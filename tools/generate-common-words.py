@@ -1,7 +1,10 @@
 #!/usr/bin/env -S uv run --script --quiet
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["wordfreq"]
+# # Pinned, and pinned to the same string as pyproject.toml's `wordlist`
+# # extra — see this module's docstring for why, and
+# # tools/check-wordlist-reproducible.py for what enforces it.
+# dependencies = ["wordfreq==3.1.1"]
 # ///
 """Regenerate src/memkit/common-words.txt — the English-common wordlist
 behind the recall hook's relevance floor.
@@ -15,6 +18,14 @@ one-word-per-line file the hook reads as a frozenset (single-digit ms).
 Run manually, rarely: English word frequency doesn't drift. Regenerate
 only to tune the threshold (then update ZIPF_THRESHOLD in the hook's
 common-words test to match) or on a major wordfreq release.
+
+wordfreq is pinned in the PEP 723 block above because the output is a
+COMMITTED artifact that decides retrieval behaviour, not a build product
+nobody reads. Unpinned, `uv run` resolves whatever is current, so two
+regenerations months apart ship two different retrievers with nothing in
+the diff saying the resolver moved. The pin must equal the `wordlist`
+extra in pyproject.toml; tools/check-wordlist-reproducible.py asserts
+that, then regenerates and diffs, and CI runs it.
 """
 
 from __future__ import annotations
