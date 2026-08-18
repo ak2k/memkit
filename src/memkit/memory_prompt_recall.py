@@ -491,7 +491,7 @@ def _is_envelope(stripped: str) -> bool:
 # briefs the hook never runs on. What survives the correction is the ordering,
 # not the magnitude: the A/B that actually justifies this constant moved 47
 # pairs from TRUNCATED to SHOWN with every other bucket bit-identical.
-MAX_HITS = 3
+MAX_HITS = 0
 # Pointers a single session may accumulate. Dedup already stops any one path
 # recurring, but a long session drifts across topics and kept paying the
 # per-prompt cost; past ~30 pointers the marginal one is noise against the
