@@ -1,0 +1,18 @@
+{
+  "include": ["src", "tests", "tools"],
+  "exclude": ["**/__pycache__", "**/.venv", "**/build", "**/dist"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": "none",
+  "reportOptionalMemberAccess": "error",
+  "reportOptionalSubscript": "error",
+  "reportOptionalIterable": "error",
+  "reportOptionalCall": "error",
+  "reportPossiblyUnboundVariable": "error",
+  "reportInvalidTypeForm": "error",
+  "reportArgumentType": "error",
+  "reportReturnType": "error",
+  "reportAssignmentType": "error"
+}

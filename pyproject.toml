@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "memkit"
+description = "Retrieval hook, integrity checker and eval harness for a tiered markdown memory store"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Adam Kirby" }]
+# The hook must IMPORT under 3.9 (the harness runs it with whatever `python3`
+# the PATH resolves to, which on a stock macOS is 3.9). The integrity checker
+# wants 3.12 and says so by name at runtime rather than dying on syntax. The
+# distribution floor is therefore the hook's, and the checker guards itself.
+requires-python = ">=3.9"
+dependencies = []
+dynamic = ["version"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing :: Indexing",
+]
+
+[project.scripts]
+memory-recall = "memkit.memory_prompt_recall:cli"
+memory-integrity = "memkit.memory_integrity:cli"
+# memory-eval earns PATH because a consumer's CI check runs it from the
+# installed package against its own stores; a path into site-packages would
+# make that check's command a build detail.
+memory-eval = "memkit.eval_memory_recall:cli"
+
+[project.optional-dependencies]
+# Only the wordlist generator needs this, and only a maintainer runs it: the
+# artifact is committed, so an adopter never resolves wordfreq at all.
+wordlist = ["wordfreq==3.1.1"]
+
+[tool.hatch.version]
+source = "vcs"
+
+# Deliberately NO `.gitattributes` export-subst: it is what triggers the
+# recorded narHash-mismatch trap. A flake input materialises without `.git`, so
+# the nix build passes HATCH_VCS_PRETEND_VERSION instead and a drift check
+# asserts the built tool reports the pinned rev.
+[tool.hatch.build.targets.wheel]
+packages = ["src/memkit"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "tools", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests", "tools"]
+# `ruff format` is deliberately NOT wired into any gate yet. Reformatting the
+# moved files would put a few hundred cosmetic lines in front of whoever reads
+# the behaviour-parity diff against the pre-extraction copies. Adopt it after
+# that evidence is recorded, in its own commit.
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "S"]
+ignore = [
+  # The hook is 3.9-import-safe on purpose; UP036/UP007 would rewrite the
+  # guards and annotations that make that true.
+  "UP007",
+  # UP033 would be safe (functools.cache is 3.9), but every rewrite of the
+  # moved files widens the diff a parity review has to read. Idiom churn is
+  # not worth that until the parity evidence is recorded.
+  "UP033",
+  "S101",  # asserts are how the tests assert
+  "S603",
+  "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "E501"]

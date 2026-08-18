@@ -1,0 +1,22 @@
+{
+  "//": [
+    "The hook's 3.9 floor, mechanically. Run it as a SECOND pass:",
+    "  pyright -p pyrightconfig-hook39.json",
+    "",
+    "It cannot be an executionEnvironment inside pyrightconfig.json, because",
+    "those are rooted at a DIRECTORY and the hook now cohabits with the",
+    "checker, which requires 3.12 and says so at runtime. One directory, two",
+    "floors, so two configs.",
+    "",
+    "The floor is real: the harness runs the hook with whatever `python3` the",
+    "PATH resolves to, which on a stock macOS is 3.9.6. A PEP-604 annotation",
+    "evaluated at runtime, or a 3.10+ stdlib call, is a hook that raises on",
+    "import — and the harness reports that as nothing at all."
+  ],
+  "include": ["src/memkit/memory_prompt_recall.py"],
+  "pythonVersion": "3.9",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": "none"
+}
