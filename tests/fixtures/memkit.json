@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "note": "Fixture config for memkit's own gates. The corpus beside it is invented: the cases are data, and a case naming a real memory is exactly what this repo must never carry.",
+  "roots": {
+    "self": {
+      "kind": "config_relative",
+      "up": 0,
+      "note": "the fixtures directory this file was read from"
+    }
+  },
+  "stores": [
+    {
+      "id": "project",
+      "role": "project",
+      "dir": "corpus/project",
+      "live_root": "self",
+      "edit_root": "self",
+      "sub_indexes": [
+        "search/domain/INDEX.md"
+      ],
+      "cwd_gate": null,
+      "note": "ungated on purpose: a build sandbox stands outside every checkout"
+    },
+    {
+      "id": "personal",
+      "role": "personal",
+      "dir": "corpus/personal",
+      "live_root": "self",
+      "edit_root": "self",
+      "sub_indexes": [],
+      "cwd_gate": null
+    }
+  ],
+  "citations": {
+    "roots": [
+      ".github",
+      "docs",
+      "scripts"
+    ],
+    "extra_suffixes": [
+      ".conf"
+    ],
+    "blame_base": "origin/main"
+  },
+  "search_cli": "memory-recall --search",
+  "eval": {
+    "root": "self",
+    "snapshot": "eval-expectations.json",
+    "gating_slices": [
+      "suite",
+      "noinject"
+    ],
+    "cases": {
+      "suite": [
+        {
+          "prompt": "recalibrate a widget after a firmware flash",
+          "file": "widget_calibration.md"
+        },
+        {
+          "prompt": "sprocket backlash after the gearbox rebuild",
+          "file": "sprocket_alignment.md"
+        },
+        {
+          "prompt": "flange fastener tightening sequence and passes",
+          "file": "flange_torque.md"
+        },
+        {
+          "prompt": "turbine balancing weights follow the rotor",
+          "file": "turbine_balancing.md"
+        },
+        {
+          "prompt": "reconcile the ledger before the period closes",
+          "file": "ledger_reconciliation.md"
+        },
+        {
+          "prompt": "gasket replacement interval on the pump",
+          "file": "gasket_replacement.md"
+        },
+        {
+          "prompt": "escalation ladder for a stuck request",
+          "file": "escalation_ladder.md"
+        }
+      ],
+      "noinject": [
+        {
+          "prompt": "thanks, that is exactly what I wanted"
+        },
+        {
+          "prompt": "how do I reverse a linked list in place"
+        }
+      ],
+      "vocab": [
+        {
+          "prompt": "the machine reads its old zero after I flashed it",
+          "file": "widget_calibration.md"
+        }
+      ]
+    }
+  }
+}

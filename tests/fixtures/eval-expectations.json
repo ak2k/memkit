@@ -1,0 +1,59 @@
+{
+  "note": "Expected outcomes of `memory-eval` on this checkout's memory stores. Regenerate with --update-snapshot, deliberately, after reading what moved; a diff here is either a corpus edit you meant or a retrieval regression you did not.",
+  "corpus_note": "sha256 over every store's *.md contents when these outcomes were recorded. A run that hashes the same corpus can attribute a moved outcome to the retriever, and gates on it; a run that hashes a different one reports every mismatch as drift.",
+  "corpus": "889f409a471cddecad939f748576b45ef6f592c45b59bb68f778235ece0de66e",
+  "cases": {
+    "suite": {
+      "recalibrate a widget after a firmware flash": {
+        "file": "widget_calibration.md",
+        "position": "search",
+        "status": "PASS"
+      },
+      "sprocket backlash after the gearbox rebuild": {
+        "file": "sprocket_alignment.md",
+        "position": "search",
+        "status": "PASS"
+      },
+      "flange fastener tightening sequence and passes": {
+        "file": "flange_torque.md",
+        "position": "search",
+        "status": "PASS"
+      },
+      "turbine balancing weights follow the rotor": {
+        "file": "turbine_balancing.md",
+        "position": "search",
+        "status": "PASS"
+      },
+      "reconcile the ledger before the period closes": {
+        "file": "ledger_reconciliation.md",
+        "position": "search",
+        "status": "PASS"
+      },
+      "gasket replacement interval on the pump": {
+        "file": "gasket_replacement.md",
+        "position": "hot",
+        "status": "ABSTAIN-OK"
+      },
+      "escalation ladder for a stuck request": {
+        "file": "escalation_ladder.md",
+        "position": "hot",
+        "status": "ABSTAIN-OK"
+      }
+    },
+    "noinject": {
+      "thanks, that is exactly what I wanted": {
+        "status": "NOINJECT-OK"
+      },
+      "how do I reverse a linked list in place": {
+        "status": "NOINJECT-OK"
+      }
+    },
+    "vocab": {
+      "the machine reads its old zero after I flashed it": {
+        "file": "widget_calibration.md",
+        "position": "search",
+        "status": "VOCAB-FOUND"
+      }
+    }
+  }
+}
