@@ -1,0 +1,64 @@
+name: Renovate
+
+# Self-hosted Renovate, the same shape as the other repos in this account.
+# renovate.json is inert without a runner, and this is the runner.
+#
+# It uses the default GITHUB_TOKEN and nothing else — no App credentials, no
+# organisation-wide token — which is the posture a repo heading for a public
+# flip needs. That choice has one consequence worth stating rather than
+# discovering: a branch pushed with GITHUB_TOKEN does NOT trigger workflows,
+# so Renovate's own PRs arrive without a Check run. This is why `automerge` is
+# off in renovate.json: nothing here would ever see green, and letting
+# Renovate's platform automerge take a PR that CI never ran is strictly worse
+# than a human merging it. To gate one, run Check against the branch by hand:
+#   gh workflow run Check --ref renovate/<branch>
+#
+# Only schedule and manual dispatch trigger it, so nothing about this job is
+# reachable from a pull request, forked or otherwise.
+on:
+  schedule:
+    # Every 6h. renovate.json's own schedule: rules decide which PRs actually
+    # open on a given run; running the workflow often just shortens the lag
+    # between an upstream release and it being noticed.
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: Log level (debug, info, warn)
+        required: false
+        default: info
+      overrideSchedule:
+        description: Ignore schedule from renovate.json (y/n)
+        required: false
+        default: 'n'
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Renovate's nix manager shells out to `nix flake update` for
+      # lockFileMaintenance, so nix has to exist on the runner.
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      - uses: renovatebot/github-action@e09d604f8f803bb527bd8321ed5be06c460b8682 # v46.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_FORCE: ${{ inputs.overrideSchedule == 'y' && '{"schedule":null}' || '' }}

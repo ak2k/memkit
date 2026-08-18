@@ -1,0 +1,174 @@
+name: Check
+
+# Dual-audience CI, because memkit has two install stories and a gate that
+# only covers one of them is a gate that lets the other rot:
+#
+#   `python`/`wordlist` — plain-python. `uv venv` + `pip install -e .`, which
+#     is what an adopter without nix does and what the pyproject floors claim
+#     to support. Fast, and the only leg that can run the wordlist
+#     reproducibility check (see that job).
+#   `nix`               — `nix flake check` on the three platforms the fleet
+#     actually runs, which is where the packaging, the home-manager module and
+#     the version-drift assertions live.
+#
+# Deliberately NO `paths:` filter on either trigger. A path-filtered workflow
+# does not merely skip — it never REPORTS, so a required status check by that
+# name stays permanently pending and the PR is unmergeable. That is the
+# recorded ak2k-skills docs-only-PR deadlock, and it is worth naming here
+# because the fix is invisible: the bug is in the absence of a `paths:` block.
+# Every job below is single-digit minutes of GitHub-hosted runner time, so
+# filtering buys nothing worth that failure mode. A README-only PR runs the
+# whole matrix and goes green.
+on:
+  # `pull_request`, never `pull_request_target`: this repo is heading for a
+  # public flip, and pull_request_target would run fork-authored code with a
+  # writable token and repository secrets in scope. Under `pull_request` a
+  # fork gets a read-only GITHUB_TOKEN and no secrets, which is the only
+  # posture in which checking out and executing a contributor's branch is
+  # safe. There are no self-hosted runners here for the same reason.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # renovate: datasource=pypi depName=ruff
+  RUFF_VERSION: "0.15.14"
+  # renovate: datasource=pypi depName=pyright
+  PYRIGHT_VERSION: "1.1.406"
+
+jobs:
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # fetch-depth 0 because the version is dynamic: hatch-vcs reads git
+      # describe at build time, and a shallow clone gives it nothing to read.
+      # This is also the only leg that exercises that path — the nix build
+      # hands the rev in through HATCH_VCS_PRETEND_VERSION instead (KTD7).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # 3.12 is the CHECKER's floor, so it is the floor for anything that
+      # imports the whole package. The hook's own 3.9 floor is a static pass
+      # (below), not a runtime one: no CI runner ships 3.9 any more, and the
+      # thing that would break there is an import-time syntax/attribute error,
+      # which pyright sees without executing anything.
+      - name: Environment
+        run: |
+          uv venv --python 3.12
+          uv pip install --python .venv -e . pytest
+
+      # One invocation covers both moved suites (pyproject sets
+      # testpaths = ["tests"]): the hook's pytest suite and the integrity
+      # checker's unittest suite, which pytest collects natively. The
+      # three-file description-cap invariant (KTD11) rides in the latter as
+      # test_the_description_cap_stays_under_the_hooks_truncation — it asserts
+      # MAX_DESC_CHARS < hook.DESC_KEEP_CHARS < hook.DESC_MAX_CHARS and that
+      # the checker's own message quotes the hook's number.
+      - name: Test suites (hook pytest + integrity unittest)
+        run: .venv/bin/python -m pytest -q
+
+      # The retrieval gate, over the invented corpus. KTD4: the real-corpus
+      # eval stays with the consumer, because its cases pair prompts with
+      # private memory filenames; what memkit can prove is the mechanism.
+      # Per-slice gating comes from the fixture config's eval.gating_slices
+      # (suite + noinject); the abstention and vocab slices are reported as
+      # instruments and do not gate.
+      - name: Fixture eval (retrieval behaviour)
+        run: .venv/bin/memory-eval --config tests/fixtures/memkit.json
+
+      - name: Ruff
+        run: uvx ruff@${{ env.RUFF_VERSION }} check .
+
+      # The hook's 3.9 floor, as a SECOND pyright pass with its own config —
+      # executionEnvironments are rooted at a directory, and here the 3.9 hook
+      # shares a directory with a checker that requires 3.12. Worth stating
+      # what this catches: the harness runs the hook with whatever `python3`
+      # the PATH resolves to, which on a stock macOS is 3.9.6, and a hook that
+      # raises on import is reported by the harness as nothing at all.
+      #
+      # PYRIGHT_PYTHON_FORCE_VERSION nails the npm-side pyright to the same
+      # version as the pypi wrapper; without it pyright-python is free to
+      # fetch a newer node package at runtime and the pin is decorative.
+      - name: Pyright — the hook's 3.9 floor
+        env:
+          PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
+        run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig-hook39.json
+
+  wordlist:
+    name: wordlist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # R6. src/memkit/common-words.txt is a committed artifact that decides
+      # which query terms the hook discards as conversational coincidence, so
+      # an edit to it is a retrieval change wearing a data diff. The check
+      # regenerates it under the pinned wordfreq and fails on any difference.
+      #
+      # uv-leg ONLY, and not for convenience: nixpkgs carries wordfreq 3.0.2
+      # against this repo's 3.1.1 pin, so a nix version of this check would
+      # regenerate under the wrong resolver and be red on arrival — it would
+      # be asserting that nixpkgs' pin matches ours, which is not a property
+      # anyone wants to maintain. (Measured 2026-08-18: the 3.0.2 word SET is
+      # in fact identical; what differs is the version the generator records
+      # in the artifact's header, which is exactly the signal this check
+      # exists to raise.)
+      - name: common-words.txt reproduces under the pinned wordfreq
+        run: uv run --no-project --python 3.12 --script tools/check-wordlist-reproducible.py
+
+  nix:
+    name: nix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest # x86_64-linux
+          - ubuntu-24.04-arm # aarch64-linux
+          - macos-14 # aarch64-darwin
+          # x86_64-darwin is a declared flake system but has no runner here:
+          # the GHA macos-13 image has been capacity-starved for months and
+          # nixpkgs is sunsetting that platform. Same call as ak2k-skills.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      # No cachix push step, deliberately. The account-wide `ak2k` cache's
+      # auth token is exactly the kind of credential that must not be
+      # reachable from a repo that is going public, and memkit's closure is
+      # python3 + pytest — everything but the ~1s package build substitutes
+      # from cache.nixos.org, so there is nothing worth caching to trade for
+      # it. If this ever becomes slow, the answer is a cache scoped to this
+      # repo, not the shared one.
+      #
+      # `checks.version-matches` only exists on a clean tree (the flake gates
+      # it on `self ? shortRev`), which a checkout is — so this leg is where
+      # the KTD7 drift assertion actually runs.
+      - name: nix flake check
+        run: nix flake check -L

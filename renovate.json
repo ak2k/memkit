@@ -1,0 +1,53 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits"
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "pep723": {
+    "description": "PEP 723 inline script metadata in tools/*.py. Renovate's pep723 manager ships an EMPTY managerFilePatterns and is therefore opt-in: without this block it extracts nothing, and the wordfreq packageRule below would match a dep that was never produced — reading as coverage while providing none.",
+    "managerFilePatterns": [
+      "/^tools/.+\\.py$/"
+    ]
+  },
+  "lockFileMaintenance": {
+    "description": "flake.lock. Both inputs (nixpkgs, flake-parts) are branch refs, so lockFileMaintenance is the only thing that moves them; there is nothing else in this repo with a lockfile.",
+    "enabled": true,
+    "schedule": [
+      "before 6am on monday"
+    ]
+  },
+  "customManagers": [
+    {
+      "description": "Tool pins in .github/workflows/check.yml. ruff and pyright are invoked through `uvx <tool>@<version>` so that CI is reproducible rather than 'whatever shipped this morning' — which means nothing else would ever tell us they had gone stale. The marker comment sits directly above the env var it names.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*\\w+:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "wordfreq is dashboard-gated because a bump is a RETRIEVAL CHANGE, not a dependency update. It is not a runtime dependency at all — no adopter ever resolves it — it is the resolver behind the committed src/memkit/common-words.txt, and that file decides which query terms the recall hook floors as conversational coincidence. Bumping the pin therefore changes what every consumer's every-prompt hook injects, via a PR whose diff is a wordlist. A green CI proves only that the artifact matches the new pin (the `wordlist` job regenerates and diffs), which is precisely the wrong thing to automerge on. A human takes this one, regenerates the artifact in the same PR, and reads the word-set diff. Both managers are named because the pin is duplicated by construction: pyproject's extra is what a maintainer installs, the PEP 723 block is what `uv run` resolves, and tools/check-wordlist-reproducible.py is red if they disagree — so they must move together, hence the shared groupName.",
+      "matchDepNames": [
+        "wordfreq"
+      ],
+      "groupName": "wordfreq pin (pyproject extra + PEP 723 block)",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "3-day cooldown on GitHub Actions bumps. Actions are the highest-value target in this repo — they are the only third-party code that runs with a write-capable token — and the tj-actions/changed-files class of compromise (Mar 2025) was caught publicly inside a day, so a short wait covers it. Deliberately NOT widened to flake inputs: the nix manager's datasource is git-refs, which carries no timestamps, and under `minimumReleaseAgeBehaviour: timestamp-required` a missing timestamp HOLDS the update — a repo-wide cooldown would silently freeze every flake input rather than error.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "minimumReleaseAge": "3 days"
+    }
+  ]
+}

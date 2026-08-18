@@ -1,0 +1,144 @@
+name: Automerge
+
+# Squash-merge the owner's own non-draft PRs once Check is green. ak2k is the
+# only human committer and agents push under the same identity, so "non-draft"
+# is the ready-to-merge signal and the label dance is unnecessary.
+#
+# Two things are deliberately absent, and both are about the planned public
+# flip rather than about today:
+#
+#   - No `pull_request_target`. It is the trigger that would let a fork PR
+#     reach this job's write token, and there is no eligibility signal on a
+#     fork PR that a fork author cannot forge.
+#   - No self-hosted runner, no App token, no secrets. This job is
+#     github-script over the default GITHUB_TOKEN and needs nothing else.
+#
+# `workflow_run` is safe on both counts: it runs the workflow file from the
+# DEFAULT BRANCH (a PR cannot edit the code that merges it), and GitHub does
+# not populate `workflow_run.pull_requests` for a PR from a fork — which the
+# same-repo assertion below re-checks from the API rather than trusting.
+on:
+  workflow_run:
+    workflows: ["Check"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: automerge
+  cancel-in-progress: false
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Every context Check reports. All of them are unconditional —
+            // check.yml has no `paths:` filter and no `if:` on any job — so
+            // "success" can be demanded outright rather than the
+            // absent-or-skipped-is-fine dance a conditional job would force.
+            // Keep this list in step with the job names in check.yml; a job
+            // added there and not here merges without being read.
+            const requiredChecks = [
+              "python",
+              "wordlist",
+              "nix (ubuntu-latest)",
+              "nix (ubuntu-24.04-arm)",
+              "nix (macos-14)",
+            ];
+
+            const candidates =
+              context.eventName === "workflow_run"
+                ? (() => {
+                    const run = context.payload.workflow_run;
+                    // NOT gated on run.conclusion: that is the AND over every
+                    // job in the workflow, so one flaky non-required job would
+                    // silently mean zero candidates and a green PR that never
+                    // gets evaluated. The per-check gate below is the
+                    // authority and is strictly narrower.
+                    if (run.event !== "pull_request") return [];
+                    return (run.pull_requests || []).map((pr) => ({
+                      number: pr.number,
+                      expectedSha: run.head_sha,
+                    }));
+                  })()
+                : (await github.paginate(github.rest.pulls.list, {
+                    owner,
+                    repo,
+                    state: "open",
+                    base: "main",
+                    per_page: 100,
+                  })).map((pr) => ({ number: pr.number }));
+
+            for (const candidate of candidates) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: candidate.number,
+              });
+
+              // Same-repo AND owner-authored. Neither alone is enough: a
+              // branch name is forgeable and an author login is only
+              // meaningful together with the branch actually living here.
+              const isSameRepo = pr.head.repo?.full_name === `${owner}/${repo}`;
+              if (!isSameRepo || pr.user.login !== owner) continue;
+              if (pr.state !== "open" || pr.draft || pr.base.ref !== "main") continue;
+              // Stale trigger: the branch moved after Check ran.
+              if (candidate.expectedSha && pr.head.sha !== candidate.expectedSha) continue;
+              if (pr.mergeable === false) continue;
+              if (["behind", "blocked", "dirty", "draft"].includes(pr.mergeable_state)) continue;
+
+              const { data } = await github.rest.checks.listForRef({
+                owner,
+                repo,
+                ref: pr.head.sha,
+                per_page: 100,
+              });
+              // One head sha can carry several check-runs under the same
+              // name (a re-run ADDS rather than replaces, and listForRef does
+              // not order by recency). Sort ascending by start time and let
+              // the newest win, so a cancelled earlier attempt cannot shadow
+              // the green re-run that superseded it.
+              const checks = new Map(
+                data.check_runs
+                  .filter((run) => run.app?.slug === "github-actions")
+                  .sort(
+                    (a, b) =>
+                      new Date(a.started_at || 0) - new Date(b.started_at || 0)
+                  )
+                  .map((run) => [run.name, run])
+              );
+              const notGreen = requiredChecks.filter(
+                (name) => checks.get(name)?.conclusion !== "success"
+              );
+              if (notGreen.length > 0) {
+                const detail = notGreen
+                  .map((name) => `${name}=${checks.get(name)?.conclusion ?? "absent"}`)
+                  .join(", ");
+                core.info(`#${pr.number}: not merging — ${detail}`);
+                continue;
+              }
+
+              try {
+                await github.rest.pulls.merge({
+                  owner,
+                  repo,
+                  pull_number: pr.number,
+                  sha: pr.head.sha,
+                  merge_method: "squash",
+                });
+                core.info(`#${pr.number}: merged`);
+              } catch (error) {
+                core.warning(`#${pr.number}: merge failed: ${error.message}`);
+              }
+            }
