@@ -223,6 +223,21 @@ hatch-vcs; the Nix build passes it in explicitly, because a flake input
 materialises without a `.git` directory, and a drift check asserts the built
 tool reports what was pinned.
 
+`src/memkit/common-words.txt` is a committed artifact, not a source file. It is
+what `tools/generate-common-words.py` produces under the pinned wordfreq, and
+CI regenerates and diffs it — so edit the generator, never the wordlist:
+
+```
+uv run tools/generate-common-words.py         # regenerate
+uv run tools/check-wordlist-reproducible.py   # what CI asserts
+```
+
+CI runs the same things twice over, once per install story: a plain-python leg
+(`uv venv` + editable install, then the suites, the fixture eval, ruff, and a
+second pyright pass that holds the hook to its 3.9 floor) and a nix leg
+(`nix flake check` on x86_64-linux, aarch64-linux and aarch64-darwin). Neither
+trigger is path-filtered, so a docs-only change still reports every context.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
