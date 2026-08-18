@@ -1125,7 +1125,17 @@ def _fts_busy(exc: BaseException) -> bool:
         # into the high bits (a SETLK build reports contention as
         # SQLITE_BUSY_TIMEOUT, 773), and an unmasked comparison would read
         # those as damage and delete the index.
-        return code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+        #
+        # sqlite3.SQLITE_* landed in 3.11, the same release as
+        # `sqlite_errorcode` — so this branch is unreachable on the 3.9 floor
+        # and the names cannot raise there. The floor pass (`pyright -p
+        # pyrightconfig-hook39.json`) resolves them against 3.9 stubs and
+        # cannot see that guard, so it is told here rather than by widening
+        # the config, which would blind the whole file.
+        return code & 0xFF in (
+            sqlite3.SQLITE_BUSY,  # pyright: ignore[reportAttributeAccessIssue]
+            sqlite3.SQLITE_LOCKED,  # pyright: ignore[reportAttributeAccessIssue]
+        )
     msg = str(exc).lower()
     return "locked" in msg or "busy" in msg
 
