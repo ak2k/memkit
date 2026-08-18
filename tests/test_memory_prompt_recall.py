@@ -1115,9 +1115,21 @@ def test_fts_rebuilds_once_on_a_non_busy_sqlite_error(
     # Schema drift from an older hook version is damage, not contention: the
     # index is thrown away and rebuilt once, and the stage still answers on
     # the same invocation rather than costing a prompt its pointers.
-    assert hook._fts_dir("restic pruning", str(corpus)) == [memo]
-    assert len(calls) == 2, "the rebuild must be a single retry, not a loop"
-    assert db.stat().st_ino != inode, "the damaged index was not replaced"
+    #
+    # Hold the doomed file open across all of it. st_ino only identifies a
+    # file while the freed number cannot be handed straight back, and ext4
+    # reallocates eagerly: the rebuilt index came back wearing the SAME inode
+    # on GitHub's linux runners, reddening this assertion on a hook that had
+    # done exactly what it should. (APFS never reuses, which is why every
+    # darwin run — including the nix checks — passed.) An open descriptor
+    # keeps the unlinked inode allocated, so the replacement is forced to get
+    # a different one and the proxy becomes sound rather than lucky. The
+    # sibling test above needs no such pin: its `blocker` connection is
+    # already holding the file open for the same window.
+    with db.open("rb"):
+        assert hook._fts_dir("restic pruning", str(corpus)) == [memo]
+        assert len(calls) == 2, "the rebuild must be a single retry, not a loop"
+        assert db.stat().st_ino != inode, "the damaged index was not replaced"
 
 
 def test_fts_contention_on_an_empty_index_is_an_error_not_no_hits(
