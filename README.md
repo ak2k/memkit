@@ -30,7 +30,7 @@ already in context or discoverable by search. Nothing else does.
 
 ## Status
 
-Private, pre-1.0, and shaped by one deployment. The interfaces below are the
+Pre-1.0 and shaped by one deployment. The interfaces below are the
 ones its own consumer uses; treat them as unstable until this repo has a
 second adopter. See [Retrieval disclosures](#retrieval-disclosures) before
 assuming any measured claim generalises to your corpus.
