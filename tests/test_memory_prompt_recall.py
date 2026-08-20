@@ -1315,6 +1315,9 @@ def test_recall_logs_the_built_query_for_the_shadow_harness(
     # Capped, so one pathological prompt cannot bloat every future log line.
     long = " ".join(f"qq{chr(97 + i // 26)}{chr(97 + i % 26)}xx" for i in range(60))
     full = hook.build_query(long)
+    # build_query answers None on a prompt with nothing content-bearing in it,
+    # which 60 invented nouns are not.
+    assert full is not None
     assert len(full) > 160, "the cap is not exercised — this test proves nothing"
     wide: dict = {}
     hook.recall(long, stats=wide)
@@ -1594,6 +1597,7 @@ def test_function_words_never_reach_the_query() -> None:
     # `yet/use/project` injected a memory on its own; the first two are
     # function words and are now stripped before ck ever sees the prompt.
     q = hook.build_query("can we use the unionfs mount yet like via project")
+    assert q is not None
     assert "use" not in q.split() and "yet" not in q.split()
     assert "like" not in q.split() and "via" not in q.split()
     assert "unionfs" in q.split()

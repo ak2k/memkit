@@ -707,7 +707,12 @@ def _check_cited_paths(store: dict, scan: set[str] | None) -> list[tuple[str, st
         return []
     # Extensions that make a token a file citation: the link checker's set plus
     # whatever else this repo cites in prose but never links.
-    suffixes = (*PATH_SUFFIXES, *store["cited_suffixes"])
+    # Bound with a type, like `search_ledger` below and for the same reason:
+    # `store` is a plain dict, so reading it yields Unknown, and unpacking that
+    # into a tuple literal gives one whose tail no longer matches the
+    # `tuple[str, ...]` the callee declares.
+    configured: tuple[str, ...] = tuple(store["cited_suffixes"])
+    suffixes = (*PATH_SUFFIXES, *configured)
     found: list[tuple[str, str]] = []
     d = store["dir"]
     root = store["root"]

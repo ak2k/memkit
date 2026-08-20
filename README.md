@@ -244,8 +244,9 @@ uv run tools/check-wordlist-reproducible.py   # what CI asserts
 ```
 
 CI runs the same things twice over, once per install story: a plain-python leg
-(`uv venv` + editable install, then the suites, the fixture eval, ruff, and a
-second pyright pass that holds the hook to its 3.9 floor) and a nix leg
+(`uv venv` + editable install, then the suites, the fixture eval, ruff, and two
+pyright passes — the package at its 3.12 floor, then the hook alone at its 3.9
+one) and a nix leg
 (`nix flake check` on x86_64-linux, aarch64-linux and aarch64-darwin). Neither
 trigger is path-filtered, so a docs-only change still reports every context.
 

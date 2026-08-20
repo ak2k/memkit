@@ -69,6 +69,19 @@ def _config(
     return path
 
 
+def _loaded(path: Path, **kw):
+    """`load_config`, narrowed to a Config.
+
+    The reader answers None for ABSENCE, which is a legitimate state with a
+    case of its own below. It is never the state a test that just wrote the
+    file is in, so narrowing once here keeps every other call site from
+    carrying a branch it cannot reach.
+    """
+    cfg = hook.load_config(str(path), **kw)
+    assert cfg is not None, f"{path} did not load"
+    return cfg
+
+
 class LinkCase(unittest.TestCase):
     """One fixture store per test, settled by a --write pass so the only
     findings left are the ones the case is about."""
@@ -727,7 +740,7 @@ class ConfigDrivenStores(unittest.TestCase):
 
     def load(self, stores: list[dict], **extra):
         path = _config(self.tmp / "memkit.json", stores, **extra)
-        return hook.load_config(str(path), honor_env_overrides=True)
+        return _loaded(path, honor_env_overrides=True)
 
     def test_n_stores_come_back_in_config_order(self) -> None:
         # KTD10's whole property: the tools take a LIST, so a one-store
@@ -814,7 +827,7 @@ class ConfigDrivenStores(unittest.TestCase):
         # developer's real stores in the child.
         cfg = self.load([{"id": "s", "dir": "notes", "live_root": "home"}])
         with unittest.mock.patch.dict(mi.os.environ, {"HOME": "/somewhere/else"}):
-            fresh = hook.load_config(str(self.tmp / "memkit.json"))
+            fresh = _loaded(self.tmp / "memkit.json")
             self.assertEqual(fresh.root("home"), "/somewhere/else")
         self.assertEqual(cfg.root("home"), mi.os.path.expanduser("~"))
 
@@ -879,7 +892,7 @@ class VerifiesTheEditTree(unittest.TestCase):
                 "edit": {"kind": "path", "path": str(self.edit)},
             },
         )
-        return hook.load_config(str(path), honor_env_overrides=True)
+        return _loaded(path, honor_env_overrides=True)
 
     def built(self) -> dict:
         stores, _ = mi.stores_from_config(self.config())
@@ -956,7 +969,7 @@ class RemediationText(unittest.TestCase):
 
     def load(self, stores: list[dict], **extra):
         path = _config(self.tmp / "memkit.json", stores, **extra)
-        return hook.load_config(str(path), honor_env_overrides=True)
+        return _loaded(path, honor_env_overrides=True)
 
     def drifted(self, **kw) -> dict:
         """A store drifted BOTH ways at once: a search memory with no row in
@@ -1289,7 +1302,7 @@ class EvalGateDecisionRules(unittest.TestCase):
         # `description:` wording, and folding them in would fail CI on prose.
         path = self.tmp / "memkit.json"
         path.write_text(json.dumps({"schema": hook.SCHEMA, "stores": []}))
-        cfg = hook.load_config(str(path))
+        cfg = _loaded(path)
         self.assertEqual(cfg.eval_gating, frozenset({"suite"}))
 
     def test_a_config_can_widen_the_gate_but_must_say_so(self) -> None:
@@ -1298,9 +1311,7 @@ class EvalGateDecisionRules(unittest.TestCase):
         path = _config(
             self.tmp / "wide.json", [], eval={"gating_slices": ["suite", "noinject"]}
         )
-        self.assertEqual(
-            hook.load_config(str(path)).eval_gating, frozenset({"suite", "noinject"})
-        )
+        self.assertEqual(_loaded(path).eval_gating, frozenset({"suite", "noinject"}))
 
     def test_nothing_outside_a_gating_slice_can_raise_the_failure_count(self) -> None:
         # The aggregation is a closure over main()'s locals and cannot be
@@ -1366,6 +1377,7 @@ class EvalGateDecisionRules(unittest.TestCase):
         self.eval.write_snapshot(path, self.cases(), "deadbeef")
         first = path.read_bytes()
         again = self.eval.read_snapshot(path)
+        assert again is not None, "the file this case just wrote reads as absent"
         self.eval.write_snapshot(path, again["cases"], again["corpus"])
         self.assertEqual(path.read_bytes(), first)
 
@@ -1385,6 +1397,7 @@ class EvalGateDecisionRules(unittest.TestCase):
         path = self.tmp / "expect.json"
         path.write_text(json.dumps({"cases": {"suite": {}}}))
         prior = self.eval.read_snapshot(path, require_fingerprint=False)
+        assert prior is not None, "the file this case just wrote reads as absent"
         self.assertIsNone(prior["corpus"])
 
     def test_a_missing_snapshot_reads_as_nothing_recorded(self) -> None:
@@ -1446,7 +1459,7 @@ class EvalGateDecisionRules(unittest.TestCase):
             self.tmp / "fp.json",
             [{"id": "project", "dir": STORE_DIR, "live_root": "home"}],
         )
-        return hook.load_config(str(path))
+        return _loaded(path)
 
     def test_a_memory_retiered_without_an_edit_hashes_differently(self) -> None:
         # The tier is the directory and the assertion follows it, so a
