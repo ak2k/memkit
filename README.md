@@ -87,6 +87,10 @@ Without a config, memkit is **inert**: no stores, zero pointers, exit 0. That
 is a deliberate default, not an oversight — there is no ambient search path to
 guess at.
 
+Rolling this out across more than one machine, verifying a host afterwards, and
+rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
+host — the hook fails open, so a broken rollout is silent.
+
 ## Config
 
 One JSON file, read by all three tools. `--config PATH` where a tool takes
