@@ -34,8 +34,10 @@ _PENDING: dict[str, tuple[str, str]] = {
     "doctor": (
         "report whether retrieval is actually working on this machine",
         'meanwhile: `memory-recall --debug-config` for what resolved, and '
-        '`memory-recall --search "<terms>"` for whether the stores answer '
-        "(exit 3 means nothing is configured, 1 means nothing matched)",
+        '`memory-recall --search "<terms>"` for whether the stores answer. '
+        "Exit 3 there means there was nothing to search — no config, or no "
+        "store on disk and in scope for this directory — and stderr names "
+        "which; exit 1 means the stores were searched and nothing matched",
     ),
     "init": (
         "create a store and wire this machine up to it",
@@ -54,10 +56,27 @@ def _parser() -> argparse.ArgumentParser:
         prog="memkit",
         description="Set up and diagnose a memkit installation. "
         "To search one, see `memory-recall --search`.",
+        # The fallbacks belong on the top-level help too, not only on the
+        # refusal an agent reaches by running the subcommand: `memkit --help`
+        # is the cheaper probe and the one tried first, and it was answering
+        # with two names and no way forward.
+        epilog="Not in this build yet:\n"
+        + "\n".join(f"  {n}: {m}" for n, (_, m) in _PENDING.items()),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = ap.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")
-    for name, (summary, _) in _PENDING.items():
-        sub.add_parser(name, help=f"{summary} — NOT IN THIS BUILD YET")
+    for name, (summary, meanwhile) in _PENDING.items():
+        # `memkit doctor --help` is the other probe an agent tries, and
+        # argparse answers it from the SUBparser — which had bare usage and
+        # exit 0, i.e. the one shape that reads as "this works". Help stays
+        # exit 0, because that is what --help means, and now carries both
+        # halves of the refusal.
+        sub.add_parser(
+            name,
+            help=f"{summary} — NOT IN THIS BUILD YET",
+            description=f"{summary}.\n\nNOT IN THIS BUILD YET. {meanwhile}",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
     return ap
 
 

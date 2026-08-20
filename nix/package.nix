@@ -1,4 +1,4 @@
-# memkit as an installed application: three console scripts, plus the hook and
+# memkit as an installed application: four console scripts, plus the hook and
 # its wordlist as a LOOSE PAIR under share/memkit/.
 #
 # The loose pair is not redundancy. The harness invokes the hook by file path,

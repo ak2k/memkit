@@ -54,6 +54,29 @@ def test_help_names_the_subcommands_that_do_not_exist_yet() -> None:
     assert "NOT IN THIS BUILD YET" in out.stdout
 
 
+def test_both_help_surfaces_carry_the_fallback_not_just_the_name() -> None:
+    """`--help` is the cheaper probe and the one an agent tries before running
+    anything, so a help page listing two names and no way forward is a dead
+    end reached in preference to the refusal that has one. Both levels: the
+    top-level epilog, and each subcommand's own `--help`, which argparse
+    answers from the SUBparser — bare usage and exit 0, the one shape that
+    reads as "this works".
+
+    Exit 0 stays, because that is what `--help` means. The fix is what it
+    says, not what it returns.
+    """
+    top = _run("--help")
+    for name, (summary, meanwhile) in cli._PENDING.items():
+        assert meanwhile in " ".join(top.stdout.split()), name
+
+        own = _run(name, "--help")
+        assert own.returncode == 0
+        collapsed = " ".join(own.stdout.split())
+        assert summary in collapsed
+        assert "NOT IN THIS BUILD YET" in collapsed
+        assert meanwhile in collapsed
+
+
 def test_an_unknown_subcommand_is_refused_against_the_list_of_real_ones() -> None:
     out = _run("frobnicate")
     assert out.returncode != 0

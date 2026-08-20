@@ -88,9 +88,23 @@ runs it with whatever `python3` the `PATH` resolves to. `memory-integrity`
 and `memory-eval` require **3.12**, and the checker says so by name on an
 older interpreter rather than dying on a syntax error.
 
-Without a config, memkit is **inert**: no stores, zero pointers, exit 0. That
-is a deliberate default, not an oversight — there is no ambient search path to
-guess at.
+Without a config, memkit is **inert**: no stores, zero pointers. That is a
+deliberate default, not an oversight — there is no ambient search path to guess
+at. The *hook* stays silent and exits 0 whatever happens, because a hook that
+fails any other way blocks a prompt; the CLIs say which state they are in.
+
+`memory-recall` exit codes — grep's three, plus one:
+
+| code | means | for the caller |
+|---|---|---|
+| 0 | pointers found, printed to stdout | read them |
+| 1 | the stores were searched and nothing matched | there is no such memory |
+| 2 | the search itself failed — unparseable config, a `--dir` or `--config` that is not there | fix what stderr names; never read as absence |
+| 3 | **inert**: nothing to search — no config, or no store on disk and in scope for this directory | stderr names which; this is *not* a claim of absence |
+
+`memory-recall --debug-config` reports the resolved config and shares those
+codes: 3 when nothing is searchable, so it cannot come back green about an
+installation `--search` calls inert.
 
 Rolling this out across more than one machine, verifying a host afterwards, and
 rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second

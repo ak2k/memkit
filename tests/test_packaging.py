@@ -9,6 +9,7 @@ list of files.
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import shutil
 import subprocess
@@ -77,6 +78,35 @@ def test_the_sdist_carries_notice_beside_the_licence(built) -> None:
     assert any(n.endswith("/LICENSE") for n in names), names
 
 
+def test_the_wheel_declares_every_console_script(built) -> None:
+    """The entry points are what an adopter actually gets on PATH, and nothing
+    was checking them. The suites reach the dispatcher through `-m`, the flake
+    checks invoke the other three binaries by path, and a `[project.scripts]`
+    key that named a module or callable that does not exist would install a
+    console script that traceback on first use — past every gate here.
+    """
+    with zipfile.ZipFile(built["wheel"]) as z:
+        entry_points = next(
+            z.read(n).decode()
+            for n in z.namelist()
+            if n.endswith(".dist-info/entry_points.txt")
+        )
+    declared = dict(
+        line.split("=", 1) for line in entry_points.splitlines() if "=" in line
+    )
+    scripts = {name.strip(): target.strip() for name, target in declared.items()}
+    assert scripts == {
+        "memkit": "memkit.cli:cli",
+        "memory-recall": "memkit.memory_prompt_recall:cli",
+        "memory-integrity": "memkit.memory_integrity:cli",
+        "memory-eval": "memkit.eval_memory_recall:cli",
+    }, entry_points
+    # And that each target resolves — the half a text assertion cannot make.
+    for target in scripts.values():
+        module, _, attr = target.partition(":")
+        assert callable(getattr(importlib.import_module(module), attr)), target
+
+
 def test_the_licence_files_are_declared_and_not_left_to_a_default(built) -> None:
     """Both files land today even with nothing declaring them — hatchling's
     default license-files glob picks up NOTICE* on its own. That is the state
@@ -101,17 +131,47 @@ def test_the_licence_files_are_declared_and_not_left_to_a_default(built) -> None
 
 
 def _imports(path: Path) -> set[str]:
-    """First-party module names `path` imports, absolute and relative."""
+    """First-party module names `path` imports, absolute and relative.
+
+    `from memkit import cli` names a MODULE, not an attribute, whenever
+    `memkit/cli.py` exists — so the imported names are offered as
+    `memkit.<name>` too and `_resolve` keeps whichever ones are files. Reading
+    only `node.module` there would see `memkit` and miss the module actually
+    being pulled in.
+    """
     found: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             found |= {a.name for a in node.names}
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                found.add(f"memkit.{node.module}" if node.module else "memkit")
-            elif node.module:
-                found.add(node.module)
+            base = f"memkit.{node.module}" if node.level and node.module else node.module
+            if node.level and not node.module:
+                base = "memkit"
+            if base:
+                found.add(base)
+                found |= {f"{base}.{a.name}" for a in node.names if a.name != "*"}
     return {n for n in found if n == "memkit" or n.startswith("memkit.")}
+
+
+def _resolve(name: str) -> set[Path]:
+    """Files that importing `name` executes: the module itself plus every
+    package `__init__.py` on the way to it.
+
+    A dotted tail may be a module (`memkit.a.b` -> `a/b.py`), a subpackage
+    (`a/b/__init__.py`), or an attribute of a module that is already counted.
+    All three shapes appear in ordinary code and the first version of this
+    helper resolved none of them, so a subpackage the hook imported would have
+    slipped the 3.9 pin in silence — the failure mode this pin exists for.
+    """
+    parts = name.split(".")[1:]  # drop the leading `memkit`
+    files = {PKG / "__init__.py"}
+    for i in range(len(parts)):
+        stem = PKG.joinpath(*parts[: i + 1])
+        if i < len(parts) - 1:
+            files.add(stem / "__init__.py")
+        else:
+            files |= {stem.with_suffix(".py"), stem / "__init__.py"}
+    return {f for f in files if f.is_file()}
 
 
 def _hook_import_closure() -> set[Path]:
@@ -120,8 +180,13 @@ def _hook_import_closure() -> set[Path]:
     queue = [HOOK]
     while queue:
         for name in _imports(queue.pop()):
-            module = PKG / (name.split(".", 1)[1] + ".py" if "." in name else "__init__.py")
-            if module.is_file() and module not in seen:
+            resolved = _resolve(name)
+            # An unresolvable first-party name is the case that must never
+            # pass quietly: silently contributing nothing shrinks the closure,
+            # and a SMALLER closure is what makes this assertion agree with an
+            # include list that is missing a file.
+            assert resolved, f"first-party import {name!r} resolves to no file"
+            for module in resolved - seen:
                 seen.add(module)
                 queue.append(module)
     return seen
@@ -142,6 +207,35 @@ def test_the_39_config_covers_exactly_the_hooks_import_path() -> None:
     config = json.loads((REPO / "pyrightconfig-hook39.json").read_text())
     listed = {(REPO / p).resolve() for p in config["include"]}
     assert listed == _hook_import_closure()
+
+
+def test_the_closure_helper_sees_the_import_shapes_real_code_uses(tmp_path) -> None:
+    """The pin above is only as good as this walk, and a walk that misses an
+    import shape does not fail — it returns a SMALLER closure, which is
+    precisely what makes an equality assertion agree with an include list that
+    has a file missing. So the shapes are pinned directly.
+    """
+    source = tmp_path / "probe.py"
+    source.write_text(
+        "import memkit.cli\n"
+        "from memkit import memory_prompt_recall\n"
+        "from memkit.memory_prompt_recall import SCHEMA\n"
+        "from . import eval_memory_recall\n"
+        "import json\n"
+    )
+    found = _imports(source)
+    assert "memkit.cli" in found
+    # `from memkit import memory_prompt_recall` names a module, not an
+    # attribute — reading only `node.module` would see `memkit` and miss it.
+    assert "memkit.memory_prompt_recall" in found
+    # Relative imports resolve against the package, not against nothing.
+    assert "memkit.eval_memory_recall" in found
+    assert not any(n.startswith("json") for n in found)
+
+    # And the name -> file step: a module, plus every __init__.py executed on
+    # the way to it. An attribute tail contributes no file of its own.
+    assert _resolve("memkit.cli") == {PKG / "__init__.py", PKG / "cli.py"}
+    assert _resolve("memkit.memory_prompt_recall.SCHEMA") == {PKG / "__init__.py"}
 
 
 def test_the_package_config_covers_new_files_without_being_edited() -> None:

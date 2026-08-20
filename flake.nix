@@ -155,6 +155,22 @@
                   chmod -R u+w fixtures
                   ${memkit}/bin/memory-integrity --config fixtures/memkit.json 2>&1 | tee $out
                 '';
+            # The dispatcher as an installed BINARY — not a suite file, so not
+            # a `suite` entry. The suites reach it through `-m` and the
+            # packaging test reads the wheel's metadata, and neither of those
+            # runs the console script the plugin's skills will invoke: a
+            # scripts entry naming a callable that does not exist installs a
+            # binary that fails for the adopter and for nobody else.
+            memkit-dispatcher = pkgs.runCommand "memkit-dispatcher" { } ''
+              ${memkit}/bin/memkit --help > $out
+              grep -q 'NOT IN THIS BUILD YET' $out
+              if ${memkit}/bin/memkit doctor 2> refusal; then
+                echo "memkit doctor exited 0 — a refusal that reads as success"
+                exit 1
+              fi
+              grep -q 'not in this build' refusal
+            '';
+
             # KTD1 + KTD2 end to end: the entry the module writes into the
             # hooks directory runs, finds its wordlist, and reads the config
             # baked into it — with nothing in the environment saying so. An
