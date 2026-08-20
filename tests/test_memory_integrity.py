@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import ast
 import json
+import re
+import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -1490,3 +1494,131 @@ class EvalGateDecisionRules(unittest.TestCase):
             self.eval.corpus_fingerprint(cfg, clean),
             self.eval.corpus_fingerprint(cfg, littered),
         )
+
+
+class FixtureEvalSensitivity(unittest.TestCase):
+    """Whether the fixture eval CI gates on can go red at all.
+
+    `memory-eval` over `tests/fixtures/` is one of the repo's five checks, and
+    all CI reads of it is the exit code. That makes it the check most able to
+    fail open: a run that compared nothing and a run that compared everything
+    and liked it print the same 0, and if the invented corpus, the cases and
+    the committed snapshot ever stop being able to disagree, the check goes on
+    passing while asserting nothing. Nothing else in this repo would notice —
+    the eval's unit tests below exercise `verdict()` and the snapshot reader
+    directly, which is precisely the layer that would still look right.
+
+    So this drives the whole harness as CI drives it, over a COPY of the
+    fixtures, and asserts that the two failures it exists to catch reach the
+    exit code. The same probe was run once out of tree — a hook copy with
+    MAX_HITS=0, pointed at CI, watched to redden — and the evidence lived in a
+    closed pull request rather than in the suite.
+
+    A third mutation deliberately has no case here: re-pointing a fixture case
+    at a different memory exits 0, because `verdict()` compares the target
+    before the outcome and a retargeted case asserts a different thing (see
+    test_a_case_repointed_at_another_memory_is_drift_not_a_regression). It is
+    the wrong probe for this property, and reads as insensitivity if you try
+    it.
+    """
+
+    FIXTURES = Path(__file__).parent / "fixtures"
+    # One suite case, quoted because both mutations key on it. A prompt that
+    # falls out of the fixture config fails these tests loudly rather than
+    # quietly mutating nothing.
+    CASE = "recalibrate a widget after a firmware flash"
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.fixtures = self.copy_writable(self.FIXTURES, self.tmp / "fixtures")
+
+    def copy_writable(self, src: Path, dst: Path) -> Path:
+        """`copytree`, then restore write permission on every copy.
+
+        The nix checks run these suites against a checkout in the store, where
+        every file is mode 444 and a copy of one inherits that — so the two
+        mutations below opened a read-only file and died, on the one leg where
+        the corpus is not a working tree. The flake's own fixture checks say
+        the same thing as `chmod -R u+w`.
+        """
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+        for path in (dst, *dst.rglob("*")):
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        return dst
+
+    def run_eval(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """The eval as CI runs it, on this interpreter.
+
+        `-m` rather than the console script: the entry point is only on PATH
+        when the package was installed with one, and the nix checks run the
+        suites from a python environment where that is not the shape.
+        """
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "memkit.eval_memory_recall",
+                "--config",
+                str(self.fixtures / "memkit.json"),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+    def snapshot(self) -> dict:
+        return json.loads((self.fixtures / "eval-expectations.json").read_text())
+
+    def test_the_unmutated_fixtures_are_green(self) -> None:
+        # The control, and not a formality: without it every assertion below is
+        # satisfied by an eval that fails on everything, which is the other way
+        # this check could be worthless.
+        done = self.run_eval()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("matches the snapshot", done.stdout)
+
+    def test_an_outcome_that_moved_off_the_snapshot_reaches_the_exit_code(
+        self,
+    ) -> None:
+        # The corpus is untouched, so the run is in the attributable regime and
+        # a recorded outcome that no longer holds is the tool's to answer for.
+        path = self.fixtures / "eval-expectations.json"
+        data = self.snapshot()
+        recorded = data["cases"]["suite"][self.CASE]
+        self.assertEqual(recorded["status"], "PASS", "the fixture case moved")
+        recorded["status"] = "MISS"
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+        done = self.run_eval()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn("REGRESSION", done.stdout)
+        self.assertIn("1 gating failure(s)", done.stdout)
+
+    def test_a_retrieval_change_the_corpus_did_not_ask_for_reddens_the_gate(
+        self,
+    ) -> None:
+        # The end the gate exists for: the corpus is what was baselined and the
+        # RETRIEVER moved. MAX_HITS is the constant that does it most bluntly —
+        # at 0 the hook retrieves as before and points at none of it, so every
+        # search case misses while the abstention cases still pass, which is
+        # also what proves the mutation reached retrieval and not the harness.
+        #
+        # A whole-directory copy because the hook resolves common-words.txt
+        # beside __file__, and the eval refuses a lone .py for that reason.
+        stock = Path(hook.__file__).parent
+        copy = self.copy_writable(stock, self.tmp / "hookcopy")
+        target = copy / Path(hook.__file__).name
+        source = target.read_text()
+        blinded = re.sub(r"^MAX_HITS = \d+", "MAX_HITS = 0", source, count=1, flags=re.M)
+        self.assertNotEqual(blinded, source, "MAX_HITS is no longer assigned plainly")
+        target.write_text(blinded)
+
+        done = self.run_eval("--hook", str(target))
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn("MAX_HITS=0", done.stdout)
+        self.assertIn("REGRESSION", done.stdout)
+        self.assertIn("5/5 retrieved", self.run_eval().stdout)  # and it is the copy
+        self.assertIn("search tier: 0/5 retrieved", done.stdout)
