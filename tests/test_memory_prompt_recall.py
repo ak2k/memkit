@@ -1563,7 +1563,76 @@ def test_a_rebuilt_index_says_so_where_the_next_run_can_read_it(
     hook._fts_dir("restic pruning", str(corpus))
     assert json.loads(Path(db.removesuffix(".db") + ".build").read_text())[
         "outcome"
-    ] == "rebuilt"
+    ] == hook.BUILD_REBUILT
+
+
+def test_a_corpus_the_walk_could_not_read_is_not_recorded_as_empty(
+    corpus: Path,
+) -> None:
+    """`files: 0, outcome: ok` is the claim that the corpus is empty, and a
+    corpus nobody can read walks to zero files WITHOUT raising — so the record
+    for an unreadable subtree was byte-identical to the record for a genuinely
+    empty store. That is the confusion this sidecar exists to break, reappearing
+    inside it.
+    """
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    hook._fts_dir("restic pruning", str(corpus))
+    whole = json.loads(build.read_text())
+    assert whole["outcome"] == hook.BUILD_OK and whole["files"] == 1
+
+    # A second memory arrives in a subtree the walk cannot enter. The corpus
+    # now holds two files and the walk still reports one, which is the lie:
+    # the count is unchanged, so nothing about `files` can carry this.
+    locked = corpus / "vault"
+    locked.mkdir()
+    _memo(locked, "b.md", "# b\n\nrestic snapshot forgetting")
+    locked.chmod(0o000)
+    try:
+        hook._fts_dir("restic pruning", str(corpus))
+        unreadable = json.loads(build.read_text())
+    finally:
+        locked.chmod(0o755)
+    assert unreadable["files"] == whole["files"]
+    assert unreadable["outcome"] == hook.BUILD_PARTIAL
+
+
+def test_a_rebuild_that_fails_does_not_leave_the_old_record_standing(
+    corpus: Path, monkeypatch
+) -> None:
+    """Between the unlink and a rebuild that never completes, the previous
+    record outlives every row it described — and it very plausibly says `ok`
+    with a file count, so a reader arriving in that window is told the corpus
+    is indexed and healthy when there is no index at all."""
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    db = hook._fts_db(str(corpus))
+    build = Path(db.removesuffix(".db") + ".build")
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(build.read_text()) == {
+        "v": hook.BUILD_SCHEMA,
+        "ts": json.loads(build.read_text())["ts"],
+        "outcome": hook.BUILD_OK,
+        "files": 1,
+    }
+
+    # Damage the index, and make the rebuild that follows fail too.
+    Path(db).write_bytes(b"this is not a database" * 100)
+    monkeypatch.setattr(
+        hook, "_fts_connect", _raising(sqlite3.DatabaseError("disk image is malformed"))
+    )
+    with pytest.raises(sqlite3.DatabaseError):
+        hook._fts_dir("restic pruning", str(corpus))
+
+    stale = json.loads(build.read_text())
+    assert stale["outcome"] == hook.BUILD_REBUILT
+    assert stale["files"] is None, "nothing read the corpus, so nothing may be claimed"
+
+
+def _raising(exc: BaseException):
+    def fail(*_args, **_kwargs):
+        raise exc
+
+    return fail
 
 
 # --- _description ------------------------------------------------------------

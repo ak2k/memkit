@@ -756,6 +756,29 @@ def _fts_note_root(db: str, root: str) -> str:
     return sidecar
 
 
+# What a `.build` record's `outcome` may say, and the order they outrank each
+# other in when a run is more than one of them: BUSY beats REBUILT beats
+# PARTIAL beats OK. Named for the same reason the EXIT_* codes are — the reader
+# is doctor, in another module and eventually another repo, and a bare literal
+# in two places is a vocabulary that drifts.
+#
+# BUSY   the sync never ran (another session held the write lock), so `files`
+#        is unknown and the query answered from the index as it stood.
+# REBUILT the index was damaged, unlinked and built from the corpus again. Run
+#        after run, this is the self-healing loop that otherwise reads exactly
+#        like a healthy cache.
+# PARTIAL the walk could not read part of the corpus, so `files` undercounts
+#        and a low number is not evidence the corpus is small.
+# OK     a complete sync over a fully readable corpus.
+BUILD_OK = "ok"
+BUILD_BUSY = "busy"
+BUILD_REBUILT = "rebuilt"
+BUILD_PARTIAL = "partial"
+# Bumped when the record's shape changes. Nothing reads these yet, which is
+# precisely when a version key is free to add and impossible to retrofit.
+BUILD_SCHEMA = 1
+
+
 def _fts_note_build(db: str, outcome: str, files: int | None) -> str:
     """Record how this corpus was last indexed, as a second sidecar.
 
@@ -765,14 +788,14 @@ def _fts_note_build(db: str, outcome: str, files: int | None) -> str:
     open the index, which syncs, which rebuilds whatever the walk finds stale.
     A diagnostic that repairs the state it is diagnosing cannot report on it.
 
-    `files` is what the walk read into the index, not a row count and not the
-    corpus's size on disk: a file the walk could not read keeps its existing
-    rows and is not counted. Zero therefore means this run established that
-    there was nothing to index. `outcome` is `ok`, `busy` (the sync lost the
-    write-lock race and the query ran against the index as it stood, so
-    `files` is unknown) or `rebuilt` (the index was damaged, unlinked, and
-    built from the corpus again — a value that appears run after run is the
-    self-healing loop that otherwise reads exactly like a healthy cache).
+    `files` is what the walk read INTO the index: not a row count, not the
+    corpus's size on disk, and not a count of what the index now holds — a
+    file the walk could not read keeps its existing rows and is excluded here,
+    because this number's job is to say what this run established. `files: 0`
+    with `outcome: ok` therefore means the corpus really was empty, and that
+    claim is only safe because every way of failing to read the corpus lands
+    on an outcome other than OK. `None` means the run never got far enough to
+    count.
 
     Same posture as the `.root` sidecar: advisory, never read by the engine, a
     stale one costs nothing, every failure suppressed. Rewritten every run,
@@ -787,7 +810,12 @@ def _fts_note_build(db: str, outcome: str, files: int | None) -> str:
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(
-                {"ts": int(time.time()), "outcome": outcome, "files": files},
+                {
+                    "v": BUILD_SCHEMA,
+                    "ts": int(time.time()),
+                    "outcome": outcome,
+                    "files": files,
+                },
                 f,
                 separators=(",", ":"),
             )
@@ -947,11 +975,16 @@ def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set
     return disk, spared, unwalked
 
 
-def _fts_sync(con: sqlite3.Connection, root: str) -> int:
+def _fts_sync(con: sqlite3.Connection, root: str) -> tuple[int, int, int]:
     """Bring the index in line with the corpus. The walk is authoritative.
 
-    Returns how many files the walk read in — the number `_fts_note_build`
-    records, and the reason 0 is a finding rather than a shrug.
+    Returns `(files, spared, unwalked)` for `_fts_note_build`: how many files
+    this walk actually read into the index, and how much of the corpus it could
+    not account for. All three, not just the first, because `files` alone
+    cannot be trusted without them — a corpus nobody can read walks to zero
+    files and no error, which is byte-identical to a corpus that is genuinely
+    empty. The counts are what let the record say `partial` instead of
+    claiming an empty corpus it never saw.
 
     A file's identity is (mtime_ns, ctime_ns, size), carried on every one of
     its chunk rows: FTS5 has no unique constraints and no update-by-key, so
@@ -1067,7 +1100,12 @@ def _fts_sync(con: sqlite3.Connection, root: str) -> int:
     _LEX_COUNTS["lex_spared"] += len(spared)
     if (spared or unwalked) and not _fts_answerable(con):
         raise OSError(f"index empty and part of {root} unreadable")
-    return len(disk)
+    # `disk` still holds any path the in-transaction backstop failed to reopen
+    # — it cannot be deleted there, since that loop iterates the live dict —
+    # so the subtraction happens here instead. Every other spared path was
+    # either never in `disk` or already removed by the staging loop, so one
+    # difference covers all of them.
+    return len(disk.keys() - spared), len(spared), len(unwalked)
 
 
 def _fts_search(con: sqlite3.Connection, query: str) -> list[str]:
@@ -1245,18 +1283,24 @@ def _fts_dir(query: str, d: str) -> list[str]:
     db = _fts_db(d)
     _fts_note_root(db, d)
 
-    def attempt(rebuilt: bool) -> list[str]:
+    def attempt(base: str) -> list[str]:
         con = _fts_connect(db)
         try:
-            outcome = "rebuilt" if rebuilt else "ok"
-            files = None
+            outcome, files = base, None
             try:
-                files = _fts_sync(con, d)
+                files, spared, unwalked = _fts_sync(con, d)
+                # A corpus nobody can read walks to zero files without raising,
+                # and `ok` over zero files is the claim that the corpus is
+                # empty — the exact confusion this sidecar exists to break. The
+                # walk's own account of what it could not reach is the only
+                # thing that separates them.
+                if (spared or unwalked) and outcome == BUILD_OK:
+                    outcome = BUILD_PARTIAL
             except sqlite3.OperationalError as exc:
                 if not _fts_busy(exc) or not _fts_answerable(con):
                     raise
                 _LEX_COUNTS["lex_busy_skip"] += 1
-                outcome = "busy"
+                outcome = BUILD_BUSY
             # Noted between the sync and the query, so a search that raises
             # still leaves the record of how the index it was about to read
             # got there.
@@ -1266,7 +1310,7 @@ def _fts_dir(query: str, d: str) -> list[str]:
             con.close()
 
     try:
-        return attempt(False)
+        return attempt(BUILD_OK)
     except sqlite3.Error as exc:
         if _fts_busy(exc):
             raise
@@ -1281,7 +1325,14 @@ def _fts_dir(query: str, d: str) -> list[str]:
         for suffix in ("", "-wal", "-shm"):
             with contextlib.suppress(OSError):
                 os.unlink(db + suffix)
-        return attempt(True)
+        # Noted BEFORE the retry, and again after it if the retry gets that
+        # far. The index this record describes has just been deleted, so the
+        # window between the unlink and a rebuild that does not complete is one
+        # where the previous record — very possibly `ok`, with a file count —
+        # outlives every row it was describing. A reader arriving then is told
+        # the corpus is indexed and healthy when there is no index at all.
+        _fts_note_build(db, BUILD_REBUILT, None)
+        return attempt(BUILD_REBUILT)
 
 
 def _interleave(ranked_lists: list[list[str]]) -> list[str]:
