@@ -3246,6 +3246,83 @@ def _single_store_config(home: Path, name: str) -> str:
     return str(path)
 
 
+def _override_config(home: Path, configured: Path) -> str:
+    """A config whose one root declares a per-root `env` override.
+
+    The ordinary shape rather than a corner: the reference config this repo is
+    extracted from declares `env` on two of its three roots, and the tools that
+    honour those overrides resolve the same file to a different tree than the
+    hook that refuses them.
+    """
+    path = home / "override.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {
+                    "fx": {"kind": "path", "path": str(configured), "env": "MEMKIT_FX"}
+                },
+                "stores": [
+                    {"id": "s", "role": "personal", "dir": "store", "live_root": "fx"}
+                ],
+            }
+        )
+    )
+    return str(path)
+
+
+def test_the_surfaces_agree_when_an_env_override_redirects_a_store(tmp_path) -> None:
+    """One config, two resolutions, and the exit codes must still match.
+
+    `--debug-config` honours the per-root env overrides and the hook never
+    does, so sharing a predicate between the two surfaces was not enough to
+    make them agree — they were sharing it over two different configs. Both
+    directions are asserted because the fix that closed the first opened the
+    second: an override pointing at a tree that exists while the configured
+    path does not is the original false green, and the reverse disagreed for
+    the first time only once the predicate was unified.
+
+    The invariant is that the DISPLAY may know more than the VERDICT and may
+    never overrule it.
+    """
+    real = tmp_path / "real"
+    (real / "store" / "search").mkdir(parents=True)
+    (real / "store" / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    absent = tmp_path / "absent"
+    query = ("--search", "sprocket backlash gearbox rebuild")
+
+    for label, configured, override, expected in (
+        ("override real, configured absent", absent, real, hook.EXIT_INERT),
+        ("override absent, configured real", real, absent, hook.EXIT_OK),
+    ):
+        cfg = _override_config(tmp_path, configured)
+        env = dict(_unconfigured(tmp_path), MEMKIT_FX=str(override))
+        search = _cli(tmp_path, "--config", cfg, *query, env=env)
+        debug = _cli(tmp_path, "--config", cfg, "--debug-config", env=env)
+
+        assert search.returncode == expected, (label, search.stderr)
+        assert debug.returncode == search.returncode, (label, debug.stdout)
+        # The display still reports what the verdict may not act on, and names
+        # the variable — an override that redirects retrieval away from the
+        # configured tree is the kind of thing set once and debugged for an
+        # hour.
+        assert "MEMKIT_FX is set" in debug.stdout, label
+        assert "the hook will read" in debug.stdout, label
+
+    # With the variable unset there is nothing to diverge, and the note must
+    # not appear — a divergence line on every run is one nobody reads.
+    quiet = dict(_unconfigured(tmp_path))
+    quiet.pop("MEMKIT_FX", None)
+    plain = _cli(
+        tmp_path, "--config", _override_config(tmp_path, real), "--debug-config", env=quiet
+    )
+    assert plain.returncode == hook.EXIT_OK, plain.stdout
+    assert "the hook will read" not in plain.stdout
+
+
 def test_a_second_config_in_one_process_is_not_answered_from_the_first(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -3317,6 +3394,15 @@ def test_a_named_config_is_checked_even_when_dir_makes_it_irrelevant(
         out = _cli(tmp_path, "--config", bad, *args, env=_unconfigured(tmp_path))
         assert out.returncode == hook.EXIT_ERROR, out.stdout
         assert out.stdout == ""
+
+        # Every other branch too, not just search. The invocation an agent
+        # uses to check a config it just wrote may be any of them, and a typo
+        # reaching exit 0 down a branch that happened not to need the file is
+        # the same false green in a different costume.
+        for branch in (("--debug-config",), ("--debug-envelope-probes",)):
+            probe = _cli(tmp_path, "--config", bad, *branch, env=_unconfigured(tmp_path))
+            assert probe.returncode == hook.EXIT_ERROR, (bad, branch, probe.stdout)
+            assert probe.stdout == ""
 
 
 def test_a_config_flag_naming_nothing_is_an_error_not_an_absence(tmp_path) -> None:

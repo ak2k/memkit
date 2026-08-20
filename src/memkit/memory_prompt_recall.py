@@ -821,7 +821,10 @@ def _fts_note_root(db: str, root: str) -> str:
 #        is unknown and the query answered from the index as it stood.
 # REBUILT the index was damaged, unlinked and built from the corpus again. Run
 #        after run, this is the self-healing loop that otherwise reads exactly
-#        like a healthy cache.
+#        like a healthy cache. Because it outranks PARTIAL, a rebuild whose
+#        walk was ALSO incomplete records REBUILT, and its `files` undercounts
+#        the corpus exactly as a PARTIAL record's would — so the number is a
+#        floor under this outcome, never a census.
 # PARTIAL the walk could not read part of the corpus, so `files` undercounts
 #        and a low number is not evidence the corpus is small.
 # OK     a complete sync over a fully readable corpus.
@@ -2285,6 +2288,20 @@ EXIT_ERROR = 2
 EXIT_INERT = 3
 
 
+def _store_state(store, live: str, searched: list) -> str:
+    """How one store stands for one resolution: the bracket `--debug-config`
+    prints, and the same predicate `_live_dirs` decides searchability with.
+
+    Three states, not two. A store this session is allowed to read and whose
+    directory does not exist was reported as `searched`, which is the single
+    most misleading line this command can print: it names the path AND asserts
+    the path is being read.
+    """
+    if store not in searched:
+        return "NOT searched here"
+    return "searched" if os.path.isdir(live) else "NOT on disk"
+
+
 def _print_config() -> int:
     """`--debug-config`: what this installation resolved, and from where.
 
@@ -2294,40 +2311,78 @@ def _print_config() -> int:
     overrides the hook path refuses, so a developer can point a session at a
     fixture tree without the every-prompt path ever growing that ability.
 
-    An inert installation exits EXIT_INERT, not 0 — and that verdict comes from
-    _config_state, the same one `--search` reads. Printing "inert" and exiting
+    An inert installation exits EXIT_INERT, not 0. Printing "inert" and exiting
     successfully asks the reader to parse prose to learn that nothing is wired
     up, and the reader here is usually an agent that checked the status and
     moved on; printing `searched` beside a store directory that is not there
     tells it something false about the store as well.
+
+    TWO resolutions of one config, and the split is the whole of this
+    function's contract. The DISPLAY honours the per-root env overrides,
+    because pointing a session at a fixture tree and seeing where it landed is
+    what the flag is for. The VERDICT — the exit code — is taken WITHOUT them,
+    because the exit code is a claim about the tree the hook will serve, and
+    the hook never honours an override. Sharing a predicate was not enough to
+    make the two surfaces agree: one derivation over two configs still let a
+    root with a live `env` override print `searched` and exit 0 for an
+    installation `--search` called inert, and made the reverse case disagree
+    for the first time.
+
+    The invariant: for the same argv and environment, this exit code and
+    `--search`'s are equal. The display may know more than the verdict; it may
+    never overrule it. Where the two resolutions land in different places the
+    divergence is printed per store rather than silently reconciled — an
+    override that redirects retrieval away from the configured tree is the
+    kind of thing a person sets once and then debugs for an hour.
     """
-    cfg, error, inert = _config_state(honor_env_overrides=True)
+    # The verdict first, and from the un-overridden resolution.
+    served, error, inert = _config_state()
     if error:
         print(f"memory-recall: {error}", file=sys.stderr)
         return EXIT_ERROR
-    if cfg is None:
+    if served is None:
         print(
             "config:     none — inert: no stores, no pointers "
             f"(no --config, ${CONFIG_ENV} unset)"
         )
         return EXIT_INERT
-    print(f"config:     {cfg.path} (schema {SCHEMA})")
-    print(f"search_cli: {cfg.search_cli}")
-    searched = cfg.searched_stores()
-    for store in cfg.stores:
-        live = cfg.store_dir(store, "live")
+    # Same file and same parse — only root RESOLUTION differs — so this cannot
+    # fail where the verdict succeeded. `or served` keeps the fallback total
+    # rather than resting on that argument.
+    display = served
+    with contextlib.suppress(ConfigError):
+        display = load_config(_CONFIG_PATH, honor_env_overrides=True) or served
+
+    print(f"config:     {display.path} (schema {SCHEMA})")
+    print(f"search_cli: {display.search_cli}")
+    shown_searched = display.searched_stores()
+    served_searched = served.searched_stores()
+    served_by_id = {s.id: s for s in served.stores}
+    for store in display.stores:
+        live = display.store_dir(store, "live")
         gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
-        # Three states, not two. A store this session is allowed to read and
-        # whose directory does not exist was reported as `searched`, which is
-        # the single most misleading line this command can print: it names the
-        # path AND asserts the path is being read.
-        if store not in searched:
-            state = "NOT searched here"
-        elif not os.path.isdir(live):
-            state = "NOT on disk"
-        else:
-            state = "searched"
+        state = _store_state(store, live, shown_searched)
         print(f"store {store.id}: {live} [{store.role}; {gated}; {state}]")
+
+        twin = served_by_id.get(store.id)
+        if twin is None:
+            continue
+        hook_live = served.store_dir(twin, "live")
+        hook_state = _store_state(twin, hook_live, served_searched)
+        # realpath both sides before comparing: an override resolves through
+        # realpath and a configured path does not, so the same tree reached two
+        # ways is not a divergence and must not be reported as one.
+        if (
+            os.path.realpath(hook_live) == os.path.realpath(live)
+            and hook_state == state
+        ):
+            continue
+        env = (display._roots_raw.get(store.live_root) or {}).get("env")
+        via = f"{env} is set: " if env else ""
+        print(
+            f"  ! {via}this run resolved {live} [{state}]; "
+            f"the hook will read {hook_live} [{hook_state}]"
+        )
     if inert:
         print(f"inert:      {inert}")
         return EXIT_INERT
@@ -2402,6 +2457,23 @@ def search_cli(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     _use_config(args.config)
 
+    # A --config the caller NAMED is opened before this run does anything else
+    # — before the probes, before --debug-config, before any search. A typo
+    # must not be able to reach an exit 0 down some branch that happened not to
+    # need the file, because the invocation an agent uses to check that a
+    # config it just wrote is good may be any of them.
+    #
+    # No soak record here, unlike the store-search path below. That asymmetry
+    # is the point: a config in the environment is the machine's standing
+    # configuration and its breakage is a property of the installation worth
+    # counting, while a --config typed on one invocation is that caller's
+    # argument error, refused to their face and gone.
+    if args.config is not None:
+        _, named_error, _ = _config_state()
+        if named_error:
+            print(f"memory-recall: {named_error}", file=sys.stderr)
+            return EXIT_ERROR
+
     if args.debug_envelope_probes:
         print(json.dumps(envelope_probes()))
         return EXIT_OK
@@ -2428,13 +2500,13 @@ def search_cli(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return EXIT_ERROR
-    # The config is consulted whenever the stores are what will be searched,
-    # and ALSO whenever the caller named one — even under --dir, where it
-    # decides nothing. `memory-recall --config <the one just written> --dir
-    # <corpus>` is a verification invocation, and letting it pass on a config
-    # that does not parse is the one way for that check to come back green
-    # about a file it never opened. Same reasoning as the --dir typo above.
-    if args.config is not None or dirs is None:
+    # A named --config has already been opened and refused if it could not be;
+    # what is left to decide is inertness, which only the store-search path
+    # asks. Under --dir the caller named the corpus, so the config has no say
+    # in what gets searched and no standing to make this run inert — that is
+    # the shape of the zero-config trial an adopter runs before there is a
+    # config to be inert.
+    if dirs is None:
         # Whether there is anything to search is settled BEFORE retrieval,
         # because recall() cannot answer it: an unconfigured machine and an
         # unanswerable query both come back as an empty list, and the caller
@@ -2442,25 +2514,18 @@ def search_cli(argv: list[str]) -> int:
         # silent about this — it has a prompt to get out of the way of — which
         # is exactly why the CLI has to say it instead.
         #
-        # Inertness is not asked under --dir: the caller named the corpus, so
-        # the config has no say in what gets searched and no standing to make
-        # this run inert. That is the shape of the zero-config trial an adopter
-        # runs before there is a config to be inert. A config that cannot be
-        # PARSED is a different matter, and is refused either way.
         _, error, inert = _config_state()
-        if error or (dirs is None and inert):
-            if dirs is None:
-                # Counted for the same reason the hook counts gate:nodirs — a
-                # run of the retrieval path that never reached a corpus is
-                # still a use of it. A --dir run that failed on its config is
-                # not: nothing was searched and nothing was going to be.
-                why = {"config": error} if error else {}
-                rec.update(
-                    outcome="cli:nodirs",
-                    ms=int((time.monotonic() - t0) * 1000),
-                    **why,
-                )
-                _soak_log(rec)
+        if error or inert:
+            # Counted for the same reason the hook counts gate:nodirs — a run
+            # of the retrieval path that never reached a corpus is still a use
+            # of it.
+            why = {"config": error} if error else {}
+            rec.update(
+                outcome="cli:nodirs",
+                ms=int((time.monotonic() - t0) * 1000),
+                **why,
+            )
+            _soak_log(rec)
             if error:
                 print(f"memory-recall: {error}", file=sys.stderr)
                 return EXIT_ERROR

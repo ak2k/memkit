@@ -104,7 +104,12 @@ fails any other way blocks a prompt; the CLIs say which state they are in.
 
 `memory-recall --debug-config` reports the resolved config and shares those
 codes: 3 when nothing is searchable, so it cannot come back green about an
-installation `--search` calls inert.
+installation `--search` calls inert. It is the one command that honours a
+root's `env` override, and it honours it in the *display* only — the exit code
+is always taken from the tree the hook will actually serve, since that is what
+the code is a claim about. Where an override sends this command somewhere the
+hook will not look, it prints the divergence per store: which variable is set,
+what this run resolved, and what the hook will read.
 
 Rolling this out across more than one machine, verifying a host afterwards, and
 rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
