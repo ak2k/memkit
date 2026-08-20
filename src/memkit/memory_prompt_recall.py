@@ -128,7 +128,6 @@ class Store:
         "edit_root",
         "sub_indexes",
         "cwd_gate",
-        "blame_only_in_edit_tree",
     )
 
     def __init__(self, raw: dict) -> None:
@@ -142,7 +141,6 @@ class Store:
         self.sub_indexes = tuple(raw.get("sub_indexes") or ())
         gate = raw.get("cwd_gate")
         self.cwd_gate = gate.get("root") if isinstance(gate, dict) else None
-        self.blame_only_in_edit_tree = bool(raw.get("blame_only_in_edit_tree"))
 
 
 class Config:

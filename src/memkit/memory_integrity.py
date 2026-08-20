@@ -129,16 +129,15 @@ def _store(
     cited_roots: tuple[str, ...] = (),
     cited_suffixes: tuple[str, ...] = (),
     blame_base: str = DEFAULT_BLAME_BASE,
-    blame_only_in_edit_tree: bool = False,
     write_recipe: str = DEFAULT_WRITE_RECIPE,
 ) -> dict:
     """One store, fully described — nothing below reads a module-level tree.
 
     `root` is where this pass READS and blames; `edit_root` is the tree the
     author is editing, which for a store pinned to a canonical checkout is a
-    different place (see _worktree_blame_pass). `link_roots` are the trees an
-    absolute or `~`-rooted link may point into and still be ours to verify: a
-    link to /nix/store or /etc is somebody else's filesystem.
+    different place. `link_roots` are the trees an absolute or `~`-rooted link
+    may point into and still be ours to verify: a link to /nix/store or /etc is
+    somebody else's filesystem.
 
     `cited_roots` defaults to EMPTY, and empty means the prose-citation check
     matches nothing. That is a real state — a store in a repo whose top-level
@@ -163,7 +162,6 @@ def _store(
         "cited_roots": tuple(cited_roots),
         "cited_suffixes": tuple(cited_suffixes),
         "blame_base": blame_base,
-        "blame_only_in_edit_tree": blame_only_in_edit_tree,
         "write_recipe": write_recipe,
     }
 
@@ -200,7 +198,6 @@ def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
                 cited_roots=cfg.cited_roots,
                 cited_suffixes=cfg.extra_suffixes,
                 blame_base=cfg.blame_base,
-                blame_only_in_edit_tree=store.blame_only_in_edit_tree,
                 write_recipe=_write_recipe(cfg, store),
             )
         )
@@ -1112,50 +1109,6 @@ def check(
     return errors, warnings
 
 
-def _worktree_blame_pass(store: dict) -> tuple[list[str], str]:
-    """(citation errors, what this pass did) for a pinned store edited HERE.
-
-    A store whose live copy is pinned to a canonical checkout is checked THERE,
-    because that is the copy anything actually reads. The cost is that an edit
-    made in a LINKED WORKTREE is neither read nor blamed: the canonical tree
-    does not have the edit, and the worktree's copy is not a store this script
-    was told about. So the author of that edit got silence — the same shape as
-    the wrong-tree bug the root resolver exists to prevent, one store over.
-
-    This adds back only the blame-aligned half — citations in the memories THIS
-    worktree changed, as errors. The canonical store keeps its full pass and
-    stays the audit target, so the live copy is still what gets verified for
-    everything else and `--write` still only ever regenerates ledgers in one
-    tree.
-    """
-    if not store["blame_only_in_edit_tree"]:
-        return [], ""
-    edit_root = store["edit_root"]
-    if edit_root.resolve() == store["root"].resolve():
-        return [], ""
-    here = _store(
-        edit_root,
-        store["mem_dir"],
-        link_roots=store["link_roots"],
-        cited_roots=store["cited_roots"],
-        cited_suffixes=store["cited_suffixes"],
-        blame_base=store["blame_base"],
-    )
-    rel_dir = store["mem_dir"]
-    if not here["dir"].is_dir():
-        return [], f"{rel_dir}/ — not present in this worktree"
-    changed, degraded = _changed_files(edit_root, store["blame_base"])
-    scan = {c for c in changed if c.startswith(f"{rel_dir}/")}
-    if not scan:
-        return [], f"{rel_dir}/ — {degraded or 'no edits to this store here'}"
-    # Deliberately NOT widened by --all. Everything this pass reports is an
-    # error, so reading beyond the changed set would make world drift block a
-    # build — the one thing the blame split exists to prevent. The audit of
-    # untouched memories belongs to the canonical store's pass.
-    findings = [m for _, m in _check_cited_paths(here, scan)]
-    return findings, f"{rel_dir}/ — {len(scan)} edited here, cited paths checked"
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -1234,15 +1187,6 @@ def main() -> int:
             print(f"[OK]   {label} ({meta})")
         for w in warnings:
             print(f"  {w}")
-
-        wt_errors, wt_note = _worktree_blame_pass(store)
-        if wt_note:
-            print(f"[{'FAIL' if wt_errors else 'OK'}]   {wt_note}")
-            for e in wt_errors:
-                print(f"  {e}")
-            if any(e.startswith("DEAD-PATH") for e in wt_errors):
-                print(f"  {_stale_base_hint(store['blame_base'])}")
-            all_errors.extend(wt_errors)
     return 1 if all_errors else 0
 
 
