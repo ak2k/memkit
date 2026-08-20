@@ -39,7 +39,10 @@ widens the scan to the whole store and reports the rest as warnings, so an
 audit still surfaces drift without failing whoever happened to run it.
 
 Which trees to check comes from the config file (`--config`, else
-MEMKIT_CONFIG). Exits 0 if all stores are consistent; 1 otherwise.
+MEMKIT_CONFIG), and for each store it is the EDIT tree — `edit_root`, the tree
+whose changes are being verified — not the live copy the recall hook serves.
+Run from a worktree, this checks and rewrites that worktree. Exits 0 if all
+stores are consistent; 1 otherwise.
 """
 
 from __future__ import annotations
@@ -78,34 +81,14 @@ DEFAULT_BLAME_BASE = "origin/main"
 # actually type. Not a path: this tool ships as a package entry point, and a
 # remediation naming a file that only exists in somebody's checkout is a
 # remediation that stops working the moment it is adopted.
+#
+# Bare, and no qualifier about where you are standing: this run verified the
+# tree you are editing (see stores_from_config), so the same command from the
+# same directory rewrites the ledgers this run just complained about. The
+# recipe carried a config-derived `VAR=$PWD` prefix while the checker verified
+# the live tree instead; verifying the edit tree is what removed the need.
 WRITE_CLI = "memory-integrity --write"
-DEFAULT_WRITE_RECIPE = f"run `{WRITE_CLI}`"
-
-
-def _write_recipe(cfg, store) -> str:
-    """The `--write` remediation line, phrased for THIS config.
-
-    A store whose live root is a fixed path is read from that path wherever
-    you happen to be standing, so an author working in a worktree who types
-    the bare command regenerates the canonical tree and not the one they are
-    editing. If the root declares an env override, naming it is the whole
-    difference between a remediation that fixes the drift in front of you and
-    one that quietly edits another checkout.
-
-    Derived from the DECLARATION, never from which route resolved the root:
-    the same finding then reads the same way whether or not the override is
-    already set, and an operator comparing two runs is not left wondering
-    which of them is lying.
-    """
-    spec = cfg.root_spec(store.live_root)
-    env = spec.get("env")
-    # A `git_toplevel` root already follows the tree you are standing in, and
-    # a `config_relative` one is pinned to the config file. Neither can be
-    # pointed at the wrong tree by being run from a worktree, so neither earns
-    # the hint.
-    if spec.get("kind") != "path" or not isinstance(env, str) or not env:
-        return DEFAULT_WRITE_RECIPE
-    return f"{DEFAULT_WRITE_RECIPE} (from a worktree: `{env}=$PWD {WRITE_CLI}`)"
+WRITE_RECIPE = f"run `{WRITE_CLI}`"
 
 
 def _stale_base_hint(blame_base: str) -> str:
@@ -124,20 +107,19 @@ def _store(
     sub_indexes: tuple[str, ...] = (),
     *,
     store_id: str = "store",
-    edit_root: Path | None = None,
     link_roots: tuple[Path, ...] = (),
     cited_roots: tuple[str, ...] = (),
     cited_suffixes: tuple[str, ...] = (),
     blame_base: str = DEFAULT_BLAME_BASE,
-    write_recipe: str = DEFAULT_WRITE_RECIPE,
 ) -> dict:
     """One store, fully described — nothing below reads a module-level tree.
 
-    `root` is where this pass READS and blames; `edit_root` is the tree the
-    author is editing, which for a store pinned to a canonical checkout is a
-    different place. `link_roots` are the trees an absolute or `~`-rooted link
-    may point into and still be ours to verify: a link to /nix/store or /etc is
-    somebody else's filesystem.
+    `root` is the ONE tree this pass reads, blames and — under `--write` —
+    rewrites: the tree whose changes are being verified. `link_roots` are the
+    trees an absolute or `~`-rooted link may point into and still be ours to
+    verify, which is a wider set than `root` alone: a memory may link the
+    canonical copy of another store by absolute path, while a link to
+    /nix/store or /etc is somebody else's filesystem.
 
     `cited_roots` defaults to EMPTY, and empty means the prose-citation check
     matches nothing. That is a real state — a store in a repo whose top-level
@@ -150,7 +132,6 @@ def _store(
         "id": store_id,
         "dir": d,
         "root": root,
-        "edit_root": edit_root if edit_root is not None else root,
         "mem_dir": mem_dir,
         "hot_ledger": d / "MEMORY.md",
         "search_ledger": d / "SEARCH.md",
@@ -162,18 +143,33 @@ def _store(
         "cited_roots": tuple(cited_roots),
         "cited_suffixes": tuple(cited_suffixes),
         "blame_base": blame_base,
-        "write_recipe": write_recipe,
     }
 
 
 def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
     """(stores, one report line per store) from a loaded config.
 
+    Rooted at each store's EDIT tree, and the two roots divide the labour by
+    what each tool is for. The hook's job is RETRIEVAL, so it serves
+    `live_root`: every session gets the canonical memories whatever checkout it
+    happens to be standing in. A checker's job is VERIFICATION OF A CHANGE, so
+    it has to read the tree that change is in — which is what `edit_root`
+    (`git_toplevel` of the cwd, in the reference config) already resolves to
+    from inside a worktree, with no prefix and nothing to remember.
+
+    Verifying the live tree instead is the seam this replaced. It printed a
+    confident `[OK]` about a tree the operator was not editing, and every
+    consumer call site had to redirect the root by hand to get the documented
+    behaviour — an env override that must be set everywhere to be correct is a
+    default pointing the wrong way.
+
     The report lines exist because the bug this resolver was written for was
     invisible precisely when the output named no tree: `[OK] docs/memories/
     (139 files)` looks identical whether it inspected your worktree or somebody
     else's checkout, and the only tell was a file count that happened to move
-    between two runs. Every store SAYS which tree answered and by which route.
+    between two runs. Every store SAYS which tree it verified and by which
+    route, and names the live tree as well when the hook is serving a different
+    one — the check that just passed says nothing about that copy.
     """
     link_roots = tuple(
         dict.fromkeys(
@@ -185,25 +181,23 @@ def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
     built: list[dict] = []
     notes: list[str] = []
     for store in cfg.stores:
-        root, how = cfg.root_with_source(store.live_root)
-        edit_root, edit_how = cfg.root_with_source(store.edit_root)
+        root, how = cfg.root_with_source(store.edit_root)
+        live_root, live_how = cfg.root_with_source(store.live_root)
         built.append(
             _store(
                 Path(root),
                 store.dir,
                 store.sub_indexes,
                 store_id=store.id,
-                edit_root=Path(edit_root),
                 link_roots=link_roots,
                 cited_roots=cfg.cited_roots,
                 cited_suffixes=cfg.extra_suffixes,
                 blame_base=cfg.blame_base,
-                write_recipe=_write_recipe(cfg, store),
             )
         )
-        note = f"{store.id} store: {root}  ({how})"
-        if edit_root != root:
-            note += f"; edits blamed in {edit_root} ({edit_how})"
+        note = f"{store.id} store: verified in {root}  ({how})"
+        if live_root != root:
+            note += f"; the hook serves {live_root} ({live_how})"
         notes.append(note)
     return tuple(built), notes
 
@@ -851,8 +845,8 @@ def check(
     errors: list[str] = []
     warnings: list[str] = []
     d = store["dir"]
-    # Relative to the STORE's own root, not a single global REPO — the two
-    # stores deliberately resolve to different trees (see _store's edit_root).
+    # Relative to the STORE's own root, not a single global REPO — two stores
+    # in one config can and do resolve to different trees.
     rel_dir = d.relative_to(store["root"])
 
     if not d.is_dir():
@@ -1005,7 +999,7 @@ def check(
         else:
             errors.append(
                 f"LEDGER-DRIFT: {rel_dir}/{ledger.relative_to(d)} is generated "
-                f"from frontmatter — {store['write_recipe']}"
+                f"from frontmatter — {WRITE_RECIPE}"
             )
 
     # "(N memories)" counts on the MEMORY.md rows that point at each ledger.
@@ -1031,7 +1025,7 @@ def check(
         else:
             errors.append(
                 f"COUNT-DRIFT: {rel_dir}/MEMORY.md ledger counts are stale — "
-                f"{store['write_recipe']}"
+                f"{WRITE_RECIPE}"
             )
 
     # Hot rows are hand-written, so nothing keeps them honest when the file

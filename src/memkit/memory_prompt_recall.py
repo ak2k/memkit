@@ -185,19 +185,6 @@ class Config:
         """
         return self.root_with_source(name)[0]
 
-    def root_spec(self, name: str) -> dict:
-        """A named root's raw declaration — `kind`, `path`, `env`, `fallback`.
-
-        For describing a root rather than resolving one: the checker phrases
-        its `--write` remediation in terms of the reader's own config, and
-        "which variable redirects this root, if any" is a question only the
-        declaration answers. Never consulted on the resolution path, and a
-        missing root is an empty dict rather than an error — a caller asking
-        what a root looks like is not the caller that needs it to exist.
-        """
-        spec = self._roots_raw.get(name)
-        return dict(spec) if isinstance(spec, dict) else {}
-
     def root_with_source(self, name: str) -> tuple:
         if name in self._resolved:
             return self._resolved[name]
