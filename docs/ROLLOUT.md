@@ -7,9 +7,11 @@ therefore produces no error, no failed unit and no red check — only pointers
 that stop arriving, which nobody notices until they go looking for a memory
 that used to surface. Everything below exists because that failure is silent.
 
-Written from one real rollout: a Nix flake consumer with a mixed darwin and
-NixOS fleet. Host names and aliases below are placeholders (`$CONSUMER` is the
-consumer checkout); the shapes are what transfers.
+Written from one real rollout — a Nix flake consumer with a mixed darwin and
+NixOS fleet — and amended after the first live darwin conversion and rollback
+drill, which found the layout defect below. Host names and aliases here are
+placeholders (`$CONSUMER` is the consumer checkout); the shapes are what
+transfers.
 
 ## The one unsafe window
 
@@ -29,55 +31,111 @@ cannot leave a host parked in the window:
 
     cd $CONSUMER && git pull && <rebuild command>
 
-NixOS hosts never see the window: their deploy aliases fetch, hard-reset to
+NixOS hosts never see this window: their deploy aliases fetch, hard-reset to
 `origin/main` and `nixos-rebuild switch` inside a single remote invocation, and
 unattended auto-upgrade does the same. Pull and switch are already one step
-there, so nothing about the order below is special for them.
+there. They are **not** exempt from the layout defect below.
+
+## The layout conversion defect
+
+Reproduced deterministically — twice on fresh generations and once on a stale
+one. It applies to exactly one transition: a consumer converting
+`~/.claude/hooks` from a single whole-directory symlink into the checkout
+(`mkOutOfStoreSymlink`) into per-file entries beneath that same path. That is
+the cutover, and only the cutover.
+
+home-manager's orphan cleanup does not remove the old directory symlink.
+`linkGeneration` then writes the new per-file entries *through* it, into the
+symlink's target — the consumer's git working tree. What lands there:
+
+- tracked hook files replaced by symlinks that resolve back through
+  `~/.claude/hooks` to themselves — **resolution loops**, `ELOOP`. On the
+  measured host, four of six hooks were dead this way.
+- `*.backup` copies of the originals and other untracked debris, in the
+  checkout.
+
+**Activation reports success throughout.** Nothing fails and nothing is logged,
+and a hook that resolves looks exactly like one that loops until you try to
+resolve it. Worth knowing which ones survive: memkit's two files are *new* at
+cutover, so they can point at real content and answer correctly while the hooks
+that were already tracked are dead. A memkit-focused verify therefore passes on
+a host whose harness is broken — which is why check 1 below tests every entry
+rather than the two this repository owns.
+
+### Converting a host
+
+Remove the directory symlink *before* the switch:
+
+    cd $CONSUMER && git pull && rm ~/.claude/hooks && <rebuild command>
+
+With nothing at the path there is nothing to write through: home-manager
+creates a real directory and populates it. This widens the dangling-hook gap to
+cover the rebuild rather than just the pull, which is an acceptable trade — the
+hook is fail-open, and it is one host at a time.
+
+A NixOS host's deploy is one remote command and sees no pull-without-rebuild
+window, but the defect is identical for the user's own checkout there. Run the
+same `rm ~/.claude/hooks` over ssh before the deploy.
+
+### Repairing a host converted in the wrong order
+
+Idempotent from then on:
+
+    readlink ~/.claude/hooks              # the directory that got written to
+    git -C $CONSUMER checkout -- <that directory>/
+    # then delete the untracked debris left in it: the two memkit files
+    # (memory-prompt-recall.py, common-words.txt), every *.backup, __pycache__
+    rm ~/.claude/hooks
+    <rebuild command>                     # or re-run this generation's activate
+
+Read `readlink` before anything else — once the symlink is gone you have lost
+the pointer to the directory that needs restoring.
 
 ## Rollout order
 
 1. **Pre-flight.** `git -C $CONSUMER status --short` is clean on every host you
-   are about to touch. A dirty consumer checkout is not cosmetic here — see the
-   stale-directory-symlink hazard under [Verify](#per-host-verify), which
-   deposits build output into the working tree.
+   are about to touch. A dirty consumer checkout is not cosmetic here: the
+   conversion defect deposits build output into the working tree, and you want
+   to be able to tell that debris apart from your own edits.
 2. **Merge** the cutover PR (first adoption) or the input-pin bump PR
    (every rollout after that).
-3. **First host: one darwin machine, and only one.** `git pull && <rebuild>` as
-   a single command. Verify it (below). **Then drill the cutover rollback on
-   this host, before any second host rebuilds** — a rollback path that has only
-   been read is not a rollback path. Roll forward again, verify again.
-4. **Remaining darwin hosts**, same single command, same verification.
+3. **First host: one darwin machine, and only one.** At the cutover, use the
+   conversion command — `git pull && rm ~/.claude/hooks && <rebuild>` as a
+   single command; for a later bump, `git pull && <rebuild>` is enough. Verify
+   it (below). **Then drill the cutover rollback on this host, before any
+   second host rebuilds** — a rollback path that has only been read is not a
+   rollback path. Roll forward again (with the `rm` again), verify again.
+4. **Remaining darwin hosts**, same command, same verification.
 5. **NixOS hosts** via their deploy aliases, or by letting unattended
-   auto-upgrade pick the change up on its own schedule.
+   auto-upgrade pick the change up on its own schedule — preceded at the
+   cutover by `rm ~/.claude/hooks` over ssh.
 
 Steps 3 and 4 are separated for the first adoption because the cutover is the
-only change that converts the hooks directory's *layout*. Routine input-pin
-bumps do not; for those, step 3's drill is optional and step 4 can be a sweep.
+only change that converts the hooks directory's *layout*, and that conversion
+is the one that needs the `rm`. Routine input-pin bumps do not touch the
+layout; for those, step 3's drill is optional and step 4 can be a sweep.
 
 ## Per-host verify
 
-Four checks. The first three prove the tool is installed and answers; the
-fourth is the one that caught a real fault.
+Four checks. The middle two prove the tool is installed and answers; the first
+and last are the ones that catch the conversion defect.
 
-**1. The hooks directory has the per-file layout.**
+**1. The hooks path is a real directory, and every entry resolves.**
 
+    test -L ~/.claude/hooks && echo "FAIL: still a symlink"
+    for f in ~/.claude/hooks/*; do readlink -f "$f" >/dev/null || echo "LOOP: $f"; done
     ls -l ~/.claude/hooks/
 
-Expect `memory-prompt-recall.py` and `common-words.txt` as symlinks into
-`/nix/store`, beside whatever other per-file hook entries your consumer keeps.
-What you must *not* see is `~/.claude/hooks` still being a **directory symlink**
-into the consumer checkout — that is the pre-cutover layout:
+`test -L` must **fail**. A symlink still at that path means the conversion did
+not complete, and the per-file entries went into the consumer checkout.
 
-    ls -ld ~/.claude/hooks        # want a real directory, not a symlink
-    readlink ~/.claude/hooks      # want no output
+`readlink -f` exiting non-zero on an entry means a resolution loop — the
+write-through signature. Test every entry, not just memkit's two: those two are
+new at cutover and can answer correctly while the pre-existing hooks are dead.
 
-If the directory symlink survives the rebuild, home-manager writes the new
-per-file entries *through* it and they land in the consumer's git working tree:
-tracked files turn into symlinks (`git status` reports `T`, a typechange),
-`.backup` copies of the originals appear untracked beside them, and the
-deployed hook is now a file inside a git checkout that any `git clean` will
-delete. Check for it explicitly; the hook keeps working, so nothing else tells
-you.
+`ls` should then show `memory-prompt-recall.py` and `common-words.txt` as
+symlinks into `/nix/store`, beside whatever other per-file hook entries your
+consumer keeps.
 
 **2. On-demand search returns hits.**
 
@@ -99,8 +157,10 @@ design, because they are in context already.
 
 Expect the pointer block on stdout and exit 0. **Use a fresh `session_id` every
 probe.** Pointers already served to a session are suppressed for it, so a
-second probe reusing the same id returns *different, lower-ranked* pointers —
-or none — and that reads as a regression when it is the deduplication working.
+second probe reusing the same id returns *different, lower-ranked* pointers, and
+a repeated identical prompt returns **zero bytes**. That is the deduplication
+working, not a fault, and it is the easiest way to talk yourself into
+diagnosing a healthy host.
 
 This probe bypasses the harness's own wiring, so finish with a real session on
 a prompt you know is good: only that exercises the `settings.json` entry, and
@@ -110,8 +170,11 @@ a settings-side breakage looks identical to a healthy host from the shell.
 
     git -C $CONSUMER status --short
 
-Must be as clean as it was at pre-flight. Anything new under the hooks
-directory means check 1 found the fault and you should stop rolling out.
+Must be as clean as it was at pre-flight. Typechanges (`T`) on tracked hook
+files, or untracked `*.backup` entries beside them, are the conversion defect
+written into your working tree: stop rolling out and repair this host first.
+Do not `git clean` that directory before you have looked — the `.backup` files
+are the only remaining copies of what those tracked files used to hold.
 
 ## Rollback
 
@@ -141,6 +204,14 @@ removals were one commit, so undoing it cannot leave the harness pointing at a
 path that neither side provides. The same single-command discipline applies —
 a revert pulled but not rebuilt parks the host in the same dangling window,
 just from the other direction.
+
+**Drilled for real, and it works.** Revert plus rebuild restored the
+whole-directory symlink layout cleanly, with no `rm` needed and no debris. The
+reverse transition is safe because home-manager owns the per-file entries it is
+removing — the defect is specific to writing new entries beneath a path that is
+still somebody else's symlink. Rolling *forward* again re-triggers it, so the
+`rm ~/.claude/hooks` pre-step applies to every re-conversion, not just the
+first.
 
 ### Bump rollback (every rollout after the first)
 
