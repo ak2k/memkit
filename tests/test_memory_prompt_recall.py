@@ -3169,11 +3169,25 @@ def test_a_named_corpus_is_never_inert(tmp_path) -> None:
 def test_a_config_naming_stores_that_are_not_there_is_inert(tmp_path) -> None:
     """Honourable, and still nothing to open. The consequence is the caller's,
     not the config's: a run that opened no corpus cannot report absence,
-    whether the reason was no config or a config pointing at nothing."""
+    whether the reason was no config or a config pointing at nothing.
+
+    Asserted on BOTH surfaces in one case, because the two disagreeing is the
+    failure. `--debug-config` used to print `searched` beside every one of
+    these missing directories and exit 0 — and it is the surface the
+    dispatcher's own refusal message sends an agent to first, so the one that
+    said the machine was fine was the one reached by following the
+    instructions.
+    """
     env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(_write_config(tmp_path)))
     out = _cli(tmp_path, "--search", "sprocket backlash gearbox", env=env)
     assert out.returncode == hook.EXIT_INERT
     assert "inert" in out.stderr and "memkit.json" in out.stderr
+
+    dbg = _cli(tmp_path, "--debug-config", env=env)
+    assert dbg.returncode == out.returncode
+    assert "NOT on disk" in dbg.stdout
+    assert "searched]" not in dbg.stdout, "a directory that is not there is not searched"
+    assert "inert:" in dbg.stdout
 
 
 def test_the_config_flag_reaches_the_stores_the_variable_does(tmp_path) -> None:
@@ -3213,6 +3227,96 @@ def test_the_config_flag_reaches_the_stores_the_variable_does(tmp_path) -> None:
     )
     assert dbg.returncode == hook.EXIT_OK
     assert env[hook.CONFIG_ENV] in dbg.stdout
+
+
+def _single_store_config(home: Path, name: str) -> str:
+    """A config whose one store is `~/<name>`, written to `~/<name>.json`."""
+    path = home / f"{name}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {"home": {"kind": "path", "path": "~"}},
+                "stores": [
+                    {"id": name, "role": "personal", "dir": name, "live_root": "home"}
+                ],
+            }
+        )
+    )
+    return str(path)
+
+
+def test_a_second_config_in_one_process_is_not_answered_from_the_first(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """IN-PROCESS, and that is the whole point of the case.
+
+    Every other `--config` assertion here spawns a subprocess, where the config
+    cache starts empty and cache invalidation cannot be observed at all —
+    deleting `_use_config`'s `cache_clear()` leaves all of them green. What it
+    breaks is the caller that reads two configs in one process, which is
+    exactly what doctor will be: the second run resolves its stores from the
+    first run's parse and answers with the wrong corpus's pointers, while every
+    surface reports success.
+
+    Distinct memories per store rather than a hit count, because both configs
+    would answer the same query and only the identity of what comes back says
+    which one was read.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv(hook.CONFIG_ENV, raising=False)
+    configs = {}
+    for name in ("alpha", "beta"):
+        root = tmp_path / name / "search"
+        root.mkdir(parents=True)
+        (root / f"{name}.md").write_text(
+            f"---\ndescription: the {name} gearbox note\ntype: reference\n---\n\n"
+            "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+        )
+        configs[name] = _single_store_config(tmp_path, name)
+    query = ["--search", "sprocket backlash gearbox rebuild"]
+
+    try:
+        for name, other in (("alpha", "beta"), ("beta", "alpha")):
+            assert hook.search_cli(["--config", configs[name], *query]) == hook.EXIT_OK
+            shown = capsys.readouterr().out
+            assert f"{name}.md" in shown, shown
+            assert f"{other}.md" not in shown, shown
+        # And back to nothing: the third call names no config, so the state a
+        # previous call left behind must not keep this process configured.
+        assert hook.search_cli(query) == hook.EXIT_INERT
+    finally:
+        # Module state outlives the test; the next one in this process would
+        # otherwise inherit a config pointing into a deleted tmpdir.
+        hook._use_config(None)
+
+
+def test_a_named_config_is_checked_even_when_dir_makes_it_irrelevant(
+    tmp_path,
+) -> None:
+    """`--config <the one just written> --dir <corpus>` is a verification
+    invocation an agent runs after writing a config, and --dir means the config
+    decides nothing about what gets searched. Letting it pass anyway is the one
+    way for that check to come back green about a file it never opened — the
+    same failure the --dir typo case exists to prevent, from the other side.
+    """
+    corpus = tmp_path / "notes"
+    corpus.mkdir()
+    (corpus / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    args = ("--search", "sprocket backlash gearbox rebuild", "--dir", str(corpus))
+
+    # The control: --dir with no config at all still searches, so the refusal
+    # below is about the config being unreadable and not about --config itself.
+    assert _cli(tmp_path, *args, env=_unconfigured(tmp_path)).returncode == hook.EXIT_OK
+
+    unhonourable = _unhonourable(tmp_path)[hook.CONFIG_ENV]
+    for bad in (unhonourable, str(tmp_path / "typo.json")):
+        out = _cli(tmp_path, "--config", bad, *args, env=_unconfigured(tmp_path))
+        assert out.returncode == hook.EXIT_ERROR, out.stdout
+        assert out.stdout == ""
 
 
 def test_a_config_flag_naming_nothing_is_an_error_not_an_absence(tmp_path) -> None:
