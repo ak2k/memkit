@@ -92,7 +92,7 @@ in
     configFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
-      example = lib.literalExpression ''"''${config.home.homeDirectory}/.config/nix/files/claude/memkit.json"'';
+      example = lib.literalExpression ''"''${config.home.homeDirectory}/dotfiles/memkit.json"'';
       description = ''
         A committed config file to bake into the hook. Wins over `roots` /
         `stores` / `citations`, which exist for a consumer that would rather
@@ -110,7 +110,7 @@ in
         {
           canonical = {
             kind = "path";
-            path = "~/.config/nix";
+            path = "~/notes";
           };
         }
       '';

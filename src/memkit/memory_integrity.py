@@ -544,7 +544,7 @@ def _check_links(store: dict, names: set[str]) -> tuple[list[str], list[str]]:
 # --- cited paths -------------------------------------------------------------
 #
 # Memories cite repo paths in PROSE far more often than they link them:
-# "the host list is modules/common/fleet.nix", "the alias lives in
+# "the host list is modules/example/hosts.nix", "the alias lives in
 # users/example/host.nix:1470". Those rot exactly like links do, and until
 # now nothing looked at them — a memory can name a module that was renamed a
 # year ago and every check stays green.
@@ -558,10 +558,11 @@ def _check_links(store: dict, names: set[str]) -> tuple[list[str], list[str]]:
 #
 # Code spans and fences are masked, same as the link check, and that is most
 # of what this check does NOT see: house style backticks paths, so a full-store
-# audit today matches 35 citations in prose (all resolving) against 481 inside
-# backticks. Unmasking is still wrong — 45 of those 481 resolve nowhere, and
-# nearly every one is ANOTHER repo's path quoted inside a memory about that
-# repo. Nothing in the text says which repo a backticked path belongs to, so
+# audit of the author's stores matches 35 citations in prose (all resolving)
+# against 481 inside backticks. Unmasking is still wrong — 45 of those 481
+# resolve nowhere, and nearly every one is ANOTHER repo's path quoted inside a
+# memory about that repo. Nothing in the text says which repo a backticked
+# path belongs to, so
 # unmasking buys ~45 false positives to catch nothing. Narrow and quiet beats
 # broad and ignored.
 
