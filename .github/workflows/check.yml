@@ -95,6 +95,20 @@ jobs:
       - name: Ruff
         run: uvx ruff@${{ env.RUFF_VERSION }} check .
 
+      # The package, at its own 3.12 floor. `pyrightconfig.json` has been in
+      # the tree since the first commit and nothing ran it, so its errors
+      # accumulated where only somebody running pyright by hand would meet
+      # them. A config that gates nothing is a config that drifts.
+      #
+      # A STEP inside this job, deliberately not a job of its own: branch
+      # protection pins the five context names, and a new job adds a sixth
+      # context that no protected branch is waiting for — green by never
+      # being required.
+      - name: Pyright — the package
+        env:
+          PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
+        run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig.json
+
       # The hook's 3.9 floor, as a SECOND pyright pass with its own config —
       # executionEnvironments are rooted at a directory, and here the 3.9 hook
       # shares a directory with a checker that requires 3.12. Worth stating

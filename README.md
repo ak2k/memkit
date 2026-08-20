@@ -140,10 +140,17 @@ one, otherwise `$MEMKIT_CONFIG`.
   build sandbox with no `$HOME` and no `.git`. A root may declare an `env`
   override *by name*; only the checker and the eval honour it, never the hook.
 - **`stores`** — a list of N stores, **ordered**, and the order is a contract:
-  retrieval interleaves hits across store directories in this order.
-  `live_root` is where the copy that gets read lives; `edit_root` is the tree
-  a checker should verify. A `cwd_gate` restricts a store to sessions inside
-  the named root, including that root's git worktrees.
+  retrieval interleaves hits across store directories in this order. Each
+  store names two roots, because the tools want different trees:
+  `live_root` is the tree the **hook serves** — the copy every session reads,
+  whichever checkout it is standing in — while `edit_root` is the tree
+  **`memory-integrity` verifies**, blames, and rewrites under `--write`.
+  Retrieval wants the canonical copy; verifying a change means reading the tree
+  that change is in, which is why `git_toplevel` is the useful setting for
+  `edit_root` and why a check run from a worktree needs no redirection.
+  `edit_root` defaults to `live_root`, which is the right answer whenever one
+  tree is both. A `cwd_gate` restricts a store to sessions inside the named
+  root, including that root's git worktrees.
 - **`citations`** — which top-level trees a prose path may name, extra
   suffixes to treat as filenames, and the base ref a change is blamed against.
 - **`eval.cases`** — three slices. `suite` pairs a prompt with the *basename*
@@ -237,8 +244,9 @@ uv run tools/check-wordlist-reproducible.py   # what CI asserts
 ```
 
 CI runs the same things twice over, once per install story: a plain-python leg
-(`uv venv` + editable install, then the suites, the fixture eval, ruff, and a
-second pyright pass that holds the hook to its 3.9 floor) and a nix leg
+(`uv venv` + editable install, then the suites, the fixture eval, ruff, and two
+pyright passes — the package at its 3.12 floor, then the hook alone at its 3.9
+one) and a nix leg
 (`nix flake check` on x86_64-linux, aarch64-linux and aarch64-darwin). Neither
 trigger is path-filtered, so a docs-only change still reports every context.
 

@@ -270,15 +270,21 @@ retrievable immediately. This is deliberate: the store is data, and data that
 needed a deploy would not get written.
 
 The one place this bites: if your config pins a store's live root to a fixed
-canonical path, then edits made in a *worktree* of that repo are not live, and
-a checker run from that worktree reads and regenerates the canonical tree
-rather than your own. Both are fixed the same way, by the env override the
-root declares:
+canonical path, then edits made in a *worktree* of that repo are not live —
+the hook goes on serving the canonical copy until the change lands there. No
+environment variable moves it, and that is the design: which directories an
+every-prompt hook reads from is the memory-poisoning surface, so the root
+overrides a config declares are honoured by the operator tools and never on
+the prompt path. To see what a worktree's copy *would* retrieve, use the tool
+that takes the tree as an argument — `memory-eval --repo "$PWD"` scores that
+checkout's stores through the same retrieval path the hook uses.
 
-    <ENV>=$PWD memory-integrity --write
-
-where `<ENV>` is `roots.<name>.env` from your config. `memory-integrity`'s own
-remediation lines name the variable for you when your config declares one.
+The **checker** is the other half of the same story and needs no redirection
+at all: `memory-integrity` verifies, blames and rewrites `edit_root`, which
+follows the checkout you are standing in, so a run from a worktree checks that
+worktree. It names both trees on every run — the one it verified and the one
+the hook serves — so a green run is never mistakable for a claim about the
+live copy.
 
 **Tooling changes travel the long way**, and there is no shortcut that is also
 safe:
