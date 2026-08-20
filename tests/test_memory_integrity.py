@@ -819,6 +819,150 @@ class ConfigDrivenStores(unittest.TestCase):
         self.assertEqual(cfg.root("home"), mi.os.path.expanduser("~"))
 
 
+class RemediationText(unittest.TestCase):
+    """What a finding actually tells its reader to type.
+
+    The remediation is the only part of a check anybody acts on, and it rots in
+    a way nothing else in this suite would notice: it named
+    `scripts/memory-integrity.py --write` for as long as this tool WAS that
+    file, and it went on looking right through the extraction that deleted the
+    file. Two properties outlive any one layout, so both are pinned here — the
+    recipe names the installed entry point, and it is phrased from the
+    READER's config rather than from the one it happened to be written
+    against.
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def load(self, stores: list[dict], **extra):
+        path = _config(self.tmp / "memkit.json", stores, **extra)
+        return hook.load_config(str(path), honor_env_overrides=True)
+
+    def drifted(self, **kw) -> dict:
+        """A store drifted BOTH ways at once: a search memory with no row in
+        the generated ledger, and a hot row whose count disagrees."""
+        d = self.tmp / STORE_DIR
+        for sub in ("hot", "search", "archive"):
+            (d / sub).mkdir(parents=True, exist_ok=True)
+        (d / "MEMORY.md").write_text(
+            MEMORY_HEAD + "\n- [search](SEARCH.md) — the ledger (7 memories)\n"
+        )
+        (d / "SEARCH.md").write_text(SEARCH_HEAD)
+        (d / "search" / "k.md").write_text(_memory("k"))
+        return mi._store(
+            self.tmp,
+            STORE_DIR,
+            cited_roots=FIXTURE_CITED_ROOTS,
+            cited_suffixes=FIXTURE_CITED_SUFFIXES,
+            **kw,
+        )
+
+    def finding(self, store: dict, kind: str) -> str:
+        errors, _ = mi.check(store, False, mi._memory_names((store,)))
+        hits = [e for e in errors if e.startswith(kind)]
+        self.assertEqual(len(hits), 1, errors)
+        return hits[0]
+
+    def test_ledger_drift_names_the_installed_command(self) -> None:
+        found = self.finding(self.drifted(), "LEDGER-DRIFT")
+        self.assertIn("run `memory-integrity --write`", found)
+        self.assertNotIn("scripts/", found)
+
+    def test_count_drift_names_the_installed_command(self) -> None:
+        found = self.finding(self.drifted(), "COUNT-DRIFT")
+        self.assertIn("run `memory-integrity --write`", found)
+        self.assertNotIn("scripts/", found)
+
+    def test_a_pinned_live_root_with_an_env_override_names_that_variable(self) -> None:
+        # A fixed path is read from that path wherever you are standing, so the
+        # bare command run from a worktree regenerates the canonical tree and
+        # not the one in front of you. The variable is deliberately NOT the
+        # reference config's: a hardcoded name passes this suite otherwise.
+        cfg = self.load(
+            [{"id": "s", "dir": STORE_DIR, "live_root": "pinned"}],
+            roots={
+                "pinned": {"kind": "path", "path": "~", "env": "FIXTURE_STORE_REPO"}
+            },
+        )
+        self.assertEqual(
+            mi._write_recipe(cfg, cfg.stores[0]),
+            "run `memory-integrity --write` (from a worktree: "
+            "`FIXTURE_STORE_REPO=$PWD memory-integrity --write`)",
+        )
+
+    def test_a_pinned_root_that_declares_no_override_gets_no_hint(self) -> None:
+        # There is nothing to suggest: without a declared variable the reader
+        # has no way to redirect the root, and inventing one would be advice
+        # that silently does nothing.
+        cfg = self.load([{"id": "s", "dir": STORE_DIR, "live_root": "home"}])
+        self.assertEqual(
+            mi._write_recipe(cfg, cfg.stores[0]), "run `memory-integrity --write`"
+        )
+
+    def test_a_root_that_already_follows_the_cwd_gets_no_hint(self) -> None:
+        # `git_toplevel` resolves to the tree you are standing in, so a run
+        # from a worktree already writes that worktree. Offering the override
+        # here would tell the reader to fix a problem they do not have.
+        cfg = self.load(
+            [{"id": "s", "dir": STORE_DIR, "live_root": "here"}],
+            roots={
+                "here": {
+                    "kind": "git_toplevel",
+                    "fallback": "home",
+                    "env": "FIXTURE_STORE_REPO",
+                },
+                "home": {"kind": "path", "path": "~"},
+            },
+        )
+        self.assertEqual(
+            mi._write_recipe(cfg, cfg.stores[0]), "run `memory-integrity --write`"
+        )
+
+    def test_the_recipe_reads_the_declaration_not_the_route(self) -> None:
+        # Setting the override changes which tree answered; it must not change
+        # what the finding says. Otherwise two runs of the same checker over
+        # the same drift disagree about the remedy, and the reader has to work
+        # out which of them was lying.
+        cfg = self.load(
+            [{"id": "s", "dir": STORE_DIR, "live_root": "pinned"}],
+            roots={
+                "pinned": {"kind": "path", "path": "~", "env": "FIXTURE_STORE_REPO"}
+            },
+        )
+        plain = mi._write_recipe(cfg, cfg.stores[0])
+        with unittest.mock.patch.dict(
+            mi.os.environ, {"FIXTURE_STORE_REPO": str(self.tmp)}
+        ):
+            fresh = hook.load_config(
+                str(self.tmp / "memkit.json"), honor_env_overrides=True
+            )
+            self.assertEqual(fresh.root("pinned"), mi.os.path.realpath(self.tmp))
+            self.assertEqual(mi._write_recipe(fresh, fresh.stores[0]), plain)
+
+    def test_the_configured_recipe_reaches_the_built_store(self) -> None:
+        # The seam: derived once in stores_from_config and carried on the store
+        # dict, because check() has the store and not the config.
+        cfg = self.load(
+            [{"id": "s", "dir": STORE_DIR, "live_root": "pinned"}],
+            roots={
+                "pinned": {"kind": "path", "path": "~", "env": "FIXTURE_STORE_REPO"}
+            },
+        )
+        stores, _ = mi.stores_from_config(cfg)
+        self.assertIn("FIXTURE_STORE_REPO=$PWD", stores[0]["write_recipe"])
+
+    def test_nothing_still_names_the_pre_extraction_script_path(self) -> None:
+        # The string this class exists for. A grep, not a behaviour: a future
+        # finding can reintroduce the dead path without going through any of
+        # the paths exercised above.
+        self.assertNotIn(
+            "scripts/memory-integrity.py", Path(mi.__file__).read_text()
+        )
+
+
 class ToolAgreements(unittest.TestCase):
     """Numbers and behaviours that must agree across files in this repo.
 
