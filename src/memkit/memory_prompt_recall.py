@@ -724,6 +724,48 @@ def _fts_note_root(db: str, root: str) -> str:
     return sidecar
 
 
+def _fts_note_build(db: str, outcome: str, files: int | None) -> str:
+    """Record how this corpus was last indexed, as a second sidecar.
+
+    "Never indexed" and "indexed, and the corpus turned out to be empty" are
+    the same absence from outside this file — no pointers, and an index file
+    that may or may not be there — and the only way to tell them apart was to
+    open the index, which syncs, which rebuilds whatever the walk finds stale.
+    A diagnostic that repairs the state it is diagnosing cannot report on it.
+
+    `files` is what the walk read into the index, not a row count and not the
+    corpus's size on disk: a file the walk could not read keeps its existing
+    rows and is not counted. Zero therefore means this run established that
+    there was nothing to index. `outcome` is `ok`, `busy` (the sync lost the
+    write-lock race and the query ran against the index as it stood, so
+    `files` is unknown) or `rebuilt` (the index was damaged, unlinked, and
+    built from the corpus again — a value that appears run after run is the
+    self-healing loop that otherwise reads exactly like a healthy cache).
+
+    Same posture as the `.root` sidecar: advisory, never read by the engine, a
+    stale one costs nothing, every failure suppressed. Rewritten every run,
+    because the question is what happened LAST. Written beside and renamed
+    over, unlike `.root`, because two sessions index the same corpus at once
+    and a reader that met half a line could not tell a torn write from an
+    index holding nothing — which is the one distinction this file exists to
+    make.
+    """
+    sidecar = db.removesuffix(".db") + ".build"
+    tmp = f"{sidecar}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(
+                {"ts": int(time.time()), "outcome": outcome, "files": files},
+                f,
+                separators=(",", ":"),
+            )
+        os.replace(tmp, sidecar)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+    return sidecar
+
+
 def _fts_connect(db: str) -> sqlite3.Connection:
     """Open (creating if absent) one corpus root's index.
 
@@ -873,8 +915,11 @@ def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set
     return disk, spared, unwalked
 
 
-def _fts_sync(con: sqlite3.Connection, root: str) -> None:
+def _fts_sync(con: sqlite3.Connection, root: str) -> int:
     """Bring the index in line with the corpus. The walk is authoritative.
+
+    Returns how many files the walk read in — the number `_fts_note_build`
+    records, and the reason 0 is a finding rather than a shrug.
 
     A file's identity is (mtime_ns, ctime_ns, size), carried on every one of
     its chunk rows: FTS5 has no unique constraints and no update-by-key, so
@@ -990,6 +1035,7 @@ def _fts_sync(con: sqlite3.Connection, root: str) -> None:
     _LEX_COUNTS["lex_spared"] += len(spared)
     if (spared or unwalked) and not _fts_answerable(con):
         raise OSError(f"index empty and part of {root} unreadable")
+    return len(disk)
 
 
 def _fts_search(con: sqlite3.Connection, query: str) -> list[str]:
@@ -1167,21 +1213,28 @@ def _fts_dir(query: str, d: str) -> list[str]:
     db = _fts_db(d)
     _fts_note_root(db, d)
 
-    def attempt() -> list[str]:
+    def attempt(rebuilt: bool) -> list[str]:
         con = _fts_connect(db)
         try:
+            outcome = "rebuilt" if rebuilt else "ok"
+            files = None
             try:
-                _fts_sync(con, d)
+                files = _fts_sync(con, d)
             except sqlite3.OperationalError as exc:
                 if not _fts_busy(exc) or not _fts_answerable(con):
                     raise
                 _LEX_COUNTS["lex_busy_skip"] += 1
+                outcome = "busy"
+            # Noted between the sync and the query, so a search that raises
+            # still leaves the record of how the index it was about to read
+            # got there.
+            _fts_note_build(db, outcome, files)
             return _fts_search(con, query)
         finally:
             con.close()
 
     try:
-        return attempt()
+        return attempt(False)
     except sqlite3.Error as exc:
         if _fts_busy(exc):
             raise
@@ -1196,7 +1249,7 @@ def _fts_dir(query: str, d: str) -> list[str]:
         for suffix in ("", "-wal", "-shm"):
             with contextlib.suppress(OSError):
                 os.unlink(db + suffix)
-        return attempt()
+        return attempt(True)
 
 
 def _interleave(ranked_lists: list[list[str]]) -> list[str]:

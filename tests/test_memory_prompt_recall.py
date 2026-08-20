@@ -1519,6 +1519,53 @@ def test_index_records_which_corpus_it_holds(corpus: Path) -> None:
     assert hook._fts_dir("restic pruning", str(corpus)) == [str(corpus / "a.md")]
 
 
+def test_the_index_records_what_its_last_build_found(corpus: Path) -> None:
+    """Never indexed and indexed-over-an-empty-corpus are the same silence.
+
+    Both answer nothing and neither leaves a pointer, so the only way to tell
+    them apart was to open the index — which syncs it, which rebuilds whatever
+    the walk finds stale. A diagnostic that repairs the state it is measuring
+    cannot report on it, so the answer is recorded at build time instead.
+    """
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    assert not build.exists(), "an unbuilt index must leave no record"
+
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(build.read_text())["files"] == 0
+
+    memo = _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    hook._fts_dir("restic pruning", str(corpus))
+    record = json.loads(build.read_text())
+    assert record["outcome"] == "ok" and record["files"] == 1
+    assert record["ts"] > 0
+
+    # Advisory, exactly like `.root`: the engine never reads it, so losing it
+    # costs answers nothing.
+    build.unlink()
+    assert hook._fts_dir("restic pruning", str(corpus)) == [memo]
+
+
+def test_a_rebuilt_index_says_so_where_the_next_run_can_read_it(
+    corpus: Path,
+) -> None:
+    """An index that self-heals leaves no other trace on disk, so a cache being
+    destroyed and rebuilt on every prompt reads exactly like a healthy one.
+    `lex_rebuilds` says so in the soak log; this says so beside the index, for
+    a reader who has the machine and not the log."""
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    db = hook._fts_db(str(corpus))
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(Path(db.removesuffix(".db") + ".build").read_text())[
+        "outcome"
+    ] == "ok"
+
+    Path(db).write_bytes(b"this is not a database" * 100)
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(Path(db.removesuffix(".db") + ".build").read_text())[
+        "outcome"
+    ] == "rebuilt"
+
+
 # --- _description ------------------------------------------------------------
 
 
