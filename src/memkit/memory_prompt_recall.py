@@ -93,6 +93,12 @@ from collections.abc import Callable
 # environment on the hook path: `honor_env_overrides` defaults to False here and
 # is turned on only by the checker, the eval, and `--debug-config`.
 #
+# The CLIs additionally take the path as `--config`, which is the same one fact
+# arriving by argument instead of by environment. That is an addition to how a
+# PERSON or an agent points a tool at a tree, never to what the hook will read:
+# the hook parses no arguments at all (see cli), so nothing an argument can say
+# reaches the every-prompt path.
+#
 # Shipped defaults are inert. No MEMKIT_CONFIG and no file means no stores,
 # which means zero pointers and exit 0 — a memkit that has not been configured
 # says nothing rather than guessing at a corpus.
@@ -340,13 +346,39 @@ def _config(honor_env_overrides: bool = False):
     """
     global _CONFIG_ERROR
     try:
-        return load_config(honor_env_overrides=honor_env_overrides)
+        return load_config(_CONFIG_PATH, honor_env_overrides=honor_env_overrides)
     except ConfigError as exc:
         _CONFIG_ERROR = str(exc)
         return None
 
 
 _CONFIG_ERROR: str | None = None
+# The config path a CLI caller named, when one did. Left None on the hook path,
+# where absence is the whole point: the installed hook reads MEMKIT_CONFIG and
+# only MEMKIT_CONFIG, because that is the variable the wrapper bakes in.
+_CONFIG_PATH: str | None = None
+
+
+def _use_config(path: str | None) -> None:
+    """Point every config read in this process at `path` (None: the env again).
+
+    `--config` has to reach `_search_dirs` and `_search_cli`, which take no
+    arguments and are reached from inside `recall()`. Threading a path through
+    them would put a CLI-only parameter into two functions on the every-prompt
+    path and into every test that calls them, for the sake of a value the hook
+    never supplies — the same trade `_LEX_COUNTS` is a module global for.
+
+    Setting it is what makes `--config` an alternative to exporting
+    MEMKIT_CONFIG rather than a second way to spell it: the highest-traffic
+    verification path stops having to mutate the environment of whatever ran
+    it. Both caches are cleared because a second call in one process — the
+    suite, and a doctor checking two configs in a row — must not answer from
+    the first one's parse.
+    """
+    global _CONFIG_PATH, _CONFIG_ERROR
+    _CONFIG_PATH = path
+    _CONFIG_ERROR = None
+    _config.cache_clear()
 
 
 # Low: just a typo/accident guard. The REAL junk gate is the stopword
@@ -2129,6 +2161,24 @@ def main() -> None:
         raise
 
 
+# --- exit codes, and the state each one names --------------------------------
+#
+# grep's three, plus one. 0/1/2 stay exactly grep's — found, found nothing, the
+# search itself failed — because the caller is an agent deciding whether to go
+# read something, and those three are the moves it already knows. The fourth
+# exists because none of them can say "this installation has nothing to search":
+# an inert memkit answers every query with the same empty result an exhaustive
+# search of a real corpus produces, and an agent reading that as absence
+# concludes the memory is not there rather than that it never looked. That
+# collapse is why the state gets a code of its own rather than a caveat in the
+# message. Named constants because doctor and the skills branch on these from
+# outside this file, and a number in two repos is a number that drifts.
+EXIT_OK = 0
+EXIT_NO_MATCH = 1
+EXIT_ERROR = 2
+EXIT_INERT = 3
+
+
 def _print_config() -> int:
     """`--debug-config`: what this installation resolved, and from where.
 
@@ -2137,15 +2187,23 @@ def _print_config() -> int:
     hook is fail-open by construction. Honours the per-root environment
     overrides the hook path refuses, so a developer can point a session at a
     fixture tree without the every-prompt path ever growing that ability.
+
+    An inert installation exits EXIT_INERT, not 0. Printing "inert" and exiting
+    successfully asks the reader to parse prose to learn that nothing is wired
+    up, and the reader here is usually an agent that checked the status and
+    moved on — which is the false green this whole surface exists to prevent.
     """
     try:
-        cfg = load_config(honor_env_overrides=True)
+        cfg = load_config(_CONFIG_PATH, honor_env_overrides=True)
     except ConfigError as exc:
         print(f"memory-recall: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_ERROR
     if cfg is None:
-        print(f"config:     none ({CONFIG_ENV} unset) — inert, no stores, no pointers")
-        return 0
+        print(
+            "config:     none — inert: no stores, no pointers "
+            f"(no --config, ${CONFIG_ENV} unset)"
+        )
+        return EXIT_INERT
     print(f"config:     {cfg.path} (schema {SCHEMA})")
     print(f"search_cli: {cfg.search_cli}")
     for store in cfg.stores:
@@ -2153,19 +2211,19 @@ def _print_config() -> int:
         gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
         searched = "searched" if store in cfg.searched_stores() else "NOT searched here"
         print(f"store {store.id}: {live} [{store.role}; {gated}; {searched}]")
-    return 0
+    return EXIT_OK
 
 
 def search_cli(argv: list[str]) -> int:
     """`--search "<terms>" [--dir PATH ...]` — the hook's own retrieval, on
     demand, printing the pointer lines it would have injected.
 
-    grep's exit codes (0 found, 1 nothing, 2 the search itself failed),
-    because the caller is an agent deciding whether to go read something and
-    the three cases want different next moves. Deliberately NOT fail-open:
-    that contract exists so a broken hook cannot block a prompt, and there is
-    no prompt here — exiting 0 and silent on a broken index would present it
-    as a corpus with nothing to say.
+    grep's exit codes plus EXIT_INERT (see that block), because the caller is
+    an agent deciding whether to go read something and each case wants a
+    different next move. Deliberately NOT fail-open: that contract exists so a
+    broken hook cannot block a prompt, and there is no prompt here — exiting 0
+    and silent on a broken index would present it as a corpus with nothing to
+    say.
 
     No cap and no session state. MAX_HITS and POINTER_BUDGET are claims about
     what may be PUSHED into a session's context unasked; a search the agent
@@ -2177,8 +2235,8 @@ def search_cli(argv: list[str]) -> int:
     It is the same retrieval path the hook runs, so what it returns is what a
     prompt in the same words would have been offered — with the cap and the
     dedup removed, not the floor. A query the corpus has no words for returns
-    nothing and exits 1; there is no nearest-neighbour guess behind that any
-    more.
+    nothing and exits EXIT_NO_MATCH; there is no nearest-neighbour guess behind
+    that any more.
     """
     # Local import: this is the only caller, and the hook path — which runs on
     # every prompt and parses no arguments — need not pay for a mode it never
@@ -2199,6 +2257,15 @@ def search_cli(argv: list[str]) -> int:
         help="corpus to search instead of the memory stores (repeatable)",
     )
     ap.add_argument(
+        "--config",
+        metavar="PATH",
+        default=None,
+        help=f"config file naming the stores to search (default: ${CONFIG_ENV}). "
+        "An alternative to exporting the variable, not a second spelling of it: "
+        "verifying a config you just wrote should not mean mutating the "
+        "environment of whatever ran this",
+    )
+    ap.add_argument(
         "--debug-envelope-probes",
         action="store_true",
         help="emit one synthesized envelope string per gated marker, as JSON. "
@@ -2213,10 +2280,11 @@ def search_cli(argv: list[str]) -> int:
         "decision to make",
     )
     args = ap.parse_args(argv)
+    _use_config(args.config)
 
     if args.debug_envelope_probes:
         print(json.dumps(envelope_probes()))
-        return 0
+        return EXIT_OK
     if args.debug_config:
         return _print_config()
     if not args.search:
@@ -2239,7 +2307,58 @@ def search_cli(argv: list[str]) -> int:
             f"memory-recall: not a directory: {', '.join(missing)}",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_ERROR
+    if dirs is None:
+        # Whether there is anything to search is settled BEFORE retrieval,
+        # because recall() cannot answer it: an unconfigured machine and an
+        # unanswerable query both come back as an empty list, and the caller
+        # would read the second meaning of the first. The hook is right to be
+        # silent about this — it has a prompt to get out of the way of — which
+        # is exactly why the CLI has to say it instead.
+        #
+        # Not asked at all under --dir: the caller named the corpus, so the
+        # config has no say in what gets searched and no standing to make this
+        # run inert. That is also the shape of the zero-config trial an adopter
+        # runs before there is a config to be inert.
+        cfg = _config()
+        # _config() folds "no config" and "a config I could not honour" into
+        # the same None, because the hook must degrade to inert either way. Out
+        # here they are the whole question: one is a machine nobody has set up,
+        # the other is a machine somebody set up wrong, and only the second is
+        # somebody's mistake to go fix.
+        inert = None
+        if cfg is None and _CONFIG_ERROR is None:
+            inert = (
+                "no config "
+                f"(no --config, ${CONFIG_ENV} unset), so no stores to search"
+            )
+        elif cfg is not None and not _search_dirs():
+            # Configured, honourable, and still nothing to open: the store
+            # directories are not on disk, or every one of them is gated to a
+            # tree this cwd is outside of. Same consequence as no config at
+            # all, so the same code — with the path named, because the fix is
+            # in that file or in where the caller is standing.
+            inert = (
+                f"{cfg.path} configures no store this session can search "
+                "(missing on disk, or gated to another tree)"
+            )
+        if cfg is None or inert:
+            why = {"config": _CONFIG_ERROR} if _CONFIG_ERROR else {}
+            rec.update(
+                outcome="cli:nodirs",
+                ms=int((time.monotonic() - t0) * 1000),
+                **why,
+            )
+            _soak_log(rec)
+            if _CONFIG_ERROR:
+                print(f"memory-recall: {_CONFIG_ERROR}", file=sys.stderr)
+                return EXIT_ERROR
+            print(
+                f"memory-recall: inert — {inert}; this is not a claim of "
+                "absence",
+                file=sys.stderr,
+            )
+            return EXIT_INERT
     hits = recall(stripped, stats=rec, dirs=dirs)
     terms = list(dict.fromkeys((build_query(stripped) or "").split()))
     eligible, floored = _eligible(hits, terms)
@@ -2265,10 +2384,10 @@ def search_cli(argv: list[str]) -> int:
                 " — result is not a claim of absence",
                 file=sys.stderr,
             )
-            return 2
-        return 1
+            return EXIT_ERROR
+        return EXIT_NO_MATCH
     print("\n".join(lines))
-    return 0
+    return EXIT_OK
 
 
 def cli() -> None:
@@ -2287,10 +2406,11 @@ def cli() -> None:
         except SystemExit:
             raise
         except Exception as exc:
-            # Never exit 1 on a failure: that code is spoken for, and an agent
-            # reading it as "no such memory" would stop looking.
+            # Never exit EXIT_NO_MATCH or EXIT_INERT on a failure: both codes
+            # are spoken for, and an agent reading either as "there is no such
+            # memory" or "nothing is set up here" would stop looking.
             print(f"memory-recall: {exc}", file=sys.stderr)
-            sys.exit(2)
+            sys.exit(EXIT_ERROR)
     # Fail-open: no output, exit 0 — never block the prompt.
     with contextlib.suppress(Exception):
         main()

@@ -2893,14 +2893,40 @@ def test_the_log_names_what_the_floor_dropped(monkeypatch, tmp_path) -> None:
 # --- --search CLI (subprocess: argv routing is only real from outside) --------
 
 
-def _cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
+def _cli(
+    tmp_path: Path, *args: str, env: dict | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["python3", HOOK, *args],
         capture_output=True,
         text=True,
         timeout=60,
-        env=_env(tmp_path),
+        env=env if env is not None else _env(tmp_path),
     )
+
+
+def _unconfigured(tmp_path: Path) -> dict:
+    """A machine with a redirected HOME and no config at all.
+
+    Pops the variable rather than trusting its absence: whoever runs this suite
+    may well have a real memkit wired up, and inheriting it would point these
+    cases at the operator's own stores.
+    """
+    env = dict(os.environ, HOME=str(tmp_path))
+    env.pop(hook.CONFIG_ENV, None)
+    return env
+
+
+def _unhonourable(tmp_path: Path) -> dict:
+    """A config that is PRESENT and cannot be honoured.
+
+    A schema this build does not speak, because that is the failure the reader
+    states in its own words — and the one a store list cannot paper over, so
+    the case cannot pass by accidentally finding nothing.
+    """
+    path = tmp_path / "unhonourable.json"
+    path.write_text(json.dumps({"schema": hook.SCHEMA + 1}))
+    return dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(path))
 
 
 def _last_record(tmp_path: Path) -> dict:
@@ -2956,6 +2982,183 @@ def test_search_cli_uses_grep_exit_codes(tmp_path) -> None:
     )
     assert typo.returncode == 2 and typo.stdout == ""
     assert "not a directory" in typo.stderr
+
+
+# The three states an agent can reach with nothing to show for it, and the
+# claim each of them supports. They are the same silence on the surfaces the
+# hook has to present — it is fail-open and must not block a prompt to explain
+# itself — and out here that collapse is what turns "nobody set this machine
+# up" into "there is no memory about this, stop looking". One test per PAIR,
+# because what matters is not that each state has a code but that no two of
+# them share one; a single three-way test passes while two of the three are
+# still fused, on whichever assertion happens to be checked first.
+
+
+def test_the_exit_codes_are_the_numbers_other_readers_hardcode() -> None:
+    """The four values, as literals.
+
+    Every other case here spells a code as `hook.EXIT_*`, which is right for
+    reading but puts the constant on both sides of the assertion: renumbering
+    EXIT_INERT to 1 would fuse it with EXIT_NO_MATCH and leave those cases
+    green. The readers that matter are outside this file — a skill's
+    `allowed-tools` branch, a doctor check, a shell `case` — and none of them
+    can import anything, so the numbers themselves are the contract.
+    """
+    assert (hook.EXIT_OK, hook.EXIT_NO_MATCH, hook.EXIT_ERROR, hook.EXIT_INERT) == (
+        0,
+        1,
+        2,
+        3,
+    )
+
+
+def test_no_config_is_not_an_empty_corpus(tmp_path) -> None:
+    query = "sprocket backlash gearbox rebuild"
+    empty = _cli(tmp_path, "--search", query)
+    inert = _cli(tmp_path, "--search", query, env=_unconfigured(tmp_path))
+
+    assert empty.returncode == hook.EXIT_NO_MATCH and empty.stdout == ""
+    assert inert.returncode == hook.EXIT_INERT and inert.stdout == ""
+    assert empty.returncode != inert.returncode
+    # The empty corpus really was searched, so its silence IS a claim of
+    # absence and must not be hedged into one the caller has to re-read.
+    assert "inert" not in empty.stderr
+    assert "inert" in inert.stderr and "not a claim of absence" in inert.stderr
+
+    empty_cfg = _cli(tmp_path, "--debug-config")
+    inert_cfg = _cli(tmp_path, "--debug-config", env=_unconfigured(tmp_path))
+    assert empty_cfg.returncode == hook.EXIT_OK
+    assert inert_cfg.returncode == hook.EXIT_INERT
+    assert "inert" in inert_cfg.stdout
+
+
+def test_a_config_that_cannot_be_honoured_is_not_an_empty_corpus(tmp_path) -> None:
+    query = "sprocket backlash gearbox rebuild"
+    empty = _cli(tmp_path, "--search", query)
+    broken = _cli(tmp_path, "--search", query, env=_unhonourable(tmp_path))
+
+    assert empty.returncode == hook.EXIT_NO_MATCH
+    assert broken.returncode == hook.EXIT_ERROR and broken.stdout == ""
+    assert empty.returncode != broken.returncode
+    # The reason, in the reader's own words: a schema mismatch is fixed by
+    # installing a build that speaks it, which "no matches" never suggests.
+    assert "schema" in broken.stderr
+
+    empty_cfg = _cli(tmp_path, "--debug-config")
+    broken_cfg = _cli(tmp_path, "--debug-config", env=_unhonourable(tmp_path))
+    assert empty_cfg.returncode == hook.EXIT_OK
+    assert broken_cfg.returncode == hook.EXIT_ERROR
+    assert "schema" in broken_cfg.stderr
+
+
+def test_a_config_that_cannot_be_honoured_is_not_the_absence_of_one(tmp_path) -> None:
+    query = "sprocket backlash gearbox rebuild"
+    inert = _cli(tmp_path, "--search", query, env=_unconfigured(tmp_path))
+    broken = _cli(tmp_path, "--search", query, env=_unhonourable(tmp_path))
+
+    assert inert.returncode == hook.EXIT_INERT
+    assert broken.returncode == hook.EXIT_ERROR
+    assert inert.returncode != broken.returncode
+    # Nobody has set this machine up vs somebody set it up wrong. Only the
+    # second is a mistake with an owner, and the pre-plugin code answered both
+    # with a silent 1.
+    assert "inert" in inert.stderr and "inert" not in broken.stderr
+
+    inert_cfg = _cli(tmp_path, "--debug-config", env=_unconfigured(tmp_path))
+    broken_cfg = _cli(tmp_path, "--debug-config", env=_unhonourable(tmp_path))
+    assert inert_cfg.returncode == hook.EXIT_INERT
+    assert broken_cfg.returncode == hook.EXIT_ERROR
+    assert inert_cfg.returncode != broken_cfg.returncode
+
+
+def test_a_named_corpus_is_never_inert(tmp_path) -> None:
+    """--dir with no config at all still searches, because the caller named the
+    corpus and the config has no say in what gets opened.
+
+    This is the zero-mutation trial an adopter runs before there IS a config —
+    ahead of the trust dialog and the consent ceremony — so an inert refusal
+    here would put the ceremony in front of the first pointer.
+    """
+    corpus = tmp_path / "notes"
+    corpus.mkdir()
+    (corpus / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    out = _cli(
+        tmp_path,
+        "--search",
+        "sprocket backlash gearbox rebuild",
+        "--dir",
+        str(corpus),
+        env=_unconfigured(tmp_path),
+    )
+    assert out.returncode == hook.EXIT_OK, out.stderr
+    assert "gearbox.md" in out.stdout
+
+
+def test_a_config_naming_stores_that_are_not_there_is_inert(tmp_path) -> None:
+    """Honourable, and still nothing to open. The consequence is the caller's,
+    not the config's: a run that opened no corpus cannot report absence,
+    whether the reason was no config or a config pointing at nothing."""
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(_write_config(tmp_path)))
+    out = _cli(tmp_path, "--search", "sprocket backlash gearbox", env=env)
+    assert out.returncode == hook.EXIT_INERT
+    assert "inert" in out.stderr and "memkit.json" in out.stderr
+
+
+def test_the_config_flag_reaches_the_stores_the_variable_does(tmp_path) -> None:
+    """`--config` is the same fact arriving by argument instead of by
+    environment, so the pin is that the two runs produce the same BYTES — not
+    that both found something, which two different corpora would also satisfy.
+    """
+    env = _env(tmp_path)
+    (tmp_path / PROJECT_DIR / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    query = "sprocket backlash gearbox rebuild"
+    by_env = _cli(tmp_path, "--search", query, env=env)
+    by_flag = _cli(
+        tmp_path,
+        "--config",
+        env[hook.CONFIG_ENV],
+        "--search",
+        query,
+        env=_unconfigured(tmp_path),
+    )
+
+    assert by_env.returncode == hook.EXIT_OK, by_env.stderr
+    assert "gearbox.md" in by_env.stdout
+    assert by_flag.returncode == by_env.returncode
+    assert by_flag.stdout == by_env.stdout
+
+    # And it reaches --debug-config too, which is where an agent that just
+    # wrote a config looks to find out whether it took.
+    dbg = _cli(
+        tmp_path,
+        "--config",
+        env[hook.CONFIG_ENV],
+        "--debug-config",
+        env=_unconfigured(tmp_path),
+    )
+    assert dbg.returncode == hook.EXIT_OK
+    assert env[hook.CONFIG_ENV] in dbg.stdout
+
+
+def test_a_config_flag_naming_nothing_is_an_error_not_an_absence(tmp_path) -> None:
+    # A typo must never read as "this machine has no stores": that is the one
+    # answer under which an agent stops looking AND stops asking.
+    out = _cli(
+        tmp_path,
+        "--config",
+        str(tmp_path / "typo.json"),
+        "--search",
+        "sprocket backlash gearbox",
+        env=_unconfigured(tmp_path),
+    )
+    assert out.returncode == hook.EXIT_ERROR
+    assert "no such config file" in out.stderr
 
 
 def test_no_argv_still_reads_the_hook_payload_from_stdin(tmp_path) -> None:
