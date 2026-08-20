@@ -6,7 +6,15 @@ build-backend = "hatchling.build"
 name = "memkit"
 description = "Retrieval hook, integrity checker and eval harness for a tiered markdown memory store"
 readme = "README.md"
-license = { file = "LICENSE" }
+# Apache-2.0 §4(d) obligates redistributing the NOTICE file, and the wheel is a
+# redistribution: `uvx --from git+...` clones and builds ONE, so an obligation
+# met only by the sdist is met by nothing an adopter of the python channel ever
+# receives. Named here as data rather than left to the backend's default
+# license-files glob, which does currently pick both up — a legal obligation
+# resting on an undeclared default is one a build-backend bump can quietly
+# drop, and test_packaging.py opens both artifacts to keep it honest.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Adam Kirby" }]
 # The hook must IMPORT under 3.9 (the harness runs it with whatever `python3`
 # the PATH resolves to, which on a stock macOS is 3.9). The integrity checker
@@ -49,7 +57,15 @@ source = "vcs"
 packages = ["src/memkit"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "tools", "README.md", "LICENSE", "pyproject.toml"]
+include = [
+  "src",
+  "tests",
+  "tools",
+  "README.md",
+  "LICENSE",
+  "NOTICE",
+  "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

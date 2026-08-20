@@ -58,6 +58,6 @@ buildPythonPackage {
   meta = {
     description = "Retrieval hook, integrity checker and eval harness for a tiered markdown memory store";
     mainProgram = "memory-recall";
-    license = lib.licenses.mit;
+    license = lib.licenses.asl20;
   };
 }

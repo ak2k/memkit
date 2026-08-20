@@ -255,6 +255,16 @@ one) and a nix leg
 (`nix flake check` on x86_64-linux, aarch64-linux and aarch64-darwin). Neither
 trigger is path-filtered, so a docs-only change still reports every context.
 
+**Which pyright config a new file belongs in.** `pyrightconfig.json` includes
+`src/`, `tests/` and `tools/` by directory, so a new file is covered there with
+no edit. `pyrightconfig-hook39.json` is an explicit file list, and it must name
+every file the *recall hook* can reach at import time — today, just the hook
+itself. Add a module the hook imports and it belongs in that list on the same
+commit: its 3.9 floor is otherwise unchecked, and the failure surfaces on a
+stock macOS as a hook that silently retrieves nothing. The direction is easy to
+invert — `cli.py` imports the hook, which does not put `cli.py` on the hook's
+import path. The list is about what the harness's `python3` executes.
+
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).

@@ -119,9 +119,20 @@
           checks = {
             package = memkit;
 
-            # The two suites the split moved here (U1's `tooling` disposition).
+            # The two suites the split moved here (U1's `tooling` disposition),
+            # and the two that grew beside them. One check per suite FILE, so
+            # each one is named for what it covers — which also means a new
+            # suite that is not listed here runs on the plain-python leg alone.
+            # That is the dual-audience gate letting one audience rot, so a new
+            # tests/ file earns a line.
             hook-tests = suite "hook-tests" "tests/test_memory_prompt_recall.py";
             integrity-tests = suite "integrity-tests" "tests/test_memory_integrity.py";
+            cli-tests = suite "cli-tests" "tests/test_cli.py";
+            # Its artifact cases need a build frontend and a network to resolve
+            # the backend, and this sandbox has neither, so they skip here and
+            # gate on the uv leg. What still runs is the pyright-include pin,
+            # which needs nothing but the tree.
+            packaging-tests = suite "packaging-tests" "tests/test_packaging.py";
 
             # KTD4: the real-corpus gate belongs to the consumer, because the
             # cases pair prompts with private memory filenames. What memkit can

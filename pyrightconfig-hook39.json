@@ -11,7 +11,14 @@
     "The floor is real: the harness runs the hook with whatever `python3` the",
     "PATH resolves to, which on a stock macOS is 3.9.6. A PEP-604 annotation",
     "evaluated at runtime, or a 3.10+ stdlib call, is a hook that raises on",
-    "import — and the harness reports that as nothing at all."
+    "import — and the harness reports that as nothing at all.",
+    "",
+    "`include` is an explicit file list, and the rule for it is: every file",
+    "the HOOK can reach at import time, and nothing else. A module the hook",
+    "grows an import of belongs here on the same commit; a module that merely",
+    "imports the hook does not, since nothing puts it in front of the",
+    "harness's interpreter. Everything else is covered by pyrightconfig.json,",
+    "which includes src/ tests/ tools/ wholesale."
   ],
   "include": ["src/memkit/memory_prompt_recall.py"],
   "pythonVersion": "3.9",
