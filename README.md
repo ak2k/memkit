@@ -30,7 +30,7 @@ already in context or discoverable by search. Nothing else does.
 
 ## Status
 
-Private, pre-1.0, and shaped by one deployment. The interfaces below are the
+Pre-1.0 and shaped by one deployment. The interfaces below are the
 ones its own consumer uses; treat them as unstable until this repo has a
 second adopter. See [Retrieval disclosures](#retrieval-disclosures) before
 assuming any measured claim generalises to your corpus.
@@ -86,6 +86,10 @@ older interpreter rather than dying on a syntax error.
 Without a config, memkit is **inert**: no stores, zero pointers, exit 0. That
 is a deliberate default, not an oversight — there is no ambient search path to
 guess at.
+
+Rolling this out across more than one machine, verifying a host afterwards, and
+rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
+host — the hook fails open, so a broken rollout is silent.
 
 ## Config
 
@@ -240,4 +244,4 @@ trigger is path-filtered, so a docs-only change still reports every context.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).

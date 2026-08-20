@@ -74,6 +74,40 @@ from memkit.memory_prompt_recall import (  # noqa: E402
 DEFAULT_BLAME_BASE = "origin/main"
 
 
+# The installed console script, which is what a reader of a finding can
+# actually type. Not a path: this tool ships as a package entry point, and a
+# remediation naming a file that only exists in somebody's checkout is a
+# remediation that stops working the moment it is adopted.
+WRITE_CLI = "memory-integrity --write"
+DEFAULT_WRITE_RECIPE = f"run `{WRITE_CLI}`"
+
+
+def _write_recipe(cfg, store) -> str:
+    """The `--write` remediation line, phrased for THIS config.
+
+    A store whose live root is a fixed path is read from that path wherever
+    you happen to be standing, so an author working in a worktree who types
+    the bare command regenerates the canonical tree and not the one they are
+    editing. If the root declares an env override, naming it is the whole
+    difference between a remediation that fixes the drift in front of you and
+    one that quietly edits another checkout.
+
+    Derived from the DECLARATION, never from which route resolved the root:
+    the same finding then reads the same way whether or not the override is
+    already set, and an operator comparing two runs is not left wondering
+    which of them is lying.
+    """
+    spec = cfg.root_spec(store.live_root)
+    env = spec.get("env")
+    # A `git_toplevel` root already follows the tree you are standing in, and
+    # a `config_relative` one is pinned to the config file. Neither can be
+    # pointed at the wrong tree by being run from a worktree, so neither earns
+    # the hint.
+    if spec.get("kind") != "path" or not isinstance(env, str) or not env:
+        return DEFAULT_WRITE_RECIPE
+    return f"{DEFAULT_WRITE_RECIPE} (from a worktree: `{env}=$PWD {WRITE_CLI}`)"
+
+
 def _stale_base_hint(blame_base: str) -> str:
     """Printed under DEAD-PATH errors. A citation this change did not touch can
     only be blamed on it if the merge base is older than it should be, and that
@@ -96,6 +130,7 @@ def _store(
     cited_suffixes: tuple[str, ...] = (),
     blame_base: str = DEFAULT_BLAME_BASE,
     blame_only_in_edit_tree: bool = False,
+    write_recipe: str = DEFAULT_WRITE_RECIPE,
 ) -> dict:
     """One store, fully described — nothing below reads a module-level tree.
 
@@ -129,6 +164,7 @@ def _store(
         "cited_suffixes": tuple(cited_suffixes),
         "blame_base": blame_base,
         "blame_only_in_edit_tree": blame_only_in_edit_tree,
+        "write_recipe": write_recipe,
     }
 
 
@@ -165,6 +201,7 @@ def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
                 cited_suffixes=cfg.extra_suffixes,
                 blame_base=cfg.blame_base,
                 blame_only_in_edit_tree=store.blame_only_in_edit_tree,
+                write_recipe=_write_recipe(cfg, store),
             )
         )
         note = f"{store.id} store: {root}  ({how})"
@@ -971,7 +1008,7 @@ def check(
         else:
             errors.append(
                 f"LEDGER-DRIFT: {rel_dir}/{ledger.relative_to(d)} is generated "
-                "from frontmatter — run `scripts/memory-integrity.py --write`"
+                f"from frontmatter — {store['write_recipe']}"
             )
 
     # "(N memories)" counts on the MEMORY.md rows that point at each ledger.
@@ -997,7 +1034,7 @@ def check(
         else:
             errors.append(
                 f"COUNT-DRIFT: {rel_dir}/MEMORY.md ledger counts are stale — "
-                "run `scripts/memory-integrity.py --write`"
+                f"{store['write_recipe']}"
             )
 
     # Hot rows are hand-written, so nothing keeps them honest when the file
