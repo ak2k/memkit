@@ -153,43 +153,82 @@ def _imports(path: Path) -> set[str]:
     return {n for n in found if n == "memkit" or n.startswith("memkit.")}
 
 
-def _resolve(name: str) -> set[Path]:
-    """Files that importing `name` executes: the module itself plus every
-    package `__init__.py` on the way to it.
+def _module_file(name: str) -> Path | None:
+    """The file `name` names, if it names a module at all — else None.
 
     A dotted tail may be a module (`memkit.a.b` -> `a/b.py`), a subpackage
-    (`a/b/__init__.py`), or an attribute of a module that is already counted.
-    All three shapes appear in ordinary code and the first version of this
-    helper resolved none of them, so a subpackage the hook imported would have
-    slipped the 3.9 pin in silence — the failure mode this pin exists for.
+    (`a/b/__init__.py`), or not a module at all: `from memkit import __version__`
+    puts an ATTRIBUTE in the same syntactic position as a submodule, and
+    nothing about the name says which it is.
     """
     parts = name.split(".")[1:]  # drop the leading `memkit`
-    files = {PKG / "__init__.py"}
-    for i in range(len(parts)):
-        stem = PKG.joinpath(*parts[: i + 1])
-        if i < len(parts) - 1:
-            files.add(stem / "__init__.py")
-        else:
-            files |= {stem.with_suffix(".py"), stem / "__init__.py"}
+    if not parts:
+        return PKG / "__init__.py"
+    stem = PKG.joinpath(*parts)
+    for candidate in (stem.with_suffix(".py"), stem / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolve(name: str) -> set[Path]:
+    """Files that importing `name` executes: the module itself plus every
+    package `__init__.py` on the way to it. Empty when `name` is not a module.
+
+    Deliberately NOT seeded with `memkit/__init__.py`. Seeding it made every
+    first-party name resolve to at least one file, which made the guard below
+    unable to fire for any input at all — a typo'd import contributed nothing
+    and passed, which is exactly the quiet shrink the guard is written to stop.
+    """
+    module = _module_file(name)
+    if module is None:
+        return set()
+    parts = name.split(".")[1:]
+    # Importing anything under the package runs the package's own __init__
+    # first, and every intermediate one on the way down.
+    files = {PKG / "__init__.py", module}
+    for i in range(len(parts) - 1):
+        init = PKG.joinpath(*parts[: i + 1]) / "__init__.py"
+        if init.is_file():
+            files.add(init)
     return {f for f in files if f.is_file()}
 
 
-def _hook_import_closure() -> set[Path]:
-    """Every file the recall hook can reach at import time, transitively."""
-    seen = {HOOK}
-    queue = [HOOK]
+def _import_closure(start: Path) -> set[Path]:
+    """Every file importing `start` executes, transitively, first-party only.
+
+    Raises AssertionError on a first-party name that is neither a module nor a
+    real attribute of its parent. That distinction cannot be made from the name
+    — `from memkit import cli` and `from memkit import __version__` are the same
+    syntax — so it is settled by importing the parent and asking it. Failing
+    loudly is the point: a name that silently contributes nothing returns a
+    SMALLER closure, and a smaller closure is what lets the equality assertion
+    below agree with an include list that has a file missing.
+    """
+    seen = {start}
+    queue = [start]
     while queue:
         for name in _imports(queue.pop()):
             resolved = _resolve(name)
-            # An unresolvable first-party name is the case that must never
-            # pass quietly: silently contributing nothing shrinks the closure,
-            # and a SMALLER closure is what makes this assertion agree with an
-            # include list that is missing a file.
-            assert resolved, f"first-party import {name!r} resolves to no file"
+            if not resolved:
+                parent, _, attr = name.rpartition(".")
+                assert _module_file(parent) is not None, (
+                    f"{name!r} is not a memkit module and neither is {parent!r}"
+                )
+                assert hasattr(importlib.import_module(parent), attr), (
+                    f"{name!r} is neither a memkit module nor an attribute of "
+                    f"{parent!r} — a typo here would otherwise shrink the closure"
+                )
+                continue
             for module in resolved - seen:
                 seen.add(module)
                 queue.append(module)
     return seen
+
+
+def _hook_import_closure() -> set[Path]:
+    """Every file the recall hook can reach at import time, transitively."""
+    return _import_closure(HOOK)
 
 
 def test_the_39_config_covers_exactly_the_hooks_import_path() -> None:
@@ -233,9 +272,43 @@ def test_the_closure_helper_sees_the_import_shapes_real_code_uses(tmp_path) -> N
     assert not any(n.startswith("json") for n in found)
 
     # And the name -> file step: a module, plus every __init__.py executed on
-    # the way to it. An attribute tail contributes no file of its own.
+    # the way to it. A name that is not a module resolves to nothing at all —
+    # which is what makes the guard below able to fire.
     assert _resolve("memkit.cli") == {PKG / "__init__.py", PKG / "cli.py"}
-    assert _resolve("memkit.memory_prompt_recall.SCHEMA") == {PKG / "__init__.py"}
+    assert _resolve("memkit.memory_prompt_recall.SCHEMA") == set()
+
+
+def test_the_closure_walk_fails_on_a_first_party_import_that_is_not_there(
+    tmp_path,
+) -> None:
+    """The guard has to be able to FIRE, and the first version of it could not:
+    the resolver seeded every name with `memkit/__init__.py`, so a typo'd
+    import resolved to one real file, contributed nothing, and passed. The
+    comment claimed a behaviour the code did not have.
+
+    The hard half is that an attribute tail must stay legal —
+    `from memkit import __version__` and `from memkit import cli` are the same
+    syntax — so the distinction is settled by importing the parent and asking
+    it, not by looking at the name.
+    """
+    for line in (
+        "from memkit import definitely_absent\n",
+        "import memkit.definitely_absent\n",
+    ):
+        probe = tmp_path / "probe.py"
+        probe.write_text(line)
+        with pytest.raises(AssertionError, match="definitely_absent"):
+            _import_closure(probe)
+
+    legal = tmp_path / "legal.py"
+    legal.write_text(
+        # An attribute of a module, and a module imported from its package:
+        # neither may fire, and the second must still be walked into.
+        "from memkit.memory_prompt_recall import SCHEMA\n"
+        "from memkit import cli\n"
+    )
+    reached = _import_closure(legal)
+    assert HOOK in reached and PKG / "cli.py" in reached
 
 
 def test_the_package_config_covers_new_files_without_being_edited() -> None:
