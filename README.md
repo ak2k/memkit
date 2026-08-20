@@ -244,4 +244,4 @@ trigger is path-filtered, so a docs-only change still reports every context.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).
