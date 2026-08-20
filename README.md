@@ -14,6 +14,11 @@ tells all three where the store is.
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
   data, supplied in config; the harness ships case-free.
 
+A fourth console script, `memkit`, is the dispatcher the setup and diagnosis
+subcommands hang off. It is a skeleton in this build: `memkit --help` lists
+`doctor` and `init` and tells you they have not landed yet, along with what to
+reach for meanwhile.
+
 The store schema is a directory layout, not frontmatter:
 
 ```

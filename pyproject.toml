@@ -27,6 +27,11 @@ memory-integrity = "memkit.memory_integrity:cli"
 # installed package against its own stores; a path into site-packages would
 # make that check's command a build detail.
 memory-eval = "memkit.eval_memory_recall:cli"
+# The setup-and-diagnosis dispatcher. Declared here so the uvx and pip channels
+# reach the same subcommands a plugin install reaches through its own bin/ —
+# an adopter who never wants the harness integration still needs a way to ask
+# whether their store is wired up correctly.
+memkit = "memkit.cli:cli"
 
 [project.optional-dependencies]
 # Only the wordlist generator needs this, and only a maintainer runs it: the
