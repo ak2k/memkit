@@ -156,10 +156,15 @@ class Profile:
             DISABLE_AUTOUPDATER="1",
             MEMKIT_RIG_HOOKLOG=str(self.hooklog),
         )
-        env.update(extra)
-        # MEMKIT_CONFIG in the ambient environment would reach a spawned hook
-        # and make a config-delivery scenario pass without the delivery.
+        # Dropped BEFORE `extra` is applied, not after. MEMKIT_CONFIG in the
+        # ambient environment would reach a spawned hook and make a
+        # config-delivery scenario pass without the delivery — but a scenario
+        # that sets it deliberately, to stand a non-plugin registration up
+        # beside the plugin, has to be able to. Popping last silently emptied
+        # that scenario: both hooks fired, one of them found no config, and the
+        # coexistence case it exists to prove could not occur.
         env.pop("MEMKIT_CONFIG", None)
+        env.update(extra)
         return env
 
     def _guard(self) -> None:

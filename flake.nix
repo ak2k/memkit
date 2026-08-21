@@ -135,6 +135,12 @@
             "test_eval.py" = "eval-tests";
             "test_plugin_surface.py" = "plugin-tests";
           };
+          # Top-level FILES only, which quietly excludes `tests/rig/` — and
+          # that exclusion is deliberate rather than incidental. Those
+          # scenarios drive the real `claude` binary against a scratch profile,
+          # and the nix sandbox has neither the binary nor a network. They gate
+          # on the plain-python leg, which installs a pinned Claude Code for
+          # exactly that.
           suiteFiles = lib.filterAttrs (
             n: t: t == "regular" && lib.hasPrefix "test_" n && lib.hasSuffix ".py" n
           ) (builtins.readDir "${inputs.self}/tests");
