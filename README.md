@@ -99,6 +99,14 @@ and until it does, updating the marketplace changes nothing about the code in
 your sessions. This matters more here than for most plugins: the payload is a
 hook that runs before every prompt you type.
 
+**Not yet installable from this marketplace.** The pin still names a commit
+from before the plugin existed, because a release commit is the only thing that
+can name itself — so the commands above will fail at `install` until the first
+tagged release moves it. Until then the plugin is installable from a clone:
+`claude plugin marketplace add <path to your checkout>`, with the entry's
+`source` set to `"./"`. Both halves of that are what `tests/rig/` does to
+exercise the real install path.
+
 **Setting it up is manual in this build.** `/memkit:init` — the consented,
 journalled setup this is designed around — has not landed yet, so for now write
 the config by hand (schema and a worked example under [Config](#config)) at the
