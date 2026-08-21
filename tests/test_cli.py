@@ -13,14 +13,15 @@ reader is an agent deciding whether to find another way.
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 
 from memkit import cli
-from memkit.memory_prompt_recall import EXIT_ERROR
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
+def _run(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     # Through `-m`, not the installed console script: the suite runs from a
     # checkout whose entry points may be stale, and this exercises the same
     # `cli.main` the script's `cli()` calls.
@@ -29,7 +30,23 @@ def _run(*args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=60,
+        env=env if env is not None else os.environ,
     )
+
+
+def test_the_dispatcher_exit_codes_are_the_numbers_a_skill_hardcodes() -> None:
+    """The literals, spelled out.
+
+    Every other case here says `cli.EXIT_*`, which puts the constant on both
+    sides of the assertion and stays green through any renumbering. The reader
+    that matters is a skill's shell branch, which cannot import anything.
+
+    Deliberately NOT memory-recall's vocabulary, even where the numbers
+    coincide: these are separate binaries with separate contracts, and the
+    codes are defined in cli.py so that adding one here never has to make
+    sense for a search command.
+    """
+    assert (cli.EXIT_USAGE, cli.EXIT_NOT_IN_BUILD) == (2, 4)
 
 
 def test_a_bare_invocation_asks_for_a_subcommand_and_says_so_in_its_status() -> None:
@@ -37,9 +54,30 @@ def test_a_bare_invocation_asks_for_a_subcommand_and_says_so_in_its_status() -> 
     got nothing done, and exiting 0 with usage text is how a caller records a
     successful setup step that never ran."""
     out = _run()
-    assert out.returncode != 0
+    assert out.returncode == cli.EXIT_USAGE
     assert out.stdout == ""
     assert "usage: memkit" in out.stderr
+
+
+def test_a_missing_subcommand_is_not_the_same_answer_as_a_wrong_one() -> None:
+    """Three states, two codes, and the split is the point.
+
+    "You invoked this wrongly" and "you invoked it correctly and it is not
+    here yet" want opposite next moves: the first says try different arguments,
+    the second says stop trying and use the fallback. They shared exit 2, so an
+    agent could not tell them apart without parsing prose, and the cheap retry
+    loop is the one it reaches for.
+
+    2 is argparse's own and cannot be reassigned, so it keeps the usage
+    meaning and the state that is not a usage error takes a code of its own.
+    """
+    usage = _run()
+    unknown = _run("frobnicate")
+    pending = _run("doctor")
+
+    assert usage.returncode == unknown.returncode == cli.EXIT_USAGE
+    assert pending.returncode == cli.EXIT_NOT_IN_BUILD
+    assert pending.returncode != usage.returncode
 
 
 def test_help_names_the_subcommands_that_do_not_exist_yet() -> None:
@@ -66,7 +104,8 @@ def test_both_help_surfaces_carry_the_fallback_not_just_the_name() -> None:
     says, not what it returns.
     """
     top = _run("--help")
-    for name, (summary, meanwhile) in cli._PENDING.items():
+    for name, (summary, template) in cli._PENDING.items():
+        meanwhile = cli._meanwhile(template)
         assert meanwhile in " ".join(top.stdout.split()), name
 
         own = _run(name, "--help")
@@ -75,6 +114,53 @@ def test_both_help_surfaces_carry_the_fallback_not_just_the_name() -> None:
         assert summary in collapsed
         assert "NOT IN THIS BUILD YET" in collapsed
         assert meanwhile in collapsed
+
+
+def test_the_refusal_names_the_search_binary_this_install_actually_has(
+    tmp_path,
+) -> None:
+    """A plugin adopter has `memkit-recall` on PATH and no `memory-recall` at
+    all, so a hardcoded fallback sends them to a binary that does not exist —
+    which reads as the tool being broken rather than as a name being wrong.
+
+    The command comes from the same `search_cli` the hook's truncation notice
+    advertises, so the refusal and the pointer block name one binary by
+    construction. The literal is the no-config fallback and nothing else.
+    """
+    config = tmp_path / "memkit.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "roots": {"home": {"kind": "path", "path": str(tmp_path)}},
+                "stores": [],
+                "search_cli": "memkit-recall --search",
+            }
+        )
+    )
+    env = dict(os.environ, MEMKIT_CONFIG=str(config))
+    out = _run("doctor", env=env)
+    assert out.returncode == cli.EXIT_NOT_IN_BUILD
+    assert "memkit-recall --search" in out.stderr
+    assert "memkit-recall --debug-config" in out.stderr
+    assert "memory-recall" not in out.stderr
+
+    # With nothing configured there is nothing better to say, so the shipped
+    # default stands.
+    bare = dict(os.environ)
+    bare.pop("MEMKIT_CONFIG", None)
+    assert "memory-recall --search" in _run("doctor", env=bare).stderr
+
+
+def test_the_refusal_quotes_the_exit_codes_from_their_source() -> None:
+    """The prose named 3 and 1 as literals while importing the constants that
+    define them, so a renumbering would have left the advice confidently
+    wrong — and this is advice an agent follows without a second source."""
+    from memkit.memory_prompt_recall import EXIT_INERT, EXIT_NO_MATCH
+
+    refusal = _run("doctor").stderr
+    assert f"Exit {EXIT_INERT} there" in refusal
+    assert f"exit {EXIT_NO_MATCH} means" in refusal
 
 
 def test_an_unknown_subcommand_is_refused_against_the_list_of_real_ones() -> None:
@@ -87,16 +173,19 @@ def test_an_unknown_subcommand_is_refused_against_the_list_of_real_ones() -> Non
 
 
 def test_a_subcommand_that_has_not_landed_refuses_with_somewhere_to_go() -> None:
-    for name, (summary, meanwhile) in cli._PENDING.items():
+    for name, (summary, template) in cli._PENDING.items():
         out = _run(name)
-        assert out.returncode == EXIT_ERROR, out.stderr
+        assert out.returncode == cli.EXIT_NOT_IN_BUILD, out.stderr
         assert out.stdout == ""
         assert f"`{name}`" in out.stderr and "not in this build" in out.stderr
         # Both halves, verbatim: the summary says what the caller wanted and
         # the fallback says what to do instead. A refusal carrying only the
-        # first is one an agent can act on by giving up.
+        # first is one an agent can act on by giving up. The fallback is
+        # rendered, not the raw template — the command it names is a config
+        # value, so the two can only be compared after resolution.
         assert summary in out.stderr
-        assert meanwhile in out.stderr
+        assert cli._meanwhile(template) in out.stderr
+        assert "{search" not in out.stderr, "an unfilled placeholder reached a user"
 
 
 def test_flags_a_pending_subcommand_will_take_do_not_preempt_its_refusal() -> None:
@@ -120,7 +209,7 @@ def test_every_pending_name_is_a_name_the_parser_accepts() -> None:
     cannot be advertised and then refused as an invalid choice — the failure a
     hand-written help string produces the moment one of the two is edited."""
     for name in cli._PENDING:
-        assert cli.main([name]) == EXIT_ERROR
+        assert cli.main([name]) == cli.EXIT_NOT_IN_BUILD
 
 
 def test_a_handler_takes_over_from_the_pending_message(monkeypatch) -> None:
