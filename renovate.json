@@ -43,6 +43,13 @@
       "dependencyDashboardApproval": true
     },
     {
+      "description": "Claude Code is dashboard-gated for the same reason wordfreq is: a bump is not a dependency update but a change to the HARNESS whose measured behaviour this plugin is built on. The option-name mangling that carries the config, the trailing slash on the plugin root, and the fact that exit 2 on UserPromptSubmit blocks the turn rather than merely failing — the zero-argument pin exists because of that last one — were each measured against a specific build. CI re-measures only the hermetic half on a bump: the rig's CLI tier covers validation, install and option delivery, while the claims that need a model (a hook's stdout reaching the turn, the trust gate end to end, double-registration detection) run in the nightly-local live tier and are invisible to a green PR. So a human takes this one, runs `MEMKIT_RIG_LIVE=1 pytest tests/rig` on the new build, and says so in the PR.",
+      "matchDepNames": [
+        "@anthropic-ai/claude-code"
+      ],
+      "dependencyDashboardApproval": true
+    },
+    {
       "description": "3-day cooldown on GitHub Actions bumps. Actions are the highest-value target in this repo — they are the only third-party code that runs with a write-capable token — and the tj-actions/changed-files class of compromise (Mar 2025) was caught publicly inside a day, so a short wait covers it. Deliberately NOT widened to flake inputs: the nix manager's datasource is git-refs, which carries no timestamps, and under `minimumReleaseAgeBehaviour: timestamp-required` a missing timestamp HOLDS the update — a repo-wide cooldown would silently freeze every flake input rather than error.",
       "matchManagers": [
         "github-actions"

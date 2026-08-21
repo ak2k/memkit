@@ -44,12 +44,30 @@ env:
   RUFF_VERSION: "0.15.14"
   # renovate: datasource=pypi depName=pyright
   PYRIGHT_VERSION: "1.1.406"
+  # The harness memkit registers a hook into. Pinned for the same reason the
+  # linters are — a validator that is "whatever shipped this morning" turns a
+  # tightened rule upstream into a red PR nobody changed anything for — and
+  # additionally because the plugin's claims are measured against a specific
+  # build: the option-name mangling, the trailing slash on the plugin root, the
+  # exit-2-blocks-the-turn behaviour the zero-argument pin rests on. When
+  # renovate moves this, the scenarios below are what re-measure them.
+  # renovate: datasource=npm depName=@anthropic-ai/claude-code
+  CLAUDE_CODE_VERSION: "2.1.238"
 
 jobs:
   python:
     name: python
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # The pin cannot drift mid-run, and an autoupdate would also rewrite the
+      # binary the steps below make claims about.
+      DISABLE_AUTOUPDATER: "1"
+      # A scratch profile for everything that runs `claude`. Nothing here needs
+      # auth — validation and plugin installs are local file operations — and a
+      # config dir named explicitly is one that cannot pick up a runner's
+      # leftovers.
+      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.claude-ci
     steps:
       # fetch-depth 0 because the version is dynamic: hatch-vcs reads git
       # describe at build time, and a shallow clone gives it nothing to read.
@@ -72,6 +90,16 @@ jobs:
         run: |
           uv venv --python 3.12
           uv pip install --python .venv -e . pytest
+
+      # Before the suites, not after: `tests/rig/` drives this binary, and a
+      # rig scenario whose dependency arrives one step too late does not fail —
+      # it SKIPS, which is the shape of a gate that stopped gating without
+      # anybody noticing.
+      - name: Claude Code (pinned)
+        run: |
+          npm install -g @anthropic-ai/claude-code@"$CLAUDE_CODE_VERSION"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          claude --version
 
       # One invocation covers both moved suites (pyproject sets
       # testpaths = ["tests"]): the hook's pytest suite and the integrity
@@ -119,10 +147,35 @@ jobs:
       # PYRIGHT_PYTHON_FORCE_VERSION nails the npm-side pyright to the same
       # version as the pypi wrapper; without it pyright-python is free to
       # fetch a newer node package at runtime and the pin is decorative.
-      - name: Pyright — the hook's 3.9 floor
+      - name: Pyright — the 3.9 floor (hook and dispatcher)
         env:
           PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
         run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig-hook39.json
+
+      # R10, the admission gate. TWO invocations, because the validator picks
+      # its mode from what it is pointed at and the two modes check different
+      # things — measured on 2.1.238, after the single-invocation version of
+      # this step passed a manifest with `author` deleted:
+      #
+      #   the repo root  -> validates the MARKETPLACE, and the plugin manifests
+      #                     it lists for SCHEMA ERRORS only (`plugins[0]
+      #                     plugin.json → …`). Metadata warnings are not raised
+      #                     through this path.
+      #   the plugin.json -> validates the PLUGIN manifest, warnings included:
+      #                     no author, no description, no version. Under
+      #                     `--strict` those are what fails.
+      #
+      # Gating on exit STATUS rather than on the output: 0 on a pass, 1 on both
+      # a strict warning and a hard error. The output still goes to the job log,
+      # because "Validation failed" with the reason is what somebody reads next.
+      #
+      # A STEP in this job, deliberately not a job of its own: branch protection
+      # pins the five context names, and a sixth context is one no protected
+      # branch waits for — green by never being required.
+      - name: Plugin manifests — validate --strict
+        run: |
+          claude plugin validate . --strict
+          claude plugin validate .claude-plugin/plugin.json --strict
 
   wordlist:
     name: wordlist

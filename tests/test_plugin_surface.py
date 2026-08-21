@@ -150,16 +150,32 @@ def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:
     assert entry["version"] == manifest["version"]
 
 
-def test_validate_strict_has_what_it_demands() -> None:
-    """`--strict` fails on warnings, and the warnings are about metadata that
-    is absent rather than wrong: no author, no description, no version. CI runs
-    the real validator; this is the same demand as a unit test so a manifest
-    edit fails in the suite rather than three minutes into a workflow."""
+def test_the_manifests_carry_the_metadata_an_adopter_is_shown() -> None:
+    """Name, description, version, author — what `/plugin` renders in a list
+    and what a directory submission is judged on. Absent metadata installs
+    perfectly and reads as an unattributed blob.
+
+    `--strict` demands these too, but only through the invocation that points
+    at the plugin manifest itself: pointed at the repo root the validator
+    checks the MARKETPLACE, and raises schema errors from the plugin manifests
+    it lists while passing over their metadata warnings. Measured on 2.1.238 by
+    deleting `author` and watching the single-invocation CI step stay green.
+    CI now runs both; this fails in the suite rather than three minutes into a
+    workflow.
+    """
     manifest = _json(PLUGIN_MANIFEST)
     for field in ("name", "description", "version", "author"):
         assert manifest.get(field), field
     assert _json(MARKETPLACE).get("description")
     assert isinstance(_json(MARKETPLACE)["owner"], dict), "owner must be an object"
+
+
+def test_ci_validates_both_manifests_and_not_only_the_marketplace() -> None:
+    """The step is what makes the assertion above a release gate rather than a
+    unit test, and it was checking half of what its name claimed."""
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text()
+    assert "claude plugin validate . --strict" in workflow
+    assert "claude plugin validate .claude-plugin/plugin.json --strict" in workflow
 
 
 def test_every_payload_file_is_tracked() -> None:

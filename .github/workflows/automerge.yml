@@ -49,6 +49,13 @@ jobs:
             // absent-or-skipped-is-fine dance a conditional job would force.
             // Keep this list in step with the job names in check.yml; a job
             // added there and not here merges without being read.
+            //
+            // The plugin work added no context: `claude plugin validate
+            // --strict` and the rig scenarios are STEPS inside `python`, so
+            // they gate through a name branch protection already waits for. A
+            // job of their own would have needed a protection change to mean
+            // anything, and would have been green by never being required
+            // until somebody made it.
             const requiredChecks = [
               "python",
               "wordlist",

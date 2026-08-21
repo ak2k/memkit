@@ -83,13 +83,67 @@ def _soak(profile: Profile) -> list[dict]:
 
 
 @cli_tier
-def test_validate_strict_passes_on_the_real_tree(profile: Profile) -> None:
+def test_validate_strict_passes_on_the_real_tree_in_both_modes(
+    profile: Profile,
+) -> None:
     """The admission gate, on the tree as committed rather than on a staged
-    copy — `--strict` fails on warnings, and the warnings are about metadata
-    that is absent rather than wrong."""
-    out = profile.claude("plugin", "validate", str(REPO), "--strict", check=False)
-    assert out.returncode == 0, f"{out.stdout}\n{out.stderr}"
-    assert "Validation passed" in out.stdout
+    copy.
+
+    Both invocations, because the validator picks its mode from what it is
+    pointed at: the repo root validates the MARKETPLACE (and the plugin
+    manifests it lists, for schema errors only), while the plugin manifest's
+    own path is the one that raises the metadata warnings `--strict` fails on.
+    A step that ran only the first passed a manifest with `author` deleted.
+
+    The mode is asserted, not assumed — the two commands differ by an argument,
+    and a validator that quietly resolved both to the same manifest would make
+    this pair look like coverage it is not.
+    """
+    marketplace = profile.claude(
+        "plugin", "validate", str(REPO), "--strict", check=False
+    )
+    assert marketplace.returncode == 0, f"{marketplace.stdout}\n{marketplace.stderr}"
+    assert "Validating marketplace manifest" in marketplace.stdout
+
+    plugin = profile.claude(
+        "plugin", "validate", str(REPO / ".claude-plugin" / "plugin.json"),
+        "--strict", check=False,
+    )
+    assert plugin.returncode == 0, f"{plugin.stdout}\n{plugin.stderr}"
+    assert "Validating plugin manifest" in plugin.stdout
+
+
+@cli_tier
+def test_the_strict_gate_can_fail(profile: Profile, tmp_path) -> None:
+    """A gate nobody has watched fail is a gate nobody has watched.
+
+    Two breakages, one per mode, because that is exactly the distinction the
+    step above rests on: a metadata warning is invisible to the marketplace
+    invocation and fatal to the plugin one.
+    """
+    manifest = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
+    del manifest["author"]
+    unattributed = tmp_path / "plugin.json"
+    unattributed.write_text(json.dumps(manifest))
+    out = profile.claude(
+        "plugin", "validate", str(unattributed), "--strict", check=False
+    )
+    assert out.returncode == 1, out.stdout
+    assert "author" in out.stdout
+
+    broken = tmp_path / "broken" / ".claude-plugin"
+    broken.mkdir(parents=True)
+    manifest = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
+    manifest["userConfig"] = {"dotted.key": manifest["userConfig"]["memkitConfig"]}
+    (broken / "plugin.json").write_text(json.dumps(manifest))
+    market = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
+    market["plugins"][0]["source"] = "./"
+    (broken / "marketplace.json").write_text(json.dumps(market))
+    out = profile.claude(
+        "plugin", "validate", str(broken.parent), "--strict", check=False
+    )
+    assert out.returncode == 1, out.stdout
+    assert "dotted.key" in out.stdout
 
 
 @cli_tier
