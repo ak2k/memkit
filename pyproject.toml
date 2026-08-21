@@ -1,5 +1,10 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+# hatchling >= 1.27 is the floor PEP 639 needs: `license` as an SPDX
+# expression plus `license-files` below. 1.26.3 does not understand either and
+# degrades quietly — it drops the declaration rather than failing, so the wheel
+# loses NOTICE and the Apache-2.0 §4(d) obligation goes unmet with a green
+# build. The bound is load-bearing, not hygiene; nothing else here needs it.
+requires = ["hatchling>=1.27", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
