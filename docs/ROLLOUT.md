@@ -143,17 +143,28 @@ consumer keeps.
 
 Run it **from inside the consumer checkout**, not from `$HOME`. A store with a
 `cwd_gate` is searched only from inside the named root (its git worktrees
-count), so the same command run from elsewhere searches nothing — but it now
-says so rather than looking like a store with no answer: exit **3** and
-`inert — … gated to another tree` on stderr. Read the code, not the silence.
-Exit **1** is the one that means the stores really were opened and nothing
-matched; **2** is a failure to search at all. Pick a term you know matches a
-`search/`-tier memory: `hot/` memories are excluded from retrieval by design,
-because they are in context already.
+count), so the same command run from elsewhere does not search it.
 
-`memory-recall --debug-config` answers the same question with the reasoning
-shown — which config resolved, and per store whether it is `searched`, `NOT on
-disk`, or `NOT searched here` — and exits 3 when none of them is searchable.
+**Use `--debug-config` as the check, not the exit code of a search.** What a
+gated-out store costs you depends on the rest of the config: if EVERY store is
+gated out the run is inert — exit **3**, with the per-store reason on stderr —
+but the reference config has an ungated personal store, so the gated one simply
+drops out and a search from the wrong directory returns an ordinary exit **1**
+that looks exactly like a term with no matches.
+
+    cd $CONSUMER && memory-recall --debug-config
+
+names the config that resolved and, per store, whether it is `searched`, `NOT
+on disk` (nobody created it on this host) or `NOT searched here` (gated to a
+tree you are standing outside of). That distinction is the thing worth
+verifying, and it is the only surface that shows it per store. Note what it
+does **not** cover: it never opens an index, so it says nothing about whether
+retrieval would return anything — step 3 is what establishes that.
+
+For the search itself: exit **1** means the stores really were opened and
+nothing matched; **2** is a failure to search at all; **3** is nothing to
+search. Pick a term you know matches a `search/`-tier memory: `hot/` memories
+are excluded from retrieval by design, because they are in context already.
 
 **3. The hook injects pointers.** Without starting a session:
 

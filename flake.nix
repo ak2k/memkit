@@ -111,28 +111,50 @@
               cd ${inputs.self}
               ${pytestEnv}/bin/pytest -q --no-header -p no:cacheprovider ${file} 2>&1 | tee $out
             '';
+
+          # MEMBERSHIP is derived from the tree; the NAMES are not. A
+          # hand-kept list of suite files carried a comment asking the next
+          # contributor to remember it, which is the shape of rot that a
+          # comment cannot fix — a new tests/ file that nobody added ran on the
+          # plain-python leg alone, silently halving its gate.
+          #
+          # The names stay pinned by this map because they are a stable
+          # surface: `nix build .#checks.<system>.hook-tests` appears in the
+          # runbook and in people's shell history, and deriving the label from
+          # the filename would rename two checks for no benefit. Branch
+          # protection is NOT the reason — its required contexts are the
+          # workflow JOB names (`python`, `nix (macos-14)`), and the nix job
+          # runs the whole `nix flake check` as one step, so a check attribute
+          # here is never a required context. Verified against the API rather
+          # than assumed.
+          suiteNames = {
+            "test_memory_prompt_recall.py" = "hook-tests";
+            "test_memory_integrity.py" = "integrity-tests";
+            "test_cli.py" = "cli-tests";
+            "test_packaging.py" = "packaging-tests";
+          };
+          suiteFiles = lib.filterAttrs (
+            n: t: t == "regular" && lib.hasPrefix "test_" n && lib.hasSuffix ".py" n
+          ) (builtins.readDir "${inputs.self}/tests");
+          # An unnamed suite file fails evaluation rather than being skipped:
+          # silently dropping it is the exact failure this derivation replaces.
+          suites = lib.mapAttrs' (
+            file: _:
+            let
+              name =
+                suiteNames.${file} or (throw
+                  "flake.nix: tests/${file} has no entry in suiteNames — add one (the names are pinned deliberately; see the comment above)"
+                );
+            in
+            lib.nameValuePair name (suite name "tests/${file}")
+          ) suiteFiles;
         in
         {
           packages.default = memkit;
           packages.memkit = memkit;
 
-          checks = {
+          checks = suites // {
             package = memkit;
-
-            # The two suites the split moved here (U1's `tooling` disposition),
-            # and the two that grew beside them. One check per suite FILE, so
-            # each one is named for what it covers — which also means a new
-            # suite that is not listed here runs on the plain-python leg alone.
-            # That is the dual-audience gate letting one audience rot, so a new
-            # tests/ file earns a line.
-            hook-tests = suite "hook-tests" "tests/test_memory_prompt_recall.py";
-            integrity-tests = suite "integrity-tests" "tests/test_memory_integrity.py";
-            cli-tests = suite "cli-tests" "tests/test_cli.py";
-            # Its artifact cases need a build frontend and a network to resolve
-            # the backend, and this sandbox has neither, so they skip here and
-            # gate on the uv leg. What still runs is the pyright-include pin,
-            # which needs nothing but the tree.
-            packaging-tests = suite "packaging-tests" "tests/test_packaging.py";
 
             # KTD4: the real-corpus gate belongs to the consumer, because the
             # cases pair prompts with private memory filenames. What memkit can
@@ -164,11 +186,25 @@
             memkit-dispatcher = pkgs.runCommand "memkit-dispatcher" { } ''
               ${memkit}/bin/memkit --help > $out
               grep -q 'NOT IN THIS BUILD YET' $out
-              if ${memkit}/bin/memkit doctor 2> refusal; then
-                echo "memkit doctor exited 0 — a refusal that reads as success"
+
+              # The EXACT code, not merely non-zero. A skill branches on this
+              # number, and "declared but not shipped" has to stay separable
+              # from "you invoked this wrongly" (2) or the caller retries with
+              # different arguments forever.
+              rc=0
+              ${memkit}/bin/memkit doctor 2> refusal || rc=$?
+              [ "$rc" = 4 ] || {
+                echo "memkit doctor exited $rc, wanted 4 (EXIT_NOT_IN_BUILD)"
                 exit 1
-              fi
+              }
               grep -q 'not in this build' refusal
+
+              rc=0
+              ${memkit}/bin/memkit frobnicate 2> /dev/null || rc=$?
+              [ "$rc" = 2 ] || {
+                echo "an unknown subcommand exited $rc, wanted 2 (usage)"
+                exit 1
+              }
             '';
 
             # KTD1 + KTD2 end to end: the entry the module writes into the

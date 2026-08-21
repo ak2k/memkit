@@ -1,6 +1,6 @@
 """memkit — a tiered markdown memory store's retrieval hook and its checkers.
 
-Three tools over one config file:
+Four console scripts over one config file:
 
 - `memory-recall`  the UserPromptSubmit hook (stdlib only, imports under 3.9)
   and its on-demand `--search` mode.
@@ -8,6 +8,8 @@ Three tools over one config file:
   (3.12+).
 - `memory-eval`  snapshot-gated retrieval eval, whose cases are the consumer's
   data and never ship here.
+- `memkit`  the dispatcher the setup and diagnosis subcommands hang off; a
+  skeleton until those land.
 
 `memkit.memory_prompt_recall` owns the config reader, because it is the module
 with the hardest constraints — stdlib only, 3.9-importable, and usable as a

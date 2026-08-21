@@ -1,7 +1,7 @@
 # memkit
 
-Three tools over one tiered markdown memory store, and one config file that
-tells all three where the store is.
+Four console scripts over one tiered markdown memory store, and one config
+file that tells all of them where the store is.
 
 - **`memory-recall`** — a `UserPromptSubmit` hook for an agent harness. It
   reads the prompt, searches the store lexically, and injects up to a few
@@ -13,11 +13,9 @@ tells all three where the store is.
   regenerates the search ledgers from frontmatter.
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
   data, supplied in config; the harness ships case-free.
-
-A fourth console script, `memkit`, is the dispatcher the setup and diagnosis
-subcommands hang off. It is a skeleton in this build: `memkit --help` lists
-`doctor` and `init` and tells you they have not landed yet, along with what to
-reach for meanwhile.
+- **`memkit`** — the dispatcher the setup and diagnosis subcommands hang off.
+  A skeleton in this build: `memkit --help` lists `doctor` and `init`, says
+  they have not landed, and names what to reach for meanwhile.
 
 The store schema is a directory layout, not frontmatter:
 
@@ -93,23 +91,47 @@ deliberate default, not an oversight — there is no ambient search path to gues
 at. The *hook* stays silent and exits 0 whatever happens, because a hook that
 fails any other way blocks a prompt; the CLIs say which state they are in.
 
+`memory-recall --search "<terms>" --dir <a directory of your own notes>` works
+with no config at all — the caller named the corpus, so nothing has to be
+configured for it to answer. One caveat worth knowing before you reach for it
+as a smoke test: a `$MEMKIT_CONFIG` that is *set and broken* is refused even
+here, because a config that cannot be parsed is somebody's mistake on any
+branch and silently ignoring it is how a typo survives. Unset the variable or
+fix the file first; an unset one is not an error.
+
 `memory-recall` exit codes — grep's three, plus one:
 
 | code | means | for the caller |
 |---|---|---|
 | 0 | pointers found, printed to stdout | read them |
 | 1 | the stores were searched and nothing matched | there is no such memory |
-| 2 | the search itself failed — unparseable config, a `--dir` or `--config` that is not there | fix what stderr names; never read as absence |
+| 2 | the search itself failed, wholly or in part — an unparseable config, a `--dir`/`--config` that is not there, or some corpus that could not be opened | fix what stderr names; never read as absence |
 | 3 | **inert**: nothing to search — no config, or no store on disk and in scope for this directory | stderr names which; this is *not* a claim of absence |
 
 `memory-recall --debug-config` reports the resolved config and shares those
 codes: 3 when nothing is searchable, so it cannot come back green about an
-installation `--search` calls inert. It is the one command that honours a
-root's `env` override, and it honours it in the *display* only — the exit code
-is always taken from the tree the hook will actually serve, since that is what
-the code is a claim about. Where an override sends this command somewhere the
-hook will not look, it prints the divergence per store: which variable is set,
-what this run resolved, and what the hook will read.
+installation `--search` calls inert. **What that shared code covers is config
+and store resolution, not retrieval health** — this command never opens an
+index, so a corrupt index and a healthy one both exit 0 here while `--search`
+separates them. Read a green from it as "the config resolves and the stores are
+where it says", never as "retrieval works".
+
+It is the one `memory-recall` mode that resolves a root's `env` override — the
+checker and the eval honour those too; the hook never does — and it resolves it
+in the *display* only. The exit code is always taken from the tree the hook
+will actually serve, since that is what the code is a claim about. Where an
+override sends this command somewhere the hook will not look, it prints the
+divergence per store: what did the resolving, what this run resolved, and what
+the hook will read.
+
+`memkit`'s codes are its own, because it is a different command with a
+different job:
+
+| code | means |
+|---|---|
+| 0 | the subcommand ran |
+| 2 | usage error, or a subcommand that does not exist |
+| 4 | the subcommand exists and is not in this build — stderr names the fallback |
 
 Rolling this out across more than one machine, verifying a host afterwards, and
 rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
@@ -117,7 +139,7 @@ host — the hook fails open, so a broken rollout is silent.
 
 ## Config
 
-One JSON file, read by all three tools. `--config PATH` where a tool takes
+One JSON file, read by all of them. `--config PATH` where a tool takes
 one, otherwise `$MEMKIT_CONFIG`.
 
 ```json
@@ -162,7 +184,9 @@ one, otherwise `$MEMKIT_CONFIG`.
   `git_toplevel` follows the checkout you are standing in. `config_relative`
   walks up from the config file, which is how the same file works inside a
   build sandbox with no `$HOME` and no `.git`. A root may declare an `env`
-  override *by name*; only the checker and the eval honour it, never the hook.
+  override *by name*. The checker, the eval and `memory-recall --debug-config`
+  resolve it; the hook never does, and `--debug-config` uses it for its display
+  only — its exit code always describes the tree the hook will serve.
 - **`stores`** — a list of N stores, **ordered**, and the order is a contract:
   retrieval interleaves hits across store directories in this order. Each
   store names two roots, because the tools want different trees:
@@ -186,6 +210,38 @@ one, otherwise `$MEMKIT_CONFIG`.
 
 `tests/fixtures/` holds a small working example of all of it: an invented
 two-store corpus, a config, and the eval snapshot it produces.
+
+### Derived state
+
+The lexical index and its sidecars live under `~/.cache/memory-recall/`, keyed
+by a digest of the corpus root. All of it is disposable — delete any of it and
+the next run rebuilds from the corpus.
+
+- `fts5-<digest>.db` — the SQLite FTS5 index.
+- `fts5-<digest>.root` — which corpus root that digest is for. Advisory; the
+  engine never reads it. It exists because sha256 is one-way and "why was this
+  memory not recalled" starts by finding the index that should have held it.
+- `fts5-<digest>.build` — how the last index build went, as one JSON object:
+  `{"v": 1, "ts": <unix seconds>, "outcome": "...", "files": <int|null>}`.
+
+The `.build` record exists so that "never indexed" (no file) and "indexed, and
+the corpus is empty" (`files: 0`) can be told apart without opening the index —
+opening it syncs it, and a diagnostic that repairs what it measures cannot
+report on it.
+
+**Two rules for anything reading it.** `v` is bumped only when the record's
+*shape* changes — a key added, removed or retyped — never for a new `outcome`
+value. And **an `outcome` you do not recognise must be treated as not-OK**:
+only `ok` licenses reading `files` as the size of the corpus. Under every other
+outcome the count is a floor or absent (`null` when the run never got far
+enough to count). Those two together are what let the vocabulary grow without
+older readers mistaking a new failure state for a healthy one. Today it is
+`ok`, `partial` (part of the corpus was unreadable), `busy` (another session
+held the write lock, so nothing was counted), `unreadable` (the corpus could
+not be read at all) and `rebuilt` (the index was damaged and built again).
+
+A sweep that collects these files must take all three: an orphaned `.build`
+outliving its index reads as a real record of a corpus that is no longer there.
 
 ## Retrieval disclosures
 
@@ -282,7 +338,9 @@ itself. Add a module the hook imports and it belongs in that list on the same
 commit: its 3.9 floor is otherwise unchecked, and the failure surfaces on a
 stock macOS as a hook that silently retrieves nothing. The direction is easy to
 invert — `cli.py` imports the hook, which does not put `cli.py` on the hook's
-import path. The list is about what the harness's `python3` executes.
+import path. The list is about what the harness's `python3` executes. (Which
+interpreter runs the `memkit` dispatcher, and therefore what floor `cli.py`
+answers to, is settled by the plugin's interpreter contract rather than here.)
 
 ## Licence
 
