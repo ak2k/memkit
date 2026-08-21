@@ -136,17 +136,36 @@ class Store:
         "cwd_gate",
     )
 
-    def __init__(self, raw: dict) -> None:
-        self.id = _require_str(raw, "id", "stores[]")
+    def __init__(self, raw: object, index: int) -> None:
+        where = f"stores[{index}]"
+        raw = _require_mapping(raw, where)
+        self.id = _require_str(raw, "id", where)
+        where = f"stores[{self.id}]"
         self.role = raw.get("role", "project")
         if self.role not in ("project", "personal"):
-            raise ConfigError(f"stores[{self.id}].role must be project or personal")
-        self.dir = _require_str(raw, "dir", f"stores[{self.id}]")
-        self.live_root = _require_str(raw, "live_root", f"stores[{self.id}]")
+            raise ConfigError(f"{where}.role must be project or personal")
+        self.dir = _require_str(raw, "dir", where)
+        self.live_root = _require_str(raw, "live_root", where)
         self.edit_root = raw.get("edit_root") or self.live_root
-        self.sub_indexes = tuple(raw.get("sub_indexes") or ())
+        if not isinstance(self.edit_root, str):
+            raise ConfigError(f"{where} needs a non-empty 'edit_root' string")
+        self.sub_indexes = _require_str_tuple(raw, "sub_indexes", where)
+        # A `cwd_gate` that is present and not a mapping used to resolve to
+        # None, which is not a lenient reading of a typo — it is the store
+        # becoming UNGATED. `"cwd_gate": "canonical"` is a plausible thing to
+        # type, and the config's gate is the only thing keeping a project
+        # store's memories out of every unrelated session's prompts. Widening
+        # what an every-prompt hook reads is not a default anything may pick.
         gate = raw.get("cwd_gate")
-        self.cwd_gate = gate.get("root") if isinstance(gate, dict) else None
+        if gate is None:
+            self.cwd_gate = None
+        elif isinstance(gate, dict):
+            self.cwd_gate = _require_str(gate, "root", f"{where}.cwd_gate")
+        else:
+            raise ConfigError(
+                f"{where}.cwd_gate must be an object with a 'root' name, or "
+                f"absent — not {type(gate).__name__}"
+            )
 
 
 class Config:
@@ -169,13 +188,27 @@ class Config:
             )
         self.path = path
         self.honor_env_overrides = honor_env_overrides
-        self._roots_raw = raw.get("roots") or {}
+        self._roots_raw = _optional_mapping(raw, "roots")
+        # Root SHAPE is checked here; root RESOLUTION stays lazy, which is a
+        # deliberate split — a root no store asks for must not fail a config,
+        # but a root spelled as a string rather than an object is malformed
+        # whether or not anybody looks at it, and finding out lazily meant
+        # meeting it as "no root named 'canonical'" while `canonical` is right
+        # there in the file.
+        for name, spec in self._roots_raw.items():
+            _require_mapping(spec, f"roots.{name}")
         self._resolved: dict = {}
-        self.stores = [Store(s) for s in (raw.get("stores") or [])]
-        citations = raw.get("citations") or {}
-        self.cited_roots = tuple(citations.get("roots") or ())
-        self.extra_suffixes = tuple(citations.get("extra_suffixes") or ())
+        self.stores = [
+            Store(s, i) for i, s in enumerate(_optional_list(raw, "stores"))
+        ]
+        citations = _optional_mapping(raw, "citations")
+        self.cited_roots = _require_str_tuple(citations, "roots", "citations")
+        self.extra_suffixes = _require_str_tuple(
+            citations, "extra_suffixes", "citations"
+        )
         self.blame_base = citations.get("blame_base") or "origin/main"
+        if not isinstance(self.blame_base, str):
+            raise ConfigError("citations needs a non-empty 'blame_base' string")
         # Type-checked like the store fields, not merely defaulted. This value
         # is a COMMAND: it is rendered into the truncation notice an agent is
         # told to run, and the dispatcher splits it to name a binary. A number
@@ -197,11 +230,13 @@ class Config:
         # anything at all. Rejecting "" as well would be a quiet tightening
         # nobody asked for, on a field most configs never set.
         self.search_cli = search_cli or DEFAULT_SEARCH_CLI
-        ev = raw.get("eval") or {}
+        ev = _optional_mapping(raw, "eval")
         self.eval_root = ev.get("root")
         self.eval_snapshot = ev.get("snapshot")
-        self.eval_gating = frozenset(ev.get("gating_slices") or ("suite",))
-        self.eval_cases = ev.get("cases") or {}
+        self.eval_gating = frozenset(
+            _require_str_tuple(ev, "gating_slices", "eval") or ("suite",)
+        )
+        self.eval_cases = _optional_mapping(ev, "cases", where="eval")
 
     def root(self, name: str) -> str:
         """Absolute path of a named root, resolved once and reported with it.
@@ -300,6 +335,71 @@ def _require_str(raw: dict, key: str, where: str) -> str:
     if not isinstance(value, str) or not value:
         raise ConfigError(f"{where} needs a non-empty {key!r} string")
     return value
+
+
+# --- shape checks -------------------------------------------------------------
+#
+# Every one of these replaces an `or {}` / `or ()` that read a wrong TYPE as an
+# absent value and carried on. What that cost is not a crash — a crash here is
+# fine, the hook is fail-open and the CLIs print the message — it is that the
+# crash arrived somewhere else entirely, as an AttributeError from a `.get` on
+# a string three frames away, with nothing naming the field that was wrong. A
+# `"stores": {...}` written as an object rather than a list iterated its KEYS
+# and reported that a string has no attribute `get`.
+#
+# Two of them were worse than a bad message. `tuple("search/x/INDEX.md")` is a
+# tuple of 21 single characters rather than a syntax error, and a `cwd_gate`
+# that was not a mapping silently ungated its store. Both read as a working
+# config right up until the behaviour was wrong.
+
+
+def _require_mapping(value: object, where: str) -> dict:
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where} must be an object, not {type(value).__name__}")
+    return value
+
+
+def _optional_mapping(raw: dict, key: str, where: str = "") -> dict:
+    """`raw[key]` as a mapping; {} when absent or null, error when it is neither."""
+    value = raw.get(key)
+    if value is None:
+        return {}
+    return _require_mapping(value, f"{where}.{key}" if where else key)
+
+
+def _optional_list(raw: dict, key: str) -> list:
+    value = raw.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError(f"{key!r} must be a list, not {type(value).__name__}")
+    return value
+
+
+def _require_str_tuple(raw: dict, key: str, where: str) -> tuple:
+    """A tuple of non-empty strings; () when absent or null.
+
+    A bare string is refused rather than accepted as a one-element list. It is
+    the likeliest way to write this field wrong, and `tuple("abc")` turns it
+    into three entries of one character each without raising anything.
+    """
+    value = raw.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError(
+            f"{where}.{key} must be a list of strings, not "
+            f"{type(value).__name__}"
+            + (" (a single value still needs to be in a list)"
+               if isinstance(value, str) else "")
+        )
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise ConfigError(
+                f"{where}.{key} must hold non-empty strings, found "
+                f"{item!r}"
+            )
+    return tuple(value)
 
 
 @functools.lru_cache(maxsize=None)

@@ -3984,6 +3984,164 @@ def test_a_search_cli_that_is_not_a_string_is_a_config_error(tmp_path) -> None:
         assert "search_cli" in out.stderr, args
 
 
+# --- config shapes: every wrong type is a NAMED error ------------------------
+#
+# The reader used to spell optional fields `raw.get(k) or <empty>`, which reads
+# a wrong TYPE as an absent value. Nothing about that is lenient: the run
+# failed anyway, three frames later, as an AttributeError from a `.get` on a
+# string with nothing naming the field. Two of the shapes did not fail at all
+# and were worse for it — see the two cases below that carry their own reason.
+
+
+def _config_blob(tmp_path: Path, **override) -> dict:
+    """A minimal valid config, for a case to break exactly one thing in."""
+    blob: dict = {
+        "schema": hook.SCHEMA,
+        "roots": {"home": {"kind": "path", "path": str(tmp_path)}},
+        "stores": [
+            {"id": "s", "role": "project", "dir": "store", "live_root": "home"}
+        ],
+    }
+    blob.update(override)
+    return blob
+
+
+def _load(tmp_path: Path, blob: dict):
+    path = tmp_path / f"cfg-{abs(hash(json.dumps(blob, sort_keys=True)))}.json"
+    path.write_text(json.dumps(blob))
+    return hook.load_config(str(path))
+
+
+def _store_with(tmp_path: Path, **fields) -> dict:
+    store = dict(_config_blob(tmp_path)["stores"][0])
+    store.update(fields)
+    return _config_blob(tmp_path, stores=[store])
+
+
+@pytest.mark.parametrize(
+    ("blob_for", "names"),
+    [
+        # `stores` as an object iterated its KEYS: every store became a bare
+        # string, and the report was that a string has no attribute 'get'.
+        (lambda p: _config_blob(p, stores={"s": {}}), ("stores", "list")),
+        (lambda p: _config_blob(p, stores=[123]), ("stores[0]", "object")),
+        (lambda p: _config_blob(p, stores=["s"]), ("stores[0]", "object")),
+        (lambda p: _config_blob(p, stores=[{}]), ("stores[0]", "id")),
+        (lambda p: _store_with(p, id=""), ("stores[0]", "id")),
+        (lambda p: _store_with(p, dir=None), ("stores[s]", "dir")),
+        (lambda p: _store_with(p, live_root=7), ("stores[s]", "live_root")),
+        (lambda p: _store_with(p, edit_root=7), ("stores[s]", "edit_root")),
+        (lambda p: _store_with(p, role="personnel"), ("stores[s]", "role")),
+        (lambda p: _store_with(p, sub_indexes="a/INDEX.md"), ("sub_indexes", "list")),
+        (lambda p: _store_with(p, sub_indexes=[1]), ("sub_indexes", "strings")),
+        (lambda p: _store_with(p, cwd_gate={}), ("cwd_gate", "root")),
+        (lambda p: _store_with(p, cwd_gate={"root": ""}), ("cwd_gate", "root")),
+        (lambda p: _config_blob(p, roots=[]), ("roots", "object")),
+        (lambda p: _config_blob(p, roots={"home": "x"}), ("roots.home", "object")),
+        (lambda p: _config_blob(p, citations=[]), ("citations", "object")),
+        (
+            lambda p: _config_blob(p, citations={"roots": "docs"}),
+            ("citations.roots", "list"),
+        ),
+        (
+            lambda p: _config_blob(p, citations={"extra_suffixes": [""]}),
+            ("extra_suffixes", "strings"),
+        ),
+        (lambda p: _config_blob(p, citations={"blame_base": 7}), ("blame_base",)),
+        (lambda p: _config_blob(p, eval=[]), ("eval", "object")),
+        (lambda p: _config_blob(p, eval={"cases": []}), ("eval.cases", "object")),
+        (
+            lambda p: _config_blob(p, eval={"gating_slices": "suite"}),
+            ("gating_slices", "list"),
+        ),
+    ],
+)
+def test_a_malformed_config_field_is_a_config_error_naming_it(
+    tmp_path, blob_for, names
+) -> None:
+    """ConfigError, not AttributeError — and the message names the field.
+
+    The class matters as much as the message: `ConfigError` is the one
+    exception every surface already handles. The hook degrades to inert and
+    records the reason, the CLIs exit 2 with the text, the checker prints it.
+    An AttributeError escapes all three and reaches the blanket fail-open
+    handler, where it becomes a hook that says nothing at all.
+    """
+    with pytest.raises(hook.ConfigError) as caught:
+        _load(tmp_path, blob_for(tmp_path))
+    for name in names:
+        assert name in str(caught.value), (name, str(caught.value))
+
+
+def test_a_cwd_gate_that_is_not_an_object_no_longer_ungates_the_store(
+    tmp_path,
+) -> None:
+    """The one malformed shape that did not fail at all, and widened what the
+    hook reads instead.
+
+    `cwd_gate` was read as `gate.get("root") if isinstance(gate, dict) else
+    None`, so `"cwd_gate": "canonical"` — a plausible thing to type — resolved
+    to None, which is not a gate. The store's memories then entered every
+    unrelated session's prompts, silently, with the config still saying they
+    were scoped. Nothing about a wrong type licenses widening the set of
+    directories an every-prompt hook reads.
+    """
+    with pytest.raises(hook.ConfigError, match="cwd_gate"):
+        _load(tmp_path, _store_with(tmp_path, cwd_gate="home"))
+
+    # And the guard can fire in only that direction: the well-formed gate still
+    # gates, and an absent one still means ungated.
+    gated = _load(tmp_path, _store_with(tmp_path, cwd_gate={"root": "home"}))
+    assert gated.stores[0].cwd_gate == "home"
+    assert _load(tmp_path, _config_blob(tmp_path)).stores[0].cwd_gate is None
+
+
+def test_a_string_sub_index_is_refused_rather_than_split_into_characters(
+    tmp_path,
+) -> None:
+    """The other shape that did not fail: `tuple("search/x/INDEX.md")` is 21
+    entries of one character each, and the checker went looking for a
+    sub-index named `s`.
+    """
+    with pytest.raises(hook.ConfigError, match="sub_indexes"):
+        _load(tmp_path, _store_with(tmp_path, sub_indexes="search/x/INDEX.md"))
+    ok = _load(tmp_path, _store_with(tmp_path, sub_indexes=["search/x/INDEX.md"]))
+    assert ok.stores[0].sub_indexes == ("search/x/INDEX.md",)
+
+
+def test_a_malformed_store_list_leaves_the_hook_inert_and_says_why(
+    tmp_path,
+) -> None:
+    """End to end, through the two surfaces that meet a broken config: the hook
+    stays fail-open and records the reason, the CLI refuses.
+
+    This is the shape that reached `cli.py`'s dispatcher guard as an
+    AttributeError. That guard stays — it defends every future field as well as
+    this one — but the config reader is where a config's shape is somebody's
+    named mistake rather than a traceback.
+    """
+    config = tmp_path / "broken.json"
+    config.write_text(json.dumps(_config_blob(tmp_path, stores=[123])))
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "cfgshape", "prompt": "flange torque passes"}),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert out.returncode == 0 and out.stdout == ""
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "gate:nodirs"
+    assert "stores[0]" in record["config"]
+
+    cli = _cli(tmp_path, "--search", "flange torque passes", env=env)
+    assert cli.returncode == hook.EXIT_ERROR
+    assert "stores[0]" in cli.stderr
+
+
 def test_the_divergence_line_names_a_cause_no_env_var_can_explain(
     tmp_path,
 ) -> None:
