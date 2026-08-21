@@ -119,9 +119,20 @@
           checks = {
             package = memkit;
 
-            # The two suites the split moved here (U1's `tooling` disposition).
+            # The two suites the split moved here (U1's `tooling` disposition),
+            # and the two that grew beside them. One check per suite FILE, so
+            # each one is named for what it covers — which also means a new
+            # suite that is not listed here runs on the plain-python leg alone.
+            # That is the dual-audience gate letting one audience rot, so a new
+            # tests/ file earns a line.
             hook-tests = suite "hook-tests" "tests/test_memory_prompt_recall.py";
             integrity-tests = suite "integrity-tests" "tests/test_memory_integrity.py";
+            cli-tests = suite "cli-tests" "tests/test_cli.py";
+            # Its artifact cases need a build frontend and a network to resolve
+            # the backend, and this sandbox has neither, so they skip here and
+            # gate on the uv leg. What still runs is the pyright-include pin,
+            # which needs nothing but the tree.
+            packaging-tests = suite "packaging-tests" "tests/test_packaging.py";
 
             # KTD4: the real-corpus gate belongs to the consumer, because the
             # cases pair prompts with private memory filenames. What memkit can
@@ -144,6 +155,22 @@
                   chmod -R u+w fixtures
                   ${memkit}/bin/memory-integrity --config fixtures/memkit.json 2>&1 | tee $out
                 '';
+            # The dispatcher as an installed BINARY — not a suite file, so not
+            # a `suite` entry. The suites reach it through `-m` and the
+            # packaging test reads the wheel's metadata, and neither of those
+            # runs the console script the plugin's skills will invoke: a
+            # scripts entry naming a callable that does not exist installs a
+            # binary that fails for the adopter and for nobody else.
+            memkit-dispatcher = pkgs.runCommand "memkit-dispatcher" { } ''
+              ${memkit}/bin/memkit --help > $out
+              grep -q 'NOT IN THIS BUILD YET' $out
+              if ${memkit}/bin/memkit doctor 2> refusal; then
+                echo "memkit doctor exited 0 — a refusal that reads as success"
+                exit 1
+              fi
+              grep -q 'not in this build' refusal
+            '';
+
             # KTD1 + KTD2 end to end: the entry the module writes into the
             # hooks directory runs, finds its wordlist, and reads the config
             # baked into it — with nothing in the environment saying so. An

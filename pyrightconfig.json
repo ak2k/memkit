@@ -1,4 +1,21 @@
 {
+  "//": [
+    "The package at its own floor. Run it as the FIRST of two passes:",
+    "  pyright -p pyrightconfig.json",
+    "",
+    "Where a new file goes. This config includes whole DIRECTORIES, so",
+    "anything added under src/, tests/ or tools/ is covered here with no",
+    "edit. pyrightconfig-hook39.json is the opposite — an explicit file list —",
+    "and it must name every file the recall HOOK can reach at import time,",
+    "which today is the one file it lists. So: add a module the hook imports,",
+    "add it there too, or its 3.9 floor is unchecked and the failure lands on",
+    "a stock macOS as a hook that silently retrieves nothing. Add anything",
+    "else and there is nothing to do.",
+    "",
+    "The direction matters and is easy to invert: cli.py imports the hook,",
+    "which does not put cli.py on the hook's import path. The list is about",
+    "what the harness's python3 will execute, not about what depends on it."
+  ],
   "include": ["src", "tests", "tools"],
   "exclude": ["**/__pycache__", "**/.venv", "**/build", "**/dist"],
   "pythonVersion": "3.12",

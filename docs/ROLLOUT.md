@@ -143,10 +143,17 @@ consumer keeps.
 
 Run it **from inside the consumer checkout**, not from `$HOME`. A store with a
 `cwd_gate` is searched only from inside the named root (its git worktrees
-count), so the same command run from elsewhere returns nothing at all and exits
-0 — an empty verify that reads exactly like a broken one. Pick a term you know
-matches a `search/`-tier memory: `hot/` memories are excluded from retrieval by
-design, because they are in context already.
+count), so the same command run from elsewhere searches nothing — but it now
+says so rather than looking like a store with no answer: exit **3** and
+`inert — … gated to another tree` on stderr. Read the code, not the silence.
+Exit **1** is the one that means the stores really were opened and nothing
+matched; **2** is a failure to search at all. Pick a term you know matches a
+`search/`-tier memory: `hot/` memories are excluded from retrieval by design,
+because they are in context already.
+
+`memory-recall --debug-config` answers the same question with the reasoning
+shown — which config resolved, and per store whether it is `searched`, `NOT on
+disk`, or `NOT searched here` — and exits 3 when none of them is searchable.
 
 **3. The hook injects pointers.** Without starting a session:
 

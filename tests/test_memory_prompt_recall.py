@@ -1519,6 +1519,122 @@ def test_index_records_which_corpus_it_holds(corpus: Path) -> None:
     assert hook._fts_dir("restic pruning", str(corpus)) == [str(corpus / "a.md")]
 
 
+def test_the_index_records_what_its_last_build_found(corpus: Path) -> None:
+    """Never indexed and indexed-over-an-empty-corpus are the same silence.
+
+    Both answer nothing and neither leaves a pointer, so the only way to tell
+    them apart was to open the index — which syncs it, which rebuilds whatever
+    the walk finds stale. A diagnostic that repairs the state it is measuring
+    cannot report on it, so the answer is recorded at build time instead.
+    """
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    assert not build.exists(), "an unbuilt index must leave no record"
+
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(build.read_text())["files"] == 0
+
+    memo = _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    hook._fts_dir("restic pruning", str(corpus))
+    record = json.loads(build.read_text())
+    assert record["outcome"] == "ok" and record["files"] == 1
+    assert record["ts"] > 0
+
+    # Advisory, exactly like `.root`: the engine never reads it, so losing it
+    # costs answers nothing.
+    build.unlink()
+    assert hook._fts_dir("restic pruning", str(corpus)) == [memo]
+
+
+def test_a_rebuilt_index_says_so_where_the_next_run_can_read_it(
+    corpus: Path,
+) -> None:
+    """An index that self-heals leaves no other trace on disk, so a cache being
+    destroyed and rebuilt on every prompt reads exactly like a healthy one.
+    `lex_rebuilds` says so in the soak log; this says so beside the index, for
+    a reader who has the machine and not the log."""
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    db = hook._fts_db(str(corpus))
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(Path(db.removesuffix(".db") + ".build").read_text())[
+        "outcome"
+    ] == "ok"
+
+    Path(db).write_bytes(b"this is not a database" * 100)
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(Path(db.removesuffix(".db") + ".build").read_text())[
+        "outcome"
+    ] == hook.BUILD_REBUILT
+
+
+def test_a_corpus_the_walk_could_not_read_is_not_recorded_as_empty(
+    corpus: Path,
+) -> None:
+    """`files: 0, outcome: ok` is the claim that the corpus is empty, and a
+    corpus nobody can read walks to zero files WITHOUT raising — so the record
+    for an unreadable subtree was byte-identical to the record for a genuinely
+    empty store. That is the confusion this sidecar exists to break, reappearing
+    inside it.
+    """
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    hook._fts_dir("restic pruning", str(corpus))
+    whole = json.loads(build.read_text())
+    assert whole["outcome"] == hook.BUILD_OK and whole["files"] == 1
+
+    # A second memory arrives in a subtree the walk cannot enter. The corpus
+    # now holds two files and the walk still reports one, which is the lie:
+    # the count is unchanged, so nothing about `files` can carry this.
+    locked = corpus / "vault"
+    locked.mkdir()
+    _memo(locked, "b.md", "# b\n\nrestic snapshot forgetting")
+    locked.chmod(0o000)
+    try:
+        hook._fts_dir("restic pruning", str(corpus))
+        unreadable = json.loads(build.read_text())
+    finally:
+        locked.chmod(0o755)
+    assert unreadable["files"] == whole["files"]
+    assert unreadable["outcome"] == hook.BUILD_PARTIAL
+
+
+def test_a_rebuild_that_fails_does_not_leave_the_old_record_standing(
+    corpus: Path, monkeypatch
+) -> None:
+    """Between the unlink and a rebuild that never completes, the previous
+    record outlives every row it described — and it very plausibly says `ok`
+    with a file count, so a reader arriving in that window is told the corpus
+    is indexed and healthy when there is no index at all."""
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    db = hook._fts_db(str(corpus))
+    build = Path(db.removesuffix(".db") + ".build")
+    hook._fts_dir("restic pruning", str(corpus))
+    assert json.loads(build.read_text()) == {
+        "v": hook.BUILD_SCHEMA,
+        "ts": json.loads(build.read_text())["ts"],
+        "outcome": hook.BUILD_OK,
+        "files": 1,
+    }
+
+    # Damage the index, and make the rebuild that follows fail too.
+    Path(db).write_bytes(b"this is not a database" * 100)
+    monkeypatch.setattr(
+        hook, "_fts_connect", _raising(sqlite3.DatabaseError("disk image is malformed"))
+    )
+    with pytest.raises(sqlite3.DatabaseError):
+        hook._fts_dir("restic pruning", str(corpus))
+
+    stale = json.loads(build.read_text())
+    assert stale["outcome"] == hook.BUILD_REBUILT
+    assert stale["files"] is None, "nothing read the corpus, so nothing may be claimed"
+
+
+def _raising(exc: BaseException):
+    def fail(*_args, **_kwargs):
+        raise exc
+
+    return fail
+
+
 # --- _description ------------------------------------------------------------
 
 
@@ -2846,14 +2962,40 @@ def test_the_log_names_what_the_floor_dropped(monkeypatch, tmp_path) -> None:
 # --- --search CLI (subprocess: argv routing is only real from outside) --------
 
 
-def _cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
+def _cli(
+    tmp_path: Path, *args: str, env: dict | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["python3", HOOK, *args],
         capture_output=True,
         text=True,
         timeout=60,
-        env=_env(tmp_path),
+        env=env if env is not None else _env(tmp_path),
     )
+
+
+def _unconfigured(tmp_path: Path) -> dict:
+    """A machine with a redirected HOME and no config at all.
+
+    Pops the variable rather than trusting its absence: whoever runs this suite
+    may well have a real memkit wired up, and inheriting it would point these
+    cases at the operator's own stores.
+    """
+    env = dict(os.environ, HOME=str(tmp_path))
+    env.pop(hook.CONFIG_ENV, None)
+    return env
+
+
+def _unhonourable(tmp_path: Path) -> dict:
+    """A config that is PRESENT and cannot be honoured.
+
+    A schema this build does not speak, because that is the failure the reader
+    states in its own words — and the one a store list cannot paper over, so
+    the case cannot pass by accidentally finding nothing.
+    """
+    path = tmp_path / "unhonourable.json"
+    path.write_text(json.dumps({"schema": hook.SCHEMA + 1}))
+    return dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(path))
 
 
 def _last_record(tmp_path: Path) -> dict:
@@ -2909,6 +3051,440 @@ def test_search_cli_uses_grep_exit_codes(tmp_path) -> None:
     )
     assert typo.returncode == 2 and typo.stdout == ""
     assert "not a directory" in typo.stderr
+
+
+# The three states an agent can reach with nothing to show for it, and the
+# claim each of them supports. They are the same silence on the surfaces the
+# hook has to present — it is fail-open and must not block a prompt to explain
+# itself — and out here that collapse is what turns "nobody set this machine
+# up" into "there is no memory about this, stop looking". One test per PAIR,
+# because what matters is not that each state has a code but that no two of
+# them share one; a single three-way test passes while two of the three are
+# still fused, on whichever assertion happens to be checked first.
+
+
+def test_the_exit_codes_are_the_numbers_other_readers_hardcode() -> None:
+    """The four values, as literals.
+
+    Every other case here spells a code as `hook.EXIT_*`, which is right for
+    reading but puts the constant on both sides of the assertion: renumbering
+    EXIT_INERT to 1 would fuse it with EXIT_NO_MATCH and leave those cases
+    green. The readers that matter are outside this file — a skill's
+    `allowed-tools` branch, a doctor check, a shell `case` — and none of them
+    can import anything, so the numbers themselves are the contract.
+    """
+    assert (hook.EXIT_OK, hook.EXIT_NO_MATCH, hook.EXIT_ERROR, hook.EXIT_INERT) == (
+        0,
+        1,
+        2,
+        3,
+    )
+
+
+def test_no_config_is_not_an_empty_corpus(tmp_path) -> None:
+    query = "sprocket backlash gearbox rebuild"
+    empty = _cli(tmp_path, "--search", query)
+    inert = _cli(tmp_path, "--search", query, env=_unconfigured(tmp_path))
+
+    assert empty.returncode == hook.EXIT_NO_MATCH and empty.stdout == ""
+    assert inert.returncode == hook.EXIT_INERT and inert.stdout == ""
+    assert empty.returncode != inert.returncode
+    # The empty corpus really was searched, so its silence IS a claim of
+    # absence and must not be hedged into one the caller has to re-read.
+    assert "inert" not in empty.stderr
+    assert "inert" in inert.stderr and "not a claim of absence" in inert.stderr
+
+    empty_cfg = _cli(tmp_path, "--debug-config")
+    inert_cfg = _cli(tmp_path, "--debug-config", env=_unconfigured(tmp_path))
+    assert empty_cfg.returncode == hook.EXIT_OK
+    assert inert_cfg.returncode == hook.EXIT_INERT
+    assert "inert" in inert_cfg.stdout
+
+
+def test_a_config_that_cannot_be_honoured_is_not_an_empty_corpus(tmp_path) -> None:
+    query = "sprocket backlash gearbox rebuild"
+    empty = _cli(tmp_path, "--search", query)
+    broken = _cli(tmp_path, "--search", query, env=_unhonourable(tmp_path))
+
+    assert empty.returncode == hook.EXIT_NO_MATCH
+    assert broken.returncode == hook.EXIT_ERROR and broken.stdout == ""
+    assert empty.returncode != broken.returncode
+    # The reason, in the reader's own words: a schema mismatch is fixed by
+    # installing a build that speaks it, which "no matches" never suggests.
+    assert "schema" in broken.stderr
+
+    empty_cfg = _cli(tmp_path, "--debug-config")
+    broken_cfg = _cli(tmp_path, "--debug-config", env=_unhonourable(tmp_path))
+    assert empty_cfg.returncode == hook.EXIT_OK
+    assert broken_cfg.returncode == hook.EXIT_ERROR
+    assert "schema" in broken_cfg.stderr
+
+
+def test_a_config_that_cannot_be_honoured_is_not_the_absence_of_one(tmp_path) -> None:
+    query = "sprocket backlash gearbox rebuild"
+    inert = _cli(tmp_path, "--search", query, env=_unconfigured(tmp_path))
+    broken = _cli(tmp_path, "--search", query, env=_unhonourable(tmp_path))
+
+    assert inert.returncode == hook.EXIT_INERT
+    assert broken.returncode == hook.EXIT_ERROR
+    assert inert.returncode != broken.returncode
+    # Nobody has set this machine up vs somebody set it up wrong. Only the
+    # second is a mistake with an owner, and the pre-plugin code answered both
+    # with a silent 1.
+    assert "inert" in inert.stderr and "inert" not in broken.stderr
+
+    inert_cfg = _cli(tmp_path, "--debug-config", env=_unconfigured(tmp_path))
+    broken_cfg = _cli(tmp_path, "--debug-config", env=_unhonourable(tmp_path))
+    assert inert_cfg.returncode == hook.EXIT_INERT
+    assert broken_cfg.returncode == hook.EXIT_ERROR
+    assert inert_cfg.returncode != broken_cfg.returncode
+
+
+def test_a_named_corpus_is_never_inert(tmp_path) -> None:
+    """--dir with no config at all still searches, because the caller named the
+    corpus and the config has no say in what gets opened.
+
+    This is the zero-mutation trial an adopter runs before there IS a config —
+    ahead of the trust dialog and the consent ceremony — so an inert refusal
+    here would put the ceremony in front of the first pointer.
+    """
+    corpus = tmp_path / "notes"
+    corpus.mkdir()
+    (corpus / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    out = _cli(
+        tmp_path,
+        "--search",
+        "sprocket backlash gearbox rebuild",
+        "--dir",
+        str(corpus),
+        env=_unconfigured(tmp_path),
+    )
+    assert out.returncode == hook.EXIT_OK, out.stderr
+    assert "gearbox.md" in out.stdout
+
+
+def test_a_config_naming_stores_that_are_not_there_is_inert(tmp_path) -> None:
+    """Honourable, and still nothing to open. The consequence is the caller's,
+    not the config's: a run that opened no corpus cannot report absence,
+    whether the reason was no config or a config pointing at nothing.
+
+    Asserted on BOTH surfaces in one case, because the two disagreeing is the
+    failure. `--debug-config` used to print `searched` beside every one of
+    these missing directories and exit 0 — and it is the surface the
+    dispatcher's own refusal message sends an agent to first, so the one that
+    said the machine was fine was the one reached by following the
+    instructions.
+    """
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(_write_config(tmp_path)))
+    out = _cli(tmp_path, "--search", "sprocket backlash gearbox", env=env)
+    assert out.returncode == hook.EXIT_INERT
+    assert "inert" in out.stderr and "memkit.json" in out.stderr
+
+    dbg = _cli(tmp_path, "--debug-config", env=env)
+    assert dbg.returncode == out.returncode
+    assert "NOT on disk" in dbg.stdout
+    assert "searched]" not in dbg.stdout, "a directory that is not there is not searched"
+    assert "inert:" in dbg.stdout
+
+
+def test_the_config_flag_reaches_the_stores_the_variable_does(tmp_path) -> None:
+    """`--config` is the same fact arriving by argument instead of by
+    environment, so the pin is that the two runs produce the same BYTES — not
+    that both found something, which two different corpora would also satisfy.
+    """
+    env = _env(tmp_path)
+    (tmp_path / PROJECT_DIR / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    query = "sprocket backlash gearbox rebuild"
+    by_env = _cli(tmp_path, "--search", query, env=env)
+    by_flag = _cli(
+        tmp_path,
+        "--config",
+        env[hook.CONFIG_ENV],
+        "--search",
+        query,
+        env=_unconfigured(tmp_path),
+    )
+
+    assert by_env.returncode == hook.EXIT_OK, by_env.stderr
+    assert "gearbox.md" in by_env.stdout
+    assert by_flag.returncode == by_env.returncode
+    assert by_flag.stdout == by_env.stdout
+
+    # And it reaches --debug-config too, which is where an agent that just
+    # wrote a config looks to find out whether it took.
+    dbg = _cli(
+        tmp_path,
+        "--config",
+        env[hook.CONFIG_ENV],
+        "--debug-config",
+        env=_unconfigured(tmp_path),
+    )
+    assert dbg.returncode == hook.EXIT_OK
+    assert env[hook.CONFIG_ENV] in dbg.stdout
+
+
+def test_the_one_shape_where_the_surfaces_part_company_fails_red(tmp_path) -> None:
+    """The parity invariant has exactly one exception, and it errs safely.
+
+    `--search` resolves only the stores it is about to open, so a store this
+    session is gated out of costs it nothing — even when that store's
+    `live_root` names a root the config never defines. `--debug-config`
+    resolves every store, because listing them is its job, so it meets the
+    ConfigError and exits 2 where `--search` exits 0.
+
+    Kept rather than reconciled: the direction it errs in is a false RED about
+    a config that really is malformed, and a false green is the only failure
+    this surface must not have. Pinned because the docstring now claims the
+    exception — a later change making this command lenient here would leave
+    that claim stale, and one making it green would make it wrong.
+    """
+    (tmp_path / "good" / "store" / "search").mkdir(parents=True)
+    (tmp_path / "good" / "store" / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    (tmp_path / "gate").mkdir()
+    cfg = tmp_path / "gated.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {
+                    "good": {"kind": "path", "path": str(tmp_path / "good")},
+                    "gate": {"kind": "path", "path": str(tmp_path / "gate")},
+                },
+                "stores": [
+                    {
+                        "id": "healthy",
+                        "role": "personal",
+                        "dir": "store",
+                        "live_root": "good",
+                    },
+                    {
+                        "id": "unreachable",
+                        "role": "project",
+                        "dir": "store",
+                        "live_root": "no_such_root",
+                        "cwd_gate": {"root": "gate"},
+                    },
+                ],
+            }
+        )
+    )
+    env = _unconfigured(tmp_path)
+    search = _cli(
+        tmp_path,
+        "--config",
+        str(cfg),
+        "--search",
+        "sprocket backlash gearbox rebuild",
+        env=env,
+    )
+    debug = _cli(tmp_path, "--config", str(cfg), "--debug-config", env=env)
+
+    assert search.returncode == hook.EXIT_OK, search.stderr
+    assert "gearbox.md" in search.stdout
+    assert debug.returncode == hook.EXIT_ERROR, debug.stdout
+    assert "no_such_root" in debug.stderr
+    # The direction is the whole point: never the green one.
+    assert debug.returncode != hook.EXIT_OK
+
+
+def _single_store_config(home: Path, name: str) -> str:
+    """A config whose one store is `~/<name>`, written to `~/<name>.json`."""
+    path = home / f"{name}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {"home": {"kind": "path", "path": "~"}},
+                "stores": [
+                    {"id": name, "role": "personal", "dir": name, "live_root": "home"}
+                ],
+            }
+        )
+    )
+    return str(path)
+
+
+def _override_config(home: Path, configured: Path) -> str:
+    """A config whose one root declares a per-root `env` override.
+
+    The ordinary shape rather than a corner: the reference config this repo is
+    extracted from declares `env` on two of its three roots, and the tools that
+    honour those overrides resolve the same file to a different tree than the
+    hook that refuses them.
+    """
+    path = home / "override.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {
+                    "fx": {"kind": "path", "path": str(configured), "env": "MEMKIT_FX"}
+                },
+                "stores": [
+                    {"id": "s", "role": "personal", "dir": "store", "live_root": "fx"}
+                ],
+            }
+        )
+    )
+    return str(path)
+
+
+def test_the_surfaces_agree_when_an_env_override_redirects_a_store(tmp_path) -> None:
+    """One config, two resolutions, and the exit codes must still match.
+
+    `--debug-config` honours the per-root env overrides and the hook never
+    does, so sharing a predicate between the two surfaces was not enough to
+    make them agree — they were sharing it over two different configs. Both
+    directions are asserted because the fix that closed the first opened the
+    second: an override pointing at a tree that exists while the configured
+    path does not is the original false green, and the reverse disagreed for
+    the first time only once the predicate was unified.
+
+    The invariant is that the DISPLAY may know more than the VERDICT and may
+    never overrule it.
+    """
+    real = tmp_path / "real"
+    (real / "store" / "search").mkdir(parents=True)
+    (real / "store" / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    absent = tmp_path / "absent"
+    query = ("--search", "sprocket backlash gearbox rebuild")
+
+    for label, configured, override, expected in (
+        ("override real, configured absent", absent, real, hook.EXIT_INERT),
+        ("override absent, configured real", real, absent, hook.EXIT_OK),
+    ):
+        cfg = _override_config(tmp_path, configured)
+        env = dict(_unconfigured(tmp_path), MEMKIT_FX=str(override))
+        search = _cli(tmp_path, "--config", cfg, *query, env=env)
+        debug = _cli(tmp_path, "--config", cfg, "--debug-config", env=env)
+
+        assert search.returncode == expected, (label, search.stderr)
+        assert debug.returncode == search.returncode, (label, debug.stdout)
+        # The display still reports what the verdict may not act on, and names
+        # the variable — an override that redirects retrieval away from the
+        # configured tree is the kind of thing set once and debugged for an
+        # hour.
+        assert "MEMKIT_FX is set" in debug.stdout, label
+        assert "the hook will read" in debug.stdout, label
+
+    # With the variable unset there is nothing to diverge, and the note must
+    # not appear — a divergence line on every run is one nobody reads.
+    quiet = dict(_unconfigured(tmp_path))
+    quiet.pop("MEMKIT_FX", None)
+    plain = _cli(
+        tmp_path, "--config", _override_config(tmp_path, real), "--debug-config", env=quiet
+    )
+    assert plain.returncode == hook.EXIT_OK, plain.stdout
+    assert "the hook will read" not in plain.stdout
+
+
+def test_a_second_config_in_one_process_is_not_answered_from_the_first(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """IN-PROCESS, and that is the whole point of the case.
+
+    Every other `--config` assertion here spawns a subprocess, where the config
+    cache starts empty and cache invalidation cannot be observed at all —
+    deleting `_use_config`'s `cache_clear()` leaves all of them green. What it
+    breaks is the caller that reads two configs in one process, which is
+    exactly what doctor will be: the second run resolves its stores from the
+    first run's parse and answers with the wrong corpus's pointers, while every
+    surface reports success.
+
+    Distinct memories per store rather than a hit count, because both configs
+    would answer the same query and only the identity of what comes back says
+    which one was read.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv(hook.CONFIG_ENV, raising=False)
+    configs = {}
+    for name in ("alpha", "beta"):
+        root = tmp_path / name / "search"
+        root.mkdir(parents=True)
+        (root / f"{name}.md").write_text(
+            f"---\ndescription: the {name} gearbox note\ntype: reference\n---\n\n"
+            "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+        )
+        configs[name] = _single_store_config(tmp_path, name)
+    query = ["--search", "sprocket backlash gearbox rebuild"]
+
+    try:
+        for name, other in (("alpha", "beta"), ("beta", "alpha")):
+            assert hook.search_cli(["--config", configs[name], *query]) == hook.EXIT_OK
+            shown = capsys.readouterr().out
+            assert f"{name}.md" in shown, shown
+            assert f"{other}.md" not in shown, shown
+        # And back to nothing: the third call names no config, so the state a
+        # previous call left behind must not keep this process configured.
+        assert hook.search_cli(query) == hook.EXIT_INERT
+    finally:
+        # Module state outlives the test; the next one in this process would
+        # otherwise inherit a config pointing into a deleted tmpdir.
+        hook._use_config(None)
+
+
+def test_a_named_config_is_checked_even_when_dir_makes_it_irrelevant(
+    tmp_path,
+) -> None:
+    """`--config <the one just written> --dir <corpus>` is a verification
+    invocation an agent runs after writing a config, and --dir means the config
+    decides nothing about what gets searched. Letting it pass anyway is the one
+    way for that check to come back green about a file it never opened — the
+    same failure the --dir typo case exists to prevent, from the other side.
+    """
+    corpus = tmp_path / "notes"
+    corpus.mkdir()
+    (corpus / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    args = ("--search", "sprocket backlash gearbox rebuild", "--dir", str(corpus))
+
+    # The control: --dir with no config at all still searches, so the refusal
+    # below is about the config being unreadable and not about --config itself.
+    assert _cli(tmp_path, *args, env=_unconfigured(tmp_path)).returncode == hook.EXIT_OK
+
+    unhonourable = _unhonourable(tmp_path)[hook.CONFIG_ENV]
+    for bad in (unhonourable, str(tmp_path / "typo.json")):
+        out = _cli(tmp_path, "--config", bad, *args, env=_unconfigured(tmp_path))
+        assert out.returncode == hook.EXIT_ERROR, out.stdout
+        assert out.stdout == ""
+
+        # Every other branch too, not just search. The invocation an agent
+        # uses to check a config it just wrote may be any of them, and a typo
+        # reaching exit 0 down a branch that happened not to need the file is
+        # the same false green in a different costume.
+        for branch in (("--debug-config",), ("--debug-envelope-probes",)):
+            probe = _cli(tmp_path, "--config", bad, *branch, env=_unconfigured(tmp_path))
+            assert probe.returncode == hook.EXIT_ERROR, (bad, branch, probe.stdout)
+            assert probe.stdout == ""
+
+
+def test_a_config_flag_naming_nothing_is_an_error_not_an_absence(tmp_path) -> None:
+    # A typo must never read as "this machine has no stores": that is the one
+    # answer under which an agent stops looking AND stops asking.
+    out = _cli(
+        tmp_path,
+        "--config",
+        str(tmp_path / "typo.json"),
+        "--search",
+        "sprocket backlash gearbox",
+        env=_unconfigured(tmp_path),
+    )
+    assert out.returncode == hook.EXIT_ERROR
+    assert "no such config file" in out.stderr
 
 
 def test_no_argv_still_reads_the_hook_payload_from_stdin(tmp_path) -> None:

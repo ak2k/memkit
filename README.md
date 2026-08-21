@@ -14,6 +14,11 @@ tells all three where the store is.
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
   data, supplied in config; the harness ships case-free.
 
+A fourth console script, `memkit`, is the dispatcher the setup and diagnosis
+subcommands hang off. It is a skeleton in this build: `memkit --help` lists
+`doctor` and `init` and tells you they have not landed yet, along with what to
+reach for meanwhile.
+
 The store schema is a directory layout, not frontmatter:
 
 ```
@@ -83,9 +88,28 @@ runs it with whatever `python3` the `PATH` resolves to. `memory-integrity`
 and `memory-eval` require **3.12**, and the checker says so by name on an
 older interpreter rather than dying on a syntax error.
 
-Without a config, memkit is **inert**: no stores, zero pointers, exit 0. That
-is a deliberate default, not an oversight — there is no ambient search path to
-guess at.
+Without a config, memkit is **inert**: no stores, zero pointers. That is a
+deliberate default, not an oversight — there is no ambient search path to guess
+at. The *hook* stays silent and exits 0 whatever happens, because a hook that
+fails any other way blocks a prompt; the CLIs say which state they are in.
+
+`memory-recall` exit codes — grep's three, plus one:
+
+| code | means | for the caller |
+|---|---|---|
+| 0 | pointers found, printed to stdout | read them |
+| 1 | the stores were searched and nothing matched | there is no such memory |
+| 2 | the search itself failed — unparseable config, a `--dir` or `--config` that is not there | fix what stderr names; never read as absence |
+| 3 | **inert**: nothing to search — no config, or no store on disk and in scope for this directory | stderr names which; this is *not* a claim of absence |
+
+`memory-recall --debug-config` reports the resolved config and shares those
+codes: 3 when nothing is searchable, so it cannot come back green about an
+installation `--search` calls inert. It is the one command that honours a
+root's `env` override, and it honours it in the *display* only — the exit code
+is always taken from the tree the hook will actually serve, since that is what
+the code is a claim about. Where an override sends this command somewhere the
+hook will not look, it prints the divergence per store: which variable is set,
+what this run resolved, and what the hook will read.
 
 Rolling this out across more than one machine, verifying a host afterwards, and
 rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
@@ -249,6 +273,16 @@ pyright passes — the package at its 3.12 floor, then the hook alone at its 3.9
 one) and a nix leg
 (`nix flake check` on x86_64-linux, aarch64-linux and aarch64-darwin). Neither
 trigger is path-filtered, so a docs-only change still reports every context.
+
+**Which pyright config a new file belongs in.** `pyrightconfig.json` includes
+`src/`, `tests/` and `tools/` by directory, so a new file is covered there with
+no edit. `pyrightconfig-hook39.json` is an explicit file list, and it must name
+every file the *recall hook* can reach at import time — today, just the hook
+itself. Add a module the hook imports and it belongs in that list on the same
+commit: its 3.9 floor is otherwise unchecked, and the failure surfaces on a
+stock macOS as a hook that silently retrieves nothing. The direction is easy to
+invert — `cli.py` imports the hook, which does not put `cli.py` on the hook's
+import path. The list is about what the harness's `python3` executes.
 
 ## Licence
 

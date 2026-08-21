@@ -1,4 +1,4 @@
-# memkit as an installed application: three console scripts, plus the hook and
+# memkit as an installed application: four console scripts, plus the hook and
 # its wordlist as a LOOSE PAIR under share/memkit/.
 #
 # The loose pair is not redundancy. The harness invokes the hook by file path,
@@ -58,6 +58,6 @@ buildPythonPackage {
   meta = {
     description = "Retrieval hook, integrity checker and eval harness for a tiered markdown memory store";
     mainProgram = "memory-recall";
-    license = lib.licenses.mit;
+    license = lib.licenses.asl20;
   };
 }

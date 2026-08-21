@@ -93,6 +93,12 @@ from collections.abc import Callable
 # environment on the hook path: `honor_env_overrides` defaults to False here and
 # is turned on only by the checker, the eval, and `--debug-config`.
 #
+# The CLIs additionally take the path as `--config`, which is the same one fact
+# arriving by argument instead of by environment. That is an addition to how a
+# PERSON or an agent points a tool at a tree, never to what the hook will read:
+# the hook parses no arguments at all (see cli), so nothing an argument can say
+# reaches the every-prompt path.
+#
 # Shipped defaults are inert. No MEMKIT_CONFIG and no file means no stores,
 # which means zero pointers and exit 0 — a memkit that has not been configured
 # says nothing rather than guessing at a corpus.
@@ -340,13 +346,39 @@ def _config(honor_env_overrides: bool = False):
     """
     global _CONFIG_ERROR
     try:
-        return load_config(honor_env_overrides=honor_env_overrides)
+        return load_config(_CONFIG_PATH, honor_env_overrides=honor_env_overrides)
     except ConfigError as exc:
         _CONFIG_ERROR = str(exc)
         return None
 
 
 _CONFIG_ERROR: str | None = None
+# The config path a CLI caller named, when one did. Left None on the hook path,
+# where absence is the whole point: the installed hook reads MEMKIT_CONFIG and
+# only MEMKIT_CONFIG, because that is the variable the wrapper bakes in.
+_CONFIG_PATH: str | None = None
+
+
+def _use_config(path: str | None) -> None:
+    """Point every config read in this process at `path` (None: the env again).
+
+    `--config` has to reach `_search_dirs` and `_search_cli`, which take no
+    arguments and are reached from inside `recall()`. Threading a path through
+    them would put a CLI-only parameter into two functions on the every-prompt
+    path and into every test that calls them, for the sake of a value the hook
+    never supplies — the same trade `_LEX_COUNTS` is a module global for.
+
+    Setting it is what makes `--config` an alternative to exporting
+    MEMKIT_CONFIG rather than a second way to spell it: the highest-traffic
+    verification path stops having to mutate the environment of whatever ran
+    it. Both caches are cleared because a second call in one process — the
+    suite, and a doctor checking two configs in a row — must not answer from
+    the first one's parse.
+    """
+    global _CONFIG_PATH, _CONFIG_ERROR
+    _CONFIG_PATH = path
+    _CONFIG_ERROR = None
+    _config.cache_clear()
 
 
 # Low: just a typo/accident guard. The REAL junk gate is the stopword
@@ -619,22 +651,77 @@ def _search_root(store: str) -> str:
     return tiered if os.path.isdir(tiered) else store
 
 
-def _search_dirs() -> list[str]:
-    """The configured stores this session may search, in config order.
+def _live_dirs(cfg) -> list[str]:
+    """The store directories `cfg` offers this session, in config order.
+
+    Split out from _search_dirs so that a caller holding a config parsed under
+    different rules — `--debug-config` honours per-root env overrides, the
+    search path does not — asks the same question of it. The two surfaces
+    disagreeing about which stores exist is exactly the defect _config_state
+    exists to prevent, and they can only agree if the predicate is one
+    function.
 
     Order feeds _interleave's tie-breaking, so the config's list order is what
     decides which store wins a tie — most-specific-first is the intended
     shape. Each store resolves through its LIVE root, so a session standing in
     a worktree still reads the copy that is actually live.
+    """
+    dirs = [cfg.store_dir(s, "live") for s in cfg.searched_stores()]
+    return [_search_root(d) for d in dirs if os.path.isdir(d)]
+
+
+def _search_dirs() -> list[str]:
+    """The stores the HOOK may search: _live_dirs over the hook's own config.
 
     Empty without a config, which is the inert default: no stores, no
     pointers.
     """
     cfg = _config()
+    return _live_dirs(cfg) if cfg is not None else []
+
+
+def _config_state(honor_env_overrides: bool = False) -> tuple:
+    """Whether this installation has anything to search — decided once.
+
+    Returns `(config, error, inert)`, where at most one of the last two is
+    set. `error` is a config that is present and cannot be honoured. `inert`
+    is the reason there is nothing to search, phrased for a person. Both None
+    means the config resolved and at least one store is on disk and in scope.
+
+    One derivation because there are two surfaces that answer this question and
+    they disagreed. `--search` called an installation inert while
+    `--debug-config` printed `searched` beside every store and exited 0 — and
+    `--debug-config` is where the dispatcher's own refusal message sends an
+    agent first, so the surface that says "this machine is fine" was the one
+    reached by anybody following the instructions. The predicate is the
+    same one _search_dirs uses (`searched_stores` then `isdir`), so a store
+    this returns as searchable is a store retrieval will actually open.
+
+    `honor_env_overrides` is a parameter rather than a constant because it is
+    the one thing the two surfaces legitimately differ on: `--debug-config`
+    honours the per-root overrides so a developer can point a session at a
+    fixture tree, and the every-prompt path never may. Reading the state
+    through one function does not mean reading it through one config.
+
+    load_config directly rather than through _config(): this is the CLI's
+    question, and _config folds the error into None and parks it in a global
+    so the fail-open hook can degrade quietly. Out here the error is half the
+    answer.
+    """
+    try:
+        cfg = load_config(_CONFIG_PATH, honor_env_overrides=honor_env_overrides)
+    except ConfigError as exc:
+        return None, str(exc), None
     if cfg is None:
-        return []
-    dirs = [cfg.store_dir(s, "live") for s in cfg.searched_stores()]
-    return [_search_root(d) for d in dirs if os.path.isdir(d)]
+        return None, None, (
+            f"no config (no --config, ${CONFIG_ENV} unset), so no stores to search"
+        )
+    if not _live_dirs(cfg):
+        return cfg, None, (
+            f"{cfg.path} configures no store this session can search "
+            "(missing on disk, or gated to another tree)"
+        )
+    return cfg, None, None
 
 
 def _search_cli() -> str:
@@ -721,6 +808,79 @@ def _fts_note_root(db: str, root: str) -> str:
         if not os.path.exists(sidecar):
             with open(sidecar, "w", encoding="utf-8") as f:
                 f.write(root + "\n")
+    return sidecar
+
+
+# What a `.build` record's `outcome` may say, and the order they outrank each
+# other in when a run is more than one of them: BUSY beats REBUILT beats
+# PARTIAL beats OK. Named for the same reason the EXIT_* codes are — the reader
+# is doctor, in another module and eventually another repo, and a bare literal
+# in two places is a vocabulary that drifts.
+#
+# BUSY   the sync never ran (another session held the write lock), so `files`
+#        is unknown and the query answered from the index as it stood.
+# REBUILT the index was damaged, unlinked and built from the corpus again. Run
+#        after run, this is the self-healing loop that otherwise reads exactly
+#        like a healthy cache. Because it outranks PARTIAL, a rebuild whose
+#        walk was ALSO incomplete records REBUILT, and its `files` undercounts
+#        the corpus exactly as a PARTIAL record's would — so the number is a
+#        floor under this outcome, never a census.
+# PARTIAL the walk could not read part of the corpus, so `files` undercounts
+#        and a low number is not evidence the corpus is small.
+# OK     a complete sync over a fully readable corpus.
+BUILD_OK = "ok"
+BUILD_BUSY = "busy"
+BUILD_REBUILT = "rebuilt"
+BUILD_PARTIAL = "partial"
+# Bumped when the record's shape changes. Nothing reads these yet, which is
+# precisely when a version key is free to add and impossible to retrofit.
+BUILD_SCHEMA = 1
+
+
+def _fts_note_build(db: str, outcome: str, files: int | None) -> str:
+    """Record how this corpus was last indexed, as a second sidecar.
+
+    "Never indexed" and "indexed, and the corpus turned out to be empty" are
+    the same absence from outside this file — no pointers, and an index file
+    that may or may not be there — and the only way to tell them apart was to
+    open the index, which syncs, which rebuilds whatever the walk finds stale.
+    A diagnostic that repairs the state it is diagnosing cannot report on it.
+
+    `files` is what the walk read INTO the index: not a row count, not the
+    corpus's size on disk, and not a count of what the index now holds — a
+    file the walk could not read keeps its existing rows and is excluded here,
+    because this number's job is to say what this run established. `files: 0`
+    with `outcome: ok` therefore means the corpus really was empty, and that
+    claim is only safe because every way of failing to read the corpus lands
+    on an outcome other than OK. `None` means the run never got far enough to
+    count.
+
+    Same posture as the `.root` sidecar: advisory, never read by the engine, a
+    stale one costs nothing, every failure suppressed. Rewritten every run,
+    because the question is what happened LAST. Written beside and renamed
+    over, unlike `.root`, because two sessions index the same corpus at once
+    and a reader that met half a line could not tell a torn write from an
+    index holding nothing — which is the one distinction this file exists to
+    make.
+    """
+    sidecar = db.removesuffix(".db") + ".build"
+    tmp = f"{sidecar}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "v": BUILD_SCHEMA,
+                    "ts": int(time.time()),
+                    "outcome": outcome,
+                    "files": files,
+                },
+                f,
+                separators=(",", ":"),
+            )
+        os.replace(tmp, sidecar)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
     return sidecar
 
 
@@ -873,8 +1033,16 @@ def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set
     return disk, spared, unwalked
 
 
-def _fts_sync(con: sqlite3.Connection, root: str) -> None:
+def _fts_sync(con: sqlite3.Connection, root: str) -> tuple[int, int, int]:
     """Bring the index in line with the corpus. The walk is authoritative.
+
+    Returns `(files, spared, unwalked)` for `_fts_note_build`: how many files
+    this walk actually read into the index, and how much of the corpus it could
+    not account for. All three, not just the first, because `files` alone
+    cannot be trusted without them — a corpus nobody can read walks to zero
+    files and no error, which is byte-identical to a corpus that is genuinely
+    empty. The counts are what let the record say `partial` instead of
+    claiming an empty corpus it never saw.
 
     A file's identity is (mtime_ns, ctime_ns, size), carried on every one of
     its chunk rows: FTS5 has no unique constraints and no update-by-key, so
@@ -990,6 +1158,12 @@ def _fts_sync(con: sqlite3.Connection, root: str) -> None:
     _LEX_COUNTS["lex_spared"] += len(spared)
     if (spared or unwalked) and not _fts_answerable(con):
         raise OSError(f"index empty and part of {root} unreadable")
+    # `disk` still holds any path the in-transaction backstop failed to reopen
+    # — it cannot be deleted there, since that loop iterates the live dict —
+    # so the subtraction happens here instead. Every other spared path was
+    # either never in `disk` or already removed by the staging loop, so one
+    # difference covers all of them.
+    return len(disk.keys() - spared), len(spared), len(unwalked)
 
 
 def _fts_search(con: sqlite3.Connection, query: str) -> list[str]:
@@ -1167,21 +1341,34 @@ def _fts_dir(query: str, d: str) -> list[str]:
     db = _fts_db(d)
     _fts_note_root(db, d)
 
-    def attempt() -> list[str]:
+    def attempt(base: str) -> list[str]:
         con = _fts_connect(db)
         try:
+            outcome, files = base, None
             try:
-                _fts_sync(con, d)
+                files, spared, unwalked = _fts_sync(con, d)
+                # A corpus nobody can read walks to zero files without raising,
+                # and `ok` over zero files is the claim that the corpus is
+                # empty — the exact confusion this sidecar exists to break. The
+                # walk's own account of what it could not reach is the only
+                # thing that separates them.
+                if (spared or unwalked) and outcome == BUILD_OK:
+                    outcome = BUILD_PARTIAL
             except sqlite3.OperationalError as exc:
                 if not _fts_busy(exc) or not _fts_answerable(con):
                     raise
                 _LEX_COUNTS["lex_busy_skip"] += 1
+                outcome = BUILD_BUSY
+            # Noted between the sync and the query, so a search that raises
+            # still leaves the record of how the index it was about to read
+            # got there.
+            _fts_note_build(db, outcome, files)
             return _fts_search(con, query)
         finally:
             con.close()
 
     try:
-        return attempt()
+        return attempt(BUILD_OK)
     except sqlite3.Error as exc:
         if _fts_busy(exc):
             raise
@@ -1196,7 +1383,14 @@ def _fts_dir(query: str, d: str) -> list[str]:
         for suffix in ("", "-wal", "-shm"):
             with contextlib.suppress(OSError):
                 os.unlink(db + suffix)
-        return attempt()
+        # Noted BEFORE the retry, and again after it if the retry gets that
+        # far. The index this record describes has just been deleted, so the
+        # window between the unlink and a rebuild that does not complete is one
+        # where the previous record — very possibly `ok`, with a file count —
+        # outlives every row it was describing. A reader arriving then is told
+        # the corpus is indexed and healthy when there is no index at all.
+        _fts_note_build(db, BUILD_REBUILT, None)
+        return attempt(BUILD_REBUILT)
 
 
 def _interleave(ranked_lists: list[list[str]]) -> list[str]:
@@ -2076,6 +2270,38 @@ def main() -> None:
         raise
 
 
+# --- exit codes, and the state each one names --------------------------------
+#
+# grep's three, plus one. 0/1/2 stay exactly grep's — found, found nothing, the
+# search itself failed — because the caller is an agent deciding whether to go
+# read something, and those three are the moves it already knows. The fourth
+# exists because none of them can say "this installation has nothing to search":
+# an inert memkit answers every query with the same empty result an exhaustive
+# search of a real corpus produces, and an agent reading that as absence
+# concludes the memory is not there rather than that it never looked. That
+# collapse is why the state gets a code of its own rather than a caveat in the
+# message. Named constants because doctor and the skills branch on these from
+# outside this file, and a number in two repos is a number that drifts.
+EXIT_OK = 0
+EXIT_NO_MATCH = 1
+EXIT_ERROR = 2
+EXIT_INERT = 3
+
+
+def _store_state(store, live: str, searched: list) -> str:
+    """How one store stands for one resolution: the bracket `--debug-config`
+    prints, and the same predicate `_live_dirs` decides searchability with.
+
+    Three states, not two. A store this session is allowed to read and whose
+    directory does not exist was reported as `searched`, which is the single
+    most misleading line this command can print: it names the path AND asserts
+    the path is being read.
+    """
+    if store not in searched:
+        return "NOT searched here"
+    return "searched" if os.path.isdir(live) else "NOT on disk"
+
+
 def _print_config() -> int:
     """`--debug-config`: what this installation resolved, and from where.
 
@@ -2084,35 +2310,105 @@ def _print_config() -> int:
     hook is fail-open by construction. Honours the per-root environment
     overrides the hook path refuses, so a developer can point a session at a
     fixture tree without the every-prompt path ever growing that ability.
+
+    An inert installation exits EXIT_INERT, not 0. Printing "inert" and exiting
+    successfully asks the reader to parse prose to learn that nothing is wired
+    up, and the reader here is usually an agent that checked the status and
+    moved on; printing `searched` beside a store directory that is not there
+    tells it something false about the store as well.
+
+    TWO resolutions of one config, and the split is the whole of this
+    function's contract. The DISPLAY honours the per-root env overrides,
+    because pointing a session at a fixture tree and seeing where it landed is
+    what the flag is for. The VERDICT — the exit code — is taken WITHOUT them,
+    because the exit code is a claim about the tree the hook will serve, and
+    the hook never honours an override. Sharing a predicate was not enough to
+    make the two surfaces agree: one derivation over two configs still let a
+    root with a live `env` override print `searched` and exit 0 for an
+    installation `--search` called inert, and made the reverse case disagree
+    for the first time.
+
+    The invariant: for the same argv and environment, this exit code and
+    `--search`'s are equal — except where resolving a store `--search` would
+    never open surfaces a config error, and this command fails loud instead.
+    `--search` resolves only the stores it is about to search, so a gated-out
+    store whose `live_root` names a root the config never defines costs it
+    nothing, while the display loop resolves every store and meets the
+    ConfigError. That asymmetry is kept rather than papered over: diagnosing
+    configs is this command's whole job, and the direction it errs in is a
+    false RED about a config that really is malformed. A false green is the
+    only failure this surface must not have.
+
+    The display may know more than the verdict; it may never overrule it.
+    Where the two resolutions land in different places the divergence is
+    printed per store rather than silently reconciled — an override that
+    redirects retrieval away from the configured tree is the kind of thing a
+    person sets once and then debugs for an hour.
     """
-    try:
-        cfg = load_config(honor_env_overrides=True)
-    except ConfigError as exc:
-        print(f"memory-recall: {exc}", file=sys.stderr)
-        return 2
-    if cfg is None:
-        print(f"config:     none ({CONFIG_ENV} unset) — inert, no stores, no pointers")
-        return 0
-    print(f"config:     {cfg.path} (schema {SCHEMA})")
-    print(f"search_cli: {cfg.search_cli}")
-    for store in cfg.stores:
-        live = cfg.store_dir(store, "live")
+    # The verdict first, and from the un-overridden resolution.
+    served, error, inert = _config_state()
+    if error:
+        print(f"memory-recall: {error}", file=sys.stderr)
+        return EXIT_ERROR
+    if served is None:
+        print(
+            "config:     none — inert: no stores, no pointers "
+            f"(no --config, ${CONFIG_ENV} unset)"
+        )
+        return EXIT_INERT
+    # Same file and same parse — only root RESOLUTION differs — so this cannot
+    # fail where the verdict succeeded. `or served` keeps the fallback total
+    # rather than resting on that argument.
+    display = served
+    with contextlib.suppress(ConfigError):
+        display = load_config(_CONFIG_PATH, honor_env_overrides=True) or served
+
+    print(f"config:     {display.path} (schema {SCHEMA})")
+    print(f"search_cli: {display.search_cli}")
+    shown_searched = display.searched_stores()
+    served_searched = served.searched_stores()
+    served_by_id = {s.id: s for s in served.stores}
+    for store in display.stores:
+        live = display.store_dir(store, "live")
         gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
-        searched = "searched" if store in cfg.searched_stores() else "NOT searched here"
-        print(f"store {store.id}: {live} [{store.role}; {gated}; {searched}]")
-    return 0
+        state = _store_state(store, live, shown_searched)
+        print(f"store {store.id}: {live} [{store.role}; {gated}; {state}]")
+
+        twin = served_by_id.get(store.id)
+        if twin is None:
+            continue
+        hook_live = served.store_dir(twin, "live")
+        hook_state = _store_state(twin, hook_live, served_searched)
+        # realpath both sides before comparing: an override resolves through
+        # realpath and a configured path does not, so the same tree reached two
+        # ways is not a divergence and must not be reported as one.
+        if (
+            os.path.realpath(hook_live) == os.path.realpath(live)
+            and hook_state == state
+        ):
+            continue
+        env = (display._roots_raw.get(store.live_root) or {}).get("env")
+        via = f"{env} is set: " if env else ""
+        print(
+            f"  ! {via}this run resolved {live} [{state}]; "
+            f"the hook will read {hook_live} [{hook_state}]"
+        )
+    if inert:
+        print(f"inert:      {inert}")
+        return EXIT_INERT
+    return EXIT_OK
 
 
 def search_cli(argv: list[str]) -> int:
     """`--search "<terms>" [--dir PATH ...]` — the hook's own retrieval, on
     demand, printing the pointer lines it would have injected.
 
-    grep's exit codes (0 found, 1 nothing, 2 the search itself failed),
-    because the caller is an agent deciding whether to go read something and
-    the three cases want different next moves. Deliberately NOT fail-open:
-    that contract exists so a broken hook cannot block a prompt, and there is
-    no prompt here — exiting 0 and silent on a broken index would present it
-    as a corpus with nothing to say.
+    grep's exit codes plus EXIT_INERT (see that block), because the caller is
+    an agent deciding whether to go read something and each case wants a
+    different next move. Deliberately NOT fail-open: that contract exists so a
+    broken hook cannot block a prompt, and there is no prompt here — exiting 0
+    and silent on a broken index would present it as a corpus with nothing to
+    say.
 
     No cap and no session state. MAX_HITS and POINTER_BUDGET are claims about
     what may be PUSHED into a session's context unasked; a search the agent
@@ -2124,8 +2420,8 @@ def search_cli(argv: list[str]) -> int:
     It is the same retrieval path the hook runs, so what it returns is what a
     prompt in the same words would have been offered — with the cap and the
     dedup removed, not the floor. A query the corpus has no words for returns
-    nothing and exits 1; there is no nearest-neighbour guess behind that any
-    more.
+    nothing and exits EXIT_NO_MATCH; there is no nearest-neighbour guess behind
+    that any more.
     """
     # Local import: this is the only caller, and the hook path — which runs on
     # every prompt and parses no arguments — need not pay for a mode it never
@@ -2146,6 +2442,15 @@ def search_cli(argv: list[str]) -> int:
         help="corpus to search instead of the memory stores (repeatable)",
     )
     ap.add_argument(
+        "--config",
+        metavar="PATH",
+        default=None,
+        help=f"config file naming the stores to search (default: ${CONFIG_ENV}). "
+        "An alternative to exporting the variable, not a second spelling of it: "
+        "verifying a config you just wrote should not mean mutating the "
+        "environment of whatever ran this",
+    )
+    ap.add_argument(
         "--debug-envelope-probes",
         action="store_true",
         help="emit one synthesized envelope string per gated marker, as JSON. "
@@ -2160,10 +2465,28 @@ def search_cli(argv: list[str]) -> int:
         "decision to make",
     )
     args = ap.parse_args(argv)
+    _use_config(args.config)
+
+    # A --config the caller NAMED is opened before this run does anything else
+    # — before the probes, before --debug-config, before any search. A typo
+    # must not be able to reach an exit 0 down some branch that happened not to
+    # need the file, because the invocation an agent uses to check that a
+    # config it just wrote is good may be any of them.
+    #
+    # No soak record here, unlike the store-search path below. That asymmetry
+    # is the point: a config in the environment is the machine's standing
+    # configuration and its breakage is a property of the installation worth
+    # counting, while a --config typed on one invocation is that caller's
+    # argument error, refused to their face and gone.
+    if args.config is not None:
+        _, named_error, _ = _config_state()
+        if named_error:
+            print(f"memory-recall: {named_error}", file=sys.stderr)
+            return EXIT_ERROR
 
     if args.debug_envelope_probes:
         print(json.dumps(envelope_probes()))
-        return 0
+        return EXIT_OK
     if args.debug_config:
         return _print_config()
     if not args.search:
@@ -2186,7 +2509,42 @@ def search_cli(argv: list[str]) -> int:
             f"memory-recall: not a directory: {', '.join(missing)}",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_ERROR
+    # A named --config has already been opened and refused if it could not be;
+    # what is left to decide is inertness, which only the store-search path
+    # asks. Under --dir the caller named the corpus, so the config has no say
+    # in what gets searched and no standing to make this run inert — that is
+    # the shape of the zero-config trial an adopter runs before there is a
+    # config to be inert.
+    if dirs is None:
+        # Whether there is anything to search is settled BEFORE retrieval,
+        # because recall() cannot answer it: an unconfigured machine and an
+        # unanswerable query both come back as an empty list, and the caller
+        # would read the second meaning of the first. The hook is right to be
+        # silent about this — it has a prompt to get out of the way of — which
+        # is exactly why the CLI has to say it instead.
+        #
+        _, error, inert = _config_state()
+        if error or inert:
+            # Counted for the same reason the hook counts gate:nodirs — a run
+            # of the retrieval path that never reached a corpus is still a use
+            # of it.
+            why = {"config": error} if error else {}
+            rec.update(
+                outcome="cli:nodirs",
+                ms=int((time.monotonic() - t0) * 1000),
+                **why,
+            )
+            _soak_log(rec)
+            if error:
+                print(f"memory-recall: {error}", file=sys.stderr)
+                return EXIT_ERROR
+            print(
+                f"memory-recall: inert — {inert}; this is not a claim of "
+                "absence",
+                file=sys.stderr,
+            )
+            return EXIT_INERT
     hits = recall(stripped, stats=rec, dirs=dirs)
     terms = list(dict.fromkeys((build_query(stripped) or "").split()))
     eligible, floored = _eligible(hits, terms)
@@ -2212,10 +2570,10 @@ def search_cli(argv: list[str]) -> int:
                 " — result is not a claim of absence",
                 file=sys.stderr,
             )
-            return 2
-        return 1
+            return EXIT_ERROR
+        return EXIT_NO_MATCH
     print("\n".join(lines))
-    return 0
+    return EXIT_OK
 
 
 def cli() -> None:
@@ -2234,10 +2592,11 @@ def cli() -> None:
         except SystemExit:
             raise
         except Exception as exc:
-            # Never exit 1 on a failure: that code is spoken for, and an agent
-            # reading it as "no such memory" would stop looking.
+            # Never exit EXIT_NO_MATCH or EXIT_INERT on a failure: both codes
+            # are spoken for, and an agent reading either as "there is no such
+            # memory" or "nothing is set up here" would stop looking.
             print(f"memory-recall: {exc}", file=sys.stderr)
-            sys.exit(2)
+            sys.exit(EXIT_ERROR)
     # Fail-open: no output, exit 0 — never block the prompt.
     with contextlib.suppress(Exception):
         main()
