@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "memkit",
+  "owner": {
+    "name": "Adam Kirby",
+    "url": "https://github.com/ak2k"
+  },
+  "description": "memkit — pointer-injecting memory retrieval for Claude Code, plus the checker and eval that keep the store honest.",
+  "plugins": [
+    {
+      "name": "memkit",
+      "description": "Injects pointers to your own memory files into every prompt: lexical retrieval over a tiered markdown store, plus a checker and an eval for it.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "source": {
+        "source": "github",
+        "repo": "ak2k/memkit",
+        "sha": "23d076ad737143e0781f7c39e351f06d8590c9e0"
+      }
+    }
+  ]
+}

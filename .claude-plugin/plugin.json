@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin.json",
+  "name": "memkit",
+  "description": "Injects pointers to your own memory files into every prompt: lexical retrieval over a tiered markdown store, plus a checker and an eval for it.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Adam Kirby",
+    "url": "https://github.com/ak2k"
+  },
+  "homepage": "https://github.com/ak2k/memkit",
+  "repository": "https://github.com/ak2k/memkit",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "retrieval",
+    "context",
+    "hooks"
+  ],
+  "userConfig": {
+    "memkitConfig": {
+      "type": "string",
+      "title": "memkit config file",
+      "description": "Absolute path to the JSON config naming your memory stores. The plugin is inert until this file exists — /memkit:init creates it at the default path below. Nothing is read from your machine before then.",
+      "default": "~/.cache/memory-recall/memkit.json",
+      "required": true
+    }
+  }
+}

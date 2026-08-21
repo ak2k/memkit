@@ -133,6 +133,7 @@
             "test_cli.py" = "cli-tests";
             "test_packaging.py" = "packaging-tests";
             "test_eval.py" = "eval-tests";
+            "test_plugin_surface.py" = "plugin-tests";
           };
           suiteFiles = lib.filterAttrs (
             n: t: t == "regular" && lib.hasPrefix "test_" n && lib.hasSuffix ".py" n

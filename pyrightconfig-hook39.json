@@ -1,6 +1,6 @@
 {
   "//": [
-    "The hook's 3.9 floor, mechanically. Run it as a SECOND pass:",
+    "The 3.9 floor, mechanically. Run it as a SECOND pass:",
     "  pyright -p pyrightconfig-hook39.json",
     "",
     "It cannot be an executionEnvironment inside pyrightconfig.json, because",
@@ -13,14 +13,25 @@
     "evaluated at runtime, or a 3.10+ stdlib call, is a hook that raises on",
     "import — and the harness reports that as nothing at all.",
     "",
-    "`include` is an explicit file list, and the rule for it is: every file",
-    "the HOOK can reach at import time, and nothing else. A module the hook",
-    "grows an import of belongs here on the same commit; a module that merely",
-    "imports the hook does not, since nothing puts it in front of the",
-    "harness's interpreter. Everything else is covered by pyrightconfig.json,",
-    "which includes src/ tests/ tools/ wholesale."
+    "`include` is an explicit file list, and the rule for it is: every file a",
+    "3.9 interpreter may EXECUTE. That is two entry points, not one. The hook",
+    "is the obvious one. The second is `memkit.cli`: the plugin's `bin/memkit`",
+    "runs the dispatcher on the same interpreter the hook wrapper resolved,",
+    "because only CHECKER-BACKED work needs 3.12 and routing the whole",
+    "dispatcher there would put diagnosis out of reach on the machine that",
+    "most needs it — a stock-python mac. So `memkit doctor` answers to this",
+    "floor as well.",
+    "",
+    "A module either entry point grows an import of belongs here on the same",
+    "commit. A module that merely imports one of them does not. Everything",
+    "else is covered by pyrightconfig.json, which includes src/ tests/ tools/",
+    "wholesale."
   ],
-  "include": ["src/memkit/memory_prompt_recall.py"],
+  "include": [
+    "src/memkit/memory_prompt_recall.py",
+    "src/memkit/cli.py",
+    "src/memkit/__init__.py"
+  ],
   "pythonVersion": "3.9",
   "typeCheckingMode": "basic",
   "reportMissingImports": "none",

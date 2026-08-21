@@ -42,6 +42,14 @@ from memkit.memory_prompt_recall import (
 # forever.
 EXIT_USAGE = 2
 EXIT_NOT_IN_BUILD = 4
+# Emitted by the plugin's `bin/memkit` wrapper and never by this module: it is
+# what a caller gets when the dispatcher could not be STARTED — no interpreter
+# resolved, or the plugin payload is incomplete. Declared here anyway, because
+# the table an agent branches on has to be complete to be usable, and a code
+# that appears only in a shell script is a code nobody can look up. Deliberately
+# not EXIT_USAGE: "you invoked this wrongly" sends a caller to retry with
+# different arguments against a machine that cannot run memkit at all.
+EXIT_NO_RUNTIME = 1
 
 # What `memkit` will route, with the one-line summary `--help` shows and the
 # thing to reach for meanwhile. Listed before they exist on purpose: the reader
@@ -118,9 +126,10 @@ def _parser() -> argparse.ArgumentParser:
         # with two names and no way forward.
         epilog="Not in this build yet:\n"
         + "\n".join(f"  {n}: {_meanwhile(m)}" for n, (_, m) in _PENDING.items())
-        + f"\n\nExit codes: 0 ok / {EXIT_USAGE} usage error or unknown "
-        f"subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but is not in "
-        "this build",
+        + f"\n\nExit codes: 0 ok / {EXIT_NO_RUNTIME} memkit could not start at "
+        f"all (stderr names what is missing) / {EXIT_USAGE} usage error or "
+        f"unknown subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but "
+        "is not in this build",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = ap.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")
