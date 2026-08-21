@@ -1795,6 +1795,103 @@ def test_contention_over_an_index_holding_nothing_still_leaves_a_record(
     assert record["files"] is None, "nothing was counted, so nothing may be claimed"
 
 
+def test_contention_on_the_retry_after_a_rebuild_outranks_the_rebuild(
+    corpus: Path, monkeypatch
+) -> None:
+    """The retry runs inside the recovery handler, so nothing it raises reaches
+    the busy branch above it — a rebuild that then met contention kept its
+    `rebuilt` record, against the documented BUSY > REBUILT precedence.
+
+    Never stale and never read as healthy, since a reader treats anything but
+    OK as not-OK. It was the wrong one of two true-ish answers, which is worth
+    fixing because the precedence is what a reader is told to rely on.
+    """
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    db = hook._fts_db(str(corpus))
+    build = Path(db.removesuffix(".db") + ".build")
+    hook._fts_dir("restic pruning", str(corpus))
+
+    # Damage the index so the run rebuilds, then make the RETRY's connect lose
+    # the lock. The first connect must succeed, or there is no rebuild to
+    # follow.
+    Path(db).write_bytes(b"this is not a database" * 100)
+    real_connect = hook._fts_connect
+    calls = {"n": 0}
+
+    def busy_on_the_retry(path):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connect(path)
+
+    monkeypatch.setattr(hook, "_fts_connect", busy_on_the_retry)
+    with pytest.raises(sqlite3.OperationalError):
+        hook._fts_dir("restic pruning", str(corpus))
+
+    assert calls["n"] > 1, "the retry never ran; the case proves nothing"
+    record = json.loads(build.read_text())
+    assert record["outcome"] == hook.BUILD_BUSY
+    assert record["files"] is None
+
+
+def test_contention_at_query_time_does_not_overwrite_a_counted_run(
+    corpus: Path, monkeypatch
+) -> None:
+    """A lock lost at QUERY time arrives after the sync has finished and
+    counted the corpus, so the run already wrote a true record.
+
+    Overwriting it with BUSY would replace `{ok, files: N}` with an outcome
+    whose own documentation says the sync never ran — false here, and it throws
+    away the only count this run established.
+    """
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    _memo(corpus, "b.md", "# b\n\nrestic snapshot forgetting")
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+
+    monkeypatch.setattr(
+        hook, "_fts_search", _raising(sqlite3.OperationalError("database is locked"))
+    )
+    with pytest.raises(sqlite3.OperationalError):
+        hook._fts_dir("restic pruning", str(corpus))
+
+    record = json.loads(build.read_text())
+    assert record["outcome"] == hook.BUILD_OK
+    assert record["files"] == 2, "the count this run established is not discarded"
+
+
+def test_an_empty_search_cli_still_means_the_default(tmp_path) -> None:
+    """Absent OR empty falls back; only a non-STRING is an error.
+
+    Rejecting `""` would be a quiet tightening on a field most configs never
+    set — an empty string is a config saying nothing about the command, which
+    has always meant "use the shipped one". A number is a config that cannot
+    mean anything at all.
+    """
+
+    def written(value) -> Path:
+        path = tmp_path / "sc.json"
+        body = {
+            "schema": hook.SCHEMA,
+            "roots": {"home": {"kind": "path", "path": str(tmp_path)}},
+            "stores": [],
+        }
+        if value is not _ABSENT:
+            body["search_cli"] = value
+        path.write_text(json.dumps(body))
+        return path
+
+    for value in (_ABSENT, ""):
+        cfg = hook.load_config(str(written(value)))
+        assert cfg is not None and cfg.search_cli == hook.DEFAULT_SEARCH_CLI, value
+
+    for value in (123, [], {"a": 1}, True):
+        with pytest.raises(hook.ConfigError, match="search_cli"):
+            hook.load_config(str(written(value)))
+
+
+_ABSENT = object()
+
+
 def test_a_file_the_backstop_could_not_reopen_is_not_counted(
     corpus: Path, monkeypatch
 ) -> None:

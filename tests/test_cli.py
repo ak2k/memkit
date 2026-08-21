@@ -169,6 +169,16 @@ def test_a_config_that_cannot_be_read_never_takes_the_refusal_down(
         '{"schema": 1, "roots": {}, "stores": [], "search_cli": 123}',
         '{"schema": 99}',
         "{ not json at all",
+        # The three below are the ones that actually exercise the fallback.
+        # Everything above is a shape `_config` already folds into None, so
+        # `_search_cli` returns the default without raising and the guard is
+        # never reached — which is how the guard came to be mutation-green
+        # while being the half that rescues `--help`. These raise straight
+        # THROUGH that swallow, because the config reader only converts
+        # ConfigError and a store that is not a mapping is an AttributeError.
+        '{"schema": 1, "roots": {}, "stores": [123]}',
+        '{"schema": 1, "roots": {}, "stores": "notalist"}',
+        '{"schema": 1, "roots": {}, "stores": [], "citations": {"roots": 5}}',
     ):
         config.write_text(raw)
         env = dict(os.environ, MEMKIT_CONFIG=str(config))

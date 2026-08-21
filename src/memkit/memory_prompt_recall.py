@@ -184,9 +184,19 @@ class Config:
         # `memkit --help` — the cheapest probe there is — with an AttributeError.
         # Absent still means the default; present and not a string is an error,
         # in the reader's own words, on the surface that reads configs.
-        self.search_cli = DEFAULT_SEARCH_CLI
-        if raw.get("search_cli") is not None:
-            self.search_cli = _require_str(raw, "search_cli", path)
+        search_cli = raw.get("search_cli")
+        if search_cli is not None and not isinstance(search_cli, str):
+            raise ConfigError(
+                f"{path}: 'search_cli' must be a string when present, not "
+                f"{type(search_cli).__name__}"
+            )
+        # Absent OR empty falls back to the default, which is the behaviour
+        # every earlier build had. Only the TYPE is tightened: an empty string
+        # is a config saying nothing about the command and has always meant
+        # "use the shipped one", while a number is a config that cannot mean
+        # anything at all. Rejecting "" as well would be a quiet tightening
+        # nobody asked for, on a field most configs never set.
+        self.search_cli = search_cli or DEFAULT_SEARCH_CLI
         ev = raw.get("eval") or {}
         self.eval_root = ev.get("root")
         self.eval_snapshot = ev.get("snapshot")
@@ -279,9 +289,16 @@ class Config:
 
 
 def _require_str(raw: dict, key: str, where: str) -> str:
+    """A required, non-empty string field, or ConfigError naming it.
+
+    The message says what the field NEEDS rather than that it is missing:
+    absent, present-but-wrong-type and present-but-empty all arrive here, and
+    "is missing a 'dir' string" is untrue of the last two — which are the ones
+    a person is most likely to have just typed.
+    """
     value = raw.get(key)
     if not isinstance(value, str) or not value:
-        raise ConfigError(f"{where} is missing a {key!r} string")
+        raise ConfigError(f"{where} needs a non-empty {key!r} string")
     return value
 
 
@@ -889,8 +906,11 @@ def _fts_note_root(db: str, root: str) -> str:
 # are — the reader is doctor, in another module and eventually another repo,
 # and a bare literal in two places is a vocabulary that drifts.
 #
-# BUSY   the sync never ran (another session held the write lock), so `files`
-#        is unknown and the query answered from the index as it stood.
+# BUSY   the sync did not complete (another session held the write lock), so
+#        this run established no count and `files` is null. Never written over
+#        a record this run already wrote: contention arriving after a finished
+#        sync leaves the true `{ok, files: N}` alone, because by then the count
+#        exists and BUSY would be discarding it.
 # UNREADABLE the sync raised: the corpus could not be read at all, or could be
 #        read only in part while the index held nothing. Distinct from PARTIAL
 #        because nothing was established — PARTIAL still indexed what it saw.
@@ -1439,12 +1459,21 @@ def _fts_dir(query: str, d: str) -> list[str]:
     db = _fts_db(d)
     _fts_note_root(db, d)
 
+    # Whether THIS attempt has already written a record. The outer handlers
+    # defer to it: a run that reached the end of its sync knows what happened
+    # and has said so, and contention arriving afterwards — at the query —
+    # must not overwrite `{ok, files: N}` with a record whose own vocabulary
+    # says the sync never ran. Reset per attempt, because the retry after a
+    # rebuild is a fresh run whose outcome the first attempt cannot speak for.
+    noted = False
+
     def attempt(base: str) -> list[str]:
+        nonlocal noted
+        noted = False
         # Connecting can itself lose the write-lock race. That needs no handler
-        # here: the exception is a sqlite3.Error, so it lands in the outer busy
-        # branch, which notes it. A second note here would be a branch no test
-        # can distinguish from its absence — which is how a guard becomes
-        # decorative.
+        # here: the exception is a sqlite3.Error, so it lands in a busy branch
+        # below, which notes it — and reaching that branch with `noted` still
+        # False is exactly what tells it to.
         con = _fts_connect(db)
         try:
             outcome, files = base, None
@@ -1474,24 +1503,36 @@ def _fts_dir(query: str, d: str) -> list[str]:
             # still leaves the record of how the index it was about to read
             # got there.
             _fts_note_build(db, outcome, files)
+            noted = True
             return _fts_search(con, query)
         finally:
             con.close()
+
+    def note_if_busy(exc: BaseException) -> None:
+        """Record contention that ended an attempt before it could speak.
+
+        Contention reaching a handler means either the connect lost the lock,
+        or the sync lost it over an index holding nothing — `attempt` re-raises
+        rather than answering from an empty index, and the recovery branch
+        declines to treat contention as damage. Both are right, and between
+        them the exit used to write no record at all: the last successful run's
+        stood, `ok` with a file count, over an index that can answer nothing. A
+        janitor that collects the `.db` and leaves the `.build` makes that
+        record outlive its index indefinitely.
+
+        `noted` is what keeps this from lying in the other direction. A query
+        that loses a lock AFTER a completed sync has a true record already
+        written, and overwriting it with BUSY would replace a counted corpus
+        with an outcome documented as "the sync never ran".
+        """
+        if _fts_busy(exc) and not noted:
+            _fts_note_build(db, BUILD_BUSY, None)
 
     try:
         return attempt(BUILD_OK)
     except sqlite3.Error as exc:
         if _fts_busy(exc):
-            # Contention that reached out here means the sync lost the write
-            # lock over an index holding nothing — `attempt` re-raises rather
-            # than answering from an empty index, and this branch declines to
-            # treat contention as damage. Both are right, and between them the
-            # exit wrote no record at all: the last successful run's stands,
-            # `ok` with a file count, over an index that can answer nothing.
-            # A janitor that collects the `.db` and leaves the `.build` makes
-            # that record outlive its index indefinitely. One note here covers
-            # both routes into this branch, since neither notes on its own.
-            _fts_note_build(db, BUILD_BUSY, None)
+            note_if_busy(exc)
             raise
         # Concurrent recoveries are deliberately not serialized. Two processes
         # can interleave here badly enough that one deletes the -wal of a
@@ -1511,7 +1552,17 @@ def _fts_dir(query: str, d: str) -> list[str]:
         # outlives every row it was describing. A reader arriving then is told
         # the corpus is indexed and healthy when there is no index at all.
         _fts_note_build(db, BUILD_REBUILT, None)
-        return attempt(BUILD_REBUILT)
+        # The retry runs INSIDE this handler, so nothing it raises reaches the
+        # branch above — a rebuild that then met contention kept the `rebuilt`
+        # record and violated the documented BUSY > REBUILT precedence. Its
+        # record was never stale and never read as healthy, since a reader
+        # treats anything but OK as not-OK; it was simply the wrong one of two
+        # true-ish answers.
+        try:
+            return attempt(BUILD_REBUILT)
+        except sqlite3.Error as retry_exc:
+            note_if_busy(retry_exc)
+            raise
 
 
 def _interleave(ranked_lists: list[list[str]]) -> list[str]:
