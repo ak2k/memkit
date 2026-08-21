@@ -152,6 +152,38 @@ def test_the_refusal_names_the_search_binary_this_install_actually_has(
     assert "memory-recall --search" in _run("doctor", env=bare).stderr
 
 
+def test_a_config_that_cannot_be_read_never_takes_the_refusal_down(
+    tmp_path,
+) -> None:
+    """A refusal is what a caller reaches when something is already wrong, so
+    it is the last surface that may fail — and `--help` reaches it too, which
+    this file's own comment calls the cheapest probe there is.
+
+    Reading the config to improve a message is worth doing; it is not worth an
+    exit code that says the tool is broken. A `search_cli` of the wrong TYPE
+    is the shape that found this: harmless while the only consumer f-stringed
+    it, an AttributeError out of `memkit --help` the moment something split it.
+    """
+    config = tmp_path / "hostile.json"
+    for raw in (
+        '{"schema": 1, "roots": {}, "stores": [], "search_cli": 123}',
+        '{"schema": 99}',
+        "{ not json at all",
+    ):
+        config.write_text(raw)
+        env = dict(os.environ, MEMKIT_CONFIG=str(config))
+
+        top = _run("--help", env=env)
+        assert top.returncode == 0, (raw, top.stderr)
+        # The shipped default, since nothing better could be resolved — and a
+        # command that exists either way.
+        assert "memory-recall --search" in top.stdout, raw
+
+        refusal = _run("doctor", env=env)
+        assert refusal.returncode == cli.EXIT_NOT_IN_BUILD, (raw, refusal.stderr)
+        assert "memory-recall --search" in refusal.stderr, raw
+
+
 def test_the_refusal_quotes_the_exit_codes_from_their_source() -> None:
     """The prose named 3 and 1 as literals while importing the constants that
     define them, so a renumbering would have left the advice confidently

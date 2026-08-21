@@ -91,6 +91,14 @@ deliberate default, not an oversight — there is no ambient search path to gues
 at. The *hook* stays silent and exits 0 whatever happens, because a hook that
 fails any other way blocks a prompt; the CLIs say which state they are in.
 
+`memory-recall --search "<terms>" --dir <a directory of your own notes>` works
+with no config at all — the caller named the corpus, so nothing has to be
+configured for it to answer. One caveat worth knowing before you reach for it
+as a smoke test: a `$MEMKIT_CONFIG` that is *set and broken* is refused even
+here, because a config that cannot be parsed is somebody's mistake on any
+branch and silently ignoring it is how a typo survives. Unset the variable or
+fix the file first; an unset one is not an error.
+
 `memory-recall` exit codes — grep's three, plus one:
 
 | code | means | for the caller |

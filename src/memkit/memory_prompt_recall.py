@@ -176,7 +176,17 @@ class Config:
         self.cited_roots = tuple(citations.get("roots") or ())
         self.extra_suffixes = tuple(citations.get("extra_suffixes") or ())
         self.blame_base = citations.get("blame_base") or "origin/main"
-        self.search_cli = raw.get("search_cli") or DEFAULT_SEARCH_CLI
+        # Type-checked like the store fields, not merely defaulted. This value
+        # is a COMMAND: it is rendered into the truncation notice an agent is
+        # told to run, and the dispatcher splits it to name a binary. A number
+        # here used to be harmless because the only consumer f-stringed it;
+        # once something parsed it, a config nobody would call broken took out
+        # `memkit --help` — the cheapest probe there is — with an AttributeError.
+        # Absent still means the default; present and not a string is an error,
+        # in the reader's own words, on the surface that reads configs.
+        self.search_cli = DEFAULT_SEARCH_CLI
+        if raw.get("search_cli") is not None:
+            self.search_cli = _require_str(raw, "search_cli", path)
         ev = raw.get("eval") or {}
         self.eval_root = ev.get("root")
         self.eval_snapshot = ev.get("snapshot")
@@ -1430,16 +1440,12 @@ def _fts_dir(query: str, d: str) -> list[str]:
     _fts_note_root(db, d)
 
     def attempt(base: str) -> list[str]:
-        # Connecting can itself lose the write-lock race, and that exit left
-        # the previous record standing — a plausible `ok` describing a run that
-        # happened at some earlier `ts`, which is the one staleness a reader
-        # cannot detect from the file's own contents.
-        try:
-            con = _fts_connect(db)
-        except sqlite3.OperationalError as exc:
-            if _fts_busy(exc):
-                _fts_note_build(db, BUILD_BUSY, None)
-            raise
+        # Connecting can itself lose the write-lock race. That needs no handler
+        # here: the exception is a sqlite3.Error, so it lands in the outer busy
+        # branch, which notes it. A second note here would be a branch no test
+        # can distinguish from its absence — which is how a guard becomes
+        # decorative.
+        con = _fts_connect(db)
         try:
             outcome, files = base, None
             try:
@@ -1476,6 +1482,16 @@ def _fts_dir(query: str, d: str) -> list[str]:
         return attempt(BUILD_OK)
     except sqlite3.Error as exc:
         if _fts_busy(exc):
+            # Contention that reached out here means the sync lost the write
+            # lock over an index holding nothing — `attempt` re-raises rather
+            # than answering from an empty index, and this branch declines to
+            # treat contention as damage. Both are right, and between them the
+            # exit wrote no record at all: the last successful run's stands,
+            # `ok` with a file count, over an index that can answer nothing.
+            # A janitor that collects the `.db` and leaves the `.build` makes
+            # that record outlive its index indefinitely. One note here covers
+            # both routes into this branch, since neither notes on its own.
+            _fts_note_build(db, BUILD_BUSY, None)
             raise
         # Concurrent recoveries are deliberately not serialized. Two processes
         # can interleave here badly enough that one deletes the -wal of a
@@ -2565,7 +2581,9 @@ def search_cli(argv: list[str]) -> int:
         "--dir",
         action="append",
         metavar="PATH",
-        help="corpus to search instead of the memory stores (repeatable)",
+        help="corpus to search instead of the memory stores (repeatable). "
+        "Needs no config — but a config that is present and unparseable is "
+        f"still refused, so unset ${CONFIG_ENV} or fix it first",
     )
     ap.add_argument(
         "--config",
@@ -2593,11 +2611,18 @@ def search_cli(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     _use_config(args.config)
 
-    # ONE derivation per invocation, taken here and passed down. The same
-    # question was being asked of the same file up to three times — three
-    # parses and up to three `git rev-parse` forks for one answer — and each
-    # extra derivation was also a window in which a config edited mid-run could
-    # make this command contradict itself.
+    # One derivation of the config STATE per invocation, taken here and passed
+    # down. It was being derived up to three times — each one a parse, and a
+    # `git rev-parse` fork for any git_toplevel root — for a single answer, and
+    # each extra derivation was also a window in which a config edited mid-run
+    # could make this command contradict itself.
+    #
+    # Retrieval's own parse is NOT collapsed into this and is not meant to be:
+    # `recall` reaches the config through the cached, fail-open `_config`,
+    # which is the hook's path and must stay reachable without a CLI having run
+    # first. So a `--search` over the stores parses twice, deliberately, and
+    # the TOCTOU window between the two is closed by consulting _CONFIG_ERROR
+    # rather than by sharing an object.
     state = _config_state()
     _, config_error, _ = state
 

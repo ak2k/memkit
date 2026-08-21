@@ -22,6 +22,7 @@ import sys
 from collections.abc import Callable
 
 from memkit.memory_prompt_recall import (
+    DEFAULT_SEARCH_CLI,
     EXIT_INERT,
     EXIT_NO_MATCH,
     _search_cli,
@@ -83,11 +84,22 @@ def _meanwhile(template: str) -> str:
     refusal and the pointer block name the same binary by construction. It
     falls back to the shipped default when no config resolves, which is the
     only case where there is nothing better to say.
+
+    Nothing about the config may take this down. A refusal is what a caller
+    reaches when something is already wrong, so it is the last surface that
+    should be able to fail — and it is reached from `--help`, the cheapest
+    probe there is. Reading the config to improve a message is worth doing;
+    it is not worth an exit code that says the tool is broken, so any failure
+    resolving it falls back to the shipped default rather than propagating.
     """
-    search = _search_cli()
-    # The debug form is the search command with its mode flag swapped, since
-    # `search_cli` is spelled `<binary> --search`.
-    binary = search.split()[0] if search.split() else search
+    try:
+        search = _search_cli()
+        # The debug form is the search command with its mode flag swapped,
+        # since `search_cli` is spelled `<binary> --search`.
+        binary = search.split()[0]
+    except Exception:
+        search = DEFAULT_SEARCH_CLI
+        binary = search.split()[0]
     return template.format(search=search, search_config=f"{binary} --debug-config")
 
 # Subcommand -> the function that runs it, given the arguments this parser did
