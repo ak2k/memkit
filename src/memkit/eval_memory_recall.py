@@ -71,8 +71,12 @@ the second, and it is what makes a red here mean one thing:
       TOOL moved. It gates.
   fingerprint DIFFERS — a memory was written, edited, retired or retiered
       since the baseline, so nothing measured here is attributable to the
-      tool. EVERY mismatch reports as DRIFT, the run exits 0, and it points
-      at --update-snapshot for a human who has looked at what moved.
+      tool. EVERY mismatch reports as DRIFT and nothing gates — and the run
+      REFUSES, non-zero, pointing at --update-snapshot for a human who has
+      looked at what moved. It exited 0 until 2026-08-21, which made "this
+      run gated nothing" and "this run gated everything and found nothing
+      wrong" the same answer to CI; on the consumer being measured then, the
+      first was the commoner state by an order of magnitude.
 
 So a red on a bump PR (corpus untouched) is always the tool, and a memory
 edit is never falsely red. Position — the tier a target sits in today — is
@@ -88,9 +92,11 @@ Usage:
   memory-eval --all-stores         # every store whatever the cwd
   memory-eval --snapshot F         # gate against F, not the configured one
   memory-eval --update-snapshot    # re-baseline, deliberately
-Exit code = failures in the gating slices, or a refusal (a gating slice that
-compared nothing, an unreadable snapshot); 0 = gated and clean, so it can
-gate CI.
+Exit code = failures in the gating slices, or a refusal (a corpus that moved
+under the snapshot, a gating slice that compared nothing, an unreadable or
+absent snapshot); 0 = gated and clean, so it can gate CI. Every way of NOT
+gating is non-zero, which is the property that makes a green here mean
+something.
 """
 
 from __future__ import annotations
@@ -764,6 +770,31 @@ def main() -> None:
         print(
             "             these stores are not the ones baselined, so every "
             "line above is drift and nothing was gated"
+        )
+        # And that is a REFUSAL, not a pass. Everything above is right — under
+        # a moved corpus nothing measured here is attributable to the tool, so
+        # nothing may gate — but exiting 0 on it made "this run gated nothing"
+        # and "this run gated everything and found nothing wrong" the same
+        # answer to CI, and the first one is by far the commoner. Measured on
+        # the consumer at the time this changed: 88 memory-touching commits in
+        # 30 days against 3 re-baselines ever, so the check spent most of its
+        # life inert while reporting green.
+        #
+        # Consumer impact, deliberately: nix-config's `memory-eval` check and
+        # `check-all` will now fail on any memory edit that does not re-baseline
+        # in the same change. That is the contract its own MEMORY.md already
+        # states ("re-baseline with --update-snapshot and commit the snapshot in
+        # the same change") being enforced rather than waived, and the remedy is
+        # one command that historically moves only the fingerprint line.
+        #
+        # A consumer BUMPING to this build should carry a fresh
+        # --update-snapshot in the same change as the bump. Whatever drift
+        # accumulated while this exited 0 is standing and invisible, and the
+        # first run on the new build surfaces all of it at once — on whichever
+        # PR happens to move the input, which is rarely the one expecting it.
+        sys.exit(
+            "corpus moved — re-baseline with `--update-snapshot` and commit "
+            "the snapshot in the same change"
         )
     # The pointer fires on ANY unclean run, regressions included: a regression
     # is sometimes the outcome you meant (a floor deliberately loosened), and
