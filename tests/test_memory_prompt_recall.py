@@ -4009,9 +4009,17 @@ def _config_blob(tmp_path: Path, **override) -> dict:
 
 
 def _load(tmp_path: Path, blob: dict):
+    """Parse a config written from `blob`, which must be one that parses.
+
+    The assert is not decoration: `load_config` returns None for "there is no
+    config", and every case here writes one — a None reaching an assertion
+    about `stores` would fail on the attribute rather than on the claim.
+    """
     path = tmp_path / f"cfg-{abs(hash(json.dumps(blob, sort_keys=True)))}.json"
     path.write_text(json.dumps(blob))
-    return hook.load_config(str(path))
+    config = hook.load_config(str(path))
+    assert config is not None, path
+    return config
 
 
 def _store_with(tmp_path: Path, **fields) -> dict:

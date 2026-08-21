@@ -43,7 +43,9 @@ def main() -> int:
     child = pexpect.spawn(
         "claude",
         cwd=project,
-        env=dict(os.environ),
+        # No `env=`: the child inherits this process's environment, which is
+        # the profile's — `Profile.env()` is what spawned this script. Passing
+        # a copy would be the same environment with an extra step.
         encoding="utf-8",
         timeout=seconds,
         dimensions=(40, 120),
