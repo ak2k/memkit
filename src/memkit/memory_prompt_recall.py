@@ -2329,11 +2329,21 @@ def _print_config() -> int:
     for the first time.
 
     The invariant: for the same argv and environment, this exit code and
-    `--search`'s are equal. The display may know more than the verdict; it may
-    never overrule it. Where the two resolutions land in different places the
-    divergence is printed per store rather than silently reconciled — an
-    override that redirects retrieval away from the configured tree is the
-    kind of thing a person sets once and then debugs for an hour.
+    `--search`'s are equal — except where resolving a store `--search` would
+    never open surfaces a config error, and this command fails loud instead.
+    `--search` resolves only the stores it is about to search, so a gated-out
+    store whose `live_root` names a root the config never defines costs it
+    nothing, while the display loop resolves every store and meets the
+    ConfigError. That asymmetry is kept rather than papered over: diagnosing
+    configs is this command's whole job, and the direction it errs in is a
+    false RED about a config that really is malformed. A false green is the
+    only failure this surface must not have.
+
+    The display may know more than the verdict; it may never overrule it.
+    Where the two resolutions land in different places the divergence is
+    printed per store rather than silently reconciled — an override that
+    redirects retrieval away from the configured tree is the kind of thing a
+    person sets once and then debugs for an hour.
     """
     # The verdict first, and from the un-overridden resolution.
     served, error, inert = _config_state()

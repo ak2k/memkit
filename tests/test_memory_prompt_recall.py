@@ -3229,6 +3229,73 @@ def test_the_config_flag_reaches_the_stores_the_variable_does(tmp_path) -> None:
     assert env[hook.CONFIG_ENV] in dbg.stdout
 
 
+def test_the_one_shape_where_the_surfaces_part_company_fails_red(tmp_path) -> None:
+    """The parity invariant has exactly one exception, and it errs safely.
+
+    `--search` resolves only the stores it is about to open, so a store this
+    session is gated out of costs it nothing — even when that store's
+    `live_root` names a root the config never defines. `--debug-config`
+    resolves every store, because listing them is its job, so it meets the
+    ConfigError and exits 2 where `--search` exits 0.
+
+    Kept rather than reconciled: the direction it errs in is a false RED about
+    a config that really is malformed, and a false green is the only failure
+    this surface must not have. Pinned because the docstring now claims the
+    exception — a later change making this command lenient here would leave
+    that claim stale, and one making it green would make it wrong.
+    """
+    (tmp_path / "good" / "store" / "search").mkdir(parents=True)
+    (tmp_path / "good" / "store" / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    (tmp_path / "gate").mkdir()
+    cfg = tmp_path / "gated.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {
+                    "good": {"kind": "path", "path": str(tmp_path / "good")},
+                    "gate": {"kind": "path", "path": str(tmp_path / "gate")},
+                },
+                "stores": [
+                    {
+                        "id": "healthy",
+                        "role": "personal",
+                        "dir": "store",
+                        "live_root": "good",
+                    },
+                    {
+                        "id": "unreachable",
+                        "role": "project",
+                        "dir": "store",
+                        "live_root": "no_such_root",
+                        "cwd_gate": {"root": "gate"},
+                    },
+                ],
+            }
+        )
+    )
+    env = _unconfigured(tmp_path)
+    search = _cli(
+        tmp_path,
+        "--config",
+        str(cfg),
+        "--search",
+        "sprocket backlash gearbox rebuild",
+        env=env,
+    )
+    debug = _cli(tmp_path, "--config", str(cfg), "--debug-config", env=env)
+
+    assert search.returncode == hook.EXIT_OK, search.stderr
+    assert "gearbox.md" in search.stdout
+    assert debug.returncode == hook.EXIT_ERROR, debug.stdout
+    assert "no_such_root" in debug.stderr
+    # The direction is the whole point: never the green one.
+    assert debug.returncode != hook.EXIT_OK
+
+
 def _single_store_config(home: Path, name: str) -> str:
     """A config whose one store is `~/<name>`, written to `~/<name>.json`."""
     path = home / f"{name}.json"
