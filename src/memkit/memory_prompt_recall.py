@@ -371,14 +371,24 @@ def _use_config(path: str | None) -> None:
     Setting it is what makes `--config` an alternative to exporting
     MEMKIT_CONFIG rather than a second way to spell it: the highest-traffic
     verification path stops having to mutate the environment of whatever ran
-    it. Both caches are cleared because a second call in one process — the
-    suite, and a doctor checking two configs in a row — must not answer from
-    the first one's parse.
+    it.
+
+    Every cache this decision reaches is cleared, because a second call in one
+    process — the suite, and a doctor checking two configs in a row — must not
+    answer from the first one's parse. That is both of them: the parsed config,
+    and `_cwd_in_root`, which memoizes a `git rev-parse` per gate root and so
+    keeps answering for whatever directory the process was standing in the
+    first time a gated store was resolved. An in-process caller that chdirs
+    between configs otherwise gets a gated store served from outside its own
+    root. The re-forked `git rev-parse` costs the hook nothing — the hook never
+    calls this — and a caller re-pointing its config is exactly the one that
+    wants a fresh gate answer.
     """
     global _CONFIG_PATH, _CONFIG_ERROR
     _CONFIG_PATH = path
     _CONFIG_ERROR = None
     _config.cache_clear()
+    _cwd_in_root.cache_clear()
 
 
 # Low: just a typo/accident guard. The REAL junk gate is the stopword
@@ -651,23 +661,65 @@ def _search_root(store: str) -> str:
     return tiered if os.path.isdir(tiered) else store
 
 
+def _store_live_dir(cfg, store, searched: list) -> str | None:
+    """The directory this store offers this session, or None when it offers
+    none — the ONE predicate for "is this store searchable".
+
+    Every caller that needs to know either which dirs to search or what to say
+    about a store asks this. They used to ask separately, in the same order
+    with the same two tests, which is a second copy of a rule the surfaces had
+    already been caught disagreeing about: `_store_state` re-derived `isdir`
+    over `store_dir` while `_live_dirs` did its own, and nothing made them move
+    together.
+
+    Two reasons a store offers nothing, and they stay distinguishable in the
+    caller because they need different remedies: gated out (this session is
+    standing outside the store's root) versus not on disk (nobody created it
+    here). None collapses them; `searched` is what tells them apart.
+    """
+    if store not in searched:
+        return None
+    live = cfg.store_dir(store, "live")
+    return _search_root(live) if os.path.isdir(live) else None
+
+
+def _store_state(cfg, store, searched: list) -> str:
+    """How one store stands for one resolution: the bracket `--debug-config`
+    prints, and the reason `_config_state` gives for an inert install.
+
+    Three states, not two. A store this session is allowed to read and whose
+    directory does not exist was reported as `searched`, which is the single
+    most misleading line this command can print: it names the path AND asserts
+    the path is being read.
+
+    Decided by `_store_live_dir` rather than by repeating its two tests — this
+    function used to run its own `isdir`, which is a second copy of a rule
+    these surfaces have already been caught disagreeing about.
+    """
+    if store not in searched:
+        return "NOT searched here"
+    return "searched" if _store_live_dir(cfg, store, searched) else "NOT on disk"
+
+
 def _live_dirs(cfg) -> list[str]:
     """The store directories `cfg` offers this session, in config order.
 
     Split out from _search_dirs so that a caller holding a config parsed under
-    different rules — `--debug-config` honours per-root env overrides, the
-    search path does not — asks the same question of it. The two surfaces
-    disagreeing about which stores exist is exactly the defect _config_state
-    exists to prevent, and they can only agree if the predicate is one
-    function.
+    different rules — `--debug-config` resolves per-root env overrides for its
+    DISPLAY, the verdict never does — asks the same question of it. The two
+    surfaces disagreeing about which stores exist is exactly the defect
+    _config_state exists to prevent, and they can only agree if the predicate
+    is one function.
 
     Order feeds _interleave's tie-breaking, so the config's list order is what
     decides which store wins a tie — most-specific-first is the intended
     shape. Each store resolves through its LIVE root, so a session standing in
     a worktree still reads the copy that is actually live.
     """
-    dirs = [cfg.store_dir(s, "live") for s in cfg.searched_stores()]
-    return [_search_root(d) for d in dirs if os.path.isdir(d)]
+    searched = cfg.searched_stores()
+    return [
+        d for s in searched if (d := _store_live_dir(cfg, s, searched)) is not None
+    ]
 
 
 def _search_dirs() -> list[str]:
@@ -680,7 +732,7 @@ def _search_dirs() -> list[str]:
     return _live_dirs(cfg) if cfg is not None else []
 
 
-def _config_state(honor_env_overrides: bool = False) -> tuple:
+def _config_state() -> tuple:
     """Whether this installation has anything to search — decided once.
 
     Returns `(config, error, inert)`, where at most one of the last two is
@@ -693,34 +745,44 @@ def _config_state(honor_env_overrides: bool = False) -> tuple:
     `--debug-config` printed `searched` beside every store and exited 0 — and
     `--debug-config` is where the dispatcher's own refusal message sends an
     agent first, so the surface that says "this machine is fine" was the one
-    reached by anybody following the instructions. The predicate is the
-    same one _search_dirs uses (`searched_stores` then `isdir`), so a store
-    this returns as searchable is a store retrieval will actually open.
+    reached by anybody following the instructions.
 
-    `honor_env_overrides` is a parameter rather than a constant because it is
-    the one thing the two surfaces legitimately differ on: `--debug-config`
-    honours the per-root overrides so a developer can point a session at a
-    fixture tree, and the every-prompt path never may. Reading the state
-    through one function does not mean reading it through one config.
+    Always resolved WITHOUT the per-root env overrides. This is the verdict,
+    and the verdict is a claim about the tree the hook will serve; the hook
+    cannot see an override, so neither may this. `--debug-config` parses a
+    second, override-honouring copy for its DISPLAY alone and reconciles the
+    two itself — that is the whole of the split, and it lives there rather than
+    here because only that one surface has a display.
+
+    The inert reason names every store and what is wrong with each. A single
+    disjunction ("missing on disk, or gated to another tree") gave byte-
+    identical stderr to two states whose remedies share nothing: one wants a
+    directory created, the other wants the caller to cd somewhere else.
 
     load_config directly rather than through _config(): this is the CLI's
     question, and _config folds the error into None and parks it in a global
     so the fail-open hook can degrade quietly. Out here the error is half the
-    answer.
+    answer. Root resolution is inside the same `try` because it is lazy — a
+    store naming a root the config never defines raises only when something
+    asks for it, and letting that escape skipped the soak record and left the
+    exit code to a blanket handler two frames up.
     """
     try:
-        cfg = load_config(_CONFIG_PATH, honor_env_overrides=honor_env_overrides)
+        cfg = load_config(_CONFIG_PATH)
+        if cfg is None:
+            return None, None, (
+                f"no config (no --config, ${CONFIG_ENV} unset), so no stores to search"
+            )
+        if not _live_dirs(cfg):
+            searched = cfg.searched_stores()
+            detail = "; ".join(
+                f"{s.id}: {_store_state(cfg, s, searched)}" for s in cfg.stores
+            )
+            return cfg, None, (
+                f"{cfg.path} configures no store this session can search ({detail})"
+            )
     except ConfigError as exc:
         return None, str(exc), None
-    if cfg is None:
-        return None, None, (
-            f"no config (no --config, ${CONFIG_ENV} unset), so no stores to search"
-        )
-    if not _live_dirs(cfg):
-        return cfg, None, (
-            f"{cfg.path} configures no store this session can search "
-            "(missing on disk, or gated to another tree)"
-        )
     return cfg, None, None
 
 
@@ -812,13 +874,16 @@ def _fts_note_root(db: str, root: str) -> str:
 
 
 # What a `.build` record's `outcome` may say, and the order they outrank each
-# other in when a run is more than one of them: BUSY beats REBUILT beats
-# PARTIAL beats OK. Named for the same reason the EXIT_* codes are — the reader
-# is doctor, in another module and eventually another repo, and a bare literal
-# in two places is a vocabulary that drifts.
+# other in when a run is more than one of them: BUSY beats UNREADABLE beats
+# REBUILT beats PARTIAL beats OK. Named for the same reason the EXIT_* codes
+# are — the reader is doctor, in another module and eventually another repo,
+# and a bare literal in two places is a vocabulary that drifts.
 #
 # BUSY   the sync never ran (another session held the write lock), so `files`
 #        is unknown and the query answered from the index as it stood.
+# UNREADABLE the sync raised: the corpus could not be read at all, or could be
+#        read only in part while the index held nothing. Distinct from PARTIAL
+#        because nothing was established — PARTIAL still indexed what it saw.
 # REBUILT the index was damaged, unlinked and built from the corpus again. Run
 #        after run, this is the self-healing loop that otherwise reads exactly
 #        like a healthy cache. Because it outranks PARTIAL, a rebuild whose
@@ -828,12 +893,23 @@ def _fts_note_root(db: str, root: str) -> str:
 # PARTIAL the walk could not read part of the corpus, so `files` undercounts
 #        and a low number is not evidence the corpus is small.
 # OK     a complete sync over a fully readable corpus.
+#
+# THE READER'S RULE, and it is a contract rather than advice: an outcome this
+# reader does not recognise must be treated as NOT-OK, and `files` must not be
+# read as a census under it. Only OK licenses reading `files` as the size of
+# the corpus. That rule is what lets this vocabulary grow — UNREADABLE was
+# added after the first four shipped — without every older reader silently
+# mistaking a new failure state for a healthy one. `BUILD_SCHEMA` is bumped
+# only when the record's SHAPE changes, never for a new outcome, precisely so
+# that a reader is never tempted to gate on the version instead of the rule.
 BUILD_OK = "ok"
 BUILD_BUSY = "busy"
+BUILD_UNREADABLE = "unreadable"
 BUILD_REBUILT = "rebuilt"
 BUILD_PARTIAL = "partial"
-# Bumped when the record's shape changes. Nothing reads these yet, which is
-# precisely when a version key is free to add and impossible to retrofit.
+# Bumped when the record's SHAPE changes — a key added, removed or retyped.
+# Nothing reads these yet, which is precisely when a version key is free to add
+# and impossible to retrofit.
 BUILD_SCHEMA = 1
 
 
@@ -879,6 +955,12 @@ def _fts_note_build(db: str, outcome: str, files: int | None) -> str:
             )
         os.replace(tmp, sidecar)
     except OSError:
+        # A suppressed write leaves the PREVIOUS record standing, which is the
+        # one failure mode this file cannot describe from inside itself: the
+        # reader sees a well-formed record and no reason to doubt its `ts`.
+        # Counting it puts the fact somewhere a reader can reach, since
+        # _LEX_COUNTS is folded into the soak record by recall().
+        _LEX_COUNTS["lex_note_unwritten"] += 1
         with contextlib.suppress(OSError):
             os.unlink(tmp)
     return sidecar
@@ -955,6 +1037,12 @@ _LEX_COUNTS: dict[str, int] = {
     "lex_unwalked": 0,
     "lex_busy_skip": 0,
     "lex_rebuilds": 0,
+    # A `.build` sidecar this run meant to write and could not. The write is
+    # best-effort by design, but a suppressed one leaves the PREVIOUS record
+    # standing — well-formed, plausible, and describing an earlier run — which
+    # is the one staleness a reader of that file cannot detect from its
+    # contents.
+    "lex_note_unwritten": 0,
 }
 
 # Where each hit came from INSIDE its file: path -> the heading of the
@@ -1342,7 +1430,16 @@ def _fts_dir(query: str, d: str) -> list[str]:
     _fts_note_root(db, d)
 
     def attempt(base: str) -> list[str]:
-        con = _fts_connect(db)
+        # Connecting can itself lose the write-lock race, and that exit left
+        # the previous record standing — a plausible `ok` describing a run that
+        # happened at some earlier `ts`, which is the one staleness a reader
+        # cannot detect from the file's own contents.
+        try:
+            con = _fts_connect(db)
+        except sqlite3.OperationalError as exc:
+            if _fts_busy(exc):
+                _fts_note_build(db, BUILD_BUSY, None)
+            raise
         try:
             outcome, files = base, None
             try:
@@ -1359,6 +1456,14 @@ def _fts_dir(query: str, d: str) -> list[str]:
                     raise
                 _LEX_COUNTS["lex_busy_skip"] += 1
                 outcome = BUILD_BUSY
+            except OSError:
+                # The sync established that the corpus could not be read at
+                # all. Every exit from here has to leave a record or the last
+                # successful run's stands: the reader is told the corpus is
+                # indexed and healthy at a `ts` that has nothing to do with
+                # what it would find now.
+                _fts_note_build(db, BUILD_UNREADABLE, None)
+                raise
             # Noted between the sync and the query, so a search that raises
             # still leaves the record of how the index it was about to read
             # got there.
@@ -2288,28 +2393,21 @@ EXIT_ERROR = 2
 EXIT_INERT = 3
 
 
-def _store_state(store, live: str, searched: list) -> str:
-    """How one store stands for one resolution: the bracket `--debug-config`
-    prints, and the same predicate `_live_dirs` decides searchability with.
-
-    Three states, not two. A store this session is allowed to read and whose
-    directory does not exist was reported as `searched`, which is the single
-    most misleading line this command can print: it names the path AND asserts
-    the path is being read.
-    """
-    if store not in searched:
-        return "NOT searched here"
-    return "searched" if os.path.isdir(live) else "NOT on disk"
-
-
-def _print_config() -> int:
+def _print_config(state: tuple) -> int:
     """`--debug-config`: what this installation resolved, and from where.
+
+    Takes the verdict its caller already derived rather than deriving its own:
+    one invocation asked the same question of the same file up to three times,
+    which is three parses and up to three `git rev-parse` forks for one answer,
+    and it also opened a window where the two derivations could disagree about
+    a config edited between them.
 
     The operator-facing answer to "why did the hook say nothing" — which is
     otherwise indistinguishable from a corpus with nothing to say, because the
-    hook is fail-open by construction. Honours the per-root environment
-    overrides the hook path refuses, so a developer can point a session at a
-    fixture tree without the every-prompt path ever growing that ability.
+    hook is fail-open by construction. Resolves the per-root environment
+    overrides the hook path refuses, for its display, so a developer can point
+    a session at a fixture tree without the every-prompt path ever growing that
+    ability.
 
     An inert installation exits EXIT_INERT, not 0. Printing "inert" and exiting
     successfully asks the reader to parse prose to learn that nothing is wired
@@ -2320,24 +2418,31 @@ def _print_config() -> int:
     TWO resolutions of one config, and the split is the whole of this
     function's contract. The DISPLAY honours the per-root env overrides,
     because pointing a session at a fixture tree and seeing where it landed is
-    what the flag is for. The VERDICT — the exit code — is taken WITHOUT them,
-    because the exit code is a claim about the tree the hook will serve, and
-    the hook never honours an override. Sharing a predicate was not enough to
-    make the two surfaces agree: one derivation over two configs still let a
-    root with a live `env` override print `searched` and exit 0 for an
-    installation `--search` called inert, and made the reverse case disagree
-    for the first time.
+    what the flag is for. The VERDICT — the exit code, handed in as `state` —
+    is taken WITHOUT them, because the exit code is a claim about the tree the
+    hook will serve, and the hook never honours an override. Sharing a
+    predicate was not enough to make the two surfaces agree: one derivation
+    over two configs still let a root with a live `env` override print
+    `searched` and exit 0 for an installation `--search` called inert, and made
+    the reverse case disagree for the first time.
 
-    The invariant: for the same argv and environment, this exit code and
-    `--search`'s are equal — except where resolving a store `--search` would
-    never open surfaces a config error, and this command fails loud instead.
+    What the shared exit code does and does not claim. It covers CONFIG AND
+    STORE RESOLUTION: which config answered, which stores this session may
+    read, and whether their directories are there. It says nothing about
+    whether retrieval would actually return anything — this command never
+    opens an index, so a corrupt index, an empty corpus and a healthy one are
+    all EXIT_OK here while `--search` separates them. Index health is doctor's
+    `hook-path` check, which runs the real hook; reading a green from this
+    command as "retrieval works" is the false green one layer up.
+
+    Within that scope the two surfaces agree, with one asymmetry kept
+    deliberately: resolving a store `--search` would never open can surface a
+    config error, and this command fails loud where `--search` succeeds.
     `--search` resolves only the stores it is about to search, so a gated-out
     store whose `live_root` names a root the config never defines costs it
-    nothing, while the display loop resolves every store and meets the
-    ConfigError. That asymmetry is kept rather than papered over: diagnosing
-    configs is this command's whole job, and the direction it errs in is a
-    false RED about a config that really is malformed. A false green is the
-    only failure this surface must not have.
+    nothing. Diagnosing configs is this command's whole job and the direction
+    it errs in is a false RED about a config that really is malformed; a false
+    green is the only failure this surface must not have.
 
     The display may know more than the verdict; it may never overrule it.
     Where the two resolutions land in different places the divergence is
@@ -2345,8 +2450,7 @@ def _print_config() -> int:
     redirects retrieval away from the configured tree is the kind of thing a
     person sets once and then debugs for an hour.
     """
-    # The verdict first, and from the un-overridden resolution.
-    served, error, inert = _config_state()
+    served, error, inert = state
     if error:
         print(f"memory-recall: {error}", file=sys.stderr)
         return EXIT_ERROR
@@ -2371,26 +2475,31 @@ def _print_config() -> int:
     for store in display.stores:
         live = display.store_dir(store, "live")
         gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
-        state = _store_state(store, live, shown_searched)
-        print(f"store {store.id}: {live} [{store.role}; {gated}; {state}]")
+        state_shown = _store_state(display, store, shown_searched)
+        print(f"store {store.id}: {live} [{store.role}; {gated}; {state_shown}]")
 
         twin = served_by_id.get(store.id)
         if twin is None:
             continue
         hook_live = served.store_dir(twin, "live")
-        hook_state = _store_state(twin, hook_live, served_searched)
+        hook_state = _store_state(served, twin, served_searched)
         # realpath both sides before comparing: an override resolves through
         # realpath and a configured path does not, so the same tree reached two
         # ways is not a divergence and must not be reported as one.
         if (
             os.path.realpath(hook_live) == os.path.realpath(live)
-            and hook_state == state
+            and hook_state == state_shown
         ):
             continue
-        env = (display._roots_raw.get(store.live_root) or {}).get("env")
-        via = f"{env} is set: " if env else ""
+        # The SOURCE that answered, from the accessor that already reports it,
+        # rather than the env name read back out of the raw spec. A root can
+        # diverge without an override answering — a git_toplevel root falling
+        # back to another root is the same divergence with no variable to
+        # name — and that case printed a causeless line. It also keeps the
+        # raw-spec read inside the class that owns it.
+        _, source = display.root_with_source(store.live_root)
         print(
-            f"  ! {via}this run resolved {live} [{state}]; "
+            f"  ! via {source}: this run resolved {live} [{state_shown}]; "
             f"the hook will read {hook_live} [{hook_state}]"
         )
     if inert:
@@ -2433,8 +2542,25 @@ def search_cli(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         prog="memory-recall",
         description="Search the memory corpora the way the recall hook does.",
+        # Built from the constants, so the help and the README cannot drift
+        # from what the code returns. An agent reading `--help` to learn how to
+        # branch was getting no contract at all, and the two codes it most
+        # needs are the two that must never be read as absence.
+        epilog=(
+            "exit codes:\n"
+            f"  {EXIT_OK}  pointers, on stdout\n"
+            f"  {EXIT_NO_MATCH}  the stores were searched and nothing matched\n"
+            f"  {EXIT_ERROR}  the search itself failed — never absence\n"
+            f"  {EXIT_INERT}  inert: nothing to search — never absence"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--search", metavar="TERMS")
+    ap.add_argument(
+        "--search",
+        metavar="TERMS",
+        help="terms to search for; required unless --debug-config or "
+        "--debug-envelope-probes",
+    )
     ap.add_argument(
         "--dir",
         action="append",
@@ -2467,37 +2593,56 @@ def search_cli(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     _use_config(args.config)
 
-    # A --config the caller NAMED is opened before this run does anything else
-    # — before the probes, before --debug-config, before any search. A typo
-    # must not be able to reach an exit 0 down some branch that happened not to
-    # need the file, because the invocation an agent uses to check that a
-    # config it just wrote is good may be any of them.
-    #
-    # No soak record here, unlike the store-search path below. That asymmetry
-    # is the point: a config in the environment is the machine's standing
-    # configuration and its breakage is a property of the installation worth
-    # counting, while a --config typed on one invocation is that caller's
-    # argument error, refused to their face and gone.
-    if args.config is not None:
-        _, named_error, _ = _config_state()
-        if named_error:
-            print(f"memory-recall: {named_error}", file=sys.stderr)
-            return EXIT_ERROR
+    # ONE derivation per invocation, taken here and passed down. The same
+    # question was being asked of the same file up to three times — three
+    # parses and up to three `git rev-parse` forks for one answer — and each
+    # extra derivation was also a window in which a config edited mid-run could
+    # make this command contradict itself.
+    state = _config_state()
+    _, config_error, _ = state
 
-    if args.debug_envelope_probes:
-        print(json.dumps(envelope_probes()))
-        return EXIT_OK
-    if args.debug_config:
-        return _print_config()
-    if not args.search:
-        ap.error("--search is required")
-
-    stripped = args.search.strip()
+    # Built before the branches because the config refusal below may have to
+    # record one. Empty and unused on the branches that never search.
+    stripped = (args.search or "").strip()
     rec: dict = {
         "prompt_sha": hashlib.sha256(stripped.encode()).hexdigest()[:12],
         "words": len(stripped.split()),
         "session": "cli",
     }
+
+    # The config is opened before this run does anything else: before the
+    # probes, before --debug-config, before any search. A broken one must not
+    # be able to reach an exit 0 down some branch that happened not to need the
+    # file, because the invocation an agent uses to check that a config is good
+    # may be any of them — and it must not depend on HOW the config arrived,
+    # which is what left `$MEMKIT_CONFIG` exiting 0 on the probes branch while
+    # `--config` pointing at the same broken file exited 2.
+    #
+    # How it arrived decides one thing only: whether the breakage is counted.
+    # A config in the environment is the machine's standing configuration and
+    # its breakage is a property of the installation worth a record, while a
+    # --config typed on one invocation is that caller's argument error, refused
+    # to their face and gone. Only a run that was going to search the stores is
+    # a use of the retrieval path at all.
+    if config_error:
+        print(f"memory-recall: {config_error}", file=sys.stderr)
+        if args.config is None and args.search and not args.dir:
+            rec.update(
+                outcome="cli:nodirs",
+                ms=int((time.monotonic() - t0) * 1000),
+                config=config_error,
+            )
+            _soak_log(rec)
+        return EXIT_ERROR
+
+    if args.debug_envelope_probes:
+        print(json.dumps(envelope_probes()))
+        return EXIT_OK
+    if args.debug_config:
+        return _print_config(state)
+    if not args.search:
+        ap.error("--search is required")
+
     dirs = [os.path.expanduser(d) for d in args.dir] if args.dir else None
     # recall() drops dirs that are not there, because the hook's own two
     # corpora legitimately come and go with the cwd. A --dir the caller
@@ -2510,12 +2655,12 @@ def search_cli(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return EXIT_ERROR
-    # A named --config has already been opened and refused if it could not be;
-    # what is left to decide is inertness, which only the store-search path
-    # asks. Under --dir the caller named the corpus, so the config has no say
-    # in what gets searched and no standing to make this run inert — that is
-    # the shape of the zero-config trial an adopter runs before there is a
-    # config to be inert.
+    # The config has already been opened and refused if it could not be; what
+    # is left to decide is inertness, which only the store-search path asks.
+    # Under --dir the caller named the corpus, so the config has no say in what
+    # gets searched and no standing to make this run inert — that is the shape
+    # of the zero-config trial an adopter runs before there is a config to be
+    # inert.
     if dirs is None:
         # Whether there is anything to search is settled BEFORE retrieval,
         # because recall() cannot answer it: an unconfigured machine and an
@@ -2523,22 +2668,16 @@ def search_cli(argv: list[str]) -> int:
         # would read the second meaning of the first. The hook is right to be
         # silent about this — it has a prompt to get out of the way of — which
         # is exactly why the CLI has to say it instead.
-        #
-        _, error, inert = _config_state()
-        if error or inert:
+        inert = state[2]
+        if inert:
             # Counted for the same reason the hook counts gate:nodirs — a run
             # of the retrieval path that never reached a corpus is still a use
             # of it.
-            why = {"config": error} if error else {}
             rec.update(
                 outcome="cli:nodirs",
                 ms=int((time.monotonic() - t0) * 1000),
-                **why,
             )
             _soak_log(rec)
-            if error:
-                print(f"memory-recall: {error}", file=sys.stderr)
-                return EXIT_ERROR
             print(
                 f"memory-recall: inert — {inert}; this is not a claim of "
                 "absence",
@@ -2570,6 +2709,16 @@ def search_cli(argv: list[str]) -> int:
                 " — result is not a claim of absence",
                 file=sys.stderr,
             )
+            return EXIT_ERROR
+        # This run gated on one parse of the config and retrieved through
+        # another — recall() reaches the config through _config(), which is
+        # fail-open and swallows the error into _CONFIG_ERROR. A file rewritten
+        # between the two parses therefore came back as a confident "no such
+        # memory". Consulting the error the fail-open path already recorded
+        # converts that window into a loud failure instead, and covers the
+        # store-directory variant of the same race for free.
+        if _CONFIG_ERROR:
+            print(f"memory-recall: {_CONFIG_ERROR}", file=sys.stderr)
             return EXIT_ERROR
         return EXIT_NO_MATCH
     print("\n".join(lines))

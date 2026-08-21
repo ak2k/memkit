@@ -1291,6 +1291,14 @@ def test_recall_records_a_sync_skipped_by_contention(corpus: Path, monkeypatch) 
     assert rec["errs_lex"] == 0
     assert rec["lex_busy_skip"] == 1
 
+    # And the sidecar says so too. A contended run answers from an index it did
+    # not sync, so `files` is not merely unknown — reading the previous run's
+    # count as this run's would be a census of a corpus nobody looked at.
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    record = json.loads(build.read_text())
+    assert record["outcome"] == hook.BUILD_BUSY
+    assert record["files"] is None
+
 
 def test_recall_logs_the_built_query_for_the_shadow_harness(
     corpus: Path, monkeypatch
@@ -1633,6 +1641,215 @@ def _raising(exc: BaseException):
         raise exc
 
     return fail
+
+
+def test_a_rebuild_over_a_partly_unreadable_corpus_counts_only_what_it_read(
+    corpus: Path,
+) -> None:
+    """Two independent claims in one run, because they only interact here.
+
+    The PRECEDENCE: this walk is both a rebuild and incomplete, and REBUILT
+    outranks PARTIAL, so that is what the record says. The ARITHMETIC: `files`
+    counts what the walk read IN, so the spared file is subtracted and the
+    answer is 1 over a two-memory corpus — the count is a floor, never a
+    census. Each was individually unpinned; a case that exercised one would
+    have been satisfied by an implementation that broke the other.
+    """
+    _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    locked = Path(_memo(corpus, "b.md", "# b\n\nrestic snapshot forgetting"))
+    db = hook._fts_db(str(corpus))
+    build = Path(db.removesuffix(".db") + ".build")
+
+    locked.chmod(0o000)
+    try:
+        # Damage the index so this run takes the rebuild path as well.
+        Path(db).write_bytes(b"this is not a database" * 100)
+        hook._fts_dir("restic pruning", str(corpus))
+        record = json.loads(build.read_text())
+    finally:
+        locked.chmod(0o644)
+
+    assert record["outcome"] == hook.BUILD_REBUILT
+    assert record["files"] == 1
+
+
+def test_a_corpus_that_cannot_be_read_at_all_says_so_rather_than_going_stale(
+    corpus: Path,
+) -> None:
+    """The sync can RAISE, and that exit wrote nothing at all — leaving the
+    last successful run's record standing over an index that no longer
+    describes anything. A reader then sees a well-formed `ok` with a plausible
+    `ts` and no reason to doubt it, which is the one staleness the file cannot
+    reveal about itself.
+    """
+    memo = Path(_memo(corpus, "a.md", "# a\n\nrestic repository pruning"))
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    hook._fts_dir("restic pruning", str(corpus))
+    healthy = json.loads(build.read_text())
+    assert healthy["outcome"] == hook.BUILD_OK and healthy["files"] == 1
+
+    # A cold index over a corpus it cannot read raises rather than committing
+    # empty — the pre-existing guard — and that path now leaves a record.
+    for suffix in ("", "-wal", "-shm"):
+        Path(hook._fts_db(str(corpus)) + suffix).unlink(missing_ok=True)
+    memo.chmod(0o000)
+    try:
+        with pytest.raises(OSError):
+            hook._fts_dir("restic pruning", str(corpus))
+        record = json.loads(build.read_text())
+    finally:
+        memo.chmod(0o644)
+
+    assert record["outcome"] == hook.BUILD_UNREADABLE
+    assert record["files"] is None
+    assert record["ts"] >= healthy["ts"]
+
+
+def test_a_sidecar_write_that_fails_is_counted_where_a_reader_can_see_it(
+    corpus: Path, monkeypatch
+) -> None:
+    """The write is best-effort, and a suppressed one leaves the PREVIOUS
+    record standing: well-formed, plausible, describing an earlier run. That is
+    the one staleness a reader of the file cannot detect from its contents, so
+    the fact has to leave by another door — the soak record, via _LEX_COUNTS.
+    """
+    memo = _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    build = hook._fts_db(str(corpus)).removesuffix(".db") + ".build"
+
+    # Only the sidecar's rename fails. Failing every os.replace would take the
+    # session ledger's write down with it and the case would stop being about
+    # this file at all.
+    real_replace = os.replace
+
+    def refuse_the_sidecar(src, dst, *a, **kw):
+        if str(dst) == build:
+            raise OSError("read-only")
+        return real_replace(src, dst, *a, **kw)
+
+    monkeypatch.setattr(hook.os, "replace", refuse_the_sidecar)
+    rec: dict = {}
+    assert hook.recall("restic repository pruning", stats=rec) == [memo]
+    assert rec["lex_note_unwritten"] == 1
+    assert not Path(build).exists()
+
+
+def test_a_gate_answer_does_not_survive_a_chdir_within_one_process(
+    tmp_path, monkeypatch
+) -> None:
+    """`_cwd_in_root` memoizes a `git rev-parse` per gate root, and the cache
+    is per-PROCESS while the answer is per-DIRECTORY.
+
+    A caller that re-points its config from somewhere else — the suite, and
+    doctor checking two installs — kept getting the first directory's gate
+    answer, so a store gated to a tree it had left went on being searched from
+    outside it. That is the gate failing open, which is the direction it must
+    never fail: the gate is what keeps a project's memories out of sessions
+    standing somewhere else.
+
+    In-process on purpose. A subprocess starts with an empty cache, so no
+    subprocess case can see this at all.
+    """
+    home = Path(os.path.realpath(tmp_path))
+    (home / "store" / "search").mkdir(parents=True)
+    (home / "store" / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    inside = home / "inside"
+    outside = home / "outside"
+    inside.mkdir()
+    outside.mkdir()
+    config = home / "gated.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {
+                    "home": {"kind": "path", "path": str(home)},
+                    "gate": {"kind": "path", "path": str(inside)},
+                },
+                "stores": [
+                    {
+                        "id": "project",
+                        "role": "project",
+                        "dir": "store",
+                        "live_root": "home",
+                        "cwd_gate": {"root": "gate"},
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(hook.CONFIG_ENV, raising=False)
+    query = ["--config", str(config), "--search", "sprocket backlash gearbox rebuild"]
+    origin = os.getcwd()
+    try:
+        os.chdir(inside)
+        assert hook.search_cli(query) == hook.EXIT_OK
+
+        os.chdir(outside)
+        assert hook.search_cli(query) == hook.EXIT_INERT
+    finally:
+        os.chdir(origin)
+        hook._use_config(None)
+
+
+def test_a_config_that_breaks_after_the_gate_is_not_reported_as_absence(
+    tmp_path, monkeypatch
+) -> None:
+    """This run gates on one parse of the config and retrieves through another.
+
+    `_config_state` reads the file directly; `recall` reaches it through
+    `_config`, which is fail-open and folds the error into a global. A file
+    rewritten between the two therefore came back as a confident "no such
+    memory" — exit 1, silent — which is the one answer that stops an agent
+    looking AND asking. Consulting the error the fail-open path already
+    recorded turns the window into a loud failure.
+
+    The rewrite is injected where the race would land it: after the gate
+    parsed and before retrieval reads. Nothing else about the run changes.
+    """
+    home = Path(os.path.realpath(tmp_path))
+    (home / "store" / "search").mkdir(parents=True)
+    (home / "store" / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n---\n\n"
+        "# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    config = home / "memkit.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {"home": {"kind": "path", "path": str(home)}},
+                "stores": [
+                    {
+                        "id": "project",
+                        "role": "project",
+                        "dir": "store",
+                        "live_root": "home",
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(hook.CONFIG_ENV, raising=False)
+    real_recall = hook.recall
+
+    def rewrite_then_recall(*args, **kwargs):
+        config.write_text("{ this is no longer json")
+        return real_recall(*args, **kwargs)
+
+    monkeypatch.setattr(hook, "recall", rewrite_then_recall)
+    try:
+        code = hook.search_cli(
+            ["--config", str(config), "--search", "sprocket backlash gearbox rebuild"]
+        )
+    finally:
+        hook._use_config(None)
+    assert code == hook.EXIT_ERROR, "a config that broke mid-run is not an absence"
 
 
 # --- _description ------------------------------------------------------------
@@ -3093,6 +3310,10 @@ def test_no_config_is_not_an_empty_corpus(tmp_path) -> None:
     # absence and must not be hedged into one the caller has to re-read.
     assert "inert" not in empty.stderr
     assert "inert" in inert.stderr and "not a claim of absence" in inert.stderr
+    # And it is counted, like the hook's own gate:nodirs. A run of the
+    # retrieval path that never reached a corpus is still a use of it, and the
+    # analyzers separate CLI records by outcome.
+    assert _last_record(tmp_path)["outcome"] == "cli:nodirs"
 
     empty_cfg = _cli(tmp_path, "--debug-config")
     inert_cfg = _cli(tmp_path, "--debug-config", env=_unconfigured(tmp_path))
@@ -3112,6 +3333,28 @@ def test_a_config_that_cannot_be_honoured_is_not_an_empty_corpus(tmp_path) -> No
     # The reason, in the reader's own words: a schema mismatch is fixed by
     # installing a build that speaks it, which "no matches" never suggests.
     assert "schema" in broken.stderr
+    # Recorded with the reason attached, the same shape the hook's gate:nodirs
+    # carries — the standing configuration being broken is a property of the
+    # installation, and the soak log is where installation properties are
+    # counted.
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "cli:nodirs" and "schema" in record["config"]
+
+    # The other half of that rule, pinned because it is a deliberate
+    # asymmetry and not an oversight: a --config typed on one invocation is
+    # the caller's argument error, refused to their face and never counted.
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    before = len(log.read_text().splitlines())
+    typo = _cli(
+        tmp_path,
+        "--config",
+        str(tmp_path / "typo.json"),
+        "--search",
+        query,
+        env=_unconfigured(tmp_path),
+    )
+    assert typo.returncode == hook.EXIT_ERROR
+    assert len(log.read_text().splitlines()) == before
 
     empty_cfg = _cli(tmp_path, "--debug-config")
     broken_cfg = _cli(tmp_path, "--debug-config", env=_unhonourable(tmp_path))
@@ -3229,8 +3472,8 @@ def test_the_config_flag_reaches_the_stores_the_variable_does(tmp_path) -> None:
     assert env[hook.CONFIG_ENV] in dbg.stdout
 
 
-def test_the_one_shape_where_the_surfaces_part_company_fails_red(tmp_path) -> None:
-    """The parity invariant has exactly one exception, and it errs safely.
+def test_a_gated_store_with_an_undefined_root_fails_red_not_green(tmp_path) -> None:
+    """Where the two surfaces part on a non-green code, and it errs safely.
 
     `--search` resolves only the stores it is about to open, so a store this
     session is gated out of costs it nothing — even when that store's
@@ -3240,9 +3483,9 @@ def test_the_one_shape_where_the_surfaces_part_company_fails_red(tmp_path) -> No
 
     Kept rather than reconciled: the direction it errs in is a false RED about
     a config that really is malformed, and a false green is the only failure
-    this surface must not have. Pinned because the docstring now claims the
-    exception — a later change making this command lenient here would leave
-    that claim stale, and one making it green would make it wrong.
+    this surface must not have. Pinned because the docstring claims it — a
+    later change making this command lenient here would leave that claim stale,
+    and one making it green would make it wrong.
     """
     (tmp_path / "good" / "store" / "search").mkdir(parents=True)
     (tmp_path / "good" / "store" / "search" / "gearbox.md").write_text(
@@ -3313,6 +3556,42 @@ def _single_store_config(home: Path, name: str) -> str:
     return str(path)
 
 
+def test_a_store_gated_to_another_tree_is_inert_and_named_as_gated(tmp_path) -> None:
+    """The other reason a store is unsearchable, and it needs a different
+    remedy from the first: this one wants the caller to cd somewhere else, not
+    to create a directory. Both are exit 3, so the stderr has to separate them
+    — it used to print the same disjunction for either.
+
+    Uses the config writer's `cwd_gate` parameter, which existed and was
+    reached by nothing: deleting `_store_state`'s gate branch left the whole
+    suite green while `--debug-config` printed `searched` beside a store this
+    session may not read.
+    """
+    # The store IS on disk — so `NOT on disk` cannot be what makes it inert —
+    # and the gate names a root this test's cwd is outside of.
+    (tmp_path / PROJECT_DIR / "search").mkdir(parents=True)
+    (tmp_path / PERSONAL_DIR / "search").mkdir(parents=True)
+    gate = tmp_path / "elsewhere"
+    gate.mkdir()
+    config = json.loads(_write_config(tmp_path).read_text())
+    config["roots"]["gate"] = {"kind": "path", "path": str(gate)}
+    for store in config["stores"]:
+        store["cwd_gate"] = {"root": "gate"}
+    path = tmp_path / "gated.json"
+    path.write_text(json.dumps(config))
+    env = dict(_unconfigured(tmp_path), MEMKIT_CONFIG=str(path))
+
+    search = _cli(tmp_path, "--search", "sprocket backlash gearbox", env=env)
+    assert search.returncode == hook.EXIT_INERT
+    assert "NOT searched here" in search.stderr
+    assert "NOT on disk" not in search.stderr
+
+    debug = _cli(tmp_path, "--debug-config", env=env)
+    assert debug.returncode == search.returncode
+    assert "NOT searched here" in debug.stdout
+    assert "searched]" not in debug.stdout
+
+
 def _override_config(home: Path, configured: Path) -> str:
     """A config whose one root declares a per-root `env` override.
 
@@ -3373,10 +3652,13 @@ def test_the_surfaces_agree_when_an_env_override_redirects_a_store(tmp_path) -> 
         assert search.returncode == expected, (label, search.stderr)
         assert debug.returncode == search.returncode, (label, debug.stdout)
         # The display still reports what the verdict may not act on, and names
-        # the variable — an override that redirects retrieval away from the
-        # configured tree is the kind of thing set once and debugged for an
-        # hour.
-        assert "MEMKIT_FX is set" in debug.stdout, label
+        # what did the resolving — an override that redirects retrieval away
+        # from the configured tree is the kind of thing set once and debugged
+        # for an hour. The cause comes from the resolver's own source label, so
+        # the line can never be causeless: a root that diverges without an
+        # override answering (a git_toplevel falling back to another root) is
+        # named too.
+        assert "via MEMKIT_FX:" in debug.stdout, label
         assert "the hook will read" in debug.stdout, label
 
     # With the variable unset there is nothing to diverge, and the note must
