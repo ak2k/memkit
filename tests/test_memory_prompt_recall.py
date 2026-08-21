@@ -31,10 +31,12 @@ What the suite covers, roughly in the order the hook does it:
 
 from __future__ import annotations
 
+import builtins
 import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -4532,3 +4534,359 @@ def test_no_fixture_session_id_can_pass_for_a_real_one() -> None:
     real = re.compile(r"[0-9a-f]{8}-[0-9a-f]{3}")
     for n, line in enumerate(Path(__file__).read_text().splitlines(), 1):
         assert not real.search(line), f"{__file__}:{n} — {line.strip()}"
+
+
+# --- the plugin channel: trust gate, marker, registration fingerprint ---------
+#
+# Every case here has a twin that must NOT fire. memkit has two install
+# channels and only one of them is new, so each plugin-only behaviour is
+# checked in both directions: that it happens under the marker the plugin
+# wrapper exports, and that nothing about it can happen without it.
+
+
+def _plugin_home(tmp_path: Path, *, data: bool = True) -> tuple[dict, Path]:
+    """(environment of a plugin-registered hook, its data directory).
+
+    The two variables are independent on purpose. `MEMKIT_PLUGIN` is memkit's
+    own and comes from the wrapper; `CLAUDE_PLUGIN_DATA` is the harness's and
+    may be absent, which is the case the gate must survive.
+    """
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_PLUGIN="1")
+    env.pop("MEMKIT_CONFIG", None)
+    plugin_data = tmp_path / "plugindata"
+    if data:
+        plugin_data.mkdir(parents=True, exist_ok=True)
+        env["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
+    else:
+        env.pop("CLAUDE_PLUGIN_DATA", None)
+    return env, plugin_data
+
+
+def _hook(env: dict, prompt: str, session: str = "trust1") -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": session, "prompt": prompt}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+
+
+def _marker(plugin_data: Path) -> dict:
+    return json.loads((plugin_data / hook.MARKER_NAME).read_text())
+
+
+def test_an_uninitialised_plugin_refuses_without_reading_the_prompt(
+    tmp_path,
+) -> None:
+    """Installed and not yet initialised is a real state, and it used to be
+    indistinguishable from every other silence: the hook is fail-open, so an
+    adopter who skipped init got exactly what a working install with nothing to
+    say gives them.
+
+    The refusal itself is unchanged — exit 0, no output, nothing in front of
+    the prompt. What is new is that it leaves a record where doctor can find
+    it, in the plugin's own data directory rather than in the shared state dir.
+    """
+    env, plugin_data = _plugin_home(tmp_path)
+    out = _hook(env, "flange fastener tightening sequence and passes")
+    assert out.returncode == 0 and out.stdout == ""
+
+    marker = _marker(plugin_data)
+    assert marker["v"] == hook.MARKER_SCHEMA
+    assert [r["outcome"] for r in marker["records"]] == ["trust:unconfigured"]
+    # The directory, as a hash. Doctor needs "how many distinct places did this
+    # refuse in"; a list of the directories somebody works in is not that.
+    assert re.fullmatch(r"[0-9a-f]{12}", marker["records"][0]["cwd"])
+    assert marker["records"][0]["ts"] > 0
+
+    # Nothing in the shared state dir: creating it is a mutation an adopter who
+    # has not consented to anything did not ask for, and it is the directory
+    # the nix channel keeps its soak log in.
+    assert not (tmp_path / ".cache" / "memory-recall").exists()
+
+
+def test_a_config_that_cannot_be_honoured_refuses_distinguishably(tmp_path) -> None:
+    """Two states, two remedies: one wants init run, the other wants a file
+    fixed. A single "refused" would send an adopter to re-run init against a
+    config that is already there and merely broken."""
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json")
+    env, plugin_data = _plugin_home(tmp_path)
+    env["MEMKIT_CONFIG"] = str(broken)
+    assert _hook(env, "flange fastener tightening sequence").returncode == 0
+    assert [r["outcome"] for r in _marker(plugin_data)["records"]] == [
+        "trust:config-error"
+    ]
+
+
+def test_the_gate_still_refuses_when_there_is_nowhere_to_record_it(tmp_path) -> None:
+    """`MEMKIT_PLUGIN` and `CLAUDE_PLUGIN_DATA` are independent variables, and
+    the gate may not learn to depend on the second. Losing the diagnostic must
+    never change what the gate does."""
+    env, plugin_data = _plugin_home(tmp_path, data=False)
+    out = _hook(env, "flange fastener tightening sequence and passes")
+    assert out.returncode == 0 and out.stdout == ""
+    assert not plugin_data.exists()
+    assert not (tmp_path / ".cache" / "memory-recall").exists()
+
+
+def test_without_the_marker_the_gate_cannot_fire_at_all(tmp_path) -> None:
+    """R6, from the side that matters: nothing the plugin adds may degrade a
+    nix or pip install.
+
+    This is a different scenario from a gate that runs and refuses. Here the
+    gate is not reached: the hook takes its ordinary unconfigured path, writes
+    its ordinary `gate:nodirs` record to the shared state dir, and leaves no
+    marker even though the data directory is right there and writable.
+    """
+    env = dict(os.environ, HOME=str(tmp_path), CLAUDE_PLUGIN_DATA=str(tmp_path / "pd"))
+    env.pop("MEMKIT_CONFIG", None)
+    env.pop("MEMKIT_PLUGIN", None)
+    (tmp_path / "pd").mkdir()
+
+    out = _hook(env, "flange fastener tightening sequence and passes")
+    assert out.returncode == 0 and out.stdout == ""
+    assert _last_record(tmp_path)["outcome"] == "gate:nodirs"
+    assert not (tmp_path / "pd" / hook.MARKER_NAME).exists()
+
+
+def test_a_configured_plugin_serves_prompts_and_records_no_refusal(
+    tmp_path,
+) -> None:
+    """The gate is about the state before init, not a standing tax on the
+    plugin channel. Past init it is one dictionary lookup and a cached parse.
+    """
+    env, plugin_data = _plugin_home(tmp_path)
+    env["MEMKIT_CONFIG"] = str(_write_config(tmp_path))
+    corpus = tmp_path / PERSONAL_DIR / "search"
+    corpus.mkdir(parents=True)
+    (corpus / "flange_torque.md").write_text(
+        "---\ndescription: Flange fasteners tighten in a star pattern across "
+        "three passes.\ntype: reference\n---\n\n# Flange torque\n\nThree passes.\n"
+    )
+    (tmp_path / PROJECT_DIR / "search").mkdir(parents=True)
+
+    out = _hook(env, "flange fastener tightening sequence and passes")
+    assert out.returncode == 0
+    assert "flange_torque.md" in out.stdout
+    assert not (plugin_data / hook.MARKER_NAME).exists()
+    assert _last_record(tmp_path)["outcome"] == "injected"
+
+
+def test_the_marker_is_bounded_and_replaces_a_file_it_cannot_read(
+    tmp_path, monkeypatch
+) -> None:
+    """Bounded, because a file appended to on every prompt of every session and
+    read by nothing that needs history becomes the thing it is reporting on.
+
+    The torn-file half matters more than it looks: `os.replace` is what keeps a
+    reader from seeing half a record, but a marker written by some future
+    schema, or truncated by a full disk, must not take the refusal path down —
+    the refusal is what happens when things are already wrong.
+    """
+    data = tmp_path / "pd"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    for i in range(hook.MARKER_MAX + 5):
+        hook._marker_append(f"trust:probe{i}")
+    records = _marker(data)["records"]
+    assert len(records) == hook.MARKER_MAX
+    # The OLDEST are the ones evicted.
+    assert records[0]["outcome"] == "trust:probe5"
+    assert records[-1]["outcome"] == f"trust:probe{hook.MARKER_MAX + 4}"
+
+    (data / hook.MARKER_NAME).write_text("{ truncated")
+    hook._marker_append("trust:unconfigured")
+    assert [r["outcome"] for r in _marker(data)["records"]] == ["trust:unconfigured"]
+
+    # A marker of a schema this build does not speak is not appended to either:
+    # reading it as records would be guessing at a shape.
+    (data / hook.MARKER_NAME).write_text(
+        json.dumps({"v": hook.MARKER_SCHEMA + 1, "records": [{"keep": "me"}]})
+    )
+    hook._marker_append("trust:unconfigured")
+    assert [r["outcome"] for r in _marker(data)["records"]] == ["trust:unconfigured"]
+
+
+def test_a_marker_that_cannot_be_written_costs_the_prompt_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(tmp_path / "does" / "not" / "exist"))
+    hook._marker_append("trust:unconfigured")  # must not raise
+
+
+def test_no_data_directory_means_no_path_is_built_at_all(monkeypatch) -> None:
+    """Not merely "the write fails harmlessly" — no path is CONSTRUCTED.
+
+    The whole append runs inside a suppressor, so a marker path built from an
+    empty variable would be a root-level path this opens on every prompt of an
+    uninitialised install and never reports. That failure is invisible to every
+    assertion about outcomes: the gate still refuses, the state dir still stays
+    absent, and the mutation that introduces it survives a suite that only
+    watches what the hook produced. So watch the `open` instead.
+    """
+    monkeypatch.delenv(hook.PLUGIN_DATA_ENV, raising=False)
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def watched(path, *a, **kw):
+        opened.append(str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", watched)
+    hook._marker_append("trust:unconfigured")
+    assert opened == [], opened
+
+
+# --- two registrations serving one session ------------------------------------
+
+
+def _second_installation(tmp_path: Path) -> str:
+    """A byte-identical copy of the hook at another path — a second
+    registration of the same release, which is the case a version stamp cannot
+    see: `_VERSION` is a hash of these bytes, so both report the same one."""
+    other = tmp_path / "other-install"
+    other.mkdir()
+    for name in ("memory_prompt_recall.py", "common-words.txt"):
+        shutil.copy(Path(hook.__file__).parent / name, other / name)
+    return str(other / "memory_prompt_recall.py")
+
+
+def _dup_records(tmp_path: Path) -> list[dict]:
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    return [
+        json.loads(line)
+        for line in log.read_text().splitlines()
+        if json.loads(line)["outcome"] == "dup-registration"
+    ]
+
+
+def _corpus_of_three(tmp_path: Path) -> None:
+    corpus = tmp_path / PERSONAL_DIR / "search"
+    corpus.mkdir(parents=True)
+    (tmp_path / PROJECT_DIR / "search").mkdir(parents=True)
+    for name, desc in (
+        ("flange_torque.md", "Flange fasteners tighten in a star pattern, three passes"),
+        ("sprocket_alignment.md", "Sprocket backlash is shim stack, never chain tension"),
+        ("turbine_balancing.md", "Turbine balancing weights follow the rotor, not the case"),
+    ):
+        (corpus / name).write_text(
+            f"---\ndescription: {desc}.\ntype: reference\n---\n\n# {name}\n\n{desc}.\n"
+        )
+
+
+PROMPTS = (
+    "flange fastener tightening sequence and passes",
+    "sprocket backlash after the gearbox rebuild",
+    "turbine balancing weights follow the rotor",
+)
+
+
+def test_two_registrations_serving_one_session_each_record_the_other(
+    tmp_path,
+) -> None:
+    """The coexistence failure R6 is about, and it is silent from inside: both
+    hooks inject, both write the session ledger, and the later write wins. What
+    the user sees is pointers that come and go for no reason.
+
+    Symmetric by construction — whichever process reads a fingerprint that is
+    not its own records the duplicate — so there is no losing registration to
+    single out. Both serve the same prompt; both are the problem.
+    """
+    _corpus_of_three(tmp_path)
+    config_a = _write_config(tmp_path)
+    config_b = tmp_path / "second.json"
+    config_b.write_text(config_a.read_text())
+    other_hook = _second_installation(tmp_path)
+    env = dict(os.environ, HOME=str(tmp_path))
+    env.pop("MEMKIT_CONFIG", None)
+
+    def run(hook_file: str, config: Path, prompt: str) -> None:
+        out = subprocess.run(
+            ["python3", hook_file],
+            input=json.dumps({"session_id": "dup1", "prompt": prompt}),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=dict(env, MEMKIT_CONFIG=str(config)),
+        )
+        assert out.returncode == 0
+        assert out.stdout, f"{hook_file} injected nothing — the case is vacuous"
+
+    run(HOOK, config_a, PROMPTS[0])
+    # A first run has nobody to disagree with.
+    assert _dup_records(tmp_path) == []
+
+    run(other_hook, config_b, PROMPTS[1])
+    run(HOOK, config_a, PROMPTS[2])
+
+    duplicates = _dup_records(tmp_path)
+    assert len(duplicates) == 2, duplicates
+    # Each names the OTHER, and by basename plus digest rather than by path:
+    # this log's contract admits hashes, counts and basenames.
+    assert duplicates[0]["other_config"] == config_a.name
+    assert duplicates[1]["other_config"] == config_b.name
+    assert duplicates[0]["mine"] == duplicates[1]["other"]
+    assert duplicates[0]["other"] == duplicates[1]["mine"]
+    assert not any("/" in d["other_config"] or "/" in d["other_file"] for d in duplicates)
+
+
+def test_a_plugin_and_a_settings_entry_on_one_config_are_still_detected(
+    tmp_path,
+) -> None:
+    """The likeliest duplicate of all, and the one a config-and-version
+    fingerprint is blind to: the same config, of the same release, registered
+    twice. `_VERSION` is a sha256 of the hook's bytes, so two copies of one
+    release report the same version — but a plugin copy and a `/nix/store`
+    copy can never share a path.
+    """
+    _corpus_of_three(tmp_path)
+    config = _write_config(tmp_path)
+    other_hook = _second_installation(tmp_path)
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+
+    for hook_file, prompt, marker in (
+        (HOOK, PROMPTS[0], None),
+        (other_hook, PROMPTS[1], "1"),
+        (HOOK, PROMPTS[2], None),
+    ):
+        run_env = dict(env)
+        # One of them arrives through the plugin wrapper, the other through a
+        # settings entry — which is exactly how this pair occurs in the wild.
+        if marker:
+            run_env["MEMKIT_PLUGIN"] = marker
+        else:
+            run_env.pop("MEMKIT_PLUGIN", None)
+        out = subprocess.run(
+            ["python3", hook_file],
+            input=json.dumps({"session_id": "dup2", "prompt": prompt}),
+            capture_output=True, text=True, timeout=60, env=run_env,
+        )
+        assert out.returncode == 0 and out.stdout
+
+    duplicates = _dup_records(tmp_path)
+    assert len(duplicates) == 2, duplicates
+    # Same config on both sides — the half a config fingerprint cannot see —
+    # and different files, which is the half that catches it.
+    assert {d["other_config"] for d in duplicates} == {config.name}
+    assert duplicates[0]["other"] != duplicates[0]["mine"]
+
+
+def test_one_registration_never_reports_itself_as_a_duplicate(tmp_path) -> None:
+    """The guard has to be able to stay quiet. A fingerprint that changed
+    between two runs of the SAME installation — a realpath taken one way here
+    and another way there, say — would report a duplicate on every prompt of
+    every session, on every machine.
+    """
+    _corpus_of_three(tmp_path)
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(_write_config(tmp_path)))
+    for prompt in PROMPTS:
+        out = subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps({"session_id": "dup3", "prompt": prompt}),
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        assert out.returncode == 0 and out.stdout
+    assert _dup_records(tmp_path) == []

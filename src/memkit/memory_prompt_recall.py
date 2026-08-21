@@ -1820,6 +1820,189 @@ def _session_state_path(session_id: str) -> str:
     return os.path.join(_state_dir(), f"{safe}.json")
 
 
+# --- the plugin channel: trust gate, marker, registration fingerprint ---------
+#
+# Everything in this section is a no-op when PLUGIN_ENV is absent, and that is
+# a requirement rather than a consequence. memkit has two install channels and
+# only one of them is new; a nix or pip install must be unable to take any
+# branch added here, or the plugin's instrumentation becomes a behaviour change
+# for installs that never asked for it. PLUGIN_ENV is exported by the plugin's
+# own wrapper and by nothing else, which is why the gate keys on it rather than
+# on `CLAUDE_PLUGIN_DATA`: the wrapper is reachable only through a plugin
+# registration, while the harness's env contract is somebody else's to change.
+PLUGIN_ENV = "MEMKIT_PLUGIN"
+# Plugin-scoped storage, which `claude plugin uninstall` removes unless
+# `--keep-data`. That is exactly the right lifetime for a record of refusals
+# and precisely the wrong one for anything a later `--undo` would need, which
+# is why the init journal and the generated config live in the state dir
+# instead. Plugin-scoped consent should die with the plugin.
+PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA"
+MARKER_NAME = "trust.json"
+MARKER_SCHEMA = 1
+# Bounded, because this file is appended to by a process that runs on every
+# prompt of every session and read by nothing that needs history. Twenty
+# records is enough for doctor to say "it refused here, and here, and here"
+# without the file becoming the thing it is reporting on.
+MARKER_MAX = 20
+
+
+def _plugin_install() -> bool:
+    return bool(os.environ.get(PLUGIN_ENV))
+
+
+def _cwd_digest() -> str:
+    """The session's directory as a hash.
+
+    A hash rather than the path itself: what doctor needs is "how many
+    DISTINCT directories did this refuse in", which a digest answers, and the
+    marker is a file inside a plugin data directory that a later `--keep-data`
+    can outlive the install by. A refusal record is not worth a list of the
+    directories somebody works in.
+    """
+    try:
+        return hashlib.sha256(os.getcwd().encode()).hexdigest()[:12]
+    except OSError:
+        return "?"
+
+
+def _marker_path() -> str | None:
+    data = os.environ.get(PLUGIN_DATA_ENV)
+    return os.path.join(data, MARKER_NAME) if data else None
+
+
+def _marker_append(outcome: str) -> None:
+    """Record one refusal in the plugin's own data directory. Best-effort.
+
+    Never load-bearing, and the gate above must not learn to depend on it: the
+    two variables are independent, so a plugin install can perfectly well have
+    PLUGIN_ENV set and `CLAUDE_PLUGIN_DATA` unset. The gate still decides and
+    still refuses exit-0-silent; only the diagnostic is lost.
+
+    Read back by doctor and never by the gate. A refusal record that fed the
+    next refusal decision would be consent by accumulation — the file is a
+    record of what happened, not a store of what is allowed.
+
+    Written whole via a temp file and `os.replace`, because a torn marker is a
+    marker that reads as a fresh install. Two hooks refusing at the same
+    instant can lose one record to the other; that is a diagnostic losing a
+    line, and the alternative is a lock on the pre-init path.
+    """
+    path = _marker_path()
+    if path is None:
+        return
+    with contextlib.suppress(Exception):
+        records = []
+        with contextlib.suppress(OSError, ValueError):
+            with open(path, encoding="utf-8") as f:
+                blob = json.load(f)
+            if isinstance(blob, dict) and blob.get("v") == MARKER_SCHEMA:
+                loaded = blob.get("records")
+                records = loaded if isinstance(loaded, list) else []
+        records.append(
+            {"cwd": _cwd_digest(), "outcome": outcome, "ts": int(time.time())}
+        )
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"v": MARKER_SCHEMA, "records": records[-MARKER_MAX:]},
+                    f,
+                    separators=(",", ":"),
+                )
+            os.replace(tmp, path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
+def _trust_gate() -> str | None:
+    """The outcome a plugin install refuses this invocation with, or None.
+
+    The predicate is "this hook serves only store roots the user's own config
+    enumerates". The code has no other way to reach a store — there is no
+    ambient discovery and no cwd-derived corpus — so what the gate adds is not
+    a restriction on WHICH stores are served but an answer for the state before
+    there are any: a plugin that has been installed and not yet initialised.
+
+    That state was previously indistinguishable from every other silence. The
+    hook is fail-open, so an adopter who installed the plugin, skipped
+    `/memkit:init`, and asked a question got exactly what a working install
+    with nothing to say gives them — and the marker is what lets doctor tell
+    those apart afterwards.
+
+    Cheap by construction: `_config()` is the parse the rest of the run needs
+    anyway and is cached per process, and in the state this gate exists for
+    there is no file to parse at all.
+
+    Returns None on a non-plugin install, always. A nix or pip hook must not be
+    able to reach this decision.
+    """
+    if not _plugin_install():
+        return None
+    if _config() is not None:
+        return None
+    # A config that is present and unhonourable is a different state from no
+    # config, and only the second one is "not set up yet". Both refuse; doctor
+    # needs the difference, because one wants init run and the other wants a
+    # file fixed.
+    return "trust:config-error" if _CONFIG_ERROR else "trust:unconfigured"
+
+
+def _registration() -> dict:
+    """Which registration this process is: its hook file, and its config.
+
+    The pair, because neither half is enough on its own. Config-and-version is
+    blind to the likeliest duplicate — a plugin entry and a settings entry
+    pointing at the SAME config of the same release, where the version is a
+    hash of identical bytes — while a plugin copy and a `/nix/store` copy can
+    never share a path. `__file__` is resolved, so the same file reached
+    through a symlink is one registration rather than two.
+    """
+    try:
+        path = os.path.realpath(__file__)
+    except OSError:
+        path = __file__
+    cfg = _config()
+    return {"file": path, "config": cfg.path if cfg is not None else ""}
+
+
+def _registration_digest(reg: dict) -> str:
+    return hashlib.sha256(
+        f"{reg.get('file', '')}\0{reg.get('config', '')}".encode()
+    ).hexdigest()[:12]
+
+
+def _foreign_registration(state_path: str) -> dict | None:
+    """The OTHER registration serving this session, if one has already run.
+
+    Two registrations both serving the same prompt is the coexistence failure
+    R6 is about, and it is silent from inside: each process injects, each
+    writes this session's ledger, and the later write wins. What the user sees
+    is pointers that come and go for no reason — a lost update, not an error.
+
+    This is the loud half. The quiet half is doctor's registration count, which
+    is the one that can name which entry to remove.
+
+    Coverage, stated because it is not total: the stamp is written when a run
+    DELIVERS, so a registration that has never injected anything in this
+    session is not yet announced. Writing it on every invocation would put a
+    file write on the every-prompt path for a diagnostic, which is a worse
+    trade than detecting the duplicate one prompt later.
+    """
+    with contextlib.suppress(OSError, ValueError):
+        with open(state_path, encoding="utf-8") as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            return None
+        stored = state.get("reg")
+        if not isinstance(stored, dict):
+            return None
+        mine = _registration()
+        if _registration_digest(stored) != _registration_digest(mine):
+            return stored
+    return None
+
+
 def _evidence(matched: list[str], total: int) -> float:
     """How much this hit's slot was bought with: the share of the prompt's
     terms it matched.
@@ -2260,6 +2443,25 @@ def main() -> None:
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
 
+    # The trust gate, before the payload is read rather than after. An
+    # uninitialised plugin install has no business seeing the prompt at all,
+    # and this is the seam where nothing has been read yet: no stdin, no
+    # corpus, no state dir — the marker in the plugin's own data directory is
+    # the only thing this branch touches, and it is skipped when the harness
+    # gave it nowhere to write.
+    #
+    # Not reading stdin is safe here: the harness writes the payload into a
+    # pipe whose reader has gone, and the turn completes normally (measured on
+    # 2.1.238, three registered hooks, one of which never read its stdin).
+    #
+    # No soak record. The state dir is shared with the nix channel and creating
+    # it is a mutation an adopter who has not run init did not ask for; the
+    # marker is this path's record, and it is the one that dies with the
+    # plugin.
+    if (refusal := _trust_gate()) is not None:
+        _marker_append(refusal)
+        return
+
     payload = json.load(sys.stdin)
     prompt = payload.get("prompt", "") or ""
 
@@ -2357,6 +2559,28 @@ def main() -> None:
     try:
         session_id = str(payload.get("session_id", "") or "nosession")
         state_path = _session_state_path(session_id)
+        # Read before the ledger, from the same file, so that a duplicate
+        # registration is recorded even on the prompts where retrieval goes on
+        # to find nothing. Its own record rather than a field on this run's:
+        # the outcome vocabulary is what the analyzers count by, and doctor
+        # reads these back to tell "another registration is serving your
+        # prompts" from a store that is merely quiet.
+        #
+        # Basenames and a digest, not paths. This log's contract admits hashes,
+        # counts, basenames and the sanitized query — the full pair stays in
+        # the session state, which doctor can read and which never leaves the
+        # machine as a corpus.
+        if (other := _foreign_registration(state_path)) is not None:
+            _soak_log(
+                {
+                    "outcome": "dup-registration",
+                    "session": rec["session"],
+                    "other_file": os.path.basename(str(other.get("file", ""))),
+                    "other_config": os.path.basename(str(other.get("config", ""))),
+                    "other": _registration_digest(other),
+                    "mine": _registration_digest(_registration()),
+                }
+            )
         shown, spent = _load_session(state_path)
         if len(spent) >= POINTER_BUDGET and any(e is None for e in spent.values()):
             return done("gate:budget", pointers=len(spent), ledger="legacy")
@@ -2513,7 +2737,18 @@ def main() -> None:
                 try:
                     with open(tmp_path, "w", encoding="utf-8") as f:
                         json.dump(
-                            {"shown": sorted(shown | set(fresh)), "spent": ledger}, f
+                            {
+                                "shown": sorted(shown | set(fresh)),
+                                "spent": ledger,
+                                # Which registration wrote this. The next
+                                # process to read the file compares it against
+                                # its own and records the duplicate; before
+                                # this field existed, two registrations
+                                # overwriting each other's ledger left nothing
+                                # behind but pointers that came and went.
+                                "reg": _registration(),
+                            },
+                            f,
                         )
                     os.replace(tmp_path, state_path)
                     persisted = True
