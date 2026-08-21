@@ -18,6 +18,7 @@ an inert hook and a wired one both exit 0 and print nothing.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -345,6 +346,57 @@ def test_a_plugin_beside_a_settings_registration_is_detected_at_runtime(
     duplicates = [r for r in _soak(profile) if r["outcome"] == "dup-registration"]
     assert duplicates, [r["outcome"] for r in _soak(profile)]
     assert duplicates[0]["other_config"] == "memkit.json"
+
+
+@live_tier
+def test_the_plugin_bin_is_on_the_agents_path_and_loses_every_name_collision(
+    profile: Profile, staged: Path
+) -> None:
+    """Both halves of KTD12's premise, measured rather than assumed.
+
+    That plugin `bin/` reaches the Bash tool's PATH is documented and is what
+    makes `memkit-recall` a command an agent can run at all. Its PRECEDENCE is
+    not documented, and the answer turns out to be the unhelpful one: the
+    plugin's directory is appended, so any name already on the adopter's PATH
+    wins.
+
+    That is why the two names that matter are collision-proof by construction.
+    `memkit-recall` searching the wrong stores would be a wrong answer wearing
+    a right one's clothes — the failure this naming exists to prevent — and no
+    other tool ships that name.
+
+    `memkit` is the exception, and it collides with memkit's OWN console
+    script: an adopter with a pip or nix install gets that one, not the
+    plugin's. It is why the skills must invoke it as
+    `${CLAUDE_PLUGIN_ROOT}/bin/memkit` rather than bare, and this case is here
+    to fail if the precedence ever changes in either direction.
+    """
+    profile.marketplace_add(staged)
+    config = _fixture_config(profile)
+    profile.install("memkit@memkit", config={"memkitConfig": str(config)})
+    project = profile.project("work")
+
+    # A decoy of memkit's own console-script name, ahead of anything the
+    # harness appends — the shape of the collision an adopter with a pip or
+    # nix install already has.
+    decoy_dir = profile.home / "decoy"
+    decoy_dir.mkdir()
+    (decoy_dir / "memkit").write_text("#!/bin/sh\necho decoy\n")
+    (decoy_dir / "memkit").chmod(0o755)
+
+    out = profile.claude(
+        "-p",
+        "Run exactly this and report its output verbatim, nothing else: "
+        "command -v memkit-recall memkit",
+        "--output-format", "json", "--allowedTools", "Bash",
+        cwd=str(project), timeout=300,
+        extra_env={"PATH": f"{decoy_dir}:{os.environ['PATH']}"},
+    )
+    answer = json.loads(out.stdout)["result"]
+    assert f"{staged}/bin/memkit-recall" in answer, answer
+    # The collision, resolved against the plugin — which is the fact the skill
+    # contract is built on, not a preference.
+    assert f"{decoy_dir}/memkit" in answer, answer
 
 
 @live_tier

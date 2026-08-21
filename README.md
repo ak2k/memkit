@@ -74,6 +74,77 @@ memory-poisoning surface of this design, and an ambient environment variable
 would hand that decision to whatever repository the session happens to be
 standing in.
 
+### Claude Code plugin
+
+```
+/plugin marketplace add ak2k/memkit
+/plugin install memkit@memkit
+```
+
+or, from a shell, in one non-interactive command:
+
+```
+claude plugin marketplace add ak2k/memkit
+claude plugin install memkit@memkit --yes \
+  --config memkitConfig="$HOME/.cache/memory-recall/memkit.json"
+```
+
+That registers the `UserPromptSubmit` hook and puts the plugin's `bin/` on the
+agent's `PATH`. It reads nothing and says nothing until you give it a config —
+see below.
+
+**What the marketplace serves you.** The entry pins a released commit sha, so
+`marketplace add` does not mean "whatever is on main". A release moves the pin,
+and until it does, updating the marketplace changes nothing about the code in
+your sessions. This matters more here than for most plugins: the payload is a
+hook that runs before every prompt you type.
+
+**Setting it up is manual in this build.** `/memkit:init` — the consented,
+journalled setup this is designed around — has not landed yet, so for now write
+the config by hand (schema and a worked example under [Config](#config)) at the
+path you passed to `--config`. Until that file exists the plugin is **inert**:
+the hook exits 0, prints nothing, reads no directory of yours, and records the
+refusal where a future `memkit doctor` can report it. That is the intended
+state, not a failure — but nothing will surface pointers until you write the
+file.
+
+The config path reaches the hook through the `memkitConfig` option above, or
+through `$CLAUDE_PLUGIN_DATA/memkit.json`, or through a `memkit.json` beside
+the plugin itself, in that order. It is never inherited from your shell: an
+every-prompt hook's list of directories is not the ambient environment's
+decision to make, which is the same rule the nix module follows by baking the
+path in.
+
+**`bin/` is the agent's PATH, not your terminal's.** While the plugin is
+enabled, `memkit-recall --search "…"` works in the agent's Bash tool. It is not
+on your own `PATH` — nothing is added to your shell — so the same command typed
+into a terminal will not be found.
+
+The plugin's directory is **appended**, so any name already on your `PATH`
+wins (measured, not assumed). That is why the two names that matter are ones
+nothing else ships: a second `memory-recall` from a pip or nix install would
+have resolved first and searched the wrong stores without saying so, which is a
+wrong answer wearing a right one's clothes. The exception is `memkit` itself,
+which collides with this project's own console script — if you also have memkit
+installed via pip or nix, a bare `memkit` in the agent's shell is that one.
+Invoke the plugin's copy by path when it has to be that copy:
+`"$CLAUDE_PLUGIN_ROOT"/bin/memkit`.
+
+**If you disable the plugin**, the hook stops and the store is untouched — it
+lives outside every plugin-managed path by design. Retrieval is still available
+out of harness, with no install:
+
+```
+uvx --from git+https://github.com/ak2k/memkit memory-recall \
+  --search "<terms>" --config ~/.cache/memory-recall/memkit.json
+```
+
+`claude plugin uninstall memkit` additionally removes the plugin's data
+directory — which holds only the refusal records above — unless you pass
+`--keep-data`. Your config, your index and your soak log live in
+`~/.cache/memory-recall/`, and your memories live wherever your config says;
+none of that is removed.
+
 ### Plain Python
 
 ```
@@ -130,6 +201,7 @@ different job:
 | code | means |
 |---|---|
 | 0 | the subcommand ran |
+| 1 | memkit could not start at all — no interpreter, or an incomplete plugin payload. Only the plugin's `bin/memkit` wrapper emits this; stderr names what is missing |
 | 2 | usage error, or a subcommand that does not exist |
 | 4 | the subcommand exists and is not in this build — stderr names the fallback |
 
@@ -324,23 +396,44 @@ uv run tools/check-wordlist-reproducible.py   # what CI asserts
 ```
 
 CI runs the same things twice over, once per install story: a plain-python leg
-(`uv venv` + editable install, then the suites, the fixture eval, ruff, and two
-pyright passes — the package at its 3.12 floor, then the hook alone at its 3.9
-one) and a nix leg
-(`nix flake check` on x86_64-linux, aarch64-linux and aarch64-darwin). Neither
-trigger is path-filtered, so a docs-only change still reports every context.
+(`uv venv` + editable install, then the suites, the fixture eval, ruff, two
+pyright passes — the package at its 3.12 floor, then the 3.9 entry points — and
+the plugin manifests through `claude plugin validate --strict` at a pinned
+Claude Code) and a nix leg (`nix flake check` on x86_64-linux, aarch64-linux and
+aarch64-darwin). Neither trigger is path-filtered, so a docs-only change still
+reports every context.
+
+`tests/rig/` drives the real `claude` binary against a scratch profile, because
+what the plugin claims — that a manifest option reaches a hook's environment,
+that an installed wrapper emits pointers — are claims about a harness this repo
+does not own, and every one of them fails silently. Two tiers: the CLI tier
+needs only the binary and runs in CI, while the live tier needs a model and is
+opt-in.
+
+```
+pytest tests/rig                          # CLI tier
+MEMKIT_RIG_LIVE=1 pytest tests/rig        # + the scenarios that need a model
+```
+
+The live tier expects an Anthropic-compatible endpoint in `ANTHROPIC_BASE_URL`
+(it never touches your real credentials or your real `~/.claude` — every
+scenario asserts its config dir is scratch before running anything that
+writes).
 
 **Which pyright config a new file belongs in.** `pyrightconfig.json` includes
 `src/`, `tests/` and `tools/` by directory, so a new file is covered there with
 no edit. `pyrightconfig-hook39.json` is an explicit file list, and it must name
-every file the *recall hook* can reach at import time — today, just the hook
-itself. Add a module the hook imports and it belongs in that list on the same
-commit: its 3.9 floor is otherwise unchecked, and the failure surfaces on a
-stock macOS as a hook that silently retrieves nothing. The direction is easy to
-invert — `cli.py` imports the hook, which does not put `cli.py` on the hook's
-import path. The list is about what the harness's `python3` executes. (Which
-interpreter runs the `memkit` dispatcher, and therefore what floor `cli.py`
-answers to, is settled by the plugin's interpreter contract rather than here.)
+every file a **3.9 interpreter can execute**. That is two entry points: the
+recall hook, which the harness runs with whatever `python3` the `PATH`
+resolves to, and `memkit.cli`, because the plugin's `bin/memkit` runs the
+dispatcher on that same interpreter — only checker-backed work routes to 3.12,
+and sending the whole dispatcher there would put `memkit doctor` out of reach
+on a stock-python mac, which is the machine that most needs to ask whether its
+install works. Add a module either entry point imports and it belongs in that
+list on the same commit; its 3.9 floor is otherwise unchecked, and the failure
+surfaces as a hook that silently retrieves nothing. The direction is easy to
+invert: a module that merely *imports* one of those two does not belong there,
+since nothing puts it in front of the 3.9 interpreter.
 
 ## Licence
 
