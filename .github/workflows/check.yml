@@ -123,6 +123,25 @@ jobs:
       - name: Ruff
         run: uvx ruff@${{ env.RUFF_VERSION }} check .
 
+      # The wrappers are POSIX sh and they are the config-delivery path — the
+      # one that decides which directories an every-prompt hook reads. Ruff and
+      # pyright see none of it, so without this the only language in the repo
+      # with no lint at all would be the one holding that decision.
+      #
+      # `--shell=sh` rather than trusting the shebang: the harness runs these
+      # with whatever `/bin/sh` is, which on a stock macOS is bash in POSIX
+      # mode, and a bashism that works on the author's machine is a wrapper
+      # that fails on an adopter's.
+      # shellcheck ships in the GitHub-hosted ubuntu image, so there is nothing
+      # to install. If that ever stops being true the step fails on a missing
+      # command, which is the right failure: a linter that silently is not
+      # there is a linter nobody notices the absence of.
+      - name: Shellcheck — the plugin wrappers
+        run: |
+          shellcheck --version
+          shellcheck --shell=sh bin/memkit bin/memkit-hook bin/memkit-recall \
+            bin/lib/common.sh
+
       # The package, at its own 3.12 floor. `pyrightconfig.json` has been in
       # the tree since the first commit and nothing ran it, so its errors
       # accumulated where only somebody running pyright by hand would meet

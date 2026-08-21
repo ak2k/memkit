@@ -32,6 +32,9 @@
 # config named `~/.cache/...` arrives with a literal tilde and every rung below
 # would silently miss it.
 memkit_expand_home() {
+    # shellcheck disable=SC2088  # the LITERAL tilde is what this matches: the
+    # value never passed through a shell, so an unexpanded `~` is the input,
+    # not a mistake in this pattern.
     case $1 in
         "~/"*) printf '%s\n' "$HOME/${1#\~/}" ;;
         "~") printf '%s\n' "$HOME" ;;
