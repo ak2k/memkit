@@ -2685,7 +2685,7 @@ def main() -> None:
 
     logged = False
 
-    def done(outcome: str, *, concludes: bool = True, **kw) -> None:
+    def done(outcome: str, concludes: bool = True, /, **kw) -> None:
         """Append one soak record, through the one emitter this run has.
 
         Every record the hook can write goes through here, and the outcome
@@ -2703,6 +2703,11 @@ def main() -> None:
         prompt already recorded, so letting a non-outcome record consume it
         would trade the duplicate for the loss of `killed` — the one outcome
         the soak log exists to expose.
+
+        Positional-only, and not for taste: several callers pass their fields
+        as `**<dict>`, and a KEYWORD parameter beside a `**kw` sink makes every
+        one of those a type error, because a dict of strings could in principle
+        carry this name. Positional-only puts it out of their reach.
         """
         nonlocal logged
         if concludes:
@@ -2805,9 +2810,11 @@ def main() -> None:
         # the session state, which doctor can read and which never leaves the
         # machine as a corpus.
         if (other := _foreign_registration(state_path)) is not None:
+            # Not this prompt's outcome — a fact about the machine, written
+            # beside the record the prompt will produce for itself.
             done(
                 "dup-registration",
-                concludes=False,
+                False,
                 other_file=os.path.basename(str(other.get("file", ""))),
                 other_config=os.path.basename(str(other.get("config", ""))),
                 other=_registration_digest(other),
