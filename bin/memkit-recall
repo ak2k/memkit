@@ -16,6 +16,13 @@
 # Unlike `memkit-hook`, exit codes MATTER here and are passed through. The
 # caller is an agent deciding whether to go read something, and 0/1/2/3 are
 # four different next moves — see the table in the README.
+#
+# This file adds the fifth. Everything below that ends the run before the
+# search could start exits 4, not 2: 2 means "what you asked for is wrong" —
+# your config, your corpus, your arguments — and an agent reading that retries
+# with a different query against a machine that has no python on it. The one
+# exception is the no-argument refusal, which genuinely IS a wrong invocation
+# and stays 2.
 
 set -u
 
@@ -29,7 +36,7 @@ MEMKIT_ROOT=$(cd "${_self%/*}/.." 2>/dev/null && pwd -P) || MEMKIT_ROOT=""
 
 if [ -z "${MEMKIT_ROOT:-}" ] || [ ! -f "$MEMKIT_ROOT/bin/lib/common.sh" ]; then
     echo "memkit-recall: cannot locate the plugin tree from $0" >&2
-    exit 2
+    exit 4
 fi
 
 . "$MEMKIT_ROOT/bin/lib/common.sh"
@@ -48,7 +55,7 @@ fi
 HOOK_FILE="$MEMKIT_ROOT/src/memkit/memory_prompt_recall.py"
 if [ ! -f "$HOOK_FILE" ]; then
     echo "memkit-recall: the plugin payload is incomplete — no $HOOK_FILE" >&2
-    exit 2
+    exit 4
 fi
 
 CONFIG=$(memkit_resolve_config) || CONFIG=""
@@ -67,7 +74,7 @@ fi
 PY=$(memkit_resolve_interpreter "$CONFIG") || PY=""
 if [ -z "$PY" ]; then
     memkit_no_interpreter_message "$CONFIG" >&2
-    exit 2
+    exit 4
 fi
 
 MEMKIT_PLUGIN=1

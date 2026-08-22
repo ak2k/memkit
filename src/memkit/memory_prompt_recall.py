@@ -2991,6 +2991,20 @@ EXIT_OK = 0
 EXIT_NO_MATCH = 1
 EXIT_ERROR = 2
 EXIT_INERT = 3
+# Emitted by the plugin's `bin/memkit-recall` wrapper and never by this module:
+# the wrapper could not START the search — no plugin tree found from its own
+# path, an incomplete payload, or no interpreter to run it with. Declared here
+# anyway, for the same reason the four above are: the table an agent branches
+# on has to be complete to be usable, and a code that appears only in a shell
+# script is a code nobody can look up.
+#
+# A code of its own because the three states 2 already names are all "what you
+# asked for is wrong" — the config, the corpus, the arguments — and every one
+# of them sends an agent to fix its own request against a machine that cannot
+# run memkit at all. Note that `memkit`'s table gives 4 a different meaning
+# (`cli.EXIT_NOT_IN_BUILD`); they are different commands with different jobs,
+# which is why neither shares the other's vocabulary.
+EXIT_CANNOT_START = 4
 
 
 def _print_config(state: tuple) -> int:

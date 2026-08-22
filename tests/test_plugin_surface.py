@@ -623,26 +623,132 @@ def test_no_interpreter_is_a_named_refusal_that_still_exits_zero(
     assert "no python3" in out.stderr and "3.9" in out.stderr
 
 
+def _exit_literals(wrapper: str) -> set[int]:
+    """Every `exit N` a wrapper can reach, read off the file.
+
+    Necessary and NOT sufficient, in both directions, which is why every case
+    using this pairs it with real runs. A scrape cannot see `set -u` aborting
+    on an unbound variable — non-zero, with no literal to find — and it cannot
+    see the final `exec`, which hands the python side's own status through as
+    the wrapper's. What it does see is the thing a runtime case cannot: a
+    branch nobody remembered to reach.
+    """
+    text = (REPO / "bin" / wrapper).read_text()
+    literals = {int(m) for m in re.findall(r"^\s*exit (\d+)$", text, re.MULTILINE)}
+    assert literals, f"{wrapper} has no exit literals — this pin would be vacuous"
+    # No computed exits, or the regex above is measuring a file that has moved
+    # past it.
+    assert not re.search(r"^\s*exit\s+[^\d\s]", text, re.MULTILINE), wrapper
+    return literals
+
+
+def _half_delivered(tmp_path: Path, wrapper: str, *, library: bool) -> Path:
+    """A payload root missing the hook file, with or without the library.
+
+    The distinction is the whole point: copying only the wrapper leaves control
+    at the `common.sh` guard, so the branch that answers for an incomplete
+    payload is never executed and a wrong exit code there survives every test
+    that thinks it covers it.
+    """
+    root = tmp_path / ("half" if library else "bare")
+    (root / "bin" / "lib").mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / "bin" / wrapper, root / "bin" / wrapper)
+    if library:
+        shutil.copy(COMMON_SH, root / "bin" / "lib" / "common.sh")
+    return root
+
+
 def test_the_hook_wrapper_never_exits_non_zero(root, tmp_path, shimmed) -> None:
     """Every reachable refusal, in one place, because the property is about the
     SET of them: a new branch that exits 1 is invisible until it is the branch
     an adopter is on, and by then it is a message in front of every prompt.
     """
-    broken = tmp_path / "brokenroot"
-    (broken / "bin").mkdir(parents=True)
-    shutil.copy(REPO / "bin" / "memkit-hook", broken / "bin" / "memkit-hook")
+    assert _exit_literals("memkit-hook") == {0}
 
     cases = [
         # no interpreter anywhere
         (root / "bin" / "memkit-hook", {"PATH": str(tmp_path / "nothing")}, ()),
-        # an incomplete payload: no library, and no hook file
-        (broken / "bin" / "memkit-hook", shimmed(), ()),
+        # cannot locate the tree at all: no library to source
+        (_half_delivered(tmp_path, "memkit-hook", library=False) / "bin"
+         / "memkit-hook", shimmed(), ()),
+        # the library is there and the hook file is not — the branch the case
+        # above cannot reach, because control leaves at the library guard
+        (_half_delivered(tmp_path, "memkit-hook", library=True) / "bin"
+         / "memkit-hook", shimmed(), ()),
         # arguments that should never arrive, and are ignored if they do
         (root / "bin" / "memkit-hook", shimmed(), ("--search", "x")),
     ]
     for wrapper, env, args in cases:
         out = _run(wrapper, *args, env={"HOME": str(tmp_path), **env})
         assert out.returncode == 0, (wrapper, args, out.returncode, out.stderr)
+    # And the branches really are distinct, or two of the cases above are one
+    # case run twice.
+    messages = {
+        _run(
+            _half_delivered(tmp_path, "memkit-hook", library=lib) / "bin"
+            / "memkit-hook",
+            env={"HOME": str(tmp_path), **shimmed()},
+        ).stderr.split("\n")[0]
+        for lib in (False, True)
+    }
+    assert len(messages) == 2, messages
+
+
+def test_the_search_wrapper_says_it_could_not_start_rather_than_that_you_erred(
+    root, tmp_path, shimmed
+) -> None:
+    """The opposite assertion to the hook wrapper's, and it is opposite on
+    purpose: here there is no prompt to get out of the way of, and the caller
+    is an agent choosing a next move from the code.
+
+    2 already means "what you asked for is wrong" — an unparseable config, a
+    `--dir` that is not there, arguments that make no sense — and all three of
+    those send an agent to fix its own request. A machine with no python on it
+    answers none of them, so it gets a code of its own; otherwise the one
+    failure no query can survive is reported as the one class of failure a
+    different query might.
+    """
+    assert _exit_literals("memkit-recall") == {hook.EXIT_ERROR, hook.EXIT_CANNOT_START}
+    assert hook.EXIT_CANNOT_START not in (
+        hook.EXIT_OK, hook.EXIT_NO_MATCH, hook.EXIT_ERROR, hook.EXIT_INERT
+    )
+    # A code an agent branches on and cannot look up is a code it has to guess
+    # at, so the row is part of the change rather than a follow-up — and this
+    # one has to warn about the collision, because `memkit`'s own table gives
+    # the same number a different meaning.
+    from memkit.cli import EXIT_NOT_IN_BUILD
+
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    row = next(
+        (
+            line for line in readme.splitlines()
+            if line.startswith(f"| {hook.EXIT_CANNOT_START} |")
+            and "memkit-recall" in line
+        ),
+        None,
+    )
+    assert row, "no README row for the search CLI's start-failure code"
+    assert EXIT_NOT_IN_BUILD == hook.EXIT_CANNOT_START and "different meaning" in row
+
+    empty = {"PATH": str(tmp_path / "nothing"), "HOME": str(tmp_path)}
+    cannot_start = [
+        # no interpreter anywhere
+        (root / "bin" / "memkit-recall", empty, ("--search", "x")),
+        # cannot locate the tree
+        (_half_delivered(tmp_path, "memkit-recall", library=False) / "bin"
+         / "memkit-recall", shimmed(), ("--search", "x")),
+        # the library present, the hook file absent
+        (_half_delivered(tmp_path, "memkit-recall", library=True) / "bin"
+         / "memkit-recall", shimmed(), ("--search", "x")),
+    ]
+    for wrapper, env, args in cannot_start:
+        out = _run(wrapper, *args, env={"HOME": str(tmp_path), **env})
+        assert out.returncode == hook.EXIT_CANNOT_START, (
+            wrapper, out.returncode, out.stderr
+        )
+    # And the one branch that really is a wrong invocation keeps saying so.
+    bare = _run(root / "bin" / "memkit-recall", env=shimmed())
+    assert bare.returncode == hook.EXIT_ERROR, bare.stderr
 
 
 def test_arguments_to_the_hook_wrapper_are_ignored_not_forwarded(

@@ -181,14 +181,20 @@ here, because a config that cannot be parsed is somebody's mistake on any
 branch and silently ignoring it is how a typo survives. Unset the variable or
 fix the file first; an unset one is not an error.
 
-`memory-recall` exit codes — grep's three, plus one:
+`memory-recall` exit codes — grep's three, plus two. `memkit-recall`, the name
+a plugin install puts on the agent's PATH, shares this table:
 
 | code | means | for the caller |
 |---|---|---|
 | 0 | pointers found, printed to stdout | read them |
 | 1 | the stores were searched and nothing matched | there is no such memory |
-| 2 | the search itself failed, wholly or in part — an unparseable config, a `--dir`/`--config` that is not there, or some corpus that could not be opened | fix what stderr names; never read as absence |
+| 2 | the search itself failed, wholly or in part — an unparseable config, a `--dir`/`--config` that is not there, some corpus that could not be opened, or arguments that make no sense | fix what stderr names; never read as absence |
 | 3 | **inert**: nothing to search — no config, or no store on disk and in scope for this directory | stderr names which; this is *not* a claim of absence |
+| 4 | the search never started — no plugin tree found, an incomplete payload, or no interpreter to run it with. Only the plugin's `memkit-recall` wrapper emits this; stderr names what is missing | nothing about the query or the config will change it. Note that `memkit`'s own table below gives 4 a different meaning |
+
+Why 4 rather than 2 for that last one: 2 says "what you asked for is wrong",
+and all three of the states it names send a caller to fix its own request —
+against, in this case, a machine that cannot run memkit at all.
 
 `memory-recall --debug-config` reports the resolved config and shares those
 codes: 3 when nothing is searchable, so it cannot come back green about an
@@ -214,7 +220,7 @@ different job:
 | 0 | the subcommand ran |
 | 1 | memkit could not start at all — no interpreter, or an incomplete plugin payload. Only the plugin's `bin/memkit` wrapper emits this; stderr names what is missing |
 | 2 | usage error, or a subcommand that does not exist |
-| 4 | the subcommand exists and is not in this build — stderr names the fallback |
+| 4 | the subcommand exists and is not in this build — stderr names the fallback. **Not** the 4 in the table above: these are different commands and neither borrows the other's vocabulary |
 
 Rolling this out across more than one machine, verifying a host afterwards, and
 rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
