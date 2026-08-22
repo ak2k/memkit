@@ -284,6 +284,15 @@ one, otherwise `$MEMKIT_CONFIG`.
   root, including that root's git worktrees.
 - **`citations`** — which top-level trees a prose path may name, extra
   suffixes to treat as filenames, and the base ref a change is blamed against.
+- **`search_cli`** — the command memkit prints when a pointer block truncates
+  its matches, so an agent can run the rest of the search itself. The default
+  is the one this channel ships: `memory-recall --search` for pip and nix,
+  `memkit-recall --search` for a plugin install. **On a plugin install this
+  field is ignored**, and deliberately — one config file is read by every
+  channel, so a value written for a pip install would otherwise travel to a
+  plugin one and name a binary that is either absent (the agent gets exit 127)
+  or, on a machine carrying both, the *other* install, searching stores nobody
+  pointed it at.
 - **`eval.cases`** — three slices. `suite` pairs a prompt with the *basename*
   of the memory it is about; the tier is resolved at run time from where the
   file lives now, so promoting a memory from `search/` to `hot/` flips its

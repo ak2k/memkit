@@ -1,7 +1,7 @@
 """`memkit <subcommand>` — the dispatcher the setup and diagnosis commands hang off.
 
-A fourth console script rather than more flags on `memory-recall`, because
-these are a different job. `memory-recall` searches; what an adopter needs
+A fourth console script rather than more flags on the search CLI, because
+these are a different job. That one searches; what an adopter needs
 before they can search is a way to set the thing up and a way to ask whether
 it worked, and both of those write or read things that have nothing to do with
 retrieval. Keeping them apart is also what lets a skill pre-approve one exact
@@ -28,7 +28,7 @@ from memkit.memory_prompt_recall import (
     _search_cli,
 )
 
-# This binary's exit codes, and deliberately NOT `memory-recall`'s. They are
+# This binary's exit codes, and deliberately NOT the search CLI's. They are
 # different commands with different jobs, so sharing a vocabulary would mean
 # every future addition to one had to make sense for the other; a skill
 # branching on `memkit doctor` should read this table and nothing else.
@@ -118,8 +118,13 @@ _HANDLERS: dict[str, Callable[[list[str]], int]] = {}
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="memkit",
-        description="Set up and diagnose a memkit installation. "
-        "To search one, see `memory-recall --search`.",
+        # Through `_meanwhile` like every other command this prints. Hardcoded,
+        # this line named a binary the plugin channel does not ship on the
+        # cheapest probe an agent runs, and no config value could reach it.
+        description=_meanwhile(
+            "Set up and diagnose a memkit installation. To search one, see "
+            "`{search}`."
+        ),
         # The fallbacks belong on the top-level help too, not only on the
         # refusal an agent reaches by running the subcommand: `memkit --help`
         # is the cheaper probe and the one tried first, and it was answering

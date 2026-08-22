@@ -817,6 +817,165 @@ def test_the_dispatcher_refuses_by_name_when_nothing_can_run_it(
     assert EXIT_NO_RUNTIME not in (EXIT_USAGE, EXIT_NOT_IN_BUILD)
 
 
+# --- the commands this channel tells an agent to run -------------------------
+
+# A token that could be a command an agent types. Path-shaped and
+# dotted-filename tokens are dropped on purpose: `~/.cache/memory-recall/` is a
+# directory this channel really does use and `memkit.json` is a file, and
+# neither is something anybody runs.
+COMMANDISH = re.compile(r"(?<![\w./-])(mem[a-z0-9]+(?:-[a-z0-9]+)*)(?![\w./-])")
+
+# The `mem…` words this channel prints that are not commands, each because it
+# is something else entirely. Default-deny is the point: a token nobody has
+# classified is treated as an advertised command and fails, which is the right
+# way round for a name whose whole failure mode is being read and run.
+NOT_A_COMMAND = {
+    "memkit-pointers",  # the frame's XML tag, never typed
+    "memory",  # prose, in the search CLI's own description
+    "memories",  # prose, in the pointer block's preamble
+}
+
+
+def _corpus(tmp_path: Path, **extra) -> Path:
+    """A store with more matching memories than one pointer block can carry, so
+    the truncation notice — the one actionable line memkit emits — is rendered.
+    """
+    corpus = tmp_path / "store" / "search"
+    corpus.mkdir(parents=True)
+    for n in range(hook.MAX_HITS + 3):
+        (corpus / f"flange_torque_{n}.md").write_text(
+            f"---\ndescription: Flange fastener {n} tightens in a star pattern, "
+            "in three passes, to the torque the table gives.\ntype: reference\n"
+            f"---\n\n# Flange torque {n}\n\nThree passes, star pattern.\n"
+        )
+    return _config_file(
+        tmp_path / "memkit.json",
+        roots={"home": {"kind": "path", "path": str(tmp_path)}},
+        stores=[{"id": "s", "role": "personal", "dir": "store", "live_root": "home"}],
+        **extra,
+    )
+
+
+def _surfaces(root: Path, tmp_path: Path, config: Path, broken: Path) -> dict[str, str]:
+    """Every surface this channel renders, driven as the agent would reach it.
+
+    Real processes through the real wrappers, with a real interpreter: what is
+    under test is the name a plugin adopter is handed, and the wrappers are what
+    make this channel a channel at all.
+    """
+    env = dict(
+        os.environ,
+        HOME=str(tmp_path / "home"),
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
+    )
+    env.pop("MEMKIT_CONFIG", None)
+    recall = root / "bin" / "memkit-recall"
+    dispatcher = root / "bin" / "memkit"
+    query = "flange fastener tightening star pattern passes torque"
+
+    def run(wrapper: Path, *args: str, **extra: str) -> str:
+        out = subprocess.run(
+            [str(wrapper), *args], capture_output=True, text=True, timeout=120,
+            env={**env, **extra}, stdin=subprocess.DEVNULL, cwd=str(tmp_path),
+        )
+        return out.stdout + out.stderr
+
+    # The truncation notice lives on the HOOK path, not the search CLI: the CLI
+    # returns everything it found, and the notice exists because the block a
+    # prompt gets is capped.
+    hook_out = subprocess.run(
+        [str(root / "bin" / "memkit-hook")],
+        input=json.dumps({"session_id": "surfaces", "prompt": query}),
+        capture_output=True, text=True, timeout=120, env=env, cwd=str(tmp_path),
+    )
+
+    return {
+        # The only line in an injected block that tells the agent to do
+        # something.
+        "truncation": hook_out.stdout + hook_out.stderr,
+        "help": run(recall, "--help"),
+        "usage error": run(recall, "--nope"),
+        "debug-config": run(recall, "--debug-config"),
+        "config error": run(
+            recall, "--search", query,
+            CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(broken),
+        ),
+        "inert": run(
+            recall, "--search", query,
+            CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(tmp_path / "absent.json"),
+        ),
+        "dispatcher help": run(dispatcher, "--help"),
+        "dispatcher refusal": run(dispatcher, "doctor"),
+    }
+
+
+def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> None:
+    """The invariant, over the SET of surfaces rather than over the one that
+    was wrong.
+
+    A command memkit prints as a next step has to resolve on the caller's PATH
+    and has to resolve to THIS install. A plugin install ships no
+    `memory-recall`, so an agent following that advice got exit 127 — and on a
+    machine that also has a pip or nix memkit it got the other install's
+    stores, which is the collision the distinct name exists to prevent.
+
+    Scraped rather than compared against a list of strings, so a surface that
+    starts printing a command name later is covered without an edit here.
+    """
+    broken = tmp_path / "broken.json"
+    broken.write_text("{ not json")
+    shipped = {
+        entry.name
+        for entry in (root / "bin").iterdir()
+        if entry.is_file() and os.access(entry, os.X_OK)
+    }
+    assert "memkit-recall" in shipped, shipped
+    # The exception list may never name a command any channel ships. Without
+    # this, the cheapest way to silence a real failure here is to add the
+    # offending name to it, and the case would go on passing by no longer
+    # looking at the one thing it is for.
+    assert NOT_A_COMMAND.isdisjoint(shipped | {hook.SEARCH_BINARY}), NOT_A_COMMAND
+
+    # Three config states, because they reach the name through three different
+    # routes and a fix can cover one without the others: a config that omits
+    # `search_cli` takes the default applied in `Config.__init__`, one that
+    # names it takes the field itself — this is the value the README's own
+    # worked example produces — and no config at all takes the default applied
+    # where the config would have been read.
+    states = {
+        "omitted": _corpus(tmp_path / "omitted"),
+        "named by the config": _corpus(
+            tmp_path / "named", search_cli="memory-recall --search"
+        ),
+    }
+    for state, config in states.items():
+        surfaces = _surfaces(root, tmp_path / state.split()[0], config, broken)
+        for surface, text in surfaces.items():
+            found = set(COMMANDISH.findall(text))
+            assert found <= shipped | NOT_A_COMMAND, (
+                state, surface, sorted(found - shipped - NOT_A_COMMAND), text
+            )
+            # And each surface really does name one, or the case above passes
+            # by measuring a surface that says nothing.
+            assert found & shipped, f"{state}/{surface} named none:\n{text}"
+        # The truncation notice specifically: the line whose whole purpose is
+        # to be run, and the one a config value used to be able to break.
+        assert "memkit-recall --search" in surfaces["truncation"], state
+
+
+def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> None:
+    """The control for the case above, which would otherwise pass by finding
+    nothing. Off the plugin channel the same surfaces name `memory-recall` —
+    correctly, since pip and nix install that console script — and the scrape
+    sees it."""
+    out = subprocess.run(
+        ["python3", hook.__file__, "--help"],
+        capture_output=True, text=True, timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path)},
+    )
+    assert "memory-recall" in set(COMMANDISH.findall(out.stdout + out.stderr))
+
+
 # --- the hook file the wrapper actually runs ---------------------------------
 
 

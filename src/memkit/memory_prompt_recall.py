@@ -108,10 +108,35 @@ from collections.abc import Callable
 # source stays byte-stable for the same reason.
 SCHEMA = 1
 CONFIG_ENV = "MEMKIT_CONFIG"
+# What this binary answers to, per channel — and the two names exist because
+# the channels ship two of them. pip and nix install a `memory-recall` console
+# script; a plugin install ships no such name and puts `memkit-recall` on the
+# agent's PATH instead, deliberately, because plugin `bin/` is APPENDED and a
+# second `memory-recall` from another install would win the collision and
+# search that install's stores without saying so.
+#
+# So the name is not decoration: a command memkit prints as a next step has to
+# resolve on the caller's PATH and has to resolve to THIS install. On a
+# plugin-only machine `memory-recall` satisfies neither — measured exit 127 —
+# and on a mixed machine it satisfies the first and fails the second, silently,
+# which is the worse half.
+SEARCH_BINARY = "memory-recall"
+PLUGIN_SEARCH_BINARY = "memkit-recall"
 # Advertised to agents when a truncation notice names the on-demand search.
 # Overridable per-config, never from the environment: it is a command string
 # handed to an agent.
-DEFAULT_SEARCH_CLI = "memory-recall --search"
+DEFAULT_SEARCH_CLI = f"{SEARCH_BINARY} --search"
+PLUGIN_SEARCH_CLI = f"{PLUGIN_SEARCH_BINARY} --search"
+
+
+def _self_name() -> str:
+    """The name this process should introduce itself by.
+
+    NOT argv[0]: the plugin's wrappers `exec "$PY" "$HOOK_FILE" "$@"`, so
+    argv[0] here is the hook file's path whichever wrapper ran — measured, and
+    it is why the channel rather than the invocation is what this reads.
+    """
+    return PLUGIN_SEARCH_BINARY if _plugin_install() else SEARCH_BINARY
 
 
 class ConfigError(Exception):
@@ -988,8 +1013,41 @@ def _config_state() -> tuple:
 
 
 def _search_cli() -> str:
-    """The command string the truncation notice tells the agent to run."""
-    cfg = _config()
+    """The command string the truncation notice tells the agent to run.
+
+    On a plugin install the channel's own binary wins over the config's value,
+    and that override is the decision rather than an oversight. One config file
+    is read by every channel — the README says so and the nix module bakes the
+    same path — so a `search_cli` written for a pip install travels to a plugin
+    one, where the name it holds resolves to nothing (exit 127) or, on a
+    machine that has both, to the OTHER install's stores. Honouring it is what
+    made the truncation notice wrong on a correctly configured plugin, and the
+    field cannot be made channel-aware from inside a file that does not know
+    which channel is reading it.
+
+    Nothing is lost where the config is right: a config naming this channel's
+    binary and this override return the same string.
+
+    An override rather than a channel-aware DEFAULT, and the difference is the
+    fix. The default is applied at two sites — `Config.__init__` for a config
+    that omits the key, and here for no config at all — so a channel-aware
+    default reaching one of them still left the commonest plugin state wrong,
+    and neither site is reached at all by a config that names the field
+    explicitly, which is the state the README's worked example produces.
+    """
+    return _advertised_search_cli(_config())
+
+
+def _advertised_search_cli(cfg: Config | None) -> str:
+    """The same answer for a config already in hand.
+
+    Two entry points and one rule, because the caller that has already parsed
+    must not parse again: `_print_config` derives the config state exactly once
+    per invocation and a second resolution there would be a second answer to
+    the question the first one settled.
+    """
+    if _plugin_install():
+        return PLUGIN_SEARCH_CLI
     return cfg.search_cli if cfg is not None else DEFAULT_SEARCH_CLI
 
 
@@ -2967,7 +3025,7 @@ def _print_config(state: tuple) -> int:
     """
     served, error, inert = state
     if error:
-        print(f"memory-recall: {error}", file=sys.stderr)
+        print(f"{_self_name()}: {error}", file=sys.stderr)
         return EXIT_ERROR
     if served is None:
         print(
@@ -2983,7 +3041,10 @@ def _print_config(state: tuple) -> int:
         display = load_config(_CONFIG_PATH, honor_env_overrides=True) or served
 
     print(f"config:     {display.path} (schema {SCHEMA})")
-    print(f"search_cli: {display.search_cli}")
+    # What this install will ADVERTISE, not the raw field: on the plugin
+    # channel those differ by design (see _search_cli), and a diagnostic that
+    # printed the field would disagree with the command an agent is handed.
+    print(f"search_cli: {_advertised_search_cli(display)}")
     shown_searched = display.searched_stores()
     served_searched = served.searched_stores()
     served_by_id = {s.id: s for s in served.stores}
@@ -3055,7 +3116,7 @@ def search_cli(argv: list[str]) -> int:
 
     t0 = time.monotonic()
     ap = argparse.ArgumentParser(
-        prog="memory-recall",
+        prog=_self_name(),
         description="Search the memory corpora the way the recall hook does.",
         # Built from the constants, so the help and the README cannot drift
         # from what the code returns. An agent reading `--help` to learn how to
@@ -3149,7 +3210,7 @@ def search_cli(argv: list[str]) -> int:
     # to their face and gone. Only a run that was going to search the stores is
     # a use of the retrieval path at all.
     if config_error:
-        print(f"memory-recall: {config_error}", file=sys.stderr)
+        print(f"{_self_name()}: {config_error}", file=sys.stderr)
         if args.config is None and args.search and not args.dir:
             rec.update(
                 outcome="cli:nodirs",
@@ -3175,7 +3236,7 @@ def search_cli(argv: list[str]) -> int:
     missing = [d for d in dirs or [] if not os.path.isdir(d)]
     if missing:
         print(
-            f"memory-recall: not a directory: {', '.join(missing)}",
+            f"{_self_name()}: not a directory: {', '.join(missing)}",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -3203,7 +3264,7 @@ def search_cli(argv: list[str]) -> int:
             )
             _soak_log(rec)
             print(
-                f"memory-recall: inert — {inert}; this is not a claim of "
+                f"{_self_name()}: inert — {inert}; this is not a claim of "
                 "absence",
                 file=sys.stderr,
             )
@@ -3228,7 +3289,7 @@ def search_cli(argv: list[str]) -> int:
         # a claim this run did not establish.
         if rec.get("errs_lex"):
             print(
-                "memory-recall: no matches, but "
+                f"{_self_name()}: no matches, but "
                 f"{rec['errs_lex']} dir(s) failed to search"
                 " — result is not a claim of absence",
                 file=sys.stderr,
@@ -3242,7 +3303,7 @@ def search_cli(argv: list[str]) -> int:
         # converts that window into a loud failure instead, and covers the
         # store-directory variant of the same race for free.
         if _CONFIG_ERROR:
-            print(f"memory-recall: {_CONFIG_ERROR}", file=sys.stderr)
+            print(f"{_self_name()}: {_CONFIG_ERROR}", file=sys.stderr)
             return EXIT_ERROR
         return EXIT_NO_MATCH
     print("\n".join(lines))
@@ -3268,7 +3329,7 @@ def cli() -> None:
             # Never exit EXIT_NO_MATCH or EXIT_INERT on a failure: both codes
             # are spoken for, and an agent reading either as "there is no such
             # memory" or "nothing is set up here" would stop looking.
-            print(f"memory-recall: {exc}", file=sys.stderr)
+            print(f"{_self_name()}: {exc}", file=sys.stderr)
             sys.exit(EXIT_ERROR)
     # Fail-open: no output, exit 0 — never block the prompt.
     with contextlib.suppress(Exception):
