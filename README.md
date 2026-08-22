@@ -131,7 +131,11 @@ journalled setup this is designed around — has not landed yet, so for now writ
 the config by hand (schema and a worked example under [Config](#config)) at the
 path you passed to `--config`. Until that file exists the plugin is **inert**:
 the hook exits 0, prints nothing, reads no directory of yours, and records the
-refusal where a future `memkit doctor` can report it. That is the intended
+refusal in the plugin's own data directory, where a future `memkit doctor` can
+report it. Whether you can read that file yourself depends on
+`$CLAUDE_PLUGIN_DATA`, which the harness exports to the plugin's own processes
+and not to your shell — so today the record is for the tool rather than for
+you; `claude plugin details memkit@memkit` is what you can check by hand. That is the intended
 state, not a failure — but nothing will surface pointers until you write the
 file.
 
@@ -179,6 +183,14 @@ out of harness, with no install:
 uvx --from git+https://github.com/ak2k/memkit memory-recall \
   --search "<terms>" --config ~/.cache/memory-recall/memkit.json
 ```
+
+**Debugging what the harness told the hook.** `tests/rig/hookdump.py` is a
+standalone recorder: register it on any hook event in a scratch
+`CLAUDE_CONFIG_DIR` and it writes one JSON file per invocation with the argv,
+the environment, the cwd and the payload. It is how the claims in this section
+were measured. Its records hold the WHOLE environment — `ANTHROPIC_API_KEY`
+included — and the whole prompt, so keep them inside the scratch profile they
+came from.
 
 `claude plugin uninstall memkit` additionally removes the plugin's data
 directory — which holds only the refusal records above — unless you pass
@@ -265,7 +277,8 @@ different job:
 
 Rolling this out across more than one machine, verifying a host afterwards, and
 rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
-host — the hook fails open, so a broken rollout is silent.
+host — the hook fails open, so a broken rollout is silent. It carries a verify
+block per channel; the nix one reads paths a plugin install does not have.
 
 ## Config
 

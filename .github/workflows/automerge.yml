@@ -52,10 +52,9 @@ jobs:
             //
             // The plugin work added no context: `claude plugin validate
             // --strict` and the rig scenarios are STEPS inside `python`, so
-            // they gate through a name branch protection already waits for. A
-            // job of their own would have needed a protection change to mean
-            // anything, and would have been green by never being required
-            // until somebody made it.
+            // they gate through a name branch protection already waits for.
+            // Why that is the rule rather than a preference is in check.yml,
+            // above its `env:` block — one home for it.
             const requiredChecks = [
               "python",
               "wordlist",

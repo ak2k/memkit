@@ -432,10 +432,13 @@ def test_the_registration_passes_zero_arguments_on_every_entry() -> None:
     assert _entries(), "hooks.json registers nothing — this pin would be vacuous"
     for event, handler in _entries():
         assert handler.get("args", []) == [], (event, handler)
-        # Exec form, so the command is never re-parsed by a shell: a plugin
-        # path containing a space is otherwise two arguments.
+        # DECLARED rather than omitted, because `args: []` is what selects the
+        # exec form: without the key the command is a shell string, and the
+        # hook file's dual mode turns any stray word into the search CLI.
         assert "args" in handler, (event, "declare args: [] rather than omitting it")
         assert handler["type"] == "command"
+        # And no space in the command itself — under a shell that would be two
+        # arguments, which is the same defect arriving through the path.
         assert " " not in handler["command"], handler["command"]
 
 

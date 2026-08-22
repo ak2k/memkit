@@ -39,6 +39,16 @@ concurrency:
 permissions:
   contents: read
 
+# WHY EVERYTHING BELOW IS A STEP RATHER THAN A JOB. Branch protection pins a
+# fixed list of required context names, and a context is a JOB. So a new job is
+# a context no protected branch is waiting for — green by never being required,
+# until somebody remembers to add it. `automerge.yml` keeps the list of names
+# that are required; this file keeps the reason there are no others.
+#
+# The cost is that a slow step serialises behind the ones before it. That is the
+# trade, and it is the right way round while every job here is single-digit
+# minutes.
+
 env:
   # renovate: datasource=pypi depName=ruff
   RUFF_VERSION: "0.15.14"
@@ -158,11 +168,6 @@ jobs:
       # the tree since the first commit and nothing ran it, so its errors
       # accumulated where only somebody running pyright by hand would meet
       # them. A config that gates nothing is a config that drifts.
-      #
-      # A STEP inside this job, deliberately not a job of its own: branch
-      # protection pins the five context names, and a new job adds a sixth
-      # context that no protected branch is waiting for — green by never
-      # being required.
       - name: Pyright — the package
         env:
           PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
@@ -199,10 +204,6 @@ jobs:
       # Gating on exit STATUS rather than on the output: 0 on a pass, 1 on both
       # a strict warning and a hard error. The output still goes to the job log,
       # because "Validation failed" with the reason is what somebody reads next.
-      #
-      # A STEP in this job, deliberately not a job of its own: branch protection
-      # pins the five context names, and a sixth context is one no protected
-      # branch waits for — green by never being required.
       - name: Plugin manifests — validate --strict
         run: |
           claude plugin validate . --strict
