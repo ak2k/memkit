@@ -31,6 +31,7 @@ What the suite covers, roughly in the order the hook does it:
 
 from __future__ import annotations
 
+import ast
 import builtins
 import io
 import json
@@ -4790,6 +4791,141 @@ PROMPTS = (
     "sprocket backlash after the gearbox rebuild",
     "turbine balancing weights follow the rotor",
 )
+
+
+def _hook_outcomes() -> set[str]:
+    """The outcome vocabulary, enumerated the way the consumer enumerates it.
+
+    The consumer's own suite reads memkit's source and asserts that every
+    outcome the hook can emit is classified as declined or search-reaching, so
+    that a new one arriving on an automerged bump fails there rather than
+    quietly landing in somebody's rates. It reads two shapes: the string
+    returns of `prompt_gate`, and the first positional argument of `done`.
+
+    A copy of that reader on this side, because the property it depends on is
+    memkit's: every record this hook writes is named by a literal at the place
+    it is written. A record emitted some other way is one the gate cannot see,
+    and the gate passing is then a statement about nothing.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    main = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    emitter = next(
+        n for n in ast.walk(main)
+        if isinstance(n, ast.FunctionDef) and n.name == "done"
+    )
+    inside_emitter = set(map(id, ast.walk(emitter)))
+    gate = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "prompt_gate"
+    )
+    gates = {
+        n.value.value for n in ast.walk(gate)
+        if isinstance(n, ast.Return)
+        and isinstance(n.value, ast.Constant)
+        and isinstance(n.value.value, str)
+    }
+
+    outcomes = set(gates)
+    for node in ast.walk(main):
+        if id(node) in inside_emitter or not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name):
+            continue
+        assert node.func.id != "_soak_log", (
+            f"a soak record written outside `done` at line {node.lineno} — the "
+            "consumer's collector enumerates `done` call sites and cannot see it"
+        )
+        if node.func.id != "done":
+            continue
+        arg = node.args[0] if node.args else None
+        # One conditional is unwrapped, matching the consumer's reader: the
+        # delivery record picks its outcome from whether the write landed.
+        sides = [arg.body, arg.orelse] if isinstance(arg, ast.IfExp) else [arg]
+        for side in sides:
+            if isinstance(side, ast.Constant) and isinstance(side.value, str):
+                outcomes.add(side.value)
+            elif isinstance(side, ast.Name) and side.id == "gate":
+                continue  # the prompt_gate returns already collected above
+            else:
+                raise AssertionError(f"outcome is not a literal at line {node.lineno}")
+    return outcomes
+
+
+def test_every_outcome_the_hook_writes_is_named_where_it_is_written() -> None:
+    """`dup-registration` was written by a bare `_soak_log` dict literal, so
+    the consumer collected thirteen outcomes while the hook could emit
+    fourteen — and its assertion, which compares the collected set against its
+    own classification of the same size, passed blind.
+
+    Asserted over the SET rather than over that one name, because the next
+    outcome added off the emitter fails here for the same reason.
+    """
+    outcomes = _hook_outcomes()
+    assert "dup-registration" in outcomes, sorted(outcomes)
+    assert {"injected", "killed", "nomatch"} <= outcomes, sorted(outcomes)
+
+
+def test_a_kill_after_a_duplicate_is_recorded_still_leaves_killed(tmp_path) -> None:
+    """The trap in routing this record through the ordinary emitter.
+
+    `done` sets `logged`, and `_flush_on_kill` writes `killed` only when that
+    flag is clear — so a duplicate-registration record written as an ordinary
+    outcome consumes the prompt's one record and a SIGTERM during retrieval
+    then writes nothing at all. That trades the consumer's blind spot for the
+    loss of the one outcome the soak log exists to expose, which is the worse
+    half. `concludes=False` is what keeps them apart, and this is the case
+    that fails if it goes away.
+
+    Same FIFO as the kill case above: an unwritten pipe named like a memory
+    blocks the corpus walk, so the signal reliably lands inside retrieval.
+    """
+    for rel in (PROJECT_DIR, PERSONAL_DIR):
+        (tmp_path / rel / "search").mkdir(parents=True, exist_ok=True)
+    os.mkfifo(tmp_path / PERSONAL_DIR / "search" / "blocks_the_walk.md")
+    env = _env(tmp_path)
+
+    # A ledger left by a second registration at another path, which is what
+    # `_foreign_registration` compares this process against.
+    state = tmp_path / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "dupkill.json").write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "shown": [],
+                "spent": {},
+                "reg": {
+                    "file": _second_installation(tmp_path),
+                    "config": env["MEMKIT_CONFIG"],
+                    "v": "deadbeef",
+                },
+            }
+        )
+    )
+
+    with subprocess.Popen(
+        ["python3", HOOK],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, text=True, env=env,
+    ) as proc:
+        assert proc.stdin is not None
+        proc.stdin.write(
+            json.dumps({"session_id": "dupkill", "prompt": "unionfs mount permissions"})
+        )
+        proc.stdin.close()
+        time.sleep(1.0)  # into the walk, blocked on the FIFO
+        proc.terminate()
+        proc.wait(timeout=10)
+
+    log = state / "log.jsonl"
+    outcomes = [json.loads(line)["outcome"] for line in log.read_text().splitlines()]
+    assert outcomes == ["dup-registration", "killed"], outcomes
+    # And the duplicate's own fields did not ride along on the prompt's record.
+    killed = json.loads(log.read_text().splitlines()[-1])
+    assert "other_file" not in killed and killed["prompt_sha"], killed
 
 
 def test_two_registrations_serving_one_session_each_record_the_other(

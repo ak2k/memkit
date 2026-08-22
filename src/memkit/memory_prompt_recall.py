@@ -2677,12 +2677,35 @@ def main() -> None:
 
     logged = False
 
-    def done(outcome: str, **kw) -> None:
+    def done(outcome: str, *, concludes: bool = True, **kw) -> None:
+        """Append one soak record, through the one emitter this run has.
+
+        Every record the hook can write goes through here, and the outcome
+        arrives as a string LITERAL at each call site, because that is what
+        lets the consumer enumerate the vocabulary statically — a record
+        written some other way is a record its tripwire cannot see, and the
+        tripwire is the only thing that fails when a new outcome arrives on an
+        automerged bump.
+
+        `concludes` is False for a record that is ABOUT this prompt without
+        being its outcome. Two things then differ, and both matter. The record
+        is built fresh rather than from `rec`, so its fields cannot ride along
+        on the prompt's own record written later. And `logged` is left alone:
+        that flag exists to keep a SIGTERM from appending a second record for a
+        prompt already recorded, so letting a non-outcome record consume it
+        would trade the duplicate for the loss of `killed` — the one outcome
+        the soak log exists to expose.
+        """
         nonlocal logged
-        rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
+        if concludes:
+            rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
+            record = rec
+        else:
+            record = {"outcome": outcome, "session": rec["session"], **kw}
         with _sigterm_masked():
-            _soak_log(rec)
-            logged = True
+            _soak_log(record)
+            if concludes:
+                logged = True
 
     # A killed hook used to leave NO record: the harness SIGTERMs at
     # HARNESS_TIMEOUT and the process died between the last stage and the
@@ -2774,15 +2797,13 @@ def main() -> None:
         # the session state, which doctor can read and which never leaves the
         # machine as a corpus.
         if (other := _foreign_registration(state_path)) is not None:
-            _soak_log(
-                {
-                    "outcome": "dup-registration",
-                    "session": rec["session"],
-                    "other_file": os.path.basename(str(other.get("file", ""))),
-                    "other_config": os.path.basename(str(other.get("config", ""))),
-                    "other": _registration_digest(other),
-                    "mine": _registration_digest(_registration()),
-                }
+            done(
+                "dup-registration",
+                concludes=False,
+                other_file=os.path.basename(str(other.get("file", ""))),
+                other_config=os.path.basename(str(other.get("config", ""))),
+                other=_registration_digest(other),
+                mine=_registration_digest(_registration()),
             )
         shown, spent = _load_session(state_path)
         if len(spent) >= POINTER_BUDGET and any(e is None for e in spent.values()):
