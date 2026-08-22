@@ -122,11 +122,37 @@ CONFIG_ENV = "MEMKIT_CONFIG"
 # which is the worse half.
 SEARCH_BINARY = "memory-recall"
 PLUGIN_SEARCH_BINARY = "memkit-recall"
+# How a config can reach this process, in the words the inert message uses —
+# per channel, because the two channels do not share a single route.
+#
+# A plugin install NEVER reads $MEMKIT_CONFIG: the wrappers export it when a
+# rung answered and UNSET it when none did, precisely so that a memkit already
+# on the machine cannot hand the plugin a corpus nobody pointed it at. Naming
+# it there sends an agent to set a variable that is stripped before the hook
+# sees it — a fix that changes nothing, on the one surface that exists to say
+# why nothing is happening.
+#
+# The plugin's rungs are resolved in POSIX sh (bin/lib/common.sh) and named
+# here in Python, with nothing between the two but a test that scrapes one and
+# compares it to the other. That test is the only reason this list can be
+# trusted; without it a rung deleted there leaves a confident sentence here.
+CONFIG_ROUTES = ("--config PATH", f"${CONFIG_ENV}")
+PLUGIN_CONFIG_ROUTES = (
+    "--config PATH",
+    "the `memkitConfig` install option",
+    "$CLAUDE_PLUGIN_DATA/memkit.json",
+)
 # Advertised to agents when a truncation notice names the on-demand search.
 # Overridable per-config, never from the environment: it is a command string
 # handed to an agent.
 DEFAULT_SEARCH_CLI = f"{SEARCH_BINARY} --search"
 PLUGIN_SEARCH_CLI = f"{PLUGIN_SEARCH_BINARY} --search"
+
+
+def _config_routes() -> str:
+    """The routes this caller's channel really does consult, as a phrase."""
+    routes = PLUGIN_CONFIG_ROUTES if _plugin_install() else CONFIG_ROUTES
+    return ", ".join(routes)
 
 
 def _self_name() -> str:
@@ -997,7 +1023,8 @@ def _config_state() -> tuple:
         cfg = load_config(_CONFIG_PATH)
         if cfg is None:
             return None, None, (
-                f"no config (no --config, ${CONFIG_ENV} unset), so no stores to search"
+                f"no config on any route this install reads ({_config_routes()}), "
+                "so no stores to search"
             )
         if not _live_dirs(cfg):
             searched = cfg.searched_stores()
@@ -3030,7 +3057,7 @@ def _print_config(state: tuple) -> int:
     if served is None:
         print(
             "config:     none — inert: no stores, no pointers "
-            f"(no --config, ${CONFIG_ENV} unset)"
+            f"(nothing on any route this install reads: {_config_routes()})"
         )
         return EXIT_INERT
     # Same file and same parse — only root RESOLUTION differs — so this cannot

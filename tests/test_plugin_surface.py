@@ -976,6 +976,74 @@ def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> No
     assert "memory-recall" in set(COMMANDISH.findall(out.stdout + out.stderr))
 
 
+# --- what the inert message says a config can arrive by ----------------------
+
+# One phrase per rung `memkit_resolve_config` really tries. The mapping is the
+# only handwritten link in the chain: the rungs are scraped from the shell and
+# the phrases are read out of the module, so the two ends cannot be edited into
+# agreement through this table without someone editing this table too.
+ROUTE_FOR_RUNG = {
+    "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": "the `memkitConfig` install option",
+    "CLAUDE_PLUGIN_DATA": "$CLAUDE_PLUGIN_DATA/memkit.json",
+}
+
+
+def _resolver_rungs() -> set[str]:
+    """The harness variables `memkit_resolve_config` consults, from its body."""
+    text = COMMON_SH.read_text(encoding="utf-8")
+    match = re.search(r"^memkit_resolve_config\(\) \{$(.*?)^\}$", text, re.S | re.M)
+    assert match, "memkit_resolve_config moved — this pin cannot see it"
+    return set(re.findall(r"CLAUDE_[A-Z0-9_]+", match.group(1)))
+
+
+def test_the_inert_message_names_the_rungs_the_resolver_actually_tries() -> None:
+    """The rungs live in POSIX sh and the sentence that describes them lives in
+    Python, with nothing between them.
+
+    A rung deleted there used to leave a confident sentence here — telling an
+    agent to configure an install through a route the code no longer has, on
+    the one surface whose whole job is to say why nothing is happening. Set
+    equality in both directions, so a rung added is as red as a rung removed.
+    """
+    rungs = _resolver_rungs()
+    assert rungs == set(ROUTE_FOR_RUNG), (rungs, set(ROUTE_FOR_RUNG))
+    expected = {"--config PATH"} | {ROUTE_FOR_RUNG[rung] for rung in rungs}
+    assert set(hook.PLUGIN_CONFIG_ROUTES) == expected, hook.PLUGIN_CONFIG_ROUTES
+
+
+def test_both_channels_inert_messages_name_only_their_own_routes(
+    root, tmp_path
+) -> None:
+    """Both branches, explicitly, because the suite runs under one of them.
+
+    With `MEMKIT_PLUGIN` unset the plugin wording is the untested branch and
+    vice versa, and the defect this replaced was exactly a message that was
+    right for the channel the tests happened to run on: a plugin install told
+    an agent to set `$MEMKIT_CONFIG`, which both wrappers strip before the hook
+    sees it, so following the advice measurably changed nothing.
+    """
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+    through_plugin = subprocess.run(
+        [str(root / "bin" / "memkit-recall"), "--search", "flange torque"],
+        capture_output=True, text=True, timeout=120, env=env,
+        stdin=subprocess.DEVNULL,
+    )
+    assert through_plugin.returncode == hook.EXIT_INERT, through_plugin.stderr
+    assert hook.CONFIG_ENV not in through_plugin.stderr, through_plugin.stderr
+    for route in hook.PLUGIN_CONFIG_ROUTES:
+        assert route in through_plugin.stderr, route
+
+    direct = subprocess.run(
+        ["python3", hook.__file__, "--search", "flange torque"],
+        capture_output=True, text=True, timeout=120, env=env,
+        stdin=subprocess.DEVNULL,
+    )
+    assert direct.returncode == hook.EXIT_INERT, direct.stderr
+    assert "CLAUDE_PLUGIN" not in direct.stderr, direct.stderr
+    for route in hook.CONFIG_ROUTES:
+        assert route in direct.stderr, route
+
+
 # --- the hook file the wrapper actually runs ---------------------------------
 
 
