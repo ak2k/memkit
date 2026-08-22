@@ -865,9 +865,17 @@ def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
 def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
     root, tmp_path, shimmed
 ) -> None:
-    """`bin/` is on the agent's PATH while the plugin is enabled, so
-    `memkit-recall --search …` arrives with argv[0] of `memkit-recall` and no
-    directory to walk up from.
+    """`bin/` is on the agent's PATH while the plugin is enabled, so a bare
+    `memkit-recall --search …` has to find its own tree with no directory in
+    argv[0] to walk up from.
+
+    Run through `sh <name>` from the wrapper's own directory, and that is the
+    only way to produce the case rather than a convenience. MEASURED on this
+    platform: a shebang script executed through a PATH lookup receives the
+    RESOLVED path as `$0` — the kernel passes execve's pathname to the
+    interpreter, not argv[0] — so `subprocess.run(["memkit-recall", ...])`
+    exercises the slashed branch and says nothing about this one. Handing the
+    name to `sh` directly is what leaves `$0` bare.
 
     The hook path the wrapper resolved is the whole assertion: a `command -v`
     that answered with a different `memkit-recall` on the same PATH would run
@@ -877,9 +885,9 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
     env = shimmed()
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     out = subprocess.run(
-        ["memkit-recall", "--search", "flange torque"],
+        ["sh", "memkit-recall", "--search", "flange torque"],
         capture_output=True, text=True, timeout=60, env=env,
-        stdin=subprocess.DEVNULL,
+        cwd=str(root / "bin"), stdin=subprocess.DEVNULL,
     )
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
