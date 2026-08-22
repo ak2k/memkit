@@ -96,18 +96,45 @@ memkit_resolve_config() {
 # would catch (an executable that is not a working python) surfaces one layer
 # down as a traceback the harness reports without blocking the turn.
 #
-# The extraction is a grep for one top-level string key rather than a JSON
-# parse, because the only thing available to parse with at this point is the
-# interpreter being looked for. It is bounded by what writes the field: init,
-# with an absolute path it resolved itself.
+# The extraction is a grep for a string key rather than a JSON parse, because
+# the only thing available to parse with at this point is the interpreter being
+# looked for. Two consequences, and the guard below is written for them rather
+# than around them:
+#
+#   - The pattern cannot express "top level". A `"interpreter"` nested in a
+#     store or a root entry matches, and which of several occurrences wins is
+#     an artifact of the file's line breaks — first on a multi-line file, last
+#     on a minified one. So the value is what gets checked, not the key.
+#   - It runs before anything has established the file is JSON at all, so a
+#     corrupt config still gets to name a binary. That is a lower bar than the
+#     stores are held to, which a real parse admits, and it is stated rather
+#     than fixed: validating shape here would mean writing a JSON parser in
+#     POSIX sh to decide which python to run.
+#
+# ABSOLUTE, or it does not count. A slashless or relative value is two
+# different files depending on who resolves it: `[ -x ]` below tests it against
+# the wrapper's CWD — a directory chosen by whoever launched the harness — while
+# `exec` searches PATH for a slashless word and the CWD for a relative one.
+# Requiring a leading `/` collapses those into one resolution, which is also
+# what closes the measured exit-127 path: a value that passed `[ -x ]` against
+# the CWD and was then absent from PATH left `exec` failing on the every-prompt
+# hook, i.e. a blocked turn from a config field.
 memkit_config_interpreter() {
     [ -n "$1" ] && [ -f "$1" ] || return 1
     _found=$(sed -n 's/.*"interpreter"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" \
         2>/dev/null | head -n 1)
     [ -n "$_found" ] || return 1
+    case $_found in
+        /*) ;;
+        *) return 1 ;;
+    esac
     printf '%s\n' "$_found"
 }
 
+# A recorded value this build will not honour — absent, relative, or naming
+# something that is not an executable file — falls through to the PATH probe
+# rather than ending the resolution. One bad character in a config field must
+# not be able to turn a working install inert.
 memkit_resolve_interpreter() {
     _config=$1
     _recorded=$(memkit_config_interpreter "$_config") || _recorded=""

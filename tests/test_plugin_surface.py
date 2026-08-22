@@ -550,6 +550,63 @@ def test_an_unusable_recorded_interpreter_falls_back_to_the_path(
     assert shimmed.read()["MEMKIT_CONFIG"] == str(config)
 
 
+def test_a_relative_recorded_interpreter_is_not_a_path_into_the_session_dir(
+    root, tmp_path, shimmed
+) -> None:
+    """`[ -x ]` and `exec` resolve a non-absolute value against different
+    things, and only one of them is the wrapper's to choose.
+
+    The test is against the wrapper's CWD, which under the harness is whatever
+    directory the session stands in. `exec` on a value with a slash resolves
+    against the same CWD and runs it; on a slashless word it searches PATH
+    instead. So a recorded `./interp/python3` used to hand the process that
+    reads every prompt to an executable sitting in the directory somebody
+    happened to open — chosen by the session, not by the install.
+    """
+    session = tmp_path / "session"
+    marker = tmp_path / "relative-ran.txt"
+    _shim(session / "interp", "python3", f'echo ran > "{marker}"')
+    config = _config_file(tmp_path / "rel.json", interpreter="./interp/python3")
+    env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
+    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
+    assert out.returncode == 0, out.stderr
+    assert not marker.exists(), "a config named an interpreter inside the cwd"
+    assert shimmed.read()["argv"] == str(
+        root / "src" / "memkit" / "memory_prompt_recall.py"
+    )
+
+
+def test_a_recorded_interpreter_the_path_cannot_answer_still_exits_zero(
+    root, tmp_path
+) -> None:
+    """The exit contract, at the config field rather than at an empty PATH.
+
+    A slashless `"interpreter": "python3"` passed the executable test against
+    a CWD that happened to hold a file of that name, and then `exec` — which
+    searches PATH for a slashless word — found nothing and left the
+    every-prompt hook exiting 127. On UserPromptSubmit that is a blocked turn,
+    produced by a config field on a machine where the fallback would have
+    worked had it been consulted.
+    """
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("sed", "head"):
+        found = shutil.which(name)
+        assert found, name
+        (tools / name).symlink_to(found)
+    session = tmp_path / "session"
+    _shim(session, "python3", "exit 0")
+    config = _config_file(tmp_path / "bare.json", interpreter="python3")
+    env = {
+        "PATH": str(tools),
+        "HOME": str(tmp_path / "home"),
+        "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config),
+    }
+    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
+    assert out.returncode == 0, (out.returncode, out.stderr)
+    assert "no python3" in out.stderr
+
+
 def test_no_interpreter_is_a_named_refusal_that_still_exits_zero(
     root, tmp_path
 ) -> None:
