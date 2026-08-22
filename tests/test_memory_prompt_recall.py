@@ -5486,6 +5486,13 @@ def test_the_bound_is_measured_in_bytes_rather_than_argued_from_characters(
     query = " ".join("漢字識別子" * 20 for _ in range(40))
     lines.append(f'- …99 further matches — search: memory-recall --search "{query}"')
 
+    # The masked write goes through the bound, not around it. A direct call to
+    # `_bounded_block` says nothing about which function `main` hands its lines
+    # to, and that is where the check has to be.
+    source = Path(hook.__file__).read_text(encoding="utf-8")
+    assert "sys.stdout.write(_bounded_block(lines))" in source
+    assert "sys.stdout.write(_framed(" not in source
+
     assert len(hook._framed(lines).encode()) > hook.PIPE_BUFFER_BOUND
     payload = hook._bounded_block(lines)
     assert len(payload.encode()) <= hook.PIPE_BUFFER_BOUND, len(payload.encode())

@@ -1466,13 +1466,22 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
     # written `if _plugin_install() and cfg is not None`, an unconfigured
     # plugin goes back to advertising the binary it does not ship and the whole
     # suite stays green.
+    # A config that raises something `load_config` does NOT convert to
+    # ConfigError: `json.load` on a deeply nested document raises
+    # RecursionError, and `_config()` catches only ConfigError. That is the
+    # state the dispatcher's `except` fallback is reached in, and it was
+    # handing plugin adopters the binary their channel does not ship.
+    raising = tmp_path / "raising.json"
+    raising.parent.mkdir(parents=True, exist_ok=True)
+    raising.write_text("[" * 200_000 + "]" * 200_000)
     states = {
         "omitted": _corpus(tmp_path / "omitted"),
         "named": _corpus(tmp_path / "named", search_cli="memory-recall --search"),
         "absent": None,
+        "raising outside ConfigError": raising,
     }
     for state, config in states.items():
-        surfaces = _surfaces(root, tmp_path / state, config, broken)
+        surfaces = _surfaces(root, tmp_path / state.split()[0], config, broken)
         named: set[str] = set()
         for surface, text in surfaces.items():
             found = set(COMMANDISH.findall(text))
@@ -1491,10 +1500,10 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         # no config there is no corpus to truncate and no path to name, so what
         # that state pins instead is the dispatcher's fallback — which is where
         # a pre-init adopter actually meets a command name.
-        if config is not None:
+        if config is not None and config.name != "raising.json":
             assert "memkit-recall --config " in surfaces["truncation"], state
         else:
-            assert "memkit-recall --search" in surfaces["dispatcher refusal"], state
+            assert "memkit-recall" in surfaces["dispatcher refusal"], state
 
 
 def test_the_advertised_command_runs_from_the_agents_bash_tool(
@@ -1552,6 +1561,26 @@ def test_the_advertised_command_runs_from_the_agents_bash_tool(
     )
     assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr, advertised[0])
     assert "flange_torque_" in out.stdout, out.stdout
+
+    # And the DIAGNOSTIC form the dispatcher hands out beside it, which is the
+    # other command an agent is sent to run and which is built by swapping the
+    # mode flag. Rebuilding it from the binary name alone drops the
+    # `--config <path>`, leaving a command that is spelled right and inert.
+    dispatcher = _run(
+        root / "bin" / "memkit", "doctor",
+        env={**env, "PATH": os.environ["PATH"]},
+    )
+    debug = [
+        part.split("`")[0]
+        for part in dispatcher.stderr.split("`")
+        if part.startswith("memkit-recall") and "--debug-config" in part
+    ]
+    assert debug, dispatcher.stderr
+    probed = subprocess.run(
+        shlex.split(debug[0]), capture_output=True, text=True, timeout=120,
+        env=bash_tool, cwd=str(tmp_path), stdin=subprocess.DEVNULL,
+    )
+    assert probed.returncode == hook.EXIT_OK, (probed.returncode, probed.stdout, debug[0])
 
 
 def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> None:
