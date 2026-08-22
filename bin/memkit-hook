@@ -23,6 +23,12 @@
 
 set -u
 
+# The name this wrapper answers to, for every message bin/lib/common.sh emits
+# on its behalf. Declared before the library is sourced, because the shared
+# messages sit beside per-wrapper exit codes and a message naming the wrong
+# binary sends an agent to the wrong exit-code table.
+MEMKIT_SELF=memkit-hook
+
 # ARGUMENTS ARE IGNORED, deliberately, and this is the second of two
 # independent guards on the same failure. The hook file is dual-mode: no
 # arguments means read a payload off stdin, any argument at all means the

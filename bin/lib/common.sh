@@ -31,6 +31,18 @@
 # into an install command, not a shell word the shell ever expanded, so a
 # config named `~/.cache/...` arrives with a literal tilde and every rung below
 # would silently miss it.
+# The name the running wrapper answers to, set by each wrapper as its first
+# act and read by every message below. One deliberate cross-function value, and
+# it is not the pseudo-local pattern this file otherwise avoids: it is set once
+# before anything is called, never written here, and its absence is survivable.
+#
+# It exists because the messages are shared and the exit codes are not. The
+# no-interpreter refusal said `memkit:` from all three wrappers while
+# `memkit-recall` exits 4 for it — and 4 in the `memkit` table an agent would
+# then look it up in means "the subcommand is not in this build", which is the
+# wrong diagnosis reached by trusting the name in the message.
+MEMKIT_SELF=${MEMKIT_SELF:-memkit}
+
 memkit_expand_home() {
     # shellcheck disable=SC2088  # the LITERAL tilde is what this matches: the
     # value never passed through a shell, so an unexpanded `~` is the input,
@@ -55,20 +67,41 @@ memkit_expand_home() {
 #      is `/memkit.json`, and a hook that reads every prompt must never stat a
 #      root-level path it did not mean to name.
 #
-# Both rungs name a path from OUTSIDE the payload: one the adopter typed at
-# install, one a data directory the harness owns and `uninstall` removes. That
-# is the whole admission rule, and it is why there is no rung reading a
-# `memkit.json` beside the wrappers. A plugin install is a clone of a pinned
-# commit, so a file inside the payload is a file the repo can ship — and a
-# config decides which directories an every-prompt hook reads and which binary
-# it exec's. Neither may be answerable by anything the payload carries.
+# THE RULE THIS ENFORCES, exactly: no rung reads a path inside the payload
+# TREE. That is why there is no rung reading a `memkit.json` beside the
+# wrappers — a plugin install is a clone of a pinned commit, so a file in the
+# tree is a file the repo can ship, and a config decides which directories an
+# every-prompt hook reads and which binary it exec's.
+#
+# It is deliberately NOT the stronger "nothing the payload carries can answer
+# this". Rung 2's directory is harness-owned but payload-WRITABLE — memkit's
+# own hook writes `trust.json` there — so a release could write
+# `$CLAUDE_PLUGIN_DATA/memkit.json` on one prompt and be honoured by every
+# later, clean release. The escalation over "a malicious payload already runs
+# code" is persistence and laundering, and it is real; what makes it tolerable
+# here is that nothing in this build writes that file. The check that would
+# make it detectable — refusing, or recording a distinct outcome, when that
+# file exists with no init-journal entry claiming authorship — belongs with
+# `init` in U3, which is the only thing that will ever legitimately write it.
+#
+# ABSOLUTE, on every rung, for the same reason the interpreter must be: a
+# relative candidate is resolved against the wrapper's CWD, which under the
+# harness is whatever directory the session stands in. An adopter who typed
+# `--config memkitConfig=memkit.json` at install would otherwise have every
+# repository they later open hand the every-prompt hook its own `memkit.json`,
+# naming both the store roots whose contents are injected and the binary that
+# runs. The manifest asks for an absolute path; this is what enforces it.
 #
 # Nothing found is not an error: the wrapper goes on to run the hook with no
 # config, which is inert by construction — no stores, no pointers, exit 0.
 memkit_resolve_config() {
     if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITCONFIG:-}" ]; then
         _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")
-        [ -f "$_candidate" ] && {
+        case $_candidate in
+            /*) ;;
+            *) _candidate="" ;;
+        esac
+        [ -n "$_candidate" ] && [ -f "$_candidate" ] && {
             printf '%s\n' "$_candidate"
             return 0
         }
@@ -111,6 +144,21 @@ memkit_resolve_config() {
 #     than fixed: validating shape here would mean writing a JSON parser in
 #     POSIX sh to decide which python to run.
 #
+# Said out loud when a recorded value is present and not honoured. Silence
+# here is the wrong answer: the install goes on working, under a python the
+# adopter did not choose — on a stock mac, 3.9.6 rather than the 3.12 they
+# recorded — and no surface in this build reports the resolved interpreter, so
+# there is nowhere else the difference could show up.
+#
+# stderr, because stdout on the hook path is the injected block. Doctor runs
+# these wrappers directly and captures it; in a live session it reaches the
+# harness's debug log.
+memkit_interpreter_refused() {
+    printf '%s\n' \
+        "$MEMKIT_SELF: the config records \"interpreter\": \"$1\", which $2." \
+        "Falling back to the python3 on PATH; retrieval is unaffected." >&2
+}
+
 # ABSOLUTE, or it does not count. A slashless or relative value is two
 # different files depending on who resolves it: `[ -x ]` below tests it against
 # the wrapper's CWD — a directory chosen by whoever launched the harness — while
@@ -119,28 +167,61 @@ memkit_resolve_config() {
 # what closes the measured exit-127 path: a value that passed `[ -x ]` against
 # the CWD and was then absent from PATH left `exec` failing on the every-prompt
 # hook, i.e. a blocked turn from a config field.
+#
+# `~/…` is expanded first. The rung above expands it for the config path, so
+# the file teaches that a tilde works, and a rule that silently rejected it one
+# field over would be a trap of this file's own making.
+#
+# `/proc/*` and `/dev/fd/*` are absolute and still session-relative: the kernel
+# resolves them through the RUNNING PROCESS, so `/proc/self/cwd/python3` names
+# an executable in whatever directory the session stands in — the outcome the
+# absoluteness rule exists to prevent, restored on the platform the nix channel
+# and this repo's CI target. A prefix test rather than a realpath: resolving
+# costs a fork on every prompt, and these two trees are the whole of the
+# process-relative namespace. A symlink at an ordinary absolute path is NOT in
+# this class and is not rejected — that is the adopter's own filesystem, not
+# the session's choice.
 memkit_config_interpreter() {
     [ -n "$1" ] && [ -f "$1" ] || return 1
     _found=$(sed -n 's/.*"interpreter"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" \
         2>/dev/null | head -n 1)
     [ -n "$_found" ] || return 1
+    _found=$(memkit_expand_home "$_found")
     case $_found in
+        /proc/* | /dev/fd/*)
+            memkit_interpreter_refused "$_found" \
+                "the kernel resolves through this process, so it names whatever directory the session stands in"
+            return 1
+            ;;
         /*) ;;
-        *) return 1 ;;
+        *)
+            memkit_interpreter_refused "$_found" "is not an absolute path"
+            return 1
+            ;;
     esac
     printf '%s\n' "$_found"
 }
 
 # A recorded value this build will not honour — absent, relative, or naming
-# something that is not an executable file — falls through to the PATH probe
+# something that is not an executable FILE — falls through to the PATH probe
 # rather than ending the resolution. One bad character in a config field must
 # not be able to turn a working install inert.
+#
+# `-f` as well as `-x`, and the pair is not belt-and-braces: `[ -x ]` alone is
+# true of a DIRECTORY, whose execute bit means "searchable". So
+# `"interpreter": "/opt/homebrew/opt/python@3.12/libexec/bin"` — a PATH entry
+# with its last segment dropped, which is how the value gets written by hand —
+# passed the guard, skipped the PATH probe, and left `exec` dying 126 on every
+# prompt of every session. Measured from all three wrappers.
 memkit_resolve_interpreter() {
     _config=$1
     _recorded=$(memkit_config_interpreter "$_config") || _recorded=""
-    if [ -n "$_recorded" ] && [ -x "$_recorded" ]; then
-        printf '%s\n' "$_recorded"
-        return 0
+    if [ -n "$_recorded" ]; then
+        if [ -f "$_recorded" ] && [ -x "$_recorded" ]; then
+            printf '%s\n' "$_recorded"
+            return 0
+        fi
+        memkit_interpreter_refused "$_recorded" "is not an executable file"
     fi
     for _candidate in python3 python; do
         _path=$(command -v "$_candidate" 2>/dev/null) || continue
@@ -184,8 +265,7 @@ memkit_python_meets_checker_floor() {
 #           nothing; a seeded memory with no ledger row is a broken store, so
 #           half-completing is worse than not starting.
 memkit_resolve_checker() {
-    _root=$1
-    _base=$2
+    _base=$1
     MEMKIT_CHECKER_ROUTE=none
     MEMKIT_CHECKER_CMD=""
     # The already-resolved interpreter first: on a machine where it is new
@@ -210,12 +290,17 @@ memkit_resolve_checker() {
 # silent: silence here is indistinguishable from a corpus with nothing to say,
 # and this is the one failure that no amount of fixing the store will cure.
 #
+# It names the RUNNING wrapper, because the exit code beside it is that
+# wrapper's. Saying `memkit:` from `memkit-recall` sends an agent to look up
+# that binary's 4 in the `memkit` table, where 4 means "the subcommand is not
+# in this build" — a wrong diagnosis produced by the message's own name.
+#
 # The reader is doctor, which runs this wrapper directly and captures stderr.
 # In a live session it goes to the harness's debug log, because the wrapper
 # exits 0 whatever happens — see the exit contract in `memkit-hook`.
 memkit_no_interpreter_message() {
     printf '%s\n' \
-        "memkit: no python3 on PATH and none recorded in the config, so the" \
+        "$MEMKIT_SELF: no python3 on PATH and none recorded in the config, so the" \
         "recall hook cannot run. Install python 3.9 or newer, or record an" \
         "absolute interpreter path as \"interpreter\" in the memkit config." \
         "Config in use: ${1:-<none resolved>}"

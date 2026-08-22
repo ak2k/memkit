@@ -672,6 +672,139 @@ def test_a_recorded_interpreter_the_path_cannot_answer_still_exits_zero(
     assert "no python3" in out.stderr
 
 
+def test_a_directory_recorded_as_the_interpreter_is_not_exec_d(
+    root, tmp_path, shimmed
+) -> None:
+    """`[ -x ]` is true of a DIRECTORY — the execute bit means "searchable" —
+    so a value like `/opt/homebrew/opt/python@3.12/libexec/bin`, which is how
+    the field gets written by hand from a PATH entry with the last segment
+    dropped, passed the guard and skipped the PATH probe.
+
+    `exec` then died 126, on every prompt of every session, with no fallback:
+    the hook wrapper's whole contract is that every path exits 0, and 126 on
+    UserPromptSubmit hands the user their prompt back unanswered. The status
+    comes from `exec` rather than from a literal, so no scrape can see it —
+    only a run can.
+    """
+    a_directory = tmp_path / "libexec-bin"
+    a_directory.mkdir()
+    config = _config_file(tmp_path / "dir.json", interpreter=str(a_directory))
+    env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
+    out = _run(root / "bin" / "memkit-hook", env=env)
+    assert out.returncode == 0, (out.returncode, out.stderr)
+    # The PATH probe answered, which is the fallback the refusal promises.
+    assert shimmed.read()["argv"] == str(
+        root / "src" / "memkit" / "memory_prompt_recall.py"
+    )
+    # And every wrapper, because each one has its own exit vocabulary and 126
+    # is in none of them.
+    for wrapper, args in (
+        ("memkit-recall", ("--search", "flange torque")),
+        ("memkit", ("doctor",)),
+    ):
+        other = _run(root / "bin" / wrapper, *args, env=shimmed(
+            CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config)
+        ))
+        assert other.returncode != 126, (wrapper, other.returncode, other.stderr)
+
+
+def test_a_relative_config_path_is_not_a_path_into_the_session_dir(
+    root, tmp_path, shimmed
+) -> None:
+    """The same rule as the interpreter field, on the rung above it.
+
+    An adopter who typed `--config memkitConfig=memkit.json` at install has
+    every repository they later open handing the every-prompt hook its own
+    `memkit.json` — which names both the store roots whose file contents are
+    injected into the model's context and the absolute binary exec'd on every
+    prompt. The manifest asks for an absolute path and nothing enforced it.
+    """
+    session = tmp_path / "someone-elses-repo"
+    session.mkdir()
+    marker = tmp_path / "session-config-used.txt"
+    _shim(session, "python3", f'echo used > "{marker}"')
+    _config_file(session / "memkit.json", interpreter=str(session / "python3"))
+    env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG="memkit.json")
+    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
+    assert out.returncode == 0, out.stderr
+    assert not marker.exists(), "the session directory named the interpreter"
+    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+
+
+def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> None:
+    """Absolute is not the same as fixed. `/proc/self/cwd/python3` is resolved
+    by the kernel through the RUNNING process, so it names an executable in
+    whatever directory the session stands in — the outcome the absoluteness
+    rule exists to prevent, restored on Linux, which is what the nix channel
+    and this repo's CI run.
+
+    `/dev/fd/*` is the same class and is reachable on this platform, which is
+    what makes the case runnable here rather than only reasoned about.
+    """
+    for value in ("/proc/self/cwd/python3", "/dev/fd/3/python3"):
+        config = _config_file(tmp_path / "proc.json", interpreter=value)
+        env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
+        out = _run(root / "bin" / "memkit-hook", env=env)
+        assert out.returncode == 0, out.stderr
+        assert value in out.stderr and "session stands in" in out.stderr, out.stderr
+        assert shimmed.read()["argv"] == str(
+            root / "src" / "memkit" / "memory_prompt_recall.py"
+        )
+
+
+def test_a_recorded_interpreter_expands_a_tilde_and_says_when_it_is_refused(
+    root, tmp_path, shimmed
+) -> None:
+    """Two halves of one complaint: an adopter records an interpreter, keeps a
+    working install, and runs every prompt under a python they did not choose.
+
+    The tilde half is a trap of this file's own making — the config PATH one
+    rung above is tilde-expanded, so the file teaches that `~` works — and the
+    silence half is what made it undiagnosable: exit 0, nothing on stderr, and
+    no surface in this build reports the resolved interpreter.
+    """
+    home = tmp_path / "home"
+    recorded = _shim(home / "venv" / "bin", "python3", "exit 0")
+    marker = tmp_path / "recorded-ran.txt"
+    recorded.write_text(f'#!/bin/sh\necho ran > "{marker}"\n')
+    recorded.chmod(0o755)
+    config = _config_file(tmp_path / "tilde.json", interpreter="~/venv/bin/python3")
+    env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
+    assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
+    assert marker.is_file(), "a tilde interpreter was refused, as if it were relative"
+
+    # And a value that really is unusable is refused OUT LOUD.
+    gone = _config_file(tmp_path / "gone.json", interpreter=str(tmp_path / "nope"))
+    out = _run(
+        root / "bin" / "memkit-hook",
+        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(gone)),
+    )
+    assert out.returncode == 0
+    assert "is not an executable file" in out.stderr, out.stderr
+    assert "Falling back" in out.stderr, out.stderr
+
+
+def test_every_shared_message_names_the_wrapper_that_is_running(
+    root, tmp_path
+) -> None:
+    """The messages are shared between the three wrappers and the exit codes
+    are not.
+
+    `memkit-recall` exits 4 when nothing can run it. An agent that read
+    `memkit:` on that line looks 4 up in the `memkit` table, where it means
+    "the subcommand exists and is not in this build" — a wrong diagnosis
+    produced by the name in the message rather than by the code.
+    """
+    empty = {"PATH": str(tmp_path / "nothing"), "HOME": str(tmp_path)}
+    for wrapper, args in (
+        ("memkit-hook", ()),
+        ("memkit-recall", ("--search", "x")),
+        ("memkit", ("doctor",)),
+    ):
+        out = _run(root / "bin" / wrapper, *args, env=empty)
+        assert out.stderr.startswith(f"{wrapper}: "), (wrapper, out.stderr)
+
+
 def test_no_interpreter_is_a_named_refusal_that_still_exits_zero(
     root, tmp_path
 ) -> None:

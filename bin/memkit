@@ -23,6 +23,12 @@
 
 set -u
 
+# The name this wrapper answers to, for every message bin/lib/common.sh emits
+# on its behalf. Declared before the library is sourced, because the shared
+# messages sit beside per-wrapper exit codes and a message naming the wrong
+# binary sends an agent to the wrong exit-code table.
+MEMKIT_SELF=memkit
+
 # The plugin tree, from this file's own path. See bin/lib/common.sh.
 _self=$0
 case $_self in
@@ -64,7 +70,7 @@ fi
 # 3.12 floor runs THIS tree's checker, so the checker and the hook are the same
 # release by construction; `uvx` is the fallback for the stock-python mac,
 # where it provisions its own interpreter.
-memkit_resolve_checker "$MEMKIT_ROOT" "$PY"
+memkit_resolve_checker "$PY"
 
 MEMKIT_PLUGIN=1
 export MEMKIT_PLUGIN
