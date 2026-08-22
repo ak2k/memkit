@@ -1499,6 +1499,88 @@ def test_both_channels_inert_messages_name_only_their_own_routes(
     for route in hook.CONFIG_ROUTES:
         assert route in direct.stderr, route
 
+    # And `--help`, which is the cheapest probe an agent runs and therefore the
+    # first place it learns what to try. It told a plugin adopter the config
+    # default was `$MEMKIT_CONFIG` and, on `--dir`, to unset it — a variable
+    # both wrappers strip, so the first claim is false and following the second
+    # changes nothing.
+    plugin_help = _run(root / "bin" / "memkit-recall", "--help", env=env)
+    assert plugin_help.returncode == 0, plugin_help.stderr
+    assert hook.CONFIG_ENV not in plugin_help.stdout, plugin_help.stdout
+    for route in hook.PLUGIN_CONFIG_ROUTES:
+        assert route in plugin_help.stdout, route
+    direct_help = subprocess.run(
+        ["python3", hook.__file__, "--help"],
+        capture_output=True, text=True, timeout=120, env=env,
+    )
+    assert f"${hook.CONFIG_ENV}" in direct_help.stdout, direct_help.stdout
+
+
+def test_the_help_epilog_carries_every_exit_code_this_binary_can_produce(
+    root, tmp_path
+) -> None:
+    """The epilog's own comment says it is built from the constants so the help
+    and the README cannot drift from what the code returns. It was complete
+    before the start-failure code existed and stopped being complete when it
+    landed — an agent meeting an undocumented 4 falls back to the nearest
+    neighbour or to shell convention, and both readings are wrong in the unsafe
+    direction.
+
+    Over the CONSTANTS, so the next code added is covered without an edit here.
+    """
+    real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+    rendered = _run(root / "bin" / "memkit-recall", "--help", env=real).stdout
+    codes = {
+        hook.EXIT_OK, hook.EXIT_NO_MATCH, hook.EXIT_ERROR,
+        hook.EXIT_INERT, hook.EXIT_CANNOT_START,
+    }
+    listed = {int(m) for m in re.findall(r"^  (\d+)  ", rendered, re.MULTILINE)}
+    assert listed == codes, (listed, codes)
+    # And the collision with the dispatcher's table is stated on both sides,
+    # in both directions: the two tables swap 1 and 4, and 1 is the dangerous
+    # one — on this table it means "nothing matched", which tells an agent to
+    # stop looking.
+    from memkit.cli import EXIT_NO_RUNTIME, EXIT_NOT_IN_BUILD
+
+    assert "dispatcher's table is its own" in rendered, rendered
+    dispatcher = _run(root / "bin" / "memkit", "--help", env=real).stdout
+    assert "swaps these two" in dispatcher, dispatcher
+    assert EXIT_NO_RUNTIME == hook.EXIT_NO_MATCH
+    assert EXIT_NOT_IN_BUILD == hook.EXIT_CANNOT_START
+
+
+def test_debug_config_says_when_it_overrode_the_field_it_is_labelled_with(
+    root, tmp_path
+) -> None:
+    """`--debug-config` is the command the README and the rollout runbook both
+    name as *the* verification surface, and every line of it reports the file —
+    except this one, whose label is the config key verbatim and whose value is
+    not from the config. An operator cannot tell the two apart.
+    """
+    real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")}
+    overridden = _corpus(tmp_path / "over", search_cli="memory-recall --search")
+    out = _run(
+        root / "bin" / "memkit-recall", "--debug-config",
+        env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(overridden)},
+    )
+    assert out.returncode == 0, out.stderr
+    assert "! the config's own `search_cli` is not in effect" in out.stdout, out.stdout
+
+    # And no divergence line where there is no divergence, or the note is
+    # decoration rather than a report. Off the plugin channel the field IS the
+    # advertised command — which is also why the note can never be silent on
+    # the plugin channel: the `--config <path>` prefix that makes the command
+    # runnable in the agent's Bash tool is not something a config file can
+    # carry, so the two always differ there.
+    same = subprocess.run(
+        ["python3", hook.__file__, "--debug-config"],
+        capture_output=True, text=True, timeout=120,
+        env={**real, "MEMKIT_CONFIG": str(overridden)},
+    )
+    assert same.returncode == 0, same.stderr
+    assert "search_cli: memory-recall --search" in same.stdout, same.stdout
+    assert "! the config's own" not in same.stdout, same.stdout
+
 
 # --- the hook file the wrapper actually runs ---------------------------------
 

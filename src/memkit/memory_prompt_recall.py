@@ -3138,7 +3138,23 @@ def _print_config(state: tuple) -> int:
     # What this install will ADVERTISE, not the raw field: on the plugin
     # channel those differ by design (see _search_cli), and a diagnostic that
     # printed the field would disagree with the command an agent is handed.
-    print(f"search_cli: {_advertised_search_cli(display)}")
+    advertised = _advertised_search_cli(display)
+    print(f"search_cli: {advertised}")
+    # Every other line here reports the FILE, so the one line that does not
+    # would be the one an operator cannot tell apart — and this is the command
+    # both the README and docs/ROLLOUT.md name as the verification surface.
+    # Same `!` convention as the store divergence below.
+    if advertised != display.search_cli:
+        # The config's own value is NOT echoed here, deliberately: this output
+        # is read by agents, and a command name printed on any line of it is a
+        # command something will eventually run. The file is named two lines
+        # above; what the operator cannot get from the file is that the field
+        # is not in effect, and that is what this says.
+        print(
+            "  ! the config's own `search_cli` is not in effect on this "
+            "channel: one config file is read by every channel, so the name it "
+            "records is not resolvable here"
+        )
     shown_searched = display.searched_stores()
     served_searched = served.searched_stores()
     served_by_id = {s.id: s for s in served.stores}
@@ -3221,7 +3237,13 @@ def search_cli(argv: list[str]) -> int:
             f"  {EXIT_OK}  pointers, on stdout\n"
             f"  {EXIT_NO_MATCH}  the stores were searched and nothing matched\n"
             f"  {EXIT_ERROR}  the search itself failed — never absence\n"
-            f"  {EXIT_INERT}  inert: nothing to search — never absence"
+            f"  {EXIT_INERT}  inert: nothing to search — never absence\n"
+            f"  {EXIT_CANNOT_START}  the search never started — no interpreter, "
+            "or an incomplete plugin payload;\n"
+            "     only the plugin wrapper emits it, and no query will change it"
+            f"\n\nThe `memkit` dispatcher's table is its own: there {EXIT_NO_MATCH} "
+            f"means it could not start\nand {EXIT_CANNOT_START} means the "
+            "subcommand is not in this build. Neither borrows the other's."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -3237,16 +3259,20 @@ def search_cli(argv: list[str]) -> int:
         metavar="PATH",
         help="corpus to search instead of the memory stores (repeatable). "
         "Needs no config — but a config that is present and unparseable is "
-        f"still refused, so unset ${CONFIG_ENV} or fix it first",
+        "still refused, because a config that cannot be parsed is somebody's "
+        "mistake on any branch. Fix it, or stop naming it; the routes this "
+        f"install reads are {_config_routes()}",
     )
     ap.add_argument(
         "--config",
         metavar="PATH",
         default=None,
-        help=f"config file naming the stores to search (default: ${CONFIG_ENV}). "
-        "An alternative to exporting the variable, not a second spelling of it: "
-        "verifying a config you just wrote should not mean mutating the "
-        "environment of whatever ran this",
+        help="config file naming the stores to search, and the route that wins "
+        f"over every other one this install reads ({_config_routes()}). "
+        "Not a second spelling of the others: verifying a config you just "
+        "wrote should not mean mutating the environment of whatever ran this, "
+        "and on a plugin install it is the only route that survives into the "
+        "agent's Bash tool",
     )
     ap.add_argument(
         "--debug-envelope-probes",

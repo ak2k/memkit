@@ -51,6 +51,11 @@ EXIT_NOT_IN_BUILD = 4
 # not EXIT_USAGE: "you invoked this wrongly" sends a caller to retry with
 # different arguments against a machine that cannot run memkit at all.
 EXIT_NO_RUNTIME = 1
+# The reciprocal note, because the two tables SWAP these two numbers and only
+# one direction was written down. `memkit-recall` exits 4 for the three
+# conditions this exits 1 for — and 1 on its table means "the stores were
+# searched and nothing matched", the code that tells an agent to stop looking.
+# That is the dangerous direction of the collision.
 
 # What `memkit` will route, with the one-line summary `--help` shows and the
 # thing to reach for meanwhile. Listed before they exist on purpose: the reader
@@ -76,7 +81,8 @@ _PENDING: dict[str, tuple[str, str]] = {
         f"Exit {EXIT_INERT} there means there was nothing to search — no "
         "config, or no store on disk and in scope for this directory — and "
         f"stderr names which; exit {EXIT_NO_MATCH} means the stores were "
-        "searched and nothing matched",
+        "searched and nothing matched. Those codes are that command's, not "
+        "this one's: the two tables swap 1 and 4",
     ),
     "init": (
         "create a store and wire this machine up to it",
@@ -142,7 +148,10 @@ def _parser() -> argparse.ArgumentParser:
         + f"\n\nExit codes: 0 ok / {EXIT_NO_RUNTIME} memkit could not start at "
         f"all (stderr names what is missing) / {EXIT_USAGE} usage error or "
         f"unknown subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but "
-        "is not in this build",
+        "is not in this build."
+        "\nThe search CLI's table is its own and swaps these two: there "
+        f"{EXIT_NO_RUNTIME} means nothing matched and {EXIT_NOT_IN_BUILD} "
+        "means it could not start.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = ap.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")
