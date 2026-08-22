@@ -75,6 +75,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from collections.abc import Callable
 
 # --- configuration -----------------------------------------------------------
@@ -860,35 +861,66 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # invisible characters written literally is one no reviewer can read and any
 # tool can silently normalise away — this very edit lost half the class to a
 # `splitlines()` that broke on the U+2028 inside it.
-# Anything that is in the model's input and not in the human's reading of the
-# transcript. The class is defined by that PROPERTY, so a codepoint that hides
-# text belongs here whether or not it is called a "format character".
+# Lone surrogates, which are not text: a filename the filesystem holds as
+# undecodable bytes arrives through `os.fsdecode` as these, and every encode
+# after that point raises on them.
 _SURROGATE = re.compile("[\ud800-\udfff]")
-_INVISIBLE = re.compile(
-    "["
-    "\u00ad"  # soft hyphen: renders as nothing until a line breaks on it
-    "\u180e"  # Mongolian vowel separator, zero-width in current Unicode
-    "\u200b-\u200f"  # zero-width space/non-joiner/joiner, LRM, RLM
-    "\u2028\u2029"  # line and paragraph separators
-    "\u202a-\u202e"  # bidi embeddings and overrides
-    "\u2060-\u2064"  # word joiner and the invisible operators
-    "\u2066-\u2069"  # bidi isolates
-    "\ufe00-\ufe0f"  # variation selectors 1-16
-    "\ufeff"  # zero-width no-break space
-    "\U000e0000-\U000e007f"  # Unicode Tags: a whole invisible ASCII alphabet
-    "\U000e0100-\U000e01ef"  # variation selectors 17-256
-    "]"
+# Anything that is in the model's input and not in the human's reading of the
+# transcript. Stated as a PROPERTY and then tested as one — an enumeration
+# under a comment defining a property is a list somebody has to keep up with,
+# and it was already behind: `\u061c` (ARABIC LETTER MARK) and the musical
+# format characters at `\U0001d173` are ordinary `Cf` codepoints that split
+# the frame tag, and neither was listed.
+#
+# `Cf` is the bulk of it — zero-width spaces and joiners, the bidi controls,
+# soft hyphen, the Tags block's invisible ASCII alphabet. `Zl`/`Zp` are here
+# because they hide text by moving it to another line rather than by rendering
+# as nothing.
+_INVISIBLE_CATEGORIES = frozenset({"Cf", "Zl", "Zp"})
+# And the ones no category collects, each because it renders as nothing while
+# carrying a codepoint. Named individually, since this is the part a reader has
+# to be able to check.
+_INVISIBLE_EXTRA = frozenset(
+    "\u034f"  # combining grapheme joiner
+    "\u17b4\u17b5"  # khmer inherent vowels, zero-width in practice
+    "\u2800"  # braille pattern blank
+    "\u3164"  # hangul filler
+    "\uffa0"  # halfwidth hangul filler
+    + "".join(chr(c) for c in range(0xFE00, 0xFE10))  # variation selectors 1-16
+    + "".join(chr(c) for c in range(0xE0100, 0xE01F0))  # variation selectors 17-256
 )
+
+
+def _is_invisible(char: str) -> bool:
+    return (
+        unicodedata.category(char) in _INVISIBLE_CATEGORIES
+        or char in _INVISIBLE_EXTRA
+    )
+
+
+def _strip_invisible(text: str) -> str:
+    """Remove every codepoint that hides text, by the property above.
+
+    The ASCII fast path is what keeps this off the every-prompt budget: a
+    per-character category lookup over a description is only paid when the
+    description is not ASCII, which most are not none of the time.
+    """
+    if text.isascii():
+        return text
+    return "".join(char for char in text if not _is_invisible(char))
+
+
 # The frame's own delimiters, defanged where they appear in content. A
 # description that closed the frame would put everything after it back outside
 # the data region — which is the whole point of having one.
 FRAME_TAG = "memkit-pointers"
-# `<` then optional space, then an optional `/` with optional space, then the
-# tag. A reader — human or model — resolves `< /memkit-pointers>` to a closing
-# tag as readily as the tight spelling, and the previous pattern required the
-# `/` to sit immediately after the `<`, so the near miss went through defanged
-# text unchanged.
-_FRAME_LITERAL = re.compile(r"<\s*/?\s*" + FRAME_TAG, re.IGNORECASE)
+# `<`, then ANY run of the characters that can sit between it and the tag
+# without a reader stopping — whitespace, slashes, backslashes — then the tag.
+# A property rather than a spelling: the previous pattern allowed exactly one
+# `/` with only `\s` around it, so `<//memkit-pointers>`, `</ /memkit-pointers>`
+# and `</\memkit-pointers>` went through unchanged, each of which a model
+# resolves to a closing tag as readily as the tight form.
+_FRAME_LITERAL = re.compile(r"<[\s/\\]*" + FRAME_TAG, re.IGNORECASE)
 
 
 def strip_unsafe(text: str) -> str:
@@ -917,7 +949,7 @@ def strip_unsafe(text: str) -> str:
         text = _SURROGATE.sub("\ufffd", text)
     text = _ANSI.sub("", text)
     text = _CONTROL.sub(" ", text)
-    text = _INVISIBLE.sub("", text)
+    text = _strip_invisible(text)
     return _FRAME_LITERAL.sub("(memkit-pointers", text)
 
 
