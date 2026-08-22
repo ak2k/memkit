@@ -812,6 +812,62 @@ def test_a_relative_config_path_is_not_a_path_into_the_session_dir(
     assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
 
 
+def test_a_relative_plugin_data_dir_is_not_a_path_into_the_session_dir(
+    root, tmp_path, shimmed
+) -> None:
+    """The same rule as rung 1, on the rung beside it.
+
+    `$CLAUDE_PLUGIN_DATA` is the harness's variable and the wrappers do not vet
+    where it came from, which is recorded above the resolver. What they CAN do
+    is refuse to resolve it against the session's directory: a relative value
+    made the every-prompt hook read `<cwd>/<value>/memkit.json`, a config
+    naming both the store roots whose contents are injected and the binary that
+    is exec'd. The comment claiming "ABSOLUTE, on every rung" was written by
+    the commit that guarded one of the two.
+    """
+    session = tmp_path / "someone-elses-repo"
+    (session / "reldata").mkdir(parents=True)
+    marker = tmp_path / "session-data-used.txt"
+    _shim(session, "python3", f'echo used > "{marker}"')
+    _config_file(
+        session / "reldata" / "memkit.json", interpreter=str(session / "python3")
+    )
+    env = shimmed(CLAUDE_PLUGIN_DATA="reldata")
+    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
+    assert out.returncode == 0, out.stderr
+    assert not marker.exists(), "the session directory named the interpreter"
+    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+
+    # And a tilde is expanded rather than refused, exactly as rung 1 does it —
+    # the value is typed by a person or written by a harness, not expanded by
+    # any shell.
+    home = tmp_path / "home"
+    data = home / "plugindata"
+    config = _config_file(data / "memkit.json")
+    tilde = shimmed(CLAUDE_PLUGIN_DATA="~/plugindata")
+    assert _run(root / "bin" / "memkit-hook", env=tilde).returncode == 0
+    assert shimmed.read()["MEMKIT_CONFIG"] == str(config)
+
+
+def test_every_wrapper_declares_the_name_it_answers_to() -> None:
+    """`MEMKIT_SELF` decides the binary named in every message the shared
+    library emits, and the library's fallback means a wrapper that forgot to
+    set it fails silently — naming the wrong binary beside its own exit code,
+    which is the defect the variable was added to fix.
+
+    Nothing in the library can enforce it: a hard failure there would sit on
+    the every-prompt path for a diagnostic. So the enforcement is here.
+    """
+    for wrapper in ("memkit", "memkit-hook", "memkit-recall"):
+        text = (BIN / wrapper).read_text()
+        assert f"\nMEMKIT_SELF={wrapper}\n" in text, wrapper
+        # Before the library is SOURCED — not merely before it is mentioned —
+        # or the first message it emits on this wrapper's behalf carries the
+        # fallback instead of the name.
+        sourced = text.index('. "$MEMKIT_ROOT/bin/lib/common.sh"')
+        assert text.index(f"MEMKIT_SELF={wrapper}") < sourced, wrapper
+
+
 def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> None:
     """Absolute is not the same as fixed. `/proc/self/cwd/python3` is resolved
     by the kernel through the RUNNING process, so it names an executable in
@@ -822,15 +878,46 @@ def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> N
     `/dev/fd/*` is the same class and is reachable on this platform, which is
     what makes the case runnable here rather than only reasoned about.
     """
-    for value in ("/proc/self/cwd/python3", "/dev/fd/3/python3"):
+    # Every respelling, because the guard is a literal prefix test and the
+    # kernel normalises before it resolves — six of these walked past it while
+    # naming exactly what it refuses.
+    for value in (
+        "/proc/self/cwd/python3",
+        "//proc/self/cwd/python3",
+        "/./proc/self/cwd/python3",
+        "/tmp/../proc/self/cwd/python3",
+        "/proc//self/cwd/python3",
+        "/usr/../proc/self/cwd/python3",
+        "/a/./b/../proc/self/cwd/python3",
+        "/dev/fd/3/python3",
+        "/dev//fd/3/python3",
+        "/./dev/fd/3/python3",
+        "/proc/self/cwd/.",
+        "/proc/self/cwd/..",
+    ):
         config = _config_file(tmp_path / "proc.json", interpreter=value)
         env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
         out = _run(root / "bin" / "memkit-hook", env=env)
         assert out.returncode == 0, out.stderr
-        assert value in out.stderr and "session stands in" in out.stderr, out.stderr
+        assert value in out.stderr, (value, out.stderr)
+        assert (
+            "session stands in" in out.stderr or "canonical" in out.stderr
+        ), (value, out.stderr)
         assert shimmed.read()["argv"] == str(
             root / "src" / "memkit" / "memory_prompt_recall.py"
         )
+    # And a canonical absolute path is still honoured, or the guard above is
+    # just "refuse everything".
+    honoured = _shim(tmp_path / "real", "python3", "exit 0")
+    marker = tmp_path / "canonical-ran.txt"
+    honoured.write_text(f'#!/bin/sh\necho ran > "{marker}"\n')
+    honoured.chmod(0o755)
+    config = _config_file(tmp_path / "ok.json", interpreter=str(honoured))
+    assert _run(
+        root / "bin" / "memkit-hook",
+        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config)),
+    ).returncode == 0
+    assert marker.is_file(), "a canonical absolute interpreter was refused"
 
 
 def test_a_recorded_interpreter_expands_a_tilde_and_says_when_it_is_refused(
@@ -1615,7 +1702,8 @@ def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> No
 ROUTE_FOR_RUNG = {
     '$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")':
         "the `memkitConfig` install option",
-    '"$CLAUDE_PLUGIN_DATA/memkit.json"': "$CLAUDE_PLUGIN_DATA/memkit.json",
+    '$(memkit_expand_home "$CLAUDE_PLUGIN_DATA")/memkit.json':
+        "$CLAUDE_PLUGIN_DATA/memkit.json",
 }
 
 

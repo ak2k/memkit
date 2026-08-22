@@ -27,10 +27,6 @@
 #     `<root>//bin/x` and naive string arithmetic carries the doubled separator
 #     into every path this then builds.
 
-# `~/x` as a person types it. The option value is a string the adopter typed
-# into an install command, not a shell word the shell ever expanded, so a
-# config named `~/.cache/...` arrives with a literal tilde and every rung below
-# would silently miss it.
 # The name the running wrapper answers to, set by each wrapper as its first
 # act and read by every message below. One deliberate cross-function value, and
 # it is not the pseudo-local pattern this file otherwise avoids: it is set once
@@ -41,8 +37,18 @@
 # `memkit-recall` exits 4 for it — and 4 in the `memkit` table an agent would
 # then look it up in means "the subcommand is not in this build", which is the
 # wrong diagnosis reached by trusting the name in the message.
+# The fallback is for a caller that sources this library directly — doctor's
+# probes, and the tests — and NOT a licence for a wrapper to omit it: a wrapper
+# that did would name the wrong binary in every message with nothing failing.
+# Nothing here can enforce that (a hard failure would be on the every-prompt
+# path, for a diagnostic), so the enforcement is a test that reads each
+# wrapper.
 MEMKIT_SELF=${MEMKIT_SELF:-memkit}
 
+# `~/x` as a person types it. The option value is a string the adopter typed
+# into an install command, not a shell word the shell ever expanded, so a
+# config named `~/.cache/...` arrives with a literal tilde and every rung below
+# would silently miss it.
 memkit_expand_home() {
     # shellcheck disable=SC2088  # the LITERAL tilde is what this matches: the
     # value never passed through a shell, so an unexpanded `~` is the input,
@@ -116,8 +122,12 @@ memkit_resolve_config() {
         }
     fi
     if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
-        _candidate="$CLAUDE_PLUGIN_DATA/memkit.json"
-        [ -f "$_candidate" ] && {
+        _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_DATA")/memkit.json
+        case $_candidate in
+            /*) ;;
+            *) _candidate="" ;;
+        esac
+        [ -n "$_candidate" ] && [ -f "$_candidate" ] && {
             printf '%s\n' "$_candidate"
             return 0
         }
@@ -197,6 +207,25 @@ memkit_config_interpreter() {
     [ -n "$_found" ] || return 1
     _found=$(memkit_expand_home "$_found")
     case $_found in
+        *//* | */./* | */../* | */. | */..)
+            # CANONICAL, and this arm has to come first. The two prefixes below
+            # are a literal test, and the kernel normalises before it resolves —
+            # so `//proc/self/cwd/python3`, `/./proc/…`, `/tmp/../proc/…`,
+            # `/dev//fd/3/…` and `/./dev/fd/3/…` all name exactly what the next
+            # arm refuses while walking past it. Measured: six spellings
+            # admitted, one refused.
+            #
+            # Still no realpath. Resolving costs a fork on every prompt, and
+            # requiring the value to be canonical is the same guarantee for
+            # free: a canonical absolute path cannot reach a process-relative
+            # tree by another name, because there is only one spelling of it.
+            # The cost is that a config recording a legitimate but
+            # non-canonical path is refused — which the message says out loud,
+            # and which the PATH probe covers.
+            memkit_interpreter_refused "$_found" \
+                "is not a canonical path, so what it names depends on who resolves it"
+            return 1
+            ;;
         /proc/* | /dev/fd/*)
             memkit_interpreter_refused "$_found" \
                 "the kernel resolves through this process, so it names whatever directory the session stands in"
