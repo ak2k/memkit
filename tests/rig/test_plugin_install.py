@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,9 @@ from rig import (
     live_tier_reason,
     require_claude,
     stage_plugin,
+)
+from rig import (
+    RIG as RIG_DIR,
 )
 
 cli_tier = pytest.mark.skipif(
@@ -89,6 +93,65 @@ def _soak(profile: Profile) -> list[dict]:
     if not log.is_file():
         return []
     return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+# --- the rig's own safety and its instruments ---------------------------------
+
+
+def test_the_profile_guard_refuses_a_config_dir_that_is_not_scratch(tmp_path) -> None:
+    """The rig's headline safety claim, which nothing checked.
+
+    `claude plugin install` writes wherever `CLAUDE_CONFIG_DIR` points and the
+    author's own profile carries a live memkit registration, so the guard is
+    what stands between a scenario and that profile. A guard nobody has watched
+    refuse is a guard nobody has watched.
+    """
+    scratch = Profile(tmp_path / "rig")
+    scratch._guard()  # the ordinary case must stay silent
+
+    for unsafe in (Path.home() / ".claude", Path.home() / "somewhere-else"):
+        hijacked = Profile(tmp_path / "rig2")
+        hijacked.config_dir = unsafe
+        with pytest.raises(AssertionError):
+            hijacked._guard()
+
+
+def test_the_pty_driver_refuses_a_config_dir_that_is_not_scratch() -> None:
+    """The same claim on the one entry point that is a separate process.
+
+    `Profile._guard` cannot reach it — the driver is spawned with an
+    environment and makes its own decision — and it checked only that the
+    variable was SET, so any value at all let it drive a real session against
+    the author's own profile.
+    """
+    driver = (RIG_DIR / "drive_interactive.py").read_text(encoding="utf-8")
+    body = driver[driver.index("def main(") :]
+    assert "realpath" in body, body
+    assert '".claude"' in body, body
+
+
+def test_hookdump_records_the_argv_and_env_it_exists_to_record(tmp_path) -> None:
+    """The instrument, exercised on the path it is for.
+
+    It is used by one scenario, which asserts one unrelated field, so it could
+    stop recording argv or env entirely and nothing would notice until someone
+    reached for it mid-investigation. Run directly here rather than through a
+    turn: what is under test is the recorder, not the harness.
+    """
+    profile = Profile(tmp_path / "rig")
+    subprocess.run(
+        [sys.executable, str(RIG_DIR / "hookdump.py"), "UserPromptSubmit"],
+        input=json.dumps({"session_id": "dump", "prompt": "hello"}),
+        capture_output=True, text=True, timeout=60,
+        env={**profile.env(), "MEMKIT_RIG_MARKER": "present"},
+    )
+    dumps = profile.dumps("UserPromptSubmit")
+    assert len(dumps) == 1, dumps
+    record = dumps[0]
+    assert record["argv"] == ["UserPromptSubmit"], record
+    assert record["payload"]["prompt"] == "hello", record
+    assert record["env"]["MEMKIT_RIG_MARKER"] == "present", record
+    assert record["cwd"] and record["raw_len"] > 0, record
 
 
 # --- the staged payload itself ------------------------------------------------

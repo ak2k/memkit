@@ -4716,6 +4716,23 @@ def test_an_uninitialised_plugin_refuses_without_reading_the_prompt(
     # the nix channel keeps its soak log in.
     assert not (tmp_path / ".cache" / "memory-recall").exists()
 
+    # BEFORE THE PAYLOAD IS READ, which nothing above can see: the assertions
+    # so far hold just as well for a gate that parses the prompt and then
+    # refuses. The ordering is the claim — an install nobody has configured
+    # does not read what the user typed — so it is measured by never sending
+    # one and requiring the refusal anyway.
+    with subprocess.Popen(
+        ["python3", HOOK],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env,
+    ) as proc:
+        assert proc.stdin is not None
+        # The pipe stays OPEN and empty: a hook that reads stdin blocks here,
+        # and the timeout is what reports it.
+        stdout, _stderr = proc.communicate(timeout=20)
+    assert proc.returncode == 0 and stdout == ""
+    assert len(_marker(plugin_data)["records"]) == 2
+
 
 def test_a_config_that_cannot_be_honoured_refuses_distinguishably(tmp_path) -> None:
     """Two states, two remedies: one wants init run, the other wants a file
@@ -5687,6 +5704,34 @@ def test_nothing_reaches_stdout_inside_the_frame_unsanitized(tmp_path) -> None:
     assert "\u00ad" not in block, repr(block)
     # Defanged rather than deleted: the reader should see that something tried.
     assert "(memkit-pointers" in block
+
+
+def test_a_description_is_sanitized_before_it_is_capped(tmp_path) -> None:
+    """The ordering is the guarantee, and nothing measured it.
+
+    Capping first lets an escape sequence spend the character budget and then
+    vanish, so the rendered description is short for no visible reason — and
+    the cut can land INSIDE a sequence, leaving a partial escape in text the
+    frame promises is display-only.
+
+    Driven with a description whose invisible prefix is most of the cap: with
+    the two steps in the right order the visible words survive whole, and with
+    them inverted almost all of them are gone.
+    """
+    noise = "\u200b" * (hook.DESC_MAX_CHARS - 20) + "\x1b[31m"
+    visible = "flange fasteners tighten in a star pattern across three passes"
+    memory = tmp_path / "ordered.md"
+    memory.write_text(f"---\ndescription: {noise}{visible}\ntype: reference\n---\n")
+
+    rendered = hook._description(str(memory))
+    assert rendered == visible, rendered
+    assert "\u200b" not in rendered and "\x1b" not in rendered
+
+    # The inverted order, computed here rather than asserted about: capping a
+    # string that is mostly invisible characters and sanitizing afterwards
+    # leaves a handful of visible ones.
+    inverted = hook.sanitize(f"{noise}{visible}"[: hook.DESC_KEEP_CHARS])
+    assert len(inverted) < len(visible) / 2, inverted
 
 
 def test_no_invisible_codepoint_can_split_the_frame_tag() -> None:

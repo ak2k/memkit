@@ -64,6 +64,26 @@ def _json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _needs_checkout() -> None:
+    """Skip only where a checkout genuinely cannot exist, and FAIL elsewhere.
+
+    These cases read the index and the commit graph, so the packaged nix leg —
+    which builds from a store copy with no `.git` — cannot run them. That leg
+    sets `MEMKIT_NO_CHECKOUT`, and everywhere else a missing checkout is a
+    broken environment rather than a licence to pass: the plain-python job is
+    where these are the gate, and a skip there reports green under the same
+    check name as a run.
+    """
+    if os.environ.get("MEMKIT_NO_CHECKOUT") == "1":
+        pytest.skip("packaged build — no .git in the store copy, by construction")
+    assert (REPO / ".git").exists(), (
+        "no .git here, and this context did not declare itself packaged. These "
+        "cases read the index and the commit graph; skipping them silently is "
+        "what makes a green check name mean nothing."
+    )
+    assert shutil.which("git"), "git is not on PATH"
+
+
 # --- the manifests ------------------------------------------------------------
 
 
@@ -153,8 +173,7 @@ def _git(*args: str) -> subprocess.CompletedProcess:
 
 
 def test_the_pinned_sha_is_a_commit_in_this_history() -> None:
-    if not (REPO / ".git").exists() or shutil.which("git") is None:
-        pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
+    _needs_checkout()
     sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
     assert _git("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0, (
         f"{sha} is not a commit in this repository"
@@ -177,8 +196,7 @@ def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
     Green today by naming the state we are actually in, and the release commit
     that moves the pin is the one whose own test forces the paragraph out.
     """
-    if not (REPO / ".git").exists() or shutil.which("git") is None:
-        pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
+    _needs_checkout()
     sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
     at_sha = {
         path: _git("cat-file", "-e", f"{sha}:{path}").returncode == 0
@@ -274,13 +292,50 @@ def test_every_payload_file_is_tracked() -> None:
     failure it produces there is the wrapper's own "payload is incomplete"
     refusal, i.e. a plugin that installs and never speaks again.
     """
-    if not (REPO / ".git").exists() or shutil.which("git") is None:
-        pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
+    _needs_checkout()
     out = subprocess.run(
         ["git", "ls-files", "--error-unmatch", *PAYLOAD],
         cwd=REPO, capture_output=True, text=True, timeout=60,
     )
     assert out.returncode == 0, out.stderr
+
+
+def test_a_git_gated_case_fails_rather_than_skips_where_a_checkout_is_expected(
+    monkeypatch, tmp_path
+) -> None:
+    """The skip is the thing being guarded, not the tool.
+
+    Three of these cases skipped whenever `.git` was absent, so the packaged
+    leg and a broken plain-python job produced the same green under the same
+    check name. Only a context that DECLARES itself packaged may skip.
+    """
+    monkeypatch.delenv("MEMKIT_NO_CHECKOUT", raising=False)
+    monkeypatch.setattr(
+        "test_plugin_surface.REPO", tmp_path, raising=False
+    )
+    with pytest.raises(AssertionError, match="did not declare itself packaged"):
+        _needs_checkout()
+
+    # `Skipped` derives from BaseException, so it has to be named: catching
+    # `Exception` here let the assertion skip the case it is asserting about.
+    monkeypatch.setenv("MEMKIT_NO_CHECKOUT", "1")
+    with pytest.raises(pytest.skip.Exception, match="packaged build"):
+        _needs_checkout()
+
+
+def test_the_packaged_leg_is_the_only_context_that_declares_itself_packaged() -> None:
+    """The marker's one producer, pinned where the skip is read.
+
+    A test that skips on an environment variable is a test anybody can turn
+    off; what makes it honest is that exactly one build sets it, and that build
+    is the one whose source really has no checkout.
+    """
+    flake = (REPO / "flake.nix").read_text(encoding="utf-8")
+    assert flake.count('MEMKIT_NO_CHECKOUT = "1"') == 1, flake.count(
+        'MEMKIT_NO_CHECKOUT = "1"'
+    )
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text()
+    assert "MEMKIT_NO_CHECKOUT" not in workflow
 
 
 def test_the_payload_carries_every_file_its_own_entry_points_import() -> None:
@@ -321,8 +376,7 @@ def test_the_payload_root_carries_no_config_of_its_own() -> None:
     index, because a clone delivers that, and the working tree, because the rig
     stages from it.
     """
-    if not (REPO / ".git").exists() or shutil.which("git") is None:
-        pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
+    _needs_checkout()
     out = subprocess.run(
         ["git", "ls-files", "--", ":(top)memkit.json"],
         cwd=REPO, capture_output=True, text=True, timeout=60,
@@ -335,8 +389,7 @@ def test_the_wrappers_are_executable_in_the_index() -> None:
     """Mode 100755 in git, not merely on this filesystem. A clone restores the
     executable bit from the index, and a wrapper checked in as 644 is a hook
     the harness cannot run at all."""
-    if not (REPO / ".git").exists() or shutil.which("git") is None:
-        pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
+    _needs_checkout()
     out = subprocess.run(
         ["git", "ls-files", "-s", "bin/"], cwd=REPO,
         capture_output=True, text=True, timeout=60,
@@ -482,31 +535,43 @@ def _run(
     )
 
 
-@pytest.fixture
-def shimmed(tmp_path: Path):
-    """A PATH holding one fake `python3`, and a reader for what it saw."""
-    shim_dir = tmp_path / "shimbin"
-    out = tmp_path / "shim-out.txt"
-    _shim(shim_dir, "python3", SHIM_BODY)
+class Shim:
+    """A PATH holding one fake `python3`, and a reader for what it saw.
 
-    def build(**extra) -> dict:
+    A class rather than attributes bolted onto a returned function: the shim's
+    directory and its output file are things a case reaches for, and hanging
+    them off a callable cost three `type: ignore`s in a file whose pyright pass
+    is now a gate.
+
+    Callable, so the call sites that build an environment read as they did.
+    """
+
+    def __init__(self, tmp_path: Path) -> None:
+        self.dir = tmp_path / "shimbin"
+        self.out = tmp_path / "shim-out.txt"
+        self._home = tmp_path / "home"
+        _shim(self.dir, "python3", SHIM_BODY)
+
+    def __call__(self, **extra: str) -> dict[str, str]:
         env = {
-            "PATH": f"{shim_dir}:/usr/bin:/bin",
-            "HOME": str(tmp_path / "home"),
-            "SHIM_OUT": str(out),
+            "PATH": f"{self.dir}:/usr/bin:/bin",
+            "HOME": str(self._home),
+            "SHIM_OUT": str(self.out),
         }
         env.update(extra)
         return env
 
-    def read() -> dict:
+    def read(self) -> dict[str, str]:
         return dict(
-            line.split("=", 1) for line in out.read_text().splitlines() if "=" in line
+            line.split("=", 1)
+            for line in self.out.read_text().splitlines()
+            if "=" in line
         )
 
-    build.read = read  # type: ignore[attr-defined]
-    build.dir = shim_dir  # type: ignore[attr-defined]
-    build.out = out  # type: ignore[attr-defined]
-    return build
+
+@pytest.fixture
+def shimmed(tmp_path: Path) -> Shim:
+    return Shim(tmp_path)
 
 
 def _config_file(path: Path, **extra) -> Path:
@@ -1340,12 +1405,28 @@ def test_the_search_wrapper_refuses_rather_than_blocking_on_stdin(root, shimmed)
 
 
 def test_the_dispatcher_runs_the_package_from_this_tree(root, shimmed) -> None:
-    out = _run(root / "bin" / "memkit", "doctor", env=shimmed())
+    """PREPENDED, not assigned — and the difference is only visible when there
+    is something to prepend to.
+
+    With no `PYTHONPATH` in the environment the two are the same string, so the
+    assertion held for a wrapper that had stopped preserving what the caller
+    set. An adopter with a pip-installed memkit of another version is exactly
+    who that costs: their `PYTHONPATH` disappearing takes their own packages
+    with it.
+    """
+    inherited = "/opt/an/adopters/own/packages"
+    out = _run(root / "bin" / "memkit", "doctor", env=shimmed(PYTHONPATH=inherited))
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
     assert seen["argv"] == "-m memkit.cli doctor"
-    assert seen["PYTHONPATH"].split(":")[0] == str(root / "src")
+    assert seen["PYTHONPATH"] == f"{root / 'src'}:{inherited}"
     assert seen["MEMKIT_PLUGIN"] == "1"
+
+    # And with nothing inherited it is just this tree, or the wrapper is
+    # prepending to an empty string and leaving a stray separator.
+    plain = _run(root / "bin" / "memkit", "doctor", env=shimmed())
+    assert plain.returncode == 0, plain.stderr
+    assert shimmed.read()["PYTHONPATH"] == str(root / "src")
 
 
 def test_the_checker_route_is_python_when_one_meets_the_floor(

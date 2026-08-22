@@ -35,10 +35,22 @@ def main() -> int:
     project, prompt = sys.argv[1], sys.argv[2]
     seconds = int(sys.argv[3]) if len(sys.argv) > 3 else 180
 
-    assert os.environ.get("CLAUDE_CONFIG_DIR"), (
+    # SCRATCH, not merely set. `Profile._guard` makes this check for everything
+    # it spawns; this script is spawned as a subprocess and had only the
+    # weaker half, so it would have driven a real session against the author's
+    # own profile — which carries a live memkit registration — as long as the
+    # variable pointed anywhere at all.
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    assert config_dir, (
         "refusing to drive a session against the real profile — "
         "CLAUDE_CONFIG_DIR must name a scratch directory"
     )
+    resolved = os.path.realpath(config_dir)
+    real = os.path.realpath(os.path.expanduser("~"))
+    assert resolved != os.path.join(real, ".claude"), resolved
+    assert not resolved.startswith(real + os.sep) or ".cache" in resolved.split(
+        os.sep
+    ), f"CLAUDE_CONFIG_DIR is inside the real home: {resolved}"
 
     child = pexpect.spawn(
         "claude",

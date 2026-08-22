@@ -15,7 +15,9 @@ Three instruments, matching the three things that go wrong:
                  profile stops on already answered. Without it every scenario
                  hangs on the theme picker.
   `hookdump.py`  registered as a hook, records argv, env, cwd and stdin per
-                 invocation. Registered at SETTINGS scope, which bounds what it
+                 invocation — the WHOLE environment, `ANTHROPIC_API_KEY`
+                 included, and the whole prompt. Its records belong to the
+                 scratch profile's tmp tree and must not be copied out of one. Registered at SETTINGS scope, which bounds what it
                  can settle: a settings-scope hook receives none of
                  `CLAUDE_PLUGIN_OPTION_*`, `CLAUDE_PLUGIN_ROOT` or
                  `CLAUDE_PLUGIN_DATA` (measured on 2.1.239), and the `argv` it
@@ -53,6 +55,16 @@ Three tiers, and the split is what keeps CI honest:
                  local proxy. Opt-in through `MEMKIT_RIG_LIVE=1`, because a
                  scenario that silently skips in CI and only ever runs on one
                  machine is a scenario nobody should read as a gate.
+
+**WHAT A GREEN CI DOES NOT COVER**, recorded here because the next reader's
+question is what the required checks mean. Two claims live only in the live
+tier and are invisible to every merge: that a hook's stdout actually reaches
+the turn's context (the harness tier reads memkit's artifacts, which say what
+the hook believes it wrote), and that a duplicate registration is detected
+across several real turns. A scheduled live run is the fix and it waits for the
+first tagged release; until then, a harness bump is checked by a human running
+`MEMKIT_RIG_LIVE=1 pytest tests/rig` and saying so in the PR, which is what
+`renovate.json` dashboard-gates that bump for.
 
 `MEMKIT_RIG_REQUIRED=1` (set by the `python` job) turns a missing `claude` into
 a FAILURE rather than a skip for the harness tier. A gate that skips itself
@@ -348,9 +360,6 @@ class Profile:
                 records.append(record)
         return records
 
-    def clear_dumps(self) -> None:
-        for path in self.hooklog.glob("*.json"):
-            path.unlink()
 
 
 def stage_plugin(dest: Path, repo: Path = REPO) -> Path:
@@ -404,22 +413,3 @@ def stage_plugin(dest: Path, repo: Path = REPO) -> Path:
         entry["source"] = "./"
     manifest.write_text(json.dumps(blob, indent=2), encoding="utf-8")
     return dest
-
-
-def prompt(profile: Profile, text: str, *, cwd: Path, timeout: int = 180) -> str:
-    """One headless turn, returning the model's text.
-
-    `--output-format json` rather than the default, because the assertion a
-    live scenario makes is usually about what the hook did, and a run that
-    failed to reach a model at all has to be distinguishable from one that
-    reached it and said nothing.
-    """
-    out = profile.claude(
-        "-p",
-        text,
-        "--output-format",
-        "json",
-        cwd=str(cwd),
-        timeout=timeout,
-    )
-    return out.stdout
