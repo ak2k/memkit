@@ -1063,6 +1063,31 @@ def _exit_literals(wrapper: str) -> set[int]:
     return _exit_statuses((REPO / "bin" / wrapper).read_text(), wrapper)
 
 
+def test_the_sourced_library_can_end_no_wrapper() -> None:
+    """`bin/lib/common.sh` is SOURCED, so an `exit` in it exits the wrapper —
+    and every scrape read `bin/<wrapper>` only.
+
+    Measured: a top-level `[ … ] && exit 1` planted in the library made
+    `bin/memkit-hook` return 1 — the non-zero `UserPromptSubmit` exit the hook
+    wrapper's whole contract is about, which blocks the turn — and the entire
+    suite stayed green. The library is also where this round put new refusal
+    paths, so it is exactly the file gaining reasons to want one.
+
+    A NEGATIVE pin rather than `_exit_literals`, which asserts a non-empty set:
+    the right number of exits here is none.
+    """
+    text = COMMON_SH.read_text(encoding="utf-8")
+    found = [
+        (n, line.strip())
+        for n, line in enumerate(text.splitlines(), 1)
+        if EXIT_TOKEN.search(_code_only(line))
+    ]
+    assert not found, found
+    # `return` is how this file ends a function, and it must have some, or the
+    # assertion above is about a file that stopped being a resolver.
+    assert re.search(r"^\s*return \d+$", text, re.MULTILINE), "no returns either"
+
+
 def test_the_exit_scrape_sees_the_forms_it_would_otherwise_miss() -> None:
     """The anti-vacuity control for the helper above, which is the static half
     of the hook's fail-open contract.
@@ -1690,12 +1715,9 @@ def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> No
 # the phrases are read out of the module, so the two ends cannot be edited into
 # agreement through this table without someone editing this table too.
 # One phrase per CANDIDATE PATH `memkit_resolve_config` really builds, keyed on
-# the shell expression that builds it. Keyed on the expression rather than on a
-# variable name for two reasons, both measured: a rung reading
-# `$HOME/.memkit.json` names no `CLAUDE_*` variable and was uncountable — which
-# is the exact shape of the rung this branch deleted — and changing the
-# BASENAME the wrapper looks for left the variable set identical, so the
-# message could send an agent to create a file the wrapper does not read.
+# the shell expression that builds it — and the scrape below additionally pins
+# that `_candidate` is the function's only sink, so a rung that skipped the
+# variable entirely cannot serve a config unseen.
 #
 # The mapping is the only handwritten link in the chain: the expressions are
 # scraped from the shell and the phrases are read out of the module.
@@ -1719,6 +1741,16 @@ def _resolver_rungs() -> set[str]:
     match = re.search(r"^memkit_resolve_config\(\) \{$(.*?)^\}$", text, re.S | re.M)
     assert match, "memkit_resolve_config moved — this pin cannot see it"
     body = match.group(1)
+    # Every value the function can PRINT is a route it serves, and the scrape
+    # has to start there rather than at the assignments: a rung written
+    # `if [ -f "$HOME/.memkit.json" ]; then printf '%s\\n' "$HOME/.memkit.json";
+    # return 0; fi` assigns nothing and is served all the same. Measured — the
+    # suite stayed green with exactly that rung in place.
+    #
+    # So `_candidate` must be the only sink, and then classifying the
+    # assignments classifies the routes.
+    printed = set(re.findall(r"""printf\s+'%s\\n'\s+(\S+)""", body))
+    assert printed <= {'"$_candidate"'}, sorted(printed - {'"$_candidate"'})
     candidates = set(re.findall(r"^\s*_candidate=(\S.*?)\s*$", body, re.M))
     # An empty assignment is the rejection arm of the absoluteness guard, not a
     # route: `_candidate=""` is how a non-absolute value is dropped.
@@ -1857,10 +1889,15 @@ def test_the_help_epilog_carries_every_exit_code_this_binary_can_produce(
     """
     real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
     rendered = _run(root / "bin" / "memkit-recall", "--help", env=real).stdout
+    # OVER the constants, which is what the epilog's own comment claims of
+    # itself — a hand-written list of five is the drift it says it prevents,
+    # and it is what let the code this round added go unlisted.
     codes = {
-        hook.EXIT_OK, hook.EXIT_NO_MATCH, hook.EXIT_ERROR,
-        hook.EXIT_INERT, hook.EXIT_CANNOT_START,
+        value
+        for name, value in vars(hook).items()
+        if name.startswith("EXIT_") and isinstance(value, int)
     }
+    assert len(codes) >= 5, codes
     listed = {int(m) for m in re.findall(r"^  (\d+)  ", rendered, re.MULTILINE)}
     assert listed == codes, (listed, codes)
     # And the collision with the dispatcher's table is stated on both sides,
