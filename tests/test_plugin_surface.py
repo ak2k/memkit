@@ -132,15 +132,62 @@ def test_the_marketplace_entry_pins_a_commit_rather_than_a_branch() -> None:
     assert "ref" not in source, "a ref beside a sha is dead config — sha wins"
 
 
+# The paragraph that tells an adopter the marketplace route is not live yet.
+# It is load-bearing rather than decorative: at a pin whose commit carries no
+# payload the install SUCCEEDS and registers nothing, so nothing an adopter is
+# told to run distinguishes it from a correct install waiting for a config.
+NOT_YET_INSTALLABLE = "**Not yet installable from this marketplace.**"
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=REPO, capture_output=True, text=True, timeout=60
+    )
+
+
 def test_the_pinned_sha_is_a_commit_in_this_history() -> None:
     if not (REPO / ".git").exists() or shutil.which("git") is None:
         pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
     sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
-    out = subprocess.run(
-        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-        cwd=REPO, capture_output=True, text=True, timeout=60,
+    assert _git("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0, (
+        f"{sha} is not a commit in this repository"
     )
-    assert out.returncode == 0, f"{sha} is not a commit in this repository"
+    # Existence is not enough: a sha from an unrelated branch, or from a fork,
+    # satisfies `cat-file` and is not what an adopter would be served.
+    assert _git("merge-base", "--is-ancestor", sha, "HEAD").returncode == 0, (
+        f"{sha} is not an ancestor of HEAD"
+    )
+
+
+def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
+    """Both directions, because both have happened in one repo or another: a
+    pin moved without the README edit, and a README edit without the pin.
+
+    Read out of the object store rather than by checking anything out —
+    `git cat-file -e <sha>:<path>` per payload entry is the same question the
+    harness's clone answers, and it costs no worktree.
+
+    Green today by naming the state we are actually in, and the release commit
+    that moves the pin is the one whose own test forces the paragraph out.
+    """
+    if not (REPO / ".git").exists() or shutil.which("git") is None:
+        pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    at_sha = {
+        path: _git("cat-file", "-e", f"{sha}:{path}").returncode == 0
+        for path in PAYLOAD
+    }
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    if all(at_sha.values()):
+        assert NOT_YET_INSTALLABLE not in readme, (
+            "the pin now carries the whole payload — the README still says it "
+            "does not"
+        )
+    else:
+        assert NOT_YET_INSTALLABLE in readme, (
+            "the pin carries no plugin payload and the README no longer says "
+            f"so: {sorted(p for p, ok in at_sha.items() if not ok)}"
+        )
 
 
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:

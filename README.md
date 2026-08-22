@@ -101,11 +101,23 @@ hook that runs before every prompt you type.
 
 **Not yet installable from this marketplace.** The pin still names a commit
 from before the plugin existed, because a release commit is the only thing that
-can name itself — so the commands above will fail at `install` until the first
-tagged release moves it. Until then the plugin is installable from a clone:
-`claude plugin marketplace add <path to your checkout>`, with the entry's
-`source` set to `"./"`. Both halves of that are what `tests/rig/` does to
-exercise the real install path.
+can name itself. The first tagged release moves it.
+
+Until it does, **the install above does not fail — it succeeds and gives you
+nothing**, and that is worth stating because the two states are hard to tell
+apart here. Measured on 2.1.239: `marketplace add` succeeds, `install` exits 0
+and prints `✔ Successfully installed plugin: memkit@memkit`, `claude plugin
+list` reports it `enabled`, and the only sign anything is wrong is a warning
+that blames the `--config` flag — `--config was given but plugin
+"memkit@memkit" declares no userConfig options` — because the commit it cloned
+has no plugin manifest to declare them in. `claude plugin details memkit@memkit`
+is the command that tells you: it reports `Hooks (0)`. A correctly installed
+memkit that has not been given a config is *also* silent by design (see below),
+so without that command the two look the same from the outside.
+
+Install from a clone instead: `claude plugin marketplace add <path to your
+checkout>`, with the entry's `source` set to `"./"`. Both halves of that are
+what `tests/rig/` does to exercise the real install path.
 
 **Setting it up is manual in this build.** `/memkit:init` — the consented,
 journalled setup this is designed around — has not landed yet, so for now write
