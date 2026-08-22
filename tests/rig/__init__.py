@@ -264,14 +264,6 @@ class Profile:
             path.unlink()
 
 
-# Files and directories a staged copy leaves behind. `.git` is the big one and
-# the reason this is a filter rather than a plain copy — but note what the
-# exclusion implies: a github install delivers TRACKED files only, so a staged
-# copy is more forgiving than the real channel. `test_plugin_surface.py` covers
-# that gap statically by asserting every payload file is tracked.
-STAGE_EXCLUDE = {".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache"}
-
-
 def stage_plugin(dest: Path, repo: Path = REPO) -> Path:
     """A copy of the plugin tree whose marketplace serves that copy in place.
 
@@ -283,13 +275,40 @@ def stage_plugin(dest: Path, repo: Path = REPO) -> Path:
     is sha-pinned, and that the sha is a commit in this history — is pinned by
     a static test instead.
 
+    TRACKED FILES ONLY, from `git ls-files`, because that is what the channel
+    this rig stands in for delivers: a github install is a clone. A copy of the
+    working tree stages files no adopter can receive — which makes an untracked
+    wrapper pass here and be missing for everyone — and it stages files the
+    payload must not carry at all, an adopter's own `memkit.json` at the root
+    being the one that used to decide what the hook read.
+
+    No fallback when git cannot answer. A staged tree assembled some other way
+    is a tree whose relationship to the real channel is unknown, and a rig that
+    quietly degrades to a more forgiving copy is the thing these scenarios
+    exist to replace.
+
     Returns the staged root, which is both the marketplace and the plugin.
     """
-    shutil.copytree(
-        repo,
-        dest,
-        ignore=lambda _d, names: {n for n in names if n in STAGE_EXCLUDE},
+    assert shutil.which("git") is not None, "staging a payload needs git"
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repo, capture_output=True, text=True, timeout=120, check=True,
     )
+    tracked = [name for name in listed.stdout.split("\0") if name]
+    assert tracked, f"no tracked files under {repo}"
+    dest.mkdir(parents=True)
+    for name in tracked:
+        source = repo / name
+        # A tracked file the working tree no longer has (mid-rebase, a deleted
+        # file not yet staged): skipping it silently would stage a payload that
+        # is neither the index's nor the tree's.
+        assert source.is_file(), f"tracked but missing from the working tree: {name}"
+        target = dest / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # copy2, so the executable bit survives — a wrapper staged as 644 is a
+        # hook the harness cannot run, which is a failure about this function
+        # rather than about the plugin.
+        shutil.copy2(source, target)
     manifest = dest / ".claude-plugin" / "marketplace.json"
     blob = json.loads(manifest.read_text())
     for entry in blob["plugins"]:

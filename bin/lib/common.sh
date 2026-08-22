@@ -16,9 +16,9 @@
 # lives inline in all three rather than here. What it does and why, once:
 #
 #   - From `$0`, not from `$CLAUDE_PLUGIN_ROOT`. A script can always find
-#     itself, which is what makes the third config rung below work when the
-#     harness exports nothing at all. Doctor, which runs the wrapper directly,
-#     is exactly that case.
+#     itself, and doctor runs the wrapper directly with none of the harness's
+#     variables set — so a derivation that needed one would leave the tree
+#     unlocatable in the state an adopter reaches for diagnosis.
 #   - `command -v` when `$0` carries no slash. `bin/` is on the agent's PATH,
 #     so `memkit-recall …` typed as a bare command arrives with argv[0] of
 #     `memkit-recall` and no directory to walk up from.
@@ -42,7 +42,7 @@ memkit_expand_home() {
     esac
 }
 
-# The config this install serves, or nothing. Three rungs, in order, first
+# The config this install serves, or nothing. Two rungs, in order, first
 # existing file wins:
 #
 #   1. CLAUDE_PLUGIN_OPTION_MEMKITCONFIG — the harness's own typed userConfig
@@ -54,15 +54,18 @@ memkit_expand_home() {
 #      unset rather than built from an empty expansion. `${unset}/memkit.json`
 #      is `/memkit.json`, and a hook that reads every prompt must never stat a
 #      root-level path it did not mean to name.
-#   3. <plugin root>/memkit.json — derived from this file's own location, and
-#      the only rung that depends on no environment at all. The first two are
-#      both plugin env exports into the hook process, i.e. one failure mode
-#      wearing two hats.
+#
+# Both rungs name a path from OUTSIDE the payload: one the adopter typed at
+# install, one a data directory the harness owns and `uninstall` removes. That
+# is the whole admission rule, and it is why there is no rung reading a
+# `memkit.json` beside the wrappers. A plugin install is a clone of a pinned
+# commit, so a file inside the payload is a file the repo can ship — and a
+# config decides which directories an every-prompt hook reads and which binary
+# it exec's. Neither may be answerable by anything the payload carries.
 #
 # Nothing found is not an error: the wrapper goes on to run the hook with no
 # config, which is inert by construction — no stores, no pointers, exit 0.
 memkit_resolve_config() {
-    _root=$1
     if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITCONFIG:-}" ]; then
         _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")
         [ -f "$_candidate" ] && {
@@ -72,13 +75,6 @@ memkit_resolve_config() {
     fi
     if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
         _candidate="$CLAUDE_PLUGIN_DATA/memkit.json"
-        [ -f "$_candidate" ] && {
-            printf '%s\n' "$_candidate"
-            return 0
-        }
-    fi
-    if [ -n "$_root" ]; then
-        _candidate="$_root/memkit.json"
         [ -f "$_candidate" ] && {
             printf '%s\n' "$_candidate"
             return 0

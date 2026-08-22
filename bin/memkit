@@ -43,7 +43,7 @@ if [ ! -f "$MEMKIT_ROOT/src/memkit/cli.py" ]; then
     exit 1
 fi
 
-CONFIG=$(memkit_resolve_config "$MEMKIT_ROOT") || CONFIG=""
+CONFIG=$(memkit_resolve_config) || CONFIG=""
 if [ -n "$CONFIG" ]; then
     MEMKIT_CONFIG=$CONFIG
     export MEMKIT_CONFIG

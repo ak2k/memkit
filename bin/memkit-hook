@@ -55,7 +55,7 @@ if [ ! -f "$HOOK_FILE" ]; then
     exit 0
 fi
 
-CONFIG=$(memkit_resolve_config "$MEMKIT_ROOT") || CONFIG=""
+CONFIG=$(memkit_resolve_config) || CONFIG=""
 
 # A HARD override, in both directions. Setting it when a rung answered is the
 # obvious half; UNSETTING it when none did is the half that matters. An adopter

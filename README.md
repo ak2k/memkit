@@ -117,11 +117,14 @@ state, not a failure — but nothing will surface pointers until you write the
 file.
 
 The config path reaches the hook through the `memkitConfig` option above, or
-through `$CLAUDE_PLUGIN_DATA/memkit.json`, or through a `memkit.json` beside
-the plugin itself, in that order. It is never inherited from your shell: an
-every-prompt hook's list of directories is not the ambient environment's
-decision to make, which is the same rule the nix module follows by baking the
-path in.
+through `$CLAUDE_PLUGIN_DATA/memkit.json`, in that order — and through nothing
+else. It is never inherited from your shell: an every-prompt hook's list of
+directories is not the ambient environment's decision to make, which is the
+same rule the nix module follows by baking the path in. It is also never taken
+from the plugin's own directory, for the sharper version of the same reason —
+the payload is a clone of a pinned commit, so a config shipped inside it would
+let the code you installed choose which of your directories the hook reads and
+which binary runs it.
 
 **`bin/` is the agent's PATH, not your terminal's.** While the plugin is
 enabled, `memkit-recall --search "…"` works in the agent's Bash tool. It is not

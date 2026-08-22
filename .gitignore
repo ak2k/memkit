@@ -5,3 +5,11 @@ __pycache__/
 .venv/
 result
 result-*
+# A developer's own memkit config, which belongs in ~/.cache/memory-recall/ and
+# never in a clone. Nothing here reads it — the wrappers admit a config only
+# from the install option or the harness's data dir — but a payload file named
+# like a config is a thing the next reader will wire back up, and
+# test_the_payload_root_carries_no_config_of_its_own is the assertion that
+# stops it. This line stops the accidental `git add -A` that would get there
+# first.
+/memkit.json

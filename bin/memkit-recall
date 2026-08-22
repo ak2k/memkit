@@ -51,7 +51,7 @@ if [ ! -f "$HOOK_FILE" ]; then
     exit 2
 fi
 
-CONFIG=$(memkit_resolve_config "$MEMKIT_ROOT") || CONFIG=""
+CONFIG=$(memkit_resolve_config) || CONFIG=""
 # Same hard override as the hook wrapper, in both directions, for the same
 # reason: what a plugin install searches is decided by the install, not by
 # whatever the launching shell exported. `--config PATH` on the command line

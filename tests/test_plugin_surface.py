@@ -101,8 +101,10 @@ def test_the_option_is_required_and_says_what_it_is_for() -> None:
 
     A `default` is declared for the interactive flow, and the wrapper must not
     depend on it: a declared default is NOT exported to hook processes when the
-    option is unset (measured), so rung 3 rather than this string is what
-    covers that case.
+    option is unset (measured), so an install that skipped `--config` reaches
+    the hook with nothing on either rung. That state is inert, which is why the
+    warning is the right severity — and it is why the default is a suggestion
+    to the person installing rather than an input to the wrapper.
     """
     option = _json(PLUGIN_MANIFEST)["userConfig"]["memkitConfig"]
     assert option["required"] is True
@@ -191,6 +193,31 @@ def test_every_payload_file_is_tracked() -> None:
         cwd=REPO, capture_output=True, text=True, timeout=60,
     )
     assert out.returncode == 0, out.stderr
+
+
+def test_the_payload_root_carries_no_config_of_its_own() -> None:
+    """The other direction of the tracking assertion above, and the one the
+    wrappers' admission rule rests on.
+
+    That test asks whether each payload entry is tracked; nothing asked what
+    ELSE the payload carries. A `memkit.json` at the root — committed, or
+    merely sitting in the checkout of whoever runs the rig — used to be a
+    config rung, and a config decides both which directories the every-prompt
+    hook reads and which binary it exec's.
+
+    Against the REAL repository root rather than the `root` fixture, which is
+    built from PAYLOAD and can never contain one. Both states are checked: the
+    index, because a clone delivers that, and the working tree, because the rig
+    stages from it.
+    """
+    if not (REPO / ".git").exists() or shutil.which("git") is None:
+        pytest.skip("no git checkout here — the plain-python CI leg is where this runs")
+    out = subprocess.run(
+        ["git", "ls-files", "--", ":(top)memkit.json"],
+        cwd=REPO, capture_output=True, text=True, timeout=60,
+    )
+    assert out.stdout.strip() == "", out.stdout
+    assert not (REPO / "memkit.json").exists(), "a config at the payload root"
 
 
 def test_the_wrappers_are_executable_in_the_index() -> None:
@@ -412,22 +439,31 @@ def test_rung_two_is_the_plugin_data_dir(root, tmp_path, shimmed) -> None:
     assert shimmed.read()["MEMKIT_CONFIG"] == str(config)
 
 
-def test_rung_three_needs_no_environment_at_all(root, shimmed) -> None:
-    """The rung that does not share the other two's failure mode. Both of those
-    are plugin env exports into the hook process — one mechanism wearing two
-    hats — and a script can always find itself."""
-    config = _config_file(root / "memkit.json")
+def test_a_config_inside_the_payload_is_not_a_rung(root, tmp_path, shimmed) -> None:
+    """The admission rule, from the side that has no environment to check.
+
+    A plugin install is a clone of a pinned commit, so a `memkit.json` at the
+    payload root is a file the repository can ship — and a config names the
+    directories the every-prompt hook reads and the binary it exec's. Both
+    halves are asserted here because they fail differently: the config half
+    poisons what is served, and the interpreter half decides what runs at all,
+    before anything has parsed a byte of JSON.
+    """
+    _config_file(root / "memkit.json", interpreter=str(tmp_path / "evil"))
     env = shimmed()
     assert "CLAUDE_PLUGIN_ROOT" not in env and "CLAUDE_PLUGIN_DATA" not in env
     assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == str(config)
+    seen = shimmed.read()
+    assert seen["MEMKIT_CONFIG"] == "<unset>", seen["MEMKIT_CONFIG"]
+    # The shim on PATH answered, i.e. the payload's file named no interpreter
+    # either. A rung reading it would have made this run the other one.
+    assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
 
 
 def test_the_rungs_are_tried_in_order(root, tmp_path, shimmed) -> None:
     option = _config_file(tmp_path / "one.json")
     data = tmp_path / "two"
     _config_file(data / "memkit.json")
-    _config_file(root / "memkit.json")
     env = shimmed(
         CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(option), CLAUDE_PLUGIN_DATA=str(data)
     )
@@ -476,9 +512,9 @@ def test_an_unset_data_dir_never_becomes_a_root_level_path(
     for env in (shimmed(), shimmed(CLAUDE_PLUGIN_DATA="")):
         out = _run(root / "bin" / "memkit-hook", env=env, cwd=cwd, shell_trace=True)
         assert out.returncode == 0
-        # `/memkit.json` as a WHOLE word — rung 3 legitimately builds
-        # `<root>/memkit.json`, and the root is an absolute path, so only the
-        # empty-expansion bug can put the bare root-level path in the trace.
+        # `/memkit.json` as a WHOLE word: every legitimate candidate this
+        # builds is prefixed by an absolute directory, so the bare root-level
+        # path can only appear through the empty expansion.
         assert not re.search(r"(?<![\w/])/memkit\.json\b", out.stderr), out.stderr
         assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
 
@@ -575,8 +611,13 @@ def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
     """The harness expands `${CLAUDE_PLUGIN_ROOT}` WITH a trailing slash
     (measured on 2.1.238), so the registration hands the wrapper
     `<root>//bin/memkit-hook`. Everything the wrapper builds is derived from
-    that string."""
-    config = _config_file(root / "memkit.json")
+    that string.
+
+    Read off the hook path the wrapper hands its interpreter, because that is
+    the derived value the whole tree is built from — equality rather than a
+    "//" search, so a derivation that normalized the separator and landed in
+    the wrong tree is caught too.
+    """
     doubled = f"{root}//bin/memkit-hook"
     out = subprocess.run(
         [doubled], capture_output=True, text=True, timeout=60,
@@ -584,8 +625,7 @@ def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
     )
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
-    assert seen["MEMKIT_CONFIG"] == str(config)
-    assert "//" not in seen["argv"], seen["argv"]
+    assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
 
 
 def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
@@ -593,8 +633,13 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
 ) -> None:
     """`bin/` is on the agent's PATH while the plugin is enabled, so
     `memkit-recall --search …` arrives with argv[0] of `memkit-recall` and no
-    directory to walk up from."""
-    config = _config_file(root / "memkit.json")
+    directory to walk up from.
+
+    The hook path the wrapper resolved is the whole assertion: a `command -v`
+    that answered with a different `memkit-recall` on the same PATH would run
+    that install's hook file, which is the wrong-tree failure this derivation
+    exists to avoid, and it is invisible in an exit code.
+    """
     env = shimmed()
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     out = subprocess.run(
@@ -604,8 +649,8 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
     )
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
-    assert seen["MEMKIT_CONFIG"] == str(config)
-    assert seen["argv"].endswith("memory_prompt_recall.py --search flange torque")
+    hook_file = root / "src" / "memkit" / "memory_prompt_recall.py"
+    assert seen["argv"] == f"{hook_file} --search flange torque"
 
 
 def test_the_search_wrapper_refuses_rather_than_blocking_on_stdin(root, shimmed):
