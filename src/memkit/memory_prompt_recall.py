@@ -1997,6 +1997,14 @@ def _session_state_path(session_id: str) -> str:
 # own wrapper and by nothing else, which is why the gate keys on it rather than
 # on `CLAUDE_PLUGIN_DATA`: the wrapper is reachable only through a plugin
 # registration, while the harness's env contract is somebody else's to change.
+#
+# And the marker may only ever NARROW what a run does — it enables refusals and
+# grants nothing, so setting it can turn a served run into a refused one and
+# never the reverse. That direction is what makes forging it pointless, and it
+# stops being true the moment something under `if _plugin_install():` widens
+# what gets served: another store root, another config route, a relaxed cwd
+# gate. Setting the marker without that property is a trust bypass, which is
+# what a reviewer read into this section once already.
 PLUGIN_ENV = "MEMKIT_PLUGIN"
 # Plugin-scoped storage, which `claude plugin uninstall` removes unless
 # `--keep-data`. That is exactly the right lifetime for a record of refusals

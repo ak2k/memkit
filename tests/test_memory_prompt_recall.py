@@ -4684,6 +4684,56 @@ def test_a_configured_plugin_serves_prompts_and_records_no_refusal(
     assert _last_record(tmp_path)["outcome"] == "injected"
 
 
+def test_the_plugin_marker_can_only_ever_narrow_what_is_served(tmp_path) -> None:
+    """The property that makes forging `MEMKIT_PLUGIN` uninteresting, pinned so
+    the next reader does not have to re-derive it.
+
+    A second reviewer reported the marker as a trust bypass — set it with a
+    valid config and `_trust_gate` returns None — and the reading is inverted:
+    without the marker the gate returns None one branch earlier, so there is no
+    refusal to bypass. The gate is an ENABLER of refusals, never a grant, and
+    the counterfactual is the whole argument: for one valid config the served
+    store set and the injected block are identical either way.
+
+    The direction is what has to stay true. Anything later added under
+    `if _plugin_install():` that WIDENS what gets served — an extra store root,
+    another config route, a relaxed cwd gate — turns a nonexistent finding into
+    a real one, and turns this red.
+    """
+    env, plugin_data = _plugin_home(tmp_path)
+    env["MEMKIT_CONFIG"] = str(_write_config(tmp_path))
+    corpus = tmp_path / PERSONAL_DIR / "search"
+    corpus.mkdir(parents=True)
+    (tmp_path / PROJECT_DIR / "search").mkdir(parents=True)
+    (corpus / "flange_torque.md").write_text(
+        "---\ndescription: Flange fasteners tighten in a star pattern across "
+        "three passes.\ntype: reference\n---\n\n# Flange torque\n\nThree passes.\n"
+    )
+    without = dict(env)
+    without.pop(hook.PLUGIN_ENV)
+
+    prompt = "flange fastener tightening sequence and passes"
+    # Distinct sessions, because the dedup ledger is per session and the second
+    # run would otherwise be answering a different question from the first.
+    marked = _hook(env, prompt, session="marker1")
+    plain = _hook(without, prompt, session="marker0")
+    assert marked.returncode == plain.returncode == 0, (marked.stderr, plain.stderr)
+    assert marked.stdout == plain.stdout != ""
+    assert not (plugin_data / hook.MARKER_NAME).exists()
+
+    stores = []
+    for case in (env, without):
+        out = subprocess.run(
+            ["python3", HOOK, "--debug-config"],
+            capture_output=True, text=True, timeout=60, env=case,
+        )
+        assert out.returncode == 0, out.stderr
+        stores.append(
+            [line for line in out.stdout.splitlines() if line.startswith("store ")]
+        )
+    assert stores[0] == stores[1] != []
+
+
 def test_the_marker_is_bounded_and_replaces_a_file_it_cannot_read(
     tmp_path, monkeypatch
 ) -> None:
