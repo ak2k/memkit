@@ -4705,10 +4705,17 @@ def test_the_plugin_marker_can_only_ever_narrow_what_is_served(tmp_path) -> None
     corpus = tmp_path / PERSONAL_DIR / "search"
     corpus.mkdir(parents=True)
     (tmp_path / PROJECT_DIR / "search").mkdir(parents=True)
-    (corpus / "flange_torque.md").write_text(
-        "---\ndescription: Flange fasteners tighten in a star pattern across "
-        "three passes.\ntype: reference\n---\n\n# Flange torque\n\nThree passes.\n"
-    )
+    # PAST THE CAP, deliberately. With one memory against MAX_HITS the block
+    # never truncates, so the notice — the one line that differs between the
+    # channels, since the plugin channel advertises its own binary and the
+    # config path — is never rendered and the byte-equality below passes by
+    # measuring output that has nothing channel-specific in it.
+    for n in range(hook.MAX_HITS + 3):
+        (corpus / f"flange_torque_{n}.md").write_text(
+            f"---\ndescription: Flange fastener {n} tightens in a star pattern "
+            "across three passes.\ntype: reference\n---\n\n"
+            f"# Flange torque {n}\n\nThree passes.\n"
+        )
     without = dict(env)
     without.pop(hook.PLUGIN_ENV)
 
@@ -4718,7 +4725,25 @@ def test_the_plugin_marker_can_only_ever_narrow_what_is_served(tmp_path) -> None
     marked = _hook(env, prompt, session="marker1")
     plain = _hook(without, prompt, session="marker0")
     assert marked.returncode == plain.returncode == 0, (marked.stderr, plain.stderr)
-    assert marked.stdout == plain.stdout != ""
+    assert "further match" in marked.stdout, marked.stdout
+
+    # The POINTER SET is what "the same stores were served" means, and it is
+    # identical. The advertised command is the one permitted divergence — it is
+    # a fact about the caller's channel, not about what was served — so it is
+    # excluded by name rather than by dropping the comparison.
+    def _pointers(text: str) -> list[str]:
+        return [
+            line for line in text.splitlines()
+            if line.startswith("- ") and "further match" not in line
+        ]
+
+    assert _pointers(marked.stdout) == _pointers(plain.stdout) != []
+    marked_notice = [x for x in marked.stdout.splitlines() if "further match" in x]
+    plain_notice = [x for x in plain.stdout.splitlines() if "further match" in x]
+    assert len(marked_notice) == len(plain_notice) == 1
+    assert marked_notice != plain_notice
+    assert hook.PLUGIN_SEARCH_BINARY in marked_notice[0]
+    assert hook.SEARCH_BINARY in plain_notice[0]
     assert not (plugin_data / hook.MARKER_NAME).exists()
 
     stores = []
@@ -4867,6 +4892,34 @@ def _hook_outcomes() -> set[str]:
         if isinstance(n, ast.FunctionDef) and n.name == "done"
     )
     inside_emitter = set(map(id, ast.walk(emitter)))
+
+    # WHOLE MODULE, not `main`'s body. Walking only `main` meant one hop hid a
+    # record again: a module-level helper called from `main` could write an
+    # outcome this never enumerates, which is the same blindness the original
+    # finding was about. So every `_soak_log` call site in the file is located
+    # and its enclosing function named — the set is a contract, and a new
+    # writer has to be argued for rather than merely added.
+    writers: set[str] = set()
+
+    def attribute(node: ast.AST, enclosing: str) -> None:
+        """Name the INNERMOST function each `_soak_log` call sits in."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                attribute(child, child.name)
+                continue
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "_soak_log"
+            ):
+                writers.add(enclosing)
+            attribute(child, enclosing)
+
+    attribute(tree, "<module>")
+    # `done` is the hook path's one emitter; `search_cli` writes the CLI
+    # path's own `cli:*` records, which are a separate vocabulary the
+    # consumer's collector does not read and does not count.
+    assert writers == {"done", "search_cli"}, sorted(writers)
     gate = next(
         n for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "prompt_gate"

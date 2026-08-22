@@ -103,6 +103,10 @@ def test_the_staged_payload_is_what_the_channel_delivers(staged: Path) -> None:
     missing for everyone, and lets a developer's own `memkit.json` sit at the
     payload root of every rig install, where it used to decide what the hook
     read.
+
+    A smoke check only: on a clean checkout it agrees with `git ls-files`
+    whichever way the staging is implemented, so the case that actually gates
+    the implementation is the one below.
     """
     listed = subprocess.run(
         ["git", "ls-files", "-z"], cwd=REPO,
@@ -120,6 +124,49 @@ def test_the_staged_payload_is_what_the_channel_delivers(staged: Path) -> None:
     # rather than about the plugin.
     for wrapper in ("bin/memkit", "bin/memkit-hook", "bin/memkit-recall"):
         assert os.access(staged / wrapper, os.X_OK), wrapper
+
+
+def test_staging_reads_the_index_rather_than_the_working_tree(tmp_path) -> None:
+    """The gate the case above cannot be.
+
+    `present <= tracked` compares the staged tree against the same
+    `git ls-files` the stager used, so on a fresh clone — which is every CI run
+    — it holds whichever way staging is implemented. Measured: reverting
+    `stage_plugin` to the old `copytree` left that case green, and every rig
+    scenario inherits the instrument.
+
+    So this builds a repository whose working tree and index DISAGREE, which is
+    the only state that can tell the two implementations apart, and asserts the
+    untracked files are absent from the staged payload. The two it plants are
+    the two that matter: a `memkit.json` at the payload root, which was a
+    config rung until this branch deleted it, and a stray executable in `bin/`,
+    which is on the agent's PATH.
+    """
+    scratch = tmp_path / "scratch-repo"
+    (scratch / ".claude-plugin").mkdir(parents=True)
+    (scratch / "bin").mkdir()
+    (scratch / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "memkit", "plugins": [{"name": "memkit", "source": "x"}]})
+    )
+    (scratch / "bin" / "memkit-hook").write_text("#!/bin/sh\nexit 0\n")
+    (scratch / "bin" / "memkit-hook").chmod(0o755)
+    def run(*a: str) -> None:
+        subprocess.run(
+            a, cwd=scratch, capture_output=True, text=True, timeout=120, check=True
+        )
+
+    run("git", "init", "-q")
+    run("git", "-c", "user.email=rig@local", "-c", "user.name=rig", "add", "-A")
+
+    # After the index is written, so the tree and the index disagree.
+    (scratch / "memkit.json").write_text('{"schema": 1}')
+    (scratch / "bin" / "stray").write_text("#!/bin/sh\necho stray\n")
+
+    staged_out = stage_plugin(tmp_path / "out", scratch)
+    present = {str(p.relative_to(staged_out)) for p in staged_out.rglob("*") if p.is_file()}
+    assert "memkit.json" not in present, present
+    assert "bin/stray" not in present, present
+    assert "bin/memkit-hook" in present, present
 
 
 # --- CLI tier -----------------------------------------------------------------

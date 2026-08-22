@@ -241,9 +241,25 @@ def test_ci_runs_the_rigs_harness_tier_as_a_gate_rather_than_a_courtesy() -> Non
     """
     from rig import REQUIRED_ENV
 
+    # The `python:` job's own text, not the whole file: a whole-file grep
+    # cannot tell which job carries a line, cannot tell a live line from a
+    # commented one, and would pass with the declaration moved to the `nix`
+    # job — where `tests/rig` is not even collected.
     workflow = (REPO / ".github" / "workflows" / "check.yml").read_text()
-    assert f"{REQUIRED_ENV}: \"1\"" in workflow, REQUIRED_ENV
-    assert "npm install -g @anthropic-ai/claude-code@" in workflow
+    jobs = re.split(r"^  (?=\w[\w-]*:$)", workflow, flags=re.MULTILINE)
+    python_job = [j for j in jobs if j.startswith("python:")]
+    assert len(python_job) == 1, [j.split(":", 1)[0] for j in jobs]
+    body = python_job[0]
+    live = "\n".join(
+        line for line in body.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert f'{REQUIRED_ENV}: "1"' in live, REQUIRED_ENV
+    assert "npm install -g @anthropic-ai/claude-code@" in live
+    assert "-m pytest" in live
+    # And nowhere else, or the declaration can drift into a job that never
+    # runs the rig while this stays green.
+    elsewhere = workflow.replace(body, "")
+    assert REQUIRED_ENV not in elsewhere, "declared outside the job that runs it"
 
 
 def test_every_payload_file_is_tracked() -> None:
@@ -1079,37 +1095,58 @@ def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
     assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
 
 
+@pytest.mark.parametrize(
+    "wrapper,args",
+    [
+        ("memkit-hook", ()),
+        ("memkit-recall", ("--search", "flange torque")),
+        ("memkit", ("doctor",)),
+    ],
+)
 def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
-    root, tmp_path, shimmed
+    root, shimmed, wrapper, args
 ) -> None:
     """`bin/` is on the agent's PATH while the plugin is enabled, so a bare
-    `memkit-recall --search …` has to find its own tree with no directory in
-    argv[0] to walk up from.
+    `memkit …` has to find its own tree with no directory in argv[0] to walk up
+    from.
+
+    All THREE wrappers, because the derivation is hand-duplicated in each and
+    covering one covered one: measured, deleting the `command -v` branch from
+    `bin/memkit-hook` and from `bin/memkit` left the whole suite green. It
+    matters most for `bin/memkit`, which is the one an agent really does type
+    bare, and where a broken derivation is an exit 1 with "cannot locate the
+    plugin tree" rather than anything about memkit.
 
     Run through `sh <name>` from the wrapper's own directory, and that is the
     only way to produce the case rather than a convenience. MEASURED on this
     platform: a shebang script executed through a PATH lookup receives the
     RESOLVED path as `$0` — the kernel passes execve's pathname to the
-    interpreter, not argv[0] — so `subprocess.run(["memkit-recall", ...])`
+    interpreter, not argv[0] — so `subprocess.run(["memkit-recall", …])`
     exercises the slashed branch and says nothing about this one. Handing the
     name to `sh` directly is what leaves `$0` bare.
 
-    The hook path the wrapper resolved is the whole assertion: a `command -v`
-    that answered with a different `memkit-recall` on the same PATH would run
-    that install's hook file, which is the wrong-tree failure this derivation
-    exists to avoid, and it is invisible in an exit code.
+    The tree the wrapper resolved is the whole assertion: a `command -v` that
+    answered with a different install on the same PATH would run that install's
+    files, which is the wrong-tree failure this derivation exists to avoid, and
+    it is invisible in an exit code.
     """
     env = shimmed()
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     out = subprocess.run(
-        ["sh", "memkit-recall", "--search", "flange torque"],
+        ["sh", wrapper, *args],
         capture_output=True, text=True, timeout=60, env=env,
         cwd=str(root / "bin"), stdin=subprocess.DEVNULL,
     )
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
-    hook_file = root / "src" / "memkit" / "memory_prompt_recall.py"
-    assert seen["argv"] == f"{hook_file} --search flange torque"
+    if wrapper == "memkit":
+        # The dispatcher runs the package rather than the hook file, so the
+        # tree shows up as the PYTHONPATH it prepends.
+        assert seen["argv"] == "-m memkit.cli doctor", seen["argv"]
+        assert seen["PYTHONPATH"].split(":")[0] == str(root / "src")
+    else:
+        hook_file = root / "src" / "memkit" / "memory_prompt_recall.py"
+        assert seen["argv"] == " ".join((str(hook_file), *args)), seen["argv"]
 
 
 def test_the_search_wrapper_refuses_rather_than_blocking_on_stdin(root, shimmed):
@@ -1225,17 +1262,23 @@ def test_the_dispatcher_refuses_by_name_when_nothing_can_run_it(
 # dotted-filename tokens are dropped on purpose: `~/.cache/memory-recall/` is a
 # directory this channel really does use and `memkit.json` is a file, and
 # neither is something anybody runs.
-COMMANDISH = re.compile(r"(?<![\w./-])(mem[a-z0-9]+(?:-[a-z0-9]+)*)(?![\w./-])")
+# A token that could be a command an agent types. Every command any channel
+# ships is either the bare word `memkit` or a hyphenated `mem…-…`, so requiring
+# that shape drops the English words this text is full of (`memory`,
+# `memories`) STRUCTURALLY rather than by naming them. Path-shaped and
+# dotted-filename tokens are dropped too: `~/.cache/memory-recall/` is a
+# directory this channel really uses and `memkit.json` is a file.
+COMMANDISH = re.compile(r"(?<![\w./-])(memkit|mem[a-z0-9]+-[a-z0-9-]+)(?![\w./-])")
 
-# The `mem…` words this channel prints that are not commands, each because it
-# is something else entirely. Default-deny is the point: a token nobody has
-# classified is treated as an advertised command and fails, which is the right
-# way round for a name whose whole failure mode is being read and run.
-NOT_A_COMMAND = {
-    "memkit-pointers",  # the frame's XML tag, never typed
-    "memory",  # prose, in the search CLI's own description
-    "memories",  # prose, in the pointer block's preamble
-}
+# The one hyphenated `mem…` token that is not a command, DERIVED rather than
+# listed: it is the frame's XML tag, and the emitter is where that fact lives.
+#
+# Derived because a hand-kept exception list is the cheapest way to silence a
+# real failure here — demonstrated: making the dispatcher advertise
+# `memkit-init` turns the case below red, and one line added to a list turns it
+# green with the bad advice still printed. There is nothing to add a line to
+# now, and the equality below says so out loud.
+NOT_A_COMMAND = {hook.FRAME_TAG}
 
 
 def _corpus(tmp_path: Path, **extra) -> Path:
@@ -1258,17 +1301,23 @@ def _corpus(tmp_path: Path, **extra) -> Path:
     )
 
 
-def _surfaces(root: Path, tmp_path: Path, config: Path, broken: Path) -> dict[str, str]:
+def _surfaces(
+    root: Path, tmp_path: Path, config: Path | None, broken: Path
+) -> dict[str, str]:
     """Every surface this channel renders, driven as the agent would reach it.
 
     Real processes through the real wrappers, with a real interpreter: what is
     under test is the name a plugin adopter is handed, and the wrappers are what
     make this channel a channel at all.
     """
+    tmp_path.mkdir(parents=True, exist_ok=True)
     env = dict(
         os.environ,
         HOME=str(tmp_path / "home"),
-        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
+        # `None` is the state between install and init: the option names a
+        # path that is not there yet, which is what an adopter's install
+        # command produces before anything has written the file.
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config or tmp_path / "not-yet.json"),
     )
     env.pop("MEMKIT_CONFIG", None)
     recall = root / "bin" / "memkit-recall"
@@ -1332,37 +1381,56 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         if entry.is_file() and os.access(entry, os.X_OK)
     }
     assert "memkit-recall" in shipped, shipped
-    # The exception list may never name a command any channel ships. Without
-    # this, the cheapest way to silence a real failure here is to add the
-    # offending name to it, and the case would go on passing by no longer
-    # looking at the one thing it is for.
+    # The exception set is exactly the frame tag, and nothing may be added to
+    # it by hand: an allowlist is the cheapest way to silence a real failure
+    # here, and the case would then go on passing by no longer looking at the
+    # one thing it is for. Anything else that needs excusing is a defect in the
+    # scrape's SHAPE, which is a change somebody has to argue for.
+    assert {hook.FRAME_TAG} == NOT_A_COMMAND, NOT_A_COMMAND
     assert NOT_A_COMMAND.isdisjoint(shipped | {hook.SEARCH_BINARY}), NOT_A_COMMAND
 
     # Three config states, because they reach the name through three different
     # routes and a fix can cover one without the others: a config that omits
     # `search_cli` takes the default applied in `Config.__init__`, one that
     # names it takes the field itself — this is the value the README's own
-    # worked example produces — and no config at all takes the default applied
+    # worked example produces — and NO CONFIG AT ALL takes the default applied
     # where the config would have been read.
+    #
+    # The third is the state the original defect was reported in — a freshly
+    # installed plugin, before init — and leaving it out let a channel-aware
+    # fix applied at one of the two application points pass: with the override
+    # written `if _plugin_install() and cfg is not None`, an unconfigured
+    # plugin goes back to advertising the binary it does not ship and the whole
+    # suite stays green.
     states = {
         "omitted": _corpus(tmp_path / "omitted"),
-        "named by the config": _corpus(
-            tmp_path / "named", search_cli="memory-recall --search"
-        ),
+        "named": _corpus(tmp_path / "named", search_cli="memory-recall --search"),
+        "absent": None,
     }
     for state, config in states.items():
-        surfaces = _surfaces(root, tmp_path / state.split()[0], config, broken)
+        surfaces = _surfaces(root, tmp_path / state, config, broken)
+        named: set[str] = set()
         for surface, text in surfaces.items():
             found = set(COMMANDISH.findall(text))
             assert found <= shipped | NOT_A_COMMAND, (
                 state, surface, sorted(found - shipped - NOT_A_COMMAND), text
             )
-            # And each surface really does name one, or the case above passes
-            # by measuring a surface that says nothing.
-            assert found & shipped, f"{state}/{surface} named none:\n{text}"
+            named |= found
+        # Anti-vacuity at the STATE rather than at each surface: with no
+        # config the hook is inert by construction and `--debug-config` reports
+        # routes rather than commands, so two surfaces legitimately name none —
+        # but a state in which NOTHING names a command is a state this case is
+        # not measuring.
+        assert named & shipped, (state, sorted(named))
         # The truncation notice specifically: the line whose whole purpose is
-        # to be run, and the one a config value used to be able to break.
-        assert "memkit-recall --config " in surfaces["truncation"], state
+        # to be run, and the one a config value used to be able to break. With
+        # no config there is no corpus to truncate and no path to name, so what
+        # that state pins instead is the dispatcher's fallback — which is where
+        # a pre-init adopter actually meets a command name.
+        if config is not None:
+            assert "memkit-recall --config " in surfaces["truncation"], state
+        else:
+            assert "memkit-recall --search" in surfaces["dispatcher refusal"], state
 
 
 def test_the_advertised_command_runs_from_the_agents_bash_tool(
@@ -1438,18 +1506,39 @@ def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> No
 # only handwritten link in the chain: the rungs are scraped from the shell and
 # the phrases are read out of the module, so the two ends cannot be edited into
 # agreement through this table without someone editing this table too.
+# One phrase per CANDIDATE PATH `memkit_resolve_config` really builds, keyed on
+# the shell expression that builds it. Keyed on the expression rather than on a
+# variable name for two reasons, both measured: a rung reading
+# `$HOME/.memkit.json` names no `CLAUDE_*` variable and was uncountable — which
+# is the exact shape of the rung this branch deleted — and changing the
+# BASENAME the wrapper looks for left the variable set identical, so the
+# message could send an agent to create a file the wrapper does not read.
+#
+# The mapping is the only handwritten link in the chain: the expressions are
+# scraped from the shell and the phrases are read out of the module.
 ROUTE_FOR_RUNG = {
-    "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": "the `memkitConfig` install option",
-    "CLAUDE_PLUGIN_DATA": "$CLAUDE_PLUGIN_DATA/memkit.json",
+    '$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")':
+        "the `memkitConfig` install option",
+    '"$CLAUDE_PLUGIN_DATA/memkit.json"': "$CLAUDE_PLUGIN_DATA/memkit.json",
 }
 
 
 def _resolver_rungs() -> set[str]:
-    """The harness variables `memkit_resolve_config` consults, from its body."""
+    """Every candidate path `memkit_resolve_config` tests, as written.
+
+    `_candidate=` is the resolver's one shape for "a path this rung might
+    serve": each rung assigns it and then `[ -f ]`s it. Anything assigned there
+    and not in ROUTE_FOR_RUNG is an admission route nobody has classified, and
+    the message that enumerates the routes is stale the moment one appears.
+    """
     text = COMMON_SH.read_text(encoding="utf-8")
     match = re.search(r"^memkit_resolve_config\(\) \{$(.*?)^\}$", text, re.S | re.M)
     assert match, "memkit_resolve_config moved — this pin cannot see it"
-    return set(re.findall(r"CLAUDE_[A-Z0-9_]+", match.group(1)))
+    body = match.group(1)
+    candidates = set(re.findall(r"^\s*_candidate=(\S.*?)\s*$", body, re.M))
+    # An empty assignment is the rejection arm of the absoluteness guard, not a
+    # route: `_candidate=""` is how a non-absolute value is dropped.
+    return {c for c in candidates if c not in ('""', "''")}
 
 
 def test_the_inert_message_names_the_rungs_the_resolver_actually_tries() -> None:
@@ -1462,7 +1551,10 @@ def test_the_inert_message_names_the_rungs_the_resolver_actually_tries() -> None
     equality in both directions, so a rung added is as red as a rung removed.
     """
     rungs = _resolver_rungs()
-    assert rungs == set(ROUTE_FOR_RUNG), (rungs, set(ROUTE_FOR_RUNG))
+    assert rungs == set(ROUTE_FOR_RUNG), (sorted(rungs), sorted(ROUTE_FOR_RUNG))
+    # The basename is part of the route, not decoration: the message tells an
+    # adopter which FILE to create.
+    assert "memkit.json" in "".join(rungs), rungs
     expected = {"--config PATH"} | {ROUTE_FOR_RUNG[rung] for rung in rungs}
     assert set(hook.PLUGIN_CONFIG_ROUTES) == expected, hook.PLUGIN_CONFIG_ROUTES
 
