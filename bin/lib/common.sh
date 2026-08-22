@@ -67,6 +67,15 @@ memkit_expand_home() {
 #      is `/memkit.json`, and a hook that reads every prompt must never stat a
 #      root-level path it did not mean to name.
 #
+# BOTH RUNGS TRUST THE HARNESS'S ENV CONTRACT. They are two environment
+# variables, and nothing here vets where they came from — so whatever can put
+# `CLAUDE_PLUGIN_DATA` into the launching environment (a wrapper script, a
+# nested harness invocation, another plugin's tooling) reproduces the failure
+# the `unset MEMKIT_CONFIG` below exists to prevent. There is no
+# harness-signed signal to check against, so this is recorded rather than
+# guarded; what it means in practice is that the README may not claim more
+# independence from the environment than "not from YOUR shell's MEMKIT_CONFIG".
+#
 # THE RULE THIS ENFORCES, exactly: no rung reads a path inside the payload
 # TREE. That is why there is no rung reading a `memkit.json` beside the
 # wrappers — a plugin install is a clone of a pinned commit, so a file in the

@@ -591,6 +591,41 @@ def test_the_rungs_are_tried_in_order(root, tmp_path, shimmed) -> None:
     assert shimmed.read()["MEMKIT_CONFIG"] == str(data / "memkit.json")
 
 
+@pytest.mark.parametrize(
+    "wrapper,args",
+    [
+        ("memkit-hook", ()),
+        ("memkit-recall", ("--search", "x")),
+        ("memkit", ("doctor",)),
+    ],
+)
+def test_every_wrapper_answers_the_config_question_identically(
+    root, tmp_path, shimmed, wrapper, args
+) -> None:
+    """The config-delivery policy is hand-duplicated in all three wrappers and
+    every rung and override case drove one of them.
+
+    Both directions of the override, because the second is the one that
+    matters: setting `MEMKIT_CONFIG` when a rung answered is obvious, and
+    UNSETTING it when none did is what stops an adopter's other memkit
+    installation handing this one a corpus nobody pointed it at. A wrapper that
+    dropped the `unset` would serve the ambient config and look identical from
+    outside.
+    """
+    config = _config_file(tmp_path / "shared.json")
+    answered = shimmed(
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
+        MEMKIT_CONFIG=str(tmp_path / "ambient.json"),
+    )
+    assert _run(root / "bin" / wrapper, *args, env=answered).returncode == 0
+    assert shimmed.read()["MEMKIT_CONFIG"] == str(config), wrapper
+
+    shimmed.out.unlink()
+    ambient = shimmed(MEMKIT_CONFIG=str(_config_file(tmp_path / "ambient.json")))
+    assert _run(root / "bin" / wrapper, *args, env=ambient).returncode == 0
+    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", wrapper
+
+
 def test_no_rung_leaves_the_config_unset_rather_than_inherited(
     root, tmp_path, shimmed
 ) -> None:
