@@ -821,8 +821,48 @@ def test_no_interpreter_is_a_named_refusal_that_still_exits_zero(
     assert "no python3" in out.stderr and "3.9" in out.stderr
 
 
-def _exit_literals(wrapper: str) -> set[int]:
-    """Every `exit N` a wrapper can reach, read off the file.
+def _code_only(line: str) -> str:
+    r"""One shell line with its comment and its quoted spans removed.
+
+    Both removals matter for finding a real `exit`. A trailing `# why` must not
+    hide the statement in front of it, and the word inside
+    `echo "exit 98 in a string"` must not be read as one. Quoted spans are
+    blanked rather than dropped so column-shaped assertions stay honest.
+
+    Only a `#` that starts a word is a comment: `"$#"` is an argument count and
+    `${1#\~/}` is a parameter expansion, and both occur in these wrappers.
+    """
+    out: list[str] = []
+    quote = None
+    for char in line:
+        if quote is not None:
+            out.append(" " if char != quote else char)
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+            out.append(char)
+        elif char == "#" and (not out or out[-1].isspace()):
+            break
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+EXIT_TOKEN = re.compile(r"(?<![\w-])exit(?![\w-])")
+
+
+def _exit_statuses(text: str, where: str) -> set[int]:
+    r"""Every status a shell file can `exit` with, DEFAULT-DENY.
+
+    The rule is inverted from the obvious one: rather than matching the exit
+    forms we expect and ignoring the rest, this finds every `exit` token in
+    code and fails on any whose form it does not recognise. The previous shape
+    — `^\s*exit (\d+)$` — required end-of-line immediately after the digits,
+    so `exit 1  # why`, `cmd && exit 1` (the idiomatic POSIX form) and a bare
+    `exit` were all invisible, and a paired "no computed exits" guard did not
+    fire when the next character was a digit. Measured: an unreached
+    `exit 1  # comment` planted in the hook wrapper left the whole suite green.
 
     Necessary and NOT sufficient, in both directions, which is why every case
     using this pairs it with real runs. A scrape cannot see `set -u` aborting
@@ -831,13 +871,56 @@ def _exit_literals(wrapper: str) -> set[int]:
     the wrapper's. What it does see is the thing a runtime case cannot: a
     branch nobody remembered to reach.
     """
-    text = (REPO / "bin" / wrapper).read_text()
-    literals = {int(m) for m in re.findall(r"^\s*exit (\d+)$", text, re.MULTILINE)}
-    assert literals, f"{wrapper} has no exit literals — this pin would be vacuous"
-    # No computed exits, or the regex above is measuring a file that has moved
-    # past it.
-    assert not re.search(r"^\s*exit\s+[^\d\s]", text, re.MULTILINE), wrapper
-    return literals
+    statuses = set()
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        code = _code_only(raw).rstrip()
+        if not EXIT_TOKEN.search(code):
+            continue
+        at = f"{where}:{lineno}"
+        assert len(EXIT_TOKEN.findall(code)) == 1, f"{at}: two exits on one line"
+        # Whatever precedes it may be a `&&`/`||` chain or a `case` arm; what
+        # FOLLOWS it must be a literal status and nothing else.
+        match = re.search(EXIT_TOKEN.pattern + r"\s*(\S*)\s*(;;)?$", code)
+        assert match, f"{at}: unrecognised exit form: {code.strip()!r}"
+        assert match.group(1).isdigit(), (
+            f"{at}: exit without a literal status — a bare `exit` propagates "
+            f"$? and a computed one cannot be read here: {code.strip()!r}"
+        )
+        statuses.add(int(match.group(1)))
+    assert statuses, f"{where} has no exit literals — this pin would be vacuous"
+    return statuses
+
+
+def _exit_literals(wrapper: str) -> set[int]:
+    return _exit_statuses((REPO / "bin" / wrapper).read_text(), wrapper)
+
+
+def test_the_exit_scrape_sees_the_forms_it_would_otherwise_miss() -> None:
+    """The anti-vacuity control for the helper above, which is the static half
+    of the hook's fail-open contract.
+
+    Each line here is a form the previous regex could not see. A scrape that
+    silently stops matching is a green test about nothing, and this one guards
+    a property whose failure mode is an error in front of every prompt.
+    """
+    seen = _exit_statuses(
+        "\n".join(
+            (
+                "exit 0",
+                "exit 2  # trailing comment",
+                "[ -n \"$x\" ] && exit 3",
+                "foo || exit 4",
+                "    exit 5 ;;",
+                "# exit 99 in prose is not an exit",
+                'echo "exit 98 in a string is not one either"',
+            )
+        ),
+        "<control>",
+    )
+    assert seen == {0, 2, 3, 4, 5}, seen
+    for hostile in ("exit", "exit $rc", "exit 1 || true", "exit 0; exit 1"):
+        with pytest.raises(AssertionError):
+            _exit_statuses(hostile, "<control>")
 
 
 def _half_delivered(tmp_path: Path, wrapper: str, *, library: bool) -> Path:
@@ -1127,10 +1210,10 @@ def test_the_dispatcher_refuses_by_name_when_nothing_can_run_it(
     # Every non-zero code this wrapper can produce, against the table an agent
     # reads. A shell script is the one place a new exit code can appear with
     # nothing to look it up in, and the two codes it must never borrow are
-    # already spoken for by the dispatcher it fronts.
-    codes = {int(m) for m in re.findall(r"^\s*exit (\d+)$",
-                                        (REPO / "bin" / "memkit").read_text(),
-                                        re.MULTILINE)} - {0}
+    # already spoken for by the dispatcher it fronts. Through the same
+    # default-deny helper as the other two wrappers, so this copy cannot go on
+    # believing a narrower regex.
+    codes = _exit_literals("memkit") - {0}
     assert codes == {EXIT_NO_RUNTIME}, codes
     assert EXIT_NO_RUNTIME not in (EXIT_USAGE, EXIT_NOT_IN_BUILD)
 
