@@ -715,8 +715,14 @@ def _half_delivered(tmp_path: Path, wrapper: str, *, library: bool) -> Path:
     payload is never executed and a wrong exit code there survives every test
     that thinks it covers it.
     """
-    root = tmp_path / ("half" if library else "bare")
-    (root / "bin" / "lib").mkdir(parents=True, exist_ok=True)
+    root = tmp_path / f"{wrapper}-{'half' if library else 'bare'}"
+    if root.exists():
+        # Built once per shape and reused. Re-copying is not merely wasteful:
+        # the source may be read-only — it is under /nix/store in the packaged
+        # check — and `shutil.copy` carries the mode across, so the second
+        # write to the same destination fails with EACCES.
+        return root
+    (root / "bin" / "lib").mkdir(parents=True)
     shutil.copy(REPO / "bin" / wrapper, root / "bin" / wrapper)
     if library:
         shutil.copy(COMMON_SH, root / "bin" / "lib" / "common.sh")
