@@ -18,14 +18,15 @@ for why the names are listed at all before they do anything.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections.abc import Callable
 
 from memkit.memory_prompt_recall import (
-    DEFAULT_SEARCH_CLI,
     EXIT_INERT,
     EXIT_NO_MATCH,
     _search_cli,
+    _self_name,
 )
 
 # This binary's exit codes, and deliberately NOT the search CLI's. They are
@@ -89,9 +90,9 @@ def _meanwhile(template: str) -> str:
     """Fill a `meanwhile` template with the commands this install exposes.
 
     `_search_cli()` is what the hook's own truncation notice advertises, so the
-    refusal and the pointer block name the same binary by construction. It
-    falls back to the shipped default when no config resolves, which is the
-    only case where there is nothing better to say.
+    refusal and the pointer block name the same command by construction —
+    including the `--config <path>` prefix the plugin channel adds, without
+    which the command is inert in the Bash tool the agent would run it from.
 
     Nothing about the config may take this down. A refusal is what a caller
     reaches when something is already wrong, so it is the last surface that
@@ -102,13 +103,20 @@ def _meanwhile(template: str) -> str:
     """
     try:
         search = _search_cli()
-        # The debug form is the search command with its mode flag swapped,
-        # since `search_cli` is spelled `<binary> --search`.
-        binary = search.split()[0]
     except Exception:
-        search = DEFAULT_SEARCH_CLI
-        binary = search.split()[0]
-    return template.format(search=search, search_config=f"{binary} --debug-config")
+        # `_self_name()` rather than the module constant: this branch is
+        # reachable whenever the config raises something `load_config` does not
+        # convert to `ConfigError` — `json.load` on a deeply nested file raises
+        # `RecursionError`, which is neither — and falling back to the shipped
+        # default there hands a plugin adopter a binary their channel does not
+        # ship. It reads only `os.environ` and cannot itself raise.
+        search = f"{_self_name()} --search"
+    # The debug form is the search command with its MODE FLAG swapped, not the
+    # binary re-derived: on the plugin channel the command carries
+    # `--config <path>`, which is the half that makes it runnable from the
+    # agent's Bash tool, and rebuilding from the first word alone dropped it.
+    search_config = re.sub(r"--search$", "--debug-config", search)
+    return template.format(search=search, search_config=search_config)
 
 # Subcommand -> the function that runs it, given the arguments this parser did
 # not consume. Empty today.

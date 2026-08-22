@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -1361,7 +1362,61 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
             assert found & shipped, f"{state}/{surface} named none:\n{text}"
         # The truncation notice specifically: the line whose whole purpose is
         # to be run, and the one a config value used to be able to break.
-        assert "memkit-recall --search" in surfaces["truncation"], state
+        assert "memkit-recall --config " in surfaces["truncation"], state
+
+
+def test_the_advertised_command_runs_from_the_agents_bash_tool(
+    root, tmp_path
+) -> None:
+    """The invariant's second clause, on the channel the command is typed into.
+
+    MEASURED in a live session: a Bash-tool process gets the plugin's `bin/` on
+    PATH and NONE of `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` or
+    `CLAUDE_PLUGIN_OPTION_*` — four plugin bin directories were on PATH and no
+    plugin variable was set. Both surviving config rungs are plugin env, so a
+    bare `memkit-recall --search` there resolves nothing and answers `inert`,
+    telling the agent a serving installation is unconfigured. That is the one
+    conclusion exit 3 exists to prevent.
+
+    So the command is taken out of the block the hook injected and RUN, in that
+    environment, rather than compared to a string. Quoting is part of the
+    claim: a config path can contain a space, and a command an agent cannot
+    paste is not a command.
+    """
+    corpus = tmp_path / "spaced dir"
+    config = _corpus(corpus)
+    env = dict(
+        os.environ,
+        HOME=str(tmp_path / "home"),
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
+    )
+    env.pop("MEMKIT_CONFIG", None)
+    query = "flange fastener tightening star pattern passes torque"
+    injected = subprocess.run(
+        [str(root / "bin" / "memkit-hook")],
+        input=json.dumps({"session_id": "bashtool", "prompt": query}),
+        capture_output=True, text=True, timeout=120, env=env, cwd=str(tmp_path),
+    )
+    assert injected.returncode == 0, injected.stderr
+    advertised = [
+        line.split("search: ", 1)[1]
+        for line in injected.stdout.splitlines()
+        if "search: " in line
+    ]
+    assert advertised, injected.stdout
+
+    # The Bash tool's shape: the plugin's bin on PATH, no plugin environment.
+    bash_tool = {
+        "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+    }
+    assert not [k for k in bash_tool if k.startswith("CLAUDE_PLUGIN_")]
+    out = subprocess.run(
+        shlex.split(advertised[0]), capture_output=True, text=True, timeout=120,
+        env=bash_tool, cwd=str(tmp_path), stdin=subprocess.DEVNULL,
+    )
+    assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr, advertised[0])
+    assert "flange_torque_" in out.stdout, out.stdout
 
 
 def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> None:

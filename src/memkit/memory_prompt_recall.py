@@ -1072,9 +1072,26 @@ def _advertised_search_cli(cfg: Config | None) -> str:
     must not parse again: `_print_config` derives the config state exactly once
     per invocation and a second resolution there would be a second answer to
     the question the first one settled.
+
+    ON THE PLUGIN CHANNEL THE CONFIG PATH IS PART OF THE COMMAND, and that is
+    what makes the command runnable rather than merely spelled correctly. The
+    agent runs it in the Bash tool, and a Bash-tool process gets the plugin's
+    `bin/` on PATH and NONE of `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` or
+    `CLAUDE_PLUGIN_OPTION_*` — measured in a live session, where four plugin
+    bin directories were on PATH and no plugin variable was set. Since both
+    surviving rungs are plugin env, a bare `memkit-recall --search` there
+    resolves no config and answers `inert`, which is the one thing exit 3
+    exists to stop an agent concluding: it reads a serving installation as an
+    unconfigured one.
     """
     if _plugin_install():
-        return PLUGIN_SEARCH_CLI
+        if cfg is None:
+            return PLUGIN_SEARCH_CLI
+        # Local import, like argparse below: the hook path runs on every
+        # prompt and reaches this only when a notice is rendered.
+        import shlex
+
+        return f"{PLUGIN_SEARCH_BINARY} --config {shlex.quote(cfg.path)} --search"
     return cfg.search_cli if cfg is not None else DEFAULT_SEARCH_CLI
 
 
