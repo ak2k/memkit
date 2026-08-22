@@ -3954,6 +3954,44 @@ def test_the_config_state_is_derived_once_per_invocation(
         hook._use_config(None)
 
 
+def test_a_falsy_wrong_type_is_a_named_error_rather_than_a_default(
+    tmp_path,
+) -> None:
+    """`raw.get(k) or <default>` reads a wrong TYPE as an absent value, which
+    is the leniency this reader's own section comment says it does not have.
+
+    Both fields it applied to are consequential. `edit_root` decides the tree
+    the checker verifies, blames and rewrites under `--write`; `blame_base`
+    decides the ref a change is blamed against. A config naming either as `0`,
+    `[]` or `{}` silently got the default and the caller was never told.
+    """
+    for field, blob in (
+        ("edit_root", {"stores": "store"}),
+        ("blame_base", {"citations": True}),
+    ):
+        for wrong in (0, [], {}, False):
+            config = tmp_path / f"{field}-{type(wrong).__name__}-{wrong!r}.json"
+            body: dict = {
+                "schema": hook.SCHEMA,
+                "roots": {"home": {"kind": "path", "path": str(tmp_path)}},
+                "stores": [
+                    {
+                        "id": "s",
+                        "role": "personal",
+                        "dir": "store",
+                        "live_root": "home",
+                    }
+                ],
+            }
+            if blob.get("citations"):
+                body["citations"] = {"roots": ["docs"], "blame_base": wrong}
+            else:
+                body["stores"][0]["edit_root"] = wrong
+            config.write_text(json.dumps(body))
+            with pytest.raises(hook.ConfigError, match=field):
+                hook.load_config(str(config))
+
+
 def test_a_search_cli_that_is_not_a_string_is_a_config_error(tmp_path) -> None:
     """`search_cli` is a COMMAND — rendered into the truncation notice an agent
     is told to run, and split by the dispatcher to name a binary — so it is
@@ -5132,6 +5170,49 @@ def test_a_plugin_and_a_settings_entry_on_one_config_are_still_detected(
     # and different files, which is the half that catches it.
     assert {d["other_config"] for d in duplicates} == {config.name}
     assert duplicates[0]["other"] != duplicates[0]["mine"]
+
+
+def test_a_dual_registered_machine_records_the_duplicate_a_bounded_number_of_times(
+    tmp_path,
+) -> None:
+    """The author's own fleet is the case: a nix-wired hook and a plugin
+    install both serving every prompt.
+
+    Each process reads a stamp the other wrote, so the detection fires on
+    essentially every prompt — and each detection used to append its own record
+    to `~/.cache/memory-recall/log.jsonl`, which nothing rotates. One record
+    per prompt forever is a file that becomes the thing it is reporting on, and
+    every rate the analyzers compute is a count over records.
+
+    What must NOT change is that the diagnostic still fires: a machine in this
+    state has to say so at least once, in each direction, or the finding it
+    exists to surface is invisible again.
+    """
+    _corpus_of_three(tmp_path)
+    config = _write_config(tmp_path)
+    other_hook = _second_installation(tmp_path)
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+    env.pop("MEMKIT_PLUGIN", None)
+
+    # Six prompts, alternating registrations — the steady state, not a corner.
+    for i in range(6):
+        subprocess.run(
+            ["python3", HOOK if i % 2 else other_hook],
+            input=json.dumps(
+                {"session_id": "dupbound", "prompt": PROMPTS[i % len(PROMPTS)]}
+            ),
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+
+    duplicates = _dup_records(tmp_path)
+    assert duplicates, "a dual-registered machine said nothing at all"
+    # One per DIRECTION, not one per prompt. Two registrations can announce
+    # each other once each; a third record means the suppression is not
+    # carrying across the ledger writes.
+    assert len(duplicates) <= 2, [
+        (d["mine"], d["other"]) for d in duplicates
+    ]
+    assert len({(d["mine"], d["other"]) for d in duplicates}) == len(duplicates)
 
 
 def test_one_registration_never_reports_itself_as_a_duplicate(tmp_path) -> None:

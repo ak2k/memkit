@@ -51,6 +51,12 @@ PAYLOAD = [
     "src/memkit/common-words.txt",
     "src/memkit/cli.py",
     "src/memkit/__init__.py",
+    # The checker `bin/memkit` routes to when a local python meets the 3.12
+    # floor: `MEMKIT_CHECKER_CMD` is `<python> -m memkit.memory_integrity`, run
+    # against THIS tree, so leaving it out of the payload made that route name
+    # a module the adopter does not have. Safe to add — its only first-party
+    # import is `memkit.memory_prompt_recall`, already here.
+    "src/memkit/memory_integrity.py",
 ]
 
 
@@ -275,6 +281,29 @@ def test_every_payload_file_is_tracked() -> None:
         cwd=REPO, capture_output=True, text=True, timeout=60,
     )
     assert out.returncode == 0, out.stderr
+
+
+def test_the_payload_carries_every_file_its_own_entry_points_import() -> None:
+    """PAYLOAD is hand-kept, and the failure it produces is the wrapper's own
+    "the plugin payload is incomplete" refusal — a plugin that installs and
+    never speaks again.
+
+    A SUBSET assertion, not equality: the closure of the two 3.9 entry points
+    does not reach `memory_integrity.py`, which the dispatcher routes to only
+    when a 3.12 interpreter is available, so equality would make that entry
+    red. What this catches is the direction that matters — a module a shipped
+    entry point imports that nobody remembered to list.
+    """
+    import sys
+
+    sys.path.insert(0, str(REPO / "tests"))
+    from test_packaging import _floor_39_closure
+
+    reachable = {
+        str(path.relative_to(REPO)) for path in _floor_39_closure()
+    }
+    listed = set(PAYLOAD)
+    assert reachable <= listed, sorted(reachable - listed)
 
 
 def test_the_payload_root_carries_no_config_of_its_own() -> None:

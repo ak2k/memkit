@@ -201,7 +201,17 @@ class Store:
             raise ConfigError(f"{where}.role must be project or personal")
         self.dir = _require_str(raw, "dir", where)
         self.live_root = _require_str(raw, "live_root", where)
-        self.edit_root = raw.get("edit_root") or self.live_root
+        # `or` reads a FALSY wrong type as absence: `"edit_root": 0`,
+        # `[]` and `{}` all silently became `live_root`, which is the leniency
+        # the section's own comment says this reader does not have. Absent is
+        # the only thing that defaults; present and wrong is named.
+        edit_root = raw.get("edit_root")
+        if edit_root is not None and not isinstance(edit_root, str):
+            raise ConfigError(
+                f"{where}: 'edit_root' must be a string when present, not "
+                f"{type(edit_root).__name__}"
+            )
+        self.edit_root = edit_root or self.live_root
         if not isinstance(self.edit_root, str):
             raise ConfigError(f"{where} needs a non-empty 'edit_root' string")
         self.sub_indexes = _require_str_tuple(raw, "sub_indexes", where)
@@ -261,7 +271,16 @@ class Config:
         self.extra_suffixes = _require_str_tuple(
             citations, "extra_suffixes", "citations"
         )
-        self.blame_base = citations.get("blame_base") or "origin/main"
+        # Same shape, same reason: a falsy wrong type here silently became
+        # `origin/main`, so a config that named the wrong TYPE of ref was
+        # blamed against a branch nobody chose.
+        blame_base = citations.get("blame_base")
+        if blame_base is not None and not isinstance(blame_base, str):
+            raise ConfigError(
+                "citations: 'blame_base' must be a string when present, not "
+                f"{type(blame_base).__name__}"
+            )
+        self.blame_base = blame_base or "origin/main"
         if not isinstance(self.blame_base, str):
             raise ConfigError("citations needs a non-empty 'blame_base' string")
         # Type-checked like the store fields, not merely defaulted. This value
@@ -2233,11 +2252,27 @@ def _foreign_registration(state_path: str) -> dict | None:
     This is the loud half. The quiet half is doctor's registration count, which
     is the one that can name which entry to remove.
 
-    Coverage, stated because it is not total: the stamp is written when a run
-    DELIVERS, so a registration that has never injected anything in this
-    session is not yet announced. Writing it on every invocation would put a
-    file write on the every-prompt path for a diagnostic, which is a worse
-    trade than detecting the duplicate one prompt later.
+    Coverage, stated because it is not total, and there are three limits:
+
+    1. The stamp is written when a run DELIVERS, so a registration that has
+       never injected anything in this session is not yet announced. Writing it
+       on every invocation would put a file write on the every-prompt path for
+       a diagnostic, which is a worse trade than detecting the duplicate one
+       prompt later.
+    2. The fingerprint is the resolved FILE plus the config, so two
+       registrations of the same file with the same config — a plugin entry and
+       a settings entry both naming one path, which is the likeliest duplicate
+       of all — produce one digest and are invisible here. Nothing on this side
+       can see them; counting registrations is doctor's job, and it is the half
+       that can name which entry to remove.
+    3. A peer on a build older than the one that introduced the stamp writes
+       this session's ledger WITHOUT a `reg` key, erasing it. The next run of
+       either registration then finds no stamp and reports nothing — so during
+       a rollout, which is exactly when two registrations are most likely, this
+       is quietest. It recovers once both sides are on a build that writes it.
+
+    None of the three is an error state, and silence here must not be read as
+    "no duplicate".
     """
     with contextlib.suppress(OSError, ValueError):
         with open(state_path, encoding="utf-8") as f:
@@ -2251,6 +2286,25 @@ def _foreign_registration(state_path: str) -> dict | None:
         if _registration_digest(stored) != _registration_digest(mine):
             return stored
     return None
+
+
+def _reported_duplicates(state_path: str) -> set[str]:
+    """Duplicate pairs this session has already announced.
+
+    Read only when a duplicate was actually detected, so a healthy machine
+    never pays for it. On a permanently dual-registered machine the detection
+    fires on essentially every prompt — each process reads a stamp the other
+    wrote — and without this the soak log grows one record per prompt forever,
+    in a file nothing rotates, moving every rate computed over it.
+    """
+    with contextlib.suppress(OSError, ValueError):
+        with open(state_path, encoding="utf-8") as f:
+            state = json.load(f)
+        if isinstance(state, dict):
+            recorded = state.get("dups")
+            if isinstance(recorded, list):
+                return {x for x in recorded if isinstance(x, str)}
+    return set()
 
 
 def _evidence(matched: list[str], total: int) -> float:
@@ -2985,17 +3039,36 @@ def main() -> None:
         # counts, basenames and the sanitized query — the full pair stays in
         # the session state, which doctor can read and which never leaves the
         # machine as a corpus.
+        # Which duplicate pairs this session has already announced, so a
+        # permanently dual-registered machine writes a BOUNDED number of these
+        # rather than one per prompt for the life of the session. The detection
+        # itself stays on every prompt — it is what makes the diagnostic fire
+        # at all when the pair only meets occasionally — and what is suppressed
+        # is the repeat.
+        #
+        # Bounded rather than once-only, and the difference is the persistence:
+        # the set is carried in the session state, which is written when a run
+        # DELIVERS, so a session whose prompts never inject can announce the
+        # same pair more than once. That is a handful of records rather than
+        # one per prompt, and closing it would mean a file write on the
+        # every-prompt path for a diagnostic.
+        announced: set[str] = set()
         if (other := _foreign_registration(state_path)) is not None:
-            # Not this prompt's outcome — a fact about the machine, written
-            # beside the record the prompt will produce for itself.
-            done(
-                "dup-registration",
-                False,
-                other_file=os.path.basename(str(other.get("file", ""))),
-                other_config=os.path.basename(str(other.get("config", ""))),
-                other=_registration_digest(other),
-                mine=_registration_digest(_registration()),
-            )
+            mine_digest = _registration_digest(_registration())
+            other_digest = _registration_digest(other)
+            pair = f"{mine_digest}:{other_digest}"
+            if pair not in _reported_duplicates(state_path):
+                announced.add(pair)
+                # Not this prompt's outcome — a fact about the machine, written
+                # beside the record the prompt will produce for itself.
+                done(
+                    "dup-registration",
+                    False,
+                    other_file=os.path.basename(str(other.get("file", ""))),
+                    other_config=os.path.basename(str(other.get("config", ""))),
+                    other=other_digest,
+                    mine=mine_digest,
+                )
         shown, spent = _load_session(state_path)
         if len(spent) >= POINTER_BUDGET and any(e is None for e in spent.values()):
             return done("gate:budget", pointers=len(spent), ledger="legacy")
@@ -3159,6 +3232,13 @@ def main() -> None:
                                 # overwriting each other's ledger left nothing
                                 # behind but pointers that came and went.
                                 "reg": _registration(),
+                                # Carried forward, not replaced: the two
+                                # registrations overwrite each other's ledger,
+                                # so a set rebuilt from this run alone would
+                                # forget the other direction on every prompt.
+                                "dups": sorted(
+                                    _reported_duplicates(state_path) | announced
+                                ),
                             },
                             f,
                         )
