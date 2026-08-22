@@ -22,7 +22,6 @@ exit 0 and print nothing.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shutil
@@ -365,11 +364,20 @@ def _no_model(profile: Profile, prompt: str, *, cwd: Path) -> None:
             "are what bound it; a harness that stopped honouring them takes the "
             "full budget, measured at 184s on the pinned build."
         ) from None
-    answer = {}
-    # Parsing defensively and asserting OUTSIDE the suppression: an assert
-    # inside one is an assert that cannot fail.
-    with contextlib.suppress(ValueError):
+    # A STRUCTURED response is required before the absence below means
+    # anything. Initialising to `{}` and parsing under a suppressor made the
+    # assertion pass on empty or non-JSON stdout — so a real endpoint, a proxy,
+    # or a CLI that failed before emitting anything all kept this CI gate
+    # green, which is the silence the tier exists to break.
+    try:
         answer = json.loads(out.stdout)
+    except ValueError:
+        raise AssertionError(
+            "the turn produced no JSON to check, so nothing here can say the "
+            f"model was unreachable. stdout={out.stdout[:400]!r} "
+            f"stderr={out.stderr[:400]!r}"
+        ) from None
+    assert isinstance(answer, dict), answer
     assert not answer.get("modelUsage"), (
         "a model answered a turn this scenario needs to be unreachable — "
         f"the route is not dead here: {answer.get('modelUsage')}"

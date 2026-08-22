@@ -1930,6 +1930,18 @@ def test_debug_config_says_when_it_overrode_the_field_it_is_labelled_with(
     assert out.returncode == 0, out.stderr
     assert "! the config's own `search_cli` is not in effect" in out.stdout, out.stdout
 
+    # And NOT where the config never declared the field: there is no value to
+    # have been overridden, and the line asserts something false about "the
+    # name it records". Measured byte-identical on two configs differing only
+    # in whether the key is present.
+    undeclared = _corpus(tmp_path / "undeclared")
+    silent = _run(
+        root / "bin" / "memkit-recall", "--debug-config",
+        env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(undeclared)},
+    )
+    assert silent.returncode == 0, silent.stderr
+    assert "! the config's own" not in silent.stdout, silent.stdout
+
     # And no divergence line where there is no divergence, or the note is
     # decoration rather than a report. Off the plugin channel the field IS the
     # advertised command — which is also why the note can never be silent on

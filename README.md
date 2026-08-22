@@ -394,11 +394,13 @@ outliving its index reads as a real record of a corpus that is no longer there.
 
 #### `log.jsonl` — the soak log, and what a reader may assume of it
 
-One JSON object per line, appended by the hook on every invocation. It is read
-outside this repository — the nix consumer's analyzers compute injection rates
-from it and its test suite asserts that every outcome memkit can emit has been
-classified — so the growth rule is a contract rather than an implementation
-note.
+One JSON object per line, appended by the hook and by the search CLI. Not on
+every invocation: a plugin install that has not been configured refuses before
+it would write anything, deliberately, because creating the shared state
+directory is a mutation nobody asked for. It is read outside this repository —
+the nix consumer's analyzers compute injection rates from it and its test suite
+asserts that every outcome memkit can emit has been classified — so the growth
+rule is a contract rather than an implementation note.
 
 - **The `outcome` vocabulary grows without a version bump.** `v` is a hash of
   the hook's own bytes, not a schema version; a new outcome is a normal change
@@ -406,14 +408,17 @@ note.
   must therefore fail loudly on one it does not recognise rather than dropping
   it from both halves — a silently unclassified outcome is a rate computed over
   a denominator nobody checked.
-- **`"concludes": false` marks a record that is about the MACHINE, not about
-  the prompt.** Duplicate-registration detection writes one; the prompt it was
-  observed during writes its own record separately. Exclude these from any
-  per-prompt population. Keying that exclusion on the outcome's name instead
-  means learning each new name; the field is there so you do not have to.
-- **A record describing a prompt carries `prompt_sha` and `ms`.** Filtering on
-  `prompt_sha` is the shape-based way to get exactly the per-prompt population,
-  and it stays correct for any non-prompt record added later.
+- **`"concludes": false` marks a record that is not a prompt outcome**, and it
+  is the ONLY filter that isolates the per-prompt population. Two kinds carry
+  it: duplicate-registration detection, which is about the machine and is
+  written beside the record the prompt produces for itself, and every record
+  the search CLI writes, since an agent running a command is not a prompt
+  anyone typed. Exclude both from any per-prompt population.
+- **Do not filter on `prompt_sha` or `ms`.** The CLI's records carry both — it
+  hashes the query the same way — so a consumer keying on them pulls a
+  command-line search into the denominator of every injection rate. Keying on
+  the outcome's NAME instead means learning each new name as it arrives; the
+  discriminator is there so you do not have to.
 - **What a record may contain is bounded**: hashes, counts, basenames, and the
   sanitized query terms. Never raw prompt text, and never file contents.
 

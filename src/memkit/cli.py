@@ -18,7 +18,6 @@ for why the names are listed at all before they do anything.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections.abc import Callable
 
@@ -121,7 +120,16 @@ def _meanwhile(template: str) -> str:
     # binary re-derived: on the plugin channel the command carries
     # `--config <path>`, which is the half that makes it runnable from the
     # agent's Bash tool, and rebuilding from the first word alone dropped it.
-    search_config = re.sub(r"--search$", "--debug-config", search)
+    #
+    # The swap is CONDITIONAL on the suffix being there, and the fallback is
+    # what it replaced: `re.sub` on a string that does not end in `--search`
+    # returns it unchanged, so the diagnostic form would silently become the
+    # search command — a command that needs terms, handed to an agent as the
+    # thing to run to see what resolved.
+    if search.endswith("--search"):
+        search_config = search[: -len("--search")] + "--debug-config"
+    else:
+        search_config = f"{search.split()[0]} --debug-config"
     return template.format(search=search, search_config=search_config)
 
 # Subcommand -> the function that runs it, given the arguments this parser did

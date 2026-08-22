@@ -3961,6 +3961,62 @@ def test_the_config_state_is_derived_once_per_invocation(
         hook._use_config(None)
 
 
+def test_an_explicit_null_is_not_read_as_absence(tmp_path) -> None:
+    """`raw.get(k)` returns None for a key that is absent AND for one set to
+    JSON `null`, so `"edit_root": null` silently took the default.
+
+    That is the same collapse the falsy-type check below was written to undo —
+    an invalid config indistinguishable from an intentional one — arriving
+    through the shape the check itself uses to decide a field is absent.
+    """
+    for field, body in (
+        ("edit_root", {"stores": True}),
+        ("blame_base", {"citations": True}),
+        ("search_cli", {"top": True}),
+    ):
+        config = tmp_path / f"null-{field}.json"
+        blob: dict = {
+            "schema": hook.SCHEMA,
+            "roots": {"home": {"kind": "path", "path": str(tmp_path)}},
+            "stores": [
+                {"id": "s", "role": "personal", "dir": "store", "live_root": "home"}
+            ],
+        }
+        if body.get("citations"):
+            blob["citations"] = {"roots": ["docs"], "blame_base": None}
+        elif body.get("stores"):
+            blob["stores"][0]["edit_root"] = None
+        else:
+            blob["search_cli"] = None
+        config.write_text(json.dumps(blob))
+        with pytest.raises(hook.ConfigError, match=field):
+            hook.load_config(str(config))
+
+
+def test_a_cli_record_is_not_counted_as_a_prompt(tmp_path) -> None:
+    """The search CLI writes into the same log and hashes its query the same
+    way, so its records carry `prompt_sha` and `ms` exactly as a prompt's do.
+
+    The published rule told a cross-repo consumer to filter on `prompt_sha`,
+    which pulls a command-line search into the denominator of every injection
+    rate — and the CLI's records got materially more frequent when the pointer
+    block started emitting a command an agent can actually run.
+    """
+    _corpus_of_three(tmp_path)
+    env = _env(tmp_path)
+    out = subprocess.run(
+        ["python3", HOOK, "--search", "flange fastener tightening"],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert out.returncode in (hook.EXIT_OK, hook.EXIT_NO_MATCH), out.stderr
+    rec = _last_record(tmp_path)
+    assert rec["session"] == "cli", rec
+    assert rec["concludes"] is False, rec
+    # The two fields a consumer must NOT key on, present here exactly as they
+    # are on a prompt record — which is why the discriminator has to exist.
+    assert "prompt_sha" in rec and "ms" in rec, rec
+
+
 def test_a_falsy_wrong_type_is_a_named_error_rather_than_a_default(
     tmp_path,
 ) -> None:

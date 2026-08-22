@@ -207,7 +207,11 @@ class Store:
         # the section's own comment says this reader does not have. Absent is
         # the only thing that defaults; present and wrong is named.
         edit_root = raw.get("edit_root")
-        if edit_root is not None and not isinstance(edit_root, str):
+        # `in`, not `is not None`: an explicit JSON `null` reaches here as None
+        # and was read as absence, so `"edit_root": null` silently selected the
+        # fallback — the exact collapse of "invalid" into "intentional default"
+        # this section exists to undo.
+        if "edit_root" in raw and not isinstance(edit_root, str):
             raise ConfigError(
                 f"{where}: 'edit_root' must be a string when present, not "
                 f"{type(edit_root).__name__}"
@@ -276,7 +280,7 @@ class Config:
         # `origin/main`, so a config that named the wrong TYPE of ref was
         # blamed against a branch nobody chose.
         blame_base = citations.get("blame_base")
-        if blame_base is not None and not isinstance(blame_base, str):
+        if "blame_base" in citations and not isinstance(blame_base, str):
             raise ConfigError(
                 "citations: 'blame_base' must be a string when present, not "
                 f"{type(blame_base).__name__}"
@@ -293,7 +297,12 @@ class Config:
         # Absent still means the default; present and not a string is an error,
         # in the reader's own words, on the surface that reads configs.
         search_cli = raw.get("search_cli")
-        if search_cli is not None and not isinstance(search_cli, str):
+        # Whether the field was DECLARED, which absent-or-empty collapses away
+        # — and `--debug-config`'s divergence line needs the difference, since
+        # a config that never mentioned `search_cli` has no value to have been
+        # overridden.
+        self.search_cli_declared = bool(raw.get("search_cli"))
+        if "search_cli" in raw and not isinstance(search_cli, str):
             raise ConfigError(
                 f"{path}: 'search_cli' must be a string when present, not "
                 f"{type(search_cli).__name__}"
@@ -3519,7 +3528,7 @@ def _print_config(state: tuple) -> int:
     # would be the one an operator cannot tell apart — and this is the command
     # both the README and docs/ROLLOUT.md name as the verification surface.
     # Same `!` convention as the store divergence below.
-    if advertised != display.search_cli:
+    if advertised != display.search_cli and display.search_cli_declared:
         # The config's own value is NOT echoed here, deliberately: this output
         # is read by agents, and a command name printed on any line of it is a
         # command something will eventually run. The file is named two lines
@@ -3688,6 +3697,14 @@ def search_cli(argv: list[str]) -> int:
         "prompt_sha": hashlib.sha256(stripped.encode()).hexdigest()[:12],
         "words": len(stripped.split()),
         "session": "cli",
+        # NOT a prompt outcome: nobody typed a prompt, an agent ran a command.
+        # It carries `prompt_sha` and `ms` like a prompt record does, so a
+        # consumer filtering on those pulls it into the denominator of every
+        # injection rate — which is what the published rule used to tell them
+        # to do. Same discriminator as the hook's own asides, so the rule is
+        # one rule: a record carrying `"concludes": false` is not about a
+        # prompt.
+        "concludes": False,
     }
 
     # The config is opened before this run does anything else: before the
