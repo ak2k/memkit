@@ -2338,23 +2338,37 @@ def _foreign_registration(state_path: str) -> dict | None:
     return None
 
 
-def _reported_duplicates(state_path: str) -> set[str]:
-    """Duplicate pairs this session has already announced.
+def _claim_duplicate(state_path: str, pair: str) -> bool:
+    """True for the ONE process that gets to announce this pair this session.
 
-    Read only when a duplicate was actually detected, so a healthy machine
-    never pays for it. On a permanently dual-registered machine the detection
-    fires on essentially every prompt — each process reads a stamp the other
-    wrote — and without this the soak log grows one record per prompt forever,
-    in a file nothing rotates, moving every rate computed over it.
+    An exclusive create, and both halves of that matter.
+
+    EXCLUSIVE, because the check and the record used to be a read of the
+    session state and a write of it several branches later: two hooks running
+    concurrently — which is what a dual-registered machine does on every
+    prompt — both read the pair as absent and both recorded it. `O_EXCL` is
+    the filesystem answering that question once.
+
+    A FILE OF ITS OWN, because the session state is written only when a run
+    delivers. Measured on the topology this bound is claimed for, both
+    registrations serving every prompt: the second one finds the paths already
+    shown, returns `deduped` before any write, and re-announces on every prompt
+    — six records over six prompts, in a log nothing rotates. The claim has to
+    outlive a run that had nothing to deliver.
+
+    Beside the session state and named after it, so whatever sweeps one sweeps
+    the other. Failure is not fatal: if the marker cannot be created at all the
+    diagnostic degrades to repeating, which is what it did before.
     """
-    with contextlib.suppress(OSError, ValueError):
-        with open(state_path, encoding="utf-8") as f:
-            state = json.load(f)
-        if isinstance(state, dict):
-            recorded = state.get("dups")
-            if isinstance(recorded, list):
-                return {x for x in recorded if isinstance(x, str)}
-    return set()
+    stem = state_path[: -len(".json")] if state_path.endswith(".json") else state_path
+    claim = f"{stem}.dup-{pair}"
+    try:
+        os.close(os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _evidence(matched: list[str], total: int) -> float:
@@ -3160,26 +3174,15 @@ def main() -> None:
         # counts, basenames and the sanitized query — the full pair stays in
         # the session state, which doctor can read and which never leaves the
         # machine as a corpus.
-        # Which duplicate pairs this session has already announced, so a
-        # permanently dual-registered machine writes a BOUNDED number of these
-        # rather than one per prompt for the life of the session. The detection
-        # itself stays on every prompt — it is what makes the diagnostic fire
-        # at all when the pair only meets occasionally — and what is suppressed
-        # is the repeat.
-        #
-        # Bounded rather than once-only, and the difference is the persistence:
-        # the set is carried in the session state, which is written when a run
-        # DELIVERS, so a session whose prompts never inject can announce the
-        # same pair more than once. That is a handful of records rather than
-        # one per prompt, and closing it would mean a file write on the
-        # every-prompt path for a diagnostic.
-        announced: set[str] = set()
+        # Once per pair per session, claimed atomically and independently of
+        # whether this run delivers anything. The detection itself stays on
+        # every prompt — it is what makes the diagnostic fire at all when the
+        # pair only meets occasionally — and what is bounded is the repeat.
         if (other := _foreign_registration(state_path)) is not None:
             mine_digest = _registration_digest(_registration())
             other_digest = _registration_digest(other)
             pair = f"{mine_digest}:{other_digest}"
-            if pair not in _reported_duplicates(state_path):
-                announced.add(pair)
+            if _claim_duplicate(state_path, pair):
                 # Not this prompt's outcome — a fact about the machine, written
                 # beside the record the prompt will produce for itself.
                 done(
@@ -3370,13 +3373,6 @@ def main() -> None:
                                 # overwriting each other's ledger left nothing
                                 # behind but pointers that came and went.
                                 "reg": _registration(),
-                                # Carried forward, not replaced: the two
-                                # registrations overwrite each other's ledger,
-                                # so a set rebuilt from this run alone would
-                                # forget the other direction on every prompt.
-                                "dups": sorted(
-                                    _reported_duplicates(state_path) | announced
-                                ),
                             },
                             f,
                         )

@@ -5201,25 +5201,98 @@ def test_a_dual_registered_machine_records_the_duplicate_a_bounded_number_of_tim
     env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
     env.pop("MEMKIT_PLUGIN", None)
 
-    # Six prompts, alternating registrations — the steady state, not a corner.
-    for i in range(6):
-        subprocess.run(
-            ["python3", HOOK if i % 2 else other_hook],
-            input=json.dumps(
-                {"session_id": "dupbound", "prompt": PROMPTS[i % len(PROMPTS)]}
-            ),
-            capture_output=True, text=True, timeout=60, env=env,
-        )
+    # BOTH registrations on EVERY prompt, which is what dual-registered means
+    # and is the topology the bound is claimed for. Alternating them made every
+    # run deliver — so the suppression was persisted every time and the case
+    # passed while the invariant did not hold.
+    #
+    # And the same prompt each time, so the second registration finds the paths
+    # already shown and returns `deduped` BEFORE any state is written. That is
+    # the steady state on such a machine, and it is where the record repeated:
+    # measured at six over six prompts.
+    for _ in range(6):
+        for hook_file in (HOOK, other_hook):
+            subprocess.run(
+                ["python3", hook_file],
+                input=json.dumps({"session_id": "dupbound", "prompt": PROMPTS[0]}),
+                capture_output=True, text=True, timeout=60, env=env,
+            )
 
     duplicates = _dup_records(tmp_path)
     assert duplicates, "a dual-registered machine said nothing at all"
     # One per DIRECTION, not one per prompt. Two registrations can announce
-    # each other once each; a third record means the suppression is not
-    # carrying across the ledger writes.
-    assert len(duplicates) <= 2, [
-        (d["mine"], d["other"]) for d in duplicates
-    ]
+    # each other once each; a third record means the claim is not outliving a
+    # run that had nothing to deliver.
+    assert len(duplicates) <= 2, [(d["mine"], d["other"]) for d in duplicates]
     assert len({(d["mine"], d["other"]) for d in duplicates}) == len(duplicates)
+    # And the outcomes show the topology really was the one described, or the
+    # bound above is a bound on a case that never dedupes.
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    outcomes = [json.loads(x)["outcome"] for x in log.read_text().splitlines()]
+    assert outcomes.count("deduped") >= 6, outcomes
+
+
+def test_the_duplicate_claim_is_atomic_between_concurrent_registrations(
+    tmp_path,
+) -> None:
+    """The check and the record used to be a read of the session state and a
+    write of it several branches later, so two hooks running at once both saw
+    the pair absent and both recorded it.
+
+    Two processes started together on one session, which is what a
+    dual-registered machine does on every prompt.
+    """
+    _corpus_of_three(tmp_path)
+    config = _write_config(tmp_path)
+    other_hook = _second_installation(tmp_path)
+    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+    env.pop("MEMKIT_PLUGIN", None)
+    # A stamp from a third registration, so BOTH racers see a foreign one.
+    state = tmp_path / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "race.json").write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "shown": [],
+                "spent": {},
+                "reg": {
+                    "file": str(tmp_path / "third" / "memory_prompt_recall.py"),
+                    "config": str(config),
+                    "v": "deadbeef",
+                },
+            }
+        )
+    )
+    payload = json.dumps({"session_id": "race", "prompt": PROMPTS[0]})
+    running = [
+        subprocess.Popen(
+            ["python3", hook_file], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            text=True, env=env,
+        )
+        for hook_file in (HOOK, HOOK, other_hook)
+    ]
+    for proc in running:
+        assert proc.stdin is not None
+        proc.stdin.write(payload)
+        proc.stdin.close()
+    for proc in running:
+        proc.wait(timeout=60)
+
+    duplicates = _dup_records(tmp_path)
+    pairs = [(d["mine"], d["other"]) for d in duplicates]
+    assert pairs, "nothing was announced at all"
+    assert len(pairs) == len(set(pairs)), pairs
+
+    # And the mechanism, because the race above is probabilistic: with the
+    # claim rewritten as a check-then-create it loses about three runs in five,
+    # which is a case that reports the defect most of the time. The exclusive
+    # create is what makes it never — asserted where it cannot be flaky.
+    source = Path(hook.__file__).read_text(encoding="utf-8")
+    claim = source[source.index("def _claim_duplicate") :].split("\ndef ")[0]
+    assert "os.O_EXCL" in claim, claim
+    assert "os.path.exists" not in claim, claim
 
 
 def test_one_registration_never_reports_itself_as_a_duplicate(tmp_path) -> None:
