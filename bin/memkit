@@ -16,6 +16,13 @@
 #   MEMKIT_CHECKER_ROUTE   python | uvx | none
 #   MEMKIT_CHECKER_CMD     the command to run it with, empty when none
 #
+# HOW A CONSUMER MUST SPLIT `MEMKIT_CHECKER_CMD`: on whitespace, and nothing
+# cleverer. It is a space-joined string, so a python whose path contains a
+# space breaks it — `command -v` can return one — and the contract is written
+# down now, before a consumer exists to be broken by a later change of mind.
+# A consumer that needs to survive that path must read MEMKIT_CHECKER_ROUTE and
+# rebuild the command itself rather than quoting its way out of this one.
+#
 # `none` is a state, not an error, and it is deliberately not fatal here.
 # Refusing at this level would take out `--help` and diagnosis — the two things
 # an adopter in that state most needs — on behalf of a subcommand they did not

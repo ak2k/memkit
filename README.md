@@ -99,6 +99,13 @@ and until it does, updating the marketplace changes nothing about the code in
 your sessions. This matters more here than for most plugins: the payload is a
 hook that runs before every prompt you type.
 
+One exception, stated because the promise above is otherwise stronger than the
+code: the `uvx` fallback used for checker work on a machine with no Python 3.12
+resolves `git+https://github.com/ak2k/memkit` at **main**, not at the pinned
+sha. Nothing on the every-prompt path uses it — it is reached only by a
+subcommand that regenerates a ledger — and the rev pin lands with the first
+tagged release, for the same reason the marketplace sha does.
+
 **Not yet installable from this marketplace.** The pin still names a commit
 from before the plugin existed, because a release commit is the only thing that
 can name itself. The first tagged release moves it.
@@ -130,7 +137,9 @@ file.
 
 The config path reaches the hook through the `memkitConfig` option above, or
 through `$CLAUDE_PLUGIN_DATA/memkit.json`, in that order — and through nothing
-else. It is never inherited from your shell: an every-prompt hook's list of
+else. Both are environment variables the harness exports into the hook process
+(`CLAUDE_PLUGIN_OPTION_MEMKITCONFIG` and `CLAUDE_PLUGIN_DATA`), and both must
+name an absolute path. `$MEMKIT_CONFIG` is not among them: an every-prompt hook's list of
 directories is not the ambient environment's decision to make, which is the
 same rule the nix module follows by baking the path in. It is also never taken
 from the plugin's own directory, for the sharper version of the same reason —
@@ -184,6 +193,17 @@ Without a config, memkit is **inert**: no stores, zero pointers. That is a
 deliberate default, not an oversight — there is no ambient search path to guess
 at. The *hook* stays silent and exits 0 whatever happens, because a hook that
 fails any other way blocks a prompt; the CLIs say which state they are in.
+
+**Both names, once.** The commands below are spelled `memory-recall`, which is
+what pip and nix install. A plugin install ships `memkit-recall` instead and no
+`memory-recall` at all — the names differ on purpose, because plugin `bin/` is
+appended to the agent's `PATH` and a second `memory-recall` would win the
+collision and search another install's stores without saying so. Everything
+that follows applies to both; substitute the name your channel ships. On a
+plugin install, add `--config <the path you passed to --config memkitConfig>`:
+the agent's Bash tool receives the plugin's `bin/` and none of the plugin's
+environment, so that flag is the route that survives into it — which is why the
+hook's own truncation notice now prints the command that way.
 
 `memory-recall --search "<terms>" --dir <a directory of your own notes>` works
 with no config at all — the caller named the corpus, so nothing has to be
@@ -240,8 +260,10 @@ host — the hook fails open, so a broken rollout is silent.
 
 ## Config
 
-One JSON file, read by all of them. `--config PATH` where a tool takes
-one, otherwise `$MEMKIT_CONFIG`.
+One JSON file, read by all of them. `--config PATH` where a tool takes one,
+otherwise `$MEMKIT_CONFIG` — **except on a plugin install**, which never reads
+that variable and takes the path from the two routes in
+[the plugin section](#claude-code-plugin) instead.
 
 ```json
 {
@@ -305,12 +327,18 @@ one, otherwise `$MEMKIT_CONFIG`.
 - **`search_cli`** — the command memkit prints when a pointer block truncates
   its matches, so an agent can run the rest of the search itself. The default
   is the one this channel ships: `memory-recall --search` for pip and nix,
-  `memkit-recall --search` for a plugin install. **On a plugin install this
-  field is ignored**, and deliberately — one config file is read by every
-  channel, so a value written for a pip install would otherwise travel to a
-  plugin one and name a binary that is either absent (the agent gets exit 127)
-  or, on a machine carrying both, the *other* install, searching stores nobody
-  pointed it at.
+  `memkit-recall --config <path> --search` for a plugin install. **On a plugin
+  install the VALUE is ignored** — deliberately, because one config file is
+  read by every channel, so a value written for a pip install would otherwise
+  travel to a plugin one and name a binary that is either absent (the agent
+  gets exit 127) or, on a machine carrying both, the *other* install, searching
+  stores nobody pointed it at. `memory-recall --debug-config` prints a `!` line
+  when it has overridden the field.
+
+  The **type check is not** ignored: a `search_cli` that is not a string is a
+  `ConfigError` on every channel, which for the hook means degrading to inert
+  and for the CLIs means exit 2. That is deliberate too — one file travels
+  between channels, so a config that is broken for one of them is broken.
 - **`eval.cases`** — three slices. `suite` pairs a prompt with the *basename*
   of the memory it is about; the tier is resolved at run time from where the
   file lives now, so promoting a memory from `search/` to `hot/` flips its

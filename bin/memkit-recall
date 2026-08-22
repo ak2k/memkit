@@ -9,9 +9,13 @@
 # answer that looks exactly like a right one. Nothing here can collide.
 #
 # This is the command the hook's own truncation notice advertises on a plugin
-# install (`search_cli` in the generated config), so what it searches and what
-# the hook searches have to be the same thing by construction: same file, same
-# config resolution, same interpreter.
+# install, so what it searches and what the hook searches have to be the same
+# thing by construction: same file, same config resolution, same interpreter.
+# The notice does NOT come from the config's `search_cli` field on this
+# channel — that value travels between channels and cannot know which one is
+# reading it — so the hook emits this binary's name with the `--config <path>`
+# it resolved, which is the form that still works from the agent's Bash tool,
+# where none of the plugin's own environment is delivered.
 #
 # Unlike `memkit-hook`, exit codes MATTER here and are passed through. The
 # caller is an agent deciding whether to go read something, and 0/1/2/3 are

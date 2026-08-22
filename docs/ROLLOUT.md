@@ -340,9 +340,10 @@ for a human debugging deliberately and never for a host.
 
 **The plugin channel does not weaken that rejection.** A plugin install
 delivers the config path through the harness — a typed `userConfig` option set
-at install time, else a file in the plugin's own data directory, else one
-beside the plugin — and its wrapper exports `MEMKIT_CONFIG` from whichever of
-those answered. What matters for this section is the other half: when none of
+at install time, else a file in the plugin's own data directory, **and nothing
+else**: a config inside the payload would let the code you installed choose
+which of your directories an every-prompt hook reads. Its wrapper exports
+`MEMKIT_CONFIG` from whichever of those answered. What matters for this section is the other half: when none of
 them answers, the wrapper **unsets** the variable rather than leaving it. So a
 machine that has both channels — a nix-managed hook and a plugin install, which
 is the author's own case — cannot have the plugin quietly serve whatever config

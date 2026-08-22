@@ -236,10 +236,16 @@ memkit_resolve_interpreter() {
 # Where the fallback checker comes from when this machine has no python new
 # enough to run the one in this tree. `uvx` provisions its own interpreter,
 # which is what makes a stock-python mac (3.9.6) able to run a 3.12 checker at
-# all. Unpinned, and knowingly: it resolves whatever `main` holds, so a plugin
-# pinned to an older release can route checker work through a newer checker.
-# The store format is what both speak and it has not moved, but the skew is
-# real and belongs in a release note rather than in a comment nobody diffs.
+# all.
+#
+# UNPINNED, and it is the one hole in the marketplace entry's sha promise: that
+# entry pins a released commit so `marketplace add` does not mean "whatever is
+# on main", and this spec resolves whatever `main` holds. An adopter on an
+# older release can therefore route checker work through a newer checker
+# without anything saying so. The store format is what both speak and it has
+# not moved, so the skew is tolerable rather than invisible — it is stated here
+# and in the README's marketplace paragraph, and the rev pin lands with the
+# first tagged release, which is the first commit that can name one.
 MEMKIT_UVX_SPEC="git+https://github.com/ak2k/memkit"
 
 # The checker's floor, which is NOT the hook's. Kept as two numbers rather than

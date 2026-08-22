@@ -1467,6 +1467,40 @@ def test_the_inert_message_names_the_rungs_the_resolver_actually_tries() -> None
     assert set(hook.PLUGIN_CONFIG_ROUTES) == expected, hook.PLUGIN_CONFIG_ROUTES
 
 
+# Phrases that described the config rung this repo deleted. A tombstone rather
+# than a derivation: the rung is gone from the shell, so nothing can scrape it
+# out of the resolver, and the only way a document naming it goes red is a list
+# of the words it was described with. Both documents that enumerate routes
+# carried one of these after the code stopped honouring it.
+RETIRED_ROUTE_PHRASES = (
+    "beside the plugin",
+    "one beside",
+    "in the plugin's own directory",
+    "memkit.json beside",
+)
+
+ROUTE_DOCS = ("README.md", "docs/ROLLOUT.md")
+
+
+def test_no_document_still_offers_the_config_route_the_code_dropped() -> None:
+    """An operator who follows a runbook naming a deleted route drops a
+    `memkit.json` into the payload root and gets a plugin that installs,
+    reports enabled and serves nothing — with no error anywhere, which is the
+    silent failure the runbook exists to prevent.
+
+    Both documents that enumerate the routes are checked, because the round
+    that deleted the rung rewrote one of them and missed the other, leaving the
+    repo shipping two answers to "which paths will an every-prompt hook read".
+    """
+    for name in ROUTE_DOCS:
+        text = (REPO / name).read_text(encoding="utf-8").lower()
+        for phrase in RETIRED_ROUTE_PHRASES:
+            assert phrase not in text, f"{name} still offers: {phrase!r}"
+        # And each still names the rung that IS there, or the tombstone above
+        # would pass on a document that stopped describing routes at all.
+        assert "$claude_plugin_data" in text or "plugin's own data directory" in text, name
+
+
 def test_both_channels_inert_messages_name_only_their_own_routes(
     root, tmp_path
 ) -> None:
