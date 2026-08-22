@@ -8,7 +8,7 @@
     "enabled": true
   },
   "pep723": {
-    "description": "PEP 723 inline script metadata in tools/*.py. Renovate's pep723 manager ships an EMPTY managerFilePatterns and is therefore opt-in: without this block it extracts nothing, and the wordfreq packageRule below would match a dep that was never produced — reading as coverage while providing none.",
+    "description": "PEP 723 inline script metadata in tools/*.py. Renovate's pep723 manager ships an EMPTY managerFilePatterns and is therefore opt-in: without this block it extracts nothing, and the wordfreq packageRule below would match a dep that was never produced \u2014 reading as coverage while providing none.",
     "managerFilePatterns": [
       "/^tools/.+\\.py$/"
     ]
@@ -22,7 +22,7 @@
   },
   "customManagers": [
     {
-      "description": "Tool pins in .github/workflows/check.yml. ruff and pyright are invoked through `uvx <tool>@<version>` so that CI is reproducible rather than 'whatever shipped this morning' — which means nothing else would ever tell us they had gone stale. The marker comment sits directly above the env var it names.",
+      "description": "Tool pins in .github/workflows/check.yml. ruff and pyright are invoked through `uvx <tool>@<version>` so that CI is reproducible rather than 'whatever shipped this morning' \u2014 which means nothing else would ever tell us they had gone stale. The marker comment sits directly above the env var it names.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^\\.github/workflows/.+\\.ya?ml$/"
@@ -35,7 +35,7 @@
   ],
   "packageRules": [
     {
-      "description": "wordfreq is dashboard-gated because a bump is a RETRIEVAL CHANGE, not a dependency update. It is not a runtime dependency at all — no adopter ever resolves it — it is the resolver behind the committed src/memkit/common-words.txt, and that file decides which query terms the recall hook floors as conversational coincidence. Bumping the pin therefore changes what every consumer's every-prompt hook injects, via a PR whose diff is a wordlist. A green CI proves only that the artifact matches the new pin (the `wordlist` job regenerates and diffs), which is precisely the wrong thing to automerge on. A human takes this one, regenerates the artifact in the same PR, and reads the word-set diff. Both managers are named because the pin is duplicated by construction: pyproject's extra is what a maintainer installs, the PEP 723 block is what `uv run` resolves, and tools/check-wordlist-reproducible.py is red if they disagree — so they must move together, hence the shared groupName.",
+      "description": "wordfreq is dashboard-gated because a bump is a RETRIEVAL CHANGE, not a dependency update. It is not a runtime dependency at all \u2014 no adopter ever resolves it \u2014 it is the resolver behind the committed src/memkit/common-words.txt, and that file decides which query terms the recall hook floors as conversational coincidence. Bumping the pin therefore changes what every consumer's every-prompt hook injects, via a PR whose diff is a wordlist. A green CI proves only that the artifact matches the new pin (the `wordlist` job regenerates and diffs), which is precisely the wrong thing to automerge on. A human takes this one, regenerates the artifact in the same PR, and reads the word-set diff. Both managers are named because the pin is duplicated by construction: pyproject's extra is what a maintainer installs, the PEP 723 block is what `uv run` resolves, and tools/check-wordlist-reproducible.py is red if they disagree \u2014 so they must move together, hence the shared groupName.",
       "matchDepNames": [
         "wordfreq"
       ],
@@ -43,14 +43,14 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Claude Code is dashboard-gated for the same reason wordfreq is: a bump is not a dependency update but a change to the HARNESS whose measured behaviour this plugin is built on. The option-name mangling that carries the config, the trailing slash on the plugin root, and the fact that exit 2 on UserPromptSubmit blocks the turn rather than merely failing — the zero-argument pin exists because of that last one — were each measured against a specific build. CI re-measures only the hermetic half on a bump: the rig's CLI tier covers validation, install and option delivery, while the claims that need a model (a hook's stdout reaching the turn, the trust gate end to end, double-registration detection) run in the nightly-local live tier and are invisible to a green PR. So a human takes this one, runs `MEMKIT_RIG_LIVE=1 pytest tests/rig` on the new build, and says so in the PR.",
+      "description": "Claude Code is dashboard-gated for the same reason wordfreq is: a bump is not a dependency update but a change to the HARNESS whose measured behaviour this plugin is built on. The option-name mangling that carries the config, the trailing slash on the plugin root, and the fact that exit 2 on UserPromptSubmit blocks the turn rather than merely failing \u2014 the zero-argument pin exists because of that last one \u2014 were each measured against a specific build. What CI re-measures on a bump: the rig's CLI tier covers validation, install and what the harness recorded in its settings, and the HARNESS tier takes a real turn with the model routed somewhere unreachable, which is what puts option delivery, config resolution and injection under a required check \u2014 hook dispatch precedes the model call, so none of that needs credentials. What still needs a model, and so is invisible to a green PR: a hook's stdout reaching the turn, and double-registration detection across several turns. So a human takes this one, runs `MEMKIT_RIG_LIVE=1 pytest tests/rig` on the new build, and says so in the PR.",
       "matchDepNames": [
         "@anthropic-ai/claude-code"
       ],
       "dependencyDashboardApproval": true
     },
     {
-      "description": "3-day cooldown on GitHub Actions bumps. Actions are the highest-value target in this repo — they are the only third-party code that runs with a write-capable token — and the tj-actions/changed-files class of compromise (Mar 2025) was caught publicly inside a day, so a short wait covers it. Deliberately NOT widened to flake inputs: the nix manager's datasource is git-refs, which carries no timestamps, and under `minimumReleaseAgeBehaviour: timestamp-required` a missing timestamp HOLDS the update — a repo-wide cooldown would silently freeze every flake input rather than error.",
+      "description": "3-day cooldown on GitHub Actions bumps. Actions are the highest-value target in this repo \u2014 they are the only third-party code that runs with a write-capable token \u2014 and the tj-actions/changed-files class of compromise (Mar 2025) was caught publicly inside a day, so a short wait covers it. Deliberately NOT widened to flake inputs: the nix manager's datasource is git-refs, which carries no timestamps, and under `minimumReleaseAgeBehaviour: timestamp-required` a missing timestamp HOLDS the update \u2014 a repo-wide cooldown would silently freeze every flake input rather than error.",
       "matchManagers": [
         "github-actions"
       ],

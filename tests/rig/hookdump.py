@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Record one hook invocation: argv, env, cwd and the payload on stdin.
 
-Registered by `Profile.register_dump_hooks`, this is the rig's only view of
-what the harness actually did. Everything the plugin claims about registration
-— that it passes zero arguments, that a manifest option arrives under a
-particular variable name, that `CLAUDE_PLUGIN_DATA` is present here and absent
-there — is a statement about this record.
+Registered by `Profile.register_dump_hooks` at SETTINGS scope, which is what
+bounds what it can settle — and it is less than the obvious reading. Measured
+on 2.1.239: a settings-scope hook receives NONE of `CLAUDE_PLUGIN_OPTION_*`,
+`CLAUDE_PLUGIN_ROOT` or `CLAUDE_PLUGIN_DATA`, so this cannot see the option
+arrive; and the `argv` below is this script's own, since the registration runs
+`{python} {hookdump} {event}`, so it is never memkit's argv either.
+
+What it does settle is what the harness told a hook of its own: the event, the
+payload, the cwd, and the non-plugin half of the environment —
+`CLAUDE_CODE_ENTRYPOINT` among it, which is the one claim the pty driver
+exists to make. The plugin-side claims are read off memkit's own artifacts
+instead; see the tier note in `__init__`.
 
 Writes one file per invocation, named so that `sorted()` is invocation order,
 because two subagents spawned in one turn produce two records at the same

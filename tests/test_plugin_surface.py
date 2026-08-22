@@ -180,6 +180,24 @@ def test_ci_validates_both_manifests_and_not_only_the_marketplace() -> None:
     assert "claude plugin validate .claude-plugin/plugin.json --strict" in workflow
 
 
+def test_ci_runs_the_rigs_harness_tier_as_a_gate_rather_than_a_courtesy() -> None:
+    """The one required context in which the HARNESS produces the config
+    option, rather than a test setting it.
+
+    Two halves, and the second is what makes it a gate. The `python` job has to
+    install the pinned binary before the suite — which it does, for the CLI
+    tier — and it has to declare the tier required, or a job whose install step
+    quietly stopped working reports green while every scenario that watches the
+    harness skips. A skipped scenario and a passing one look identical in a
+    check name.
+    """
+    from rig import REQUIRED_ENV
+
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text()
+    assert f"{REQUIRED_ENV}: \"1\"" in workflow, REQUIRED_ENV
+    assert "npm install -g @anthropic-ai/claude-code@" in workflow
+
+
 def test_every_payload_file_is_tracked() -> None:
     """A github install is a clone. An untracked wrapper works perfectly on the
     machine it was written on and is missing for every adopter — and the

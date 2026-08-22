@@ -15,8 +15,15 @@ Three instruments, matching the three things that go wrong:
                  profile stops on already answered. Without it every scenario
                  hangs on the theme picker.
   `hookdump.py`  registered as a hook, records argv, env, cwd and stdin per
-                 invocation. It is how "zero arguments" and "the option
-                 arrived" become assertions rather than readings of a manifest.
+                 invocation. Registered at SETTINGS scope, which bounds what it
+                 can settle: a settings-scope hook receives none of
+                 `CLAUDE_PLUGIN_OPTION_*`, `CLAUDE_PLUGIN_ROOT` or
+                 `CLAUDE_PLUGIN_DATA` (measured on 2.1.239), and the `argv` it
+                 records is its own. What memkit's own registration received is
+                 read off memkit's ARTIFACTS instead — the soak record and the
+                 trust marker — which is the more honest instrument anyway,
+                 since it measures what the product did rather than what a
+                 probe saw.
   `drive_interactive.py`  a pty, for the runs that must not look headless.
                  `claude -p` sets `CLAUDE_CODE_ENTRYPOINT=sdk-cli` and some
                  harness behaviour keys on that, so a pty is the only way to
@@ -29,16 +36,29 @@ tree before it runs a binary that writes. That assertion is not decoration —
 author's own profile carries a live memkit registration that a stray install
 would sit beside.
 
-Two tiers, and the split is what keeps CI honest:
+Three tiers, and the split is what keeps CI honest:
 
-  CLI tier   — needs only the `claude` binary. Marketplace add, install,
-               validate, and reading back what got registered. Runs wherever
-               the binary is (CI installs a pinned one), skipped where it is
-               not.
-  LIVE tier  — needs a model to answer a prompt, which means the author's local
-               proxy. Opt-in through `MEMKIT_RIG_LIVE=1`, because a scenario
-               that silently skips in CI and only ever runs on one machine is a
-               scenario nobody should read as a gate.
+  CLI tier     — needs only the `claude` binary. Marketplace add, install,
+                 validate, and reading back what got registered. It never
+                 dispatches a hook, so anything it claims about delivery it
+                 claims about an environment this repo built.
+  HARNESS tier — needs the binary and a real turn, and no model. Hook dispatch
+                 precedes the model call, so a turn that cannot reach one still
+                 runs install, option delivery, config resolution, retrieval
+                 and injection — measured, and it is what makes the delivery
+                 claim gateable at all. The turn's own exit status means
+                 nothing here and is not asserted; the evidence is memkit's
+                 artifacts, written before the call that fails.
+  LIVE tier    — needs a model to answer a prompt, which means the author's
+                 local proxy. Opt-in through `MEMKIT_RIG_LIVE=1`, because a
+                 scenario that silently skips in CI and only ever runs on one
+                 machine is a scenario nobody should read as a gate.
+
+`MEMKIT_RIG_REQUIRED=1` (set by the `python` job) turns a missing `claude` into
+a FAILURE rather than a skip for the harness tier. A gate that skips itself
+when its dependency is missing is the shape of gate this tier exists to
+replace: the whole defect it guards against — a plugin whose belief about the
+harness is wrong but internally consistent — is silent, and so is a skip.
 """
 
 from __future__ import annotations
@@ -61,6 +81,31 @@ HOOKDUMP = RIG / "hookdump.py"
 # config dir — so this is the only route a scenario has to a model.
 LIVE_ENV = "MEMKIT_RIG_LIVE"
 DEFAULT_PROXY = "http://127.0.0.1:18317"
+# Declared by a caller that considers the harness tier a gate rather than a
+# convenience — CI. See the tier note above for why a skip is the wrong answer
+# there.
+REQUIRED_ENV = "MEMKIT_RIG_REQUIRED"
+
+# Routes the model call somewhere that cannot answer, without touching what
+# runs before it. Bedrock rather than a bogus `ANTHROPIC_BASE_URL`, because a
+# developer machine's keychain OAuth wins over both that and a bogus key
+# (measured) — this is the only route that is unreachable on a laptop and on a
+# credential-less runner alike. The retry ceilings are what make it FAST: with
+# them the turn ends in 1.2s, without them it was still retrying at 90s.
+NO_MODEL_ENV = {
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "AWS_REGION": "us-east-1",
+    "AWS_ACCESS_KEY_ID": "AKIAINVALIDINVALID00",
+    "AWS_SECRET_ACCESS_KEY": "invalid",
+    # Discard, on the loopback: refused rather than routed anywhere.
+    "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9",
+    # Belt and braces: the bedrock switch is what actually decides the route,
+    # but a profile carries a base URL for the live tier and this leaves no
+    # reachable endpoint under either name.
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+    "CLAUDE_CODE_MAX_RETRIES": "0",
+    "ANTHROPIC_MAX_RETRIES": "0",
+}
 
 
 def claude_bin() -> str | None:
@@ -72,6 +117,27 @@ def cli_tier_reason() -> str | None:
     if claude_bin() is None:
         return "no `claude` on PATH — the CLI tier needs the real binary"
     return None
+
+
+def harness_tier_reason() -> str | None:
+    """Why the harness tier cannot run here, or None when it can.
+
+    Never a reason when a caller has declared it required: the scenario then
+    runs and fails on the missing binary, which is what a gate does.
+    """
+    if os.environ.get(REQUIRED_ENV) == "1":
+        return None
+    return cli_tier_reason()
+
+
+def require_claude() -> str:
+    """The binary, or a failure that says why a skip was not the answer."""
+    binary = claude_bin()
+    assert binary is not None, (
+        f"no `claude` on PATH and {REQUIRED_ENV}=1 — this tier is a gate, so a "
+        "missing harness is a failure rather than a skip"
+    )
+    return binary
 
 
 def live_tier_reason() -> str | None:
@@ -164,6 +230,14 @@ class Profile:
         # that scenario: both hooks fired, one of them found no config, and the
         # coexistence case it exists to prove could not occur.
         env.pop("MEMKIT_CONFIG", None)
+        # And every plugin variable, for the sharper version of the same
+        # reason. `CLAUDE_PLUGIN_OPTION_MEMKITCONFIG` is the whole claim the
+        # config-delivery design rests on, and a scenario that inherits one
+        # from the developer's shell measures its own environment rather than
+        # the harness's. Popped before `extra` so a scenario that sets one
+        # deliberately still can.
+        for name in [k for k in env if k.startswith("CLAUDE_PLUGIN_")]:
+            env.pop(name)
         env.update(extra)
         return env
 

@@ -68,6 +68,11 @@ jobs:
       # config dir named explicitly is one that cannot pick up a runner's
       # leftovers.
       CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.claude-ci
+      # The rig's harness tier is a GATE here, so a missing `claude` fails it
+      # rather than skipping it. Without this the step below still reports
+      # green when the install step above has quietly stopped working, which is
+      # the same silence the tier exists to break.
+      MEMKIT_RIG_REQUIRED: "1"
     steps:
       # fetch-depth 0 because the version is dynamic: hatch-vcs reads git
       # describe at build time, and a shallow clone gives it nothing to read.
@@ -108,6 +113,13 @@ jobs:
       # test_the_description_cap_stays_under_the_hooks_truncation — it asserts
       # MAX_DESC_CHARS < hook.DESC_KEEP_CHARS < hook.DESC_MAX_CHARS and that
       # the checker's own message quotes the hook's number.
+      # `tests/rig`'s harness tier rides in here: it installs the plugin
+      # through the pinned binary and takes a real turn with the model routed
+      # somewhere unreachable, because hook dispatch precedes the model call.
+      # That is the only context in which the harness rather than a test
+      # produces CLAUDE_PLUGIN_OPTION_MEMKITCONFIG — a repo-wide rename of the
+      # assumed prefix otherwise leaves every check green and every adopter's
+      # plugin inert.
       - name: Test suites (hook pytest + integrity unittest)
         run: .venv/bin/python -m pytest -q
 

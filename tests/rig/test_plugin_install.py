@@ -5,14 +5,19 @@ here can be settled by reading memkit's own files. Two tiers:
 
   CLI tier — needs the binary and nothing else. Validation, marketplace add,
     install, and reading back what got registered. Runs in CI, which installs
-    a pinned Claude Code for exactly this.
+    a pinned Claude Code for exactly this. It never dispatches a hook.
+  HARNESS tier — needs the binary and a real turn, and no model. This is where
+    the config-delivery claim is settled, because it is the only tier in which
+    the harness rather than the test produces
+    `CLAUDE_PLUGIN_OPTION_MEMKITCONFIG`. Runs in CI, and FAILS rather than
+    skips there.
   LIVE tier — needs a model to answer a prompt, which means the author's local
     proxy. `MEMKIT_RIG_LIVE=1` to opt in. A scenario that silently skips
     everywhere but one machine is not a gate, so it says which it is.
 
-The live tier is where the U2 verification lives: an install that yields a
-hook which FIRES, asserted on a pointer rather than on an exit code, because
-an inert hook and a wired one both exit 0 and print nothing.
+The U2 verification is an install that yields a hook which FIRES, asserted on a
+pointer rather than on an exit code, because an inert hook and a wired one both
+exit 0 and print nothing.
 """
 
 from __future__ import annotations
@@ -26,15 +31,21 @@ from pathlib import Path
 import pytest
 
 from rig import (
+    NO_MODEL_ENV,
     REPO,
     Profile,
     cli_tier_reason,
+    harness_tier_reason,
     live_tier_reason,
+    require_claude,
     stage_plugin,
 )
 
 cli_tier = pytest.mark.skipif(
     cli_tier_reason() is not None, reason=cli_tier_reason() or ""
+)
+harness_tier = pytest.mark.skipif(
+    harness_tier_reason() is not None, reason=harness_tier_reason() or ""
 )
 live_tier = pytest.mark.skipif(
     live_tier_reason() is not None, reason=live_tier_reason() or ""
@@ -253,6 +264,93 @@ def test_the_hook_the_harness_would_run_is_the_wrapper_and_it_answers(
     )
     assert out.returncode == 0, out.stderr
     assert EXPECTED in out.stdout, out.stdout
+
+
+# --- HARNESS tier -------------------------------------------------------------
+#
+# What separates this tier from the one above is who produces the environment.
+# The CLI-tier case below resolves the registration's command itself and runs
+# it with `CLAUDE_PLUGIN_OPTION_MEMKITCONFIG` set by the test — which makes the
+# one claim it looks like it is testing unfalsifiable, because the test is the
+# source of the variable. Here the harness exports it or nothing does.
+#
+# Measured, and it is why this tier can exist: a rename of the assumed prefix
+# across bin/lib/common.sh and both test files leaves the whole suite green and
+# the installed plugin recording `trust:unconfigured` on a real turn. The
+# variable name is a fact about a build this repo does not own, pinned by
+# renovate precisely because it can move.
+
+
+def _no_model(profile: Profile, prompt: str, *, cwd: Path) -> None:
+    """One real turn whose model call cannot succeed.
+
+    Nothing about the turn's own result is asserted, deliberately: with no
+    reachable model it legitimately fails, and gating on that would be gating
+    on the half of the run this says nothing about. Hook dispatch precedes the
+    model call, so the evidence is memkit's artifacts, written before the
+    failure.
+    """
+    profile.claude(
+        "-p", prompt, "--output-format", "json",
+        cwd=str(cwd), timeout=180, check=False,
+        extra_env=dict(NO_MODEL_ENV),
+    )
+
+
+@harness_tier
+def test_the_harness_delivers_the_option_and_the_hook_serves_the_turn(
+    profile: Profile, staged: Path
+) -> None:
+    """Config delivery, measured on an environment this repo did not build.
+
+    The config sits at a path under the profile's own HOME, which is a path no
+    rung but the install option can name — the other rung is
+    `$CLAUDE_PLUGIN_DATA/memkit.json` — so a pointer to a memory in that store
+    is proof that the option arrived, under the name the wrapper reads, from
+    the harness.
+    """
+    require_claude()
+    profile.marketplace_add(staged)
+    config = _fixture_config(profile)
+    profile.install("memkit@memkit", config={"memkitConfig": str(config)})
+
+    # The test supplies no plugin variable of any kind; `Profile.env` strips
+    # them. Without this the scenario could pass on its own environment.
+    assert not [k for k in profile.env() if k.startswith("CLAUDE_PLUGIN_")]
+
+    _no_model(profile, PROMPT, cwd=profile.project("work"))
+
+    injected = [r for r in _soak(profile) if r["outcome"] == "injected"]
+    assert injected, [r["outcome"] for r in _soak(profile)] or "no soak records"
+    assert EXPECTED in injected[-1]["injected"], injected[-1]
+
+
+@harness_tier
+def test_without_the_option_the_same_turn_leaves_a_refusal_and_no_store(
+    profile: Profile, staged: Path
+) -> None:
+    """The negative, without which the case above cannot tell rung 1 from some
+    other rung answering — or from a hook that would have served that corpus
+    whatever the harness did.
+
+    Same install, same turn, one flag removed. The trust marker is the
+    plugin-scoped record of the refusal, and the absent state directory is the
+    other half: an install that has not been configured has not been consented
+    to, and does not get to create it.
+    """
+    require_claude()
+    profile.marketplace_add(staged)
+    _fixture_config(profile)  # on disk, and nothing names it
+    profile.claude("plugin", "install", "memkit@memkit", "--yes")
+
+    _no_model(profile, PROMPT, cwd=profile.project("work"))
+
+    marker = profile.config_dir / "plugins" / "data" / "memkit-memkit" / "trust.json"
+    assert marker.is_file(), "the gate refused without recording it"
+    assert [r["outcome"] for r in json.loads(marker.read_text())["records"]] == [
+        "trust:unconfigured"
+    ]
+    assert not (profile.home / ".cache" / "memory-recall").exists()
 
 
 # --- LIVE tier ----------------------------------------------------------------
