@@ -135,6 +135,36 @@ NO_MODEL_ENV = {
 }
 
 
+def assert_no_model_answered(stdout: str, stderr: str) -> None:
+    """Refuse a turn whose result cannot be read, then refuse one that a model
+    answered.
+
+    Two steps, and the ORDER is the point: asserting the absence of
+    `modelUsage` in a dict that failed to parse is asserting the absence of a
+    key in `{}`, which is true of every failure — an empty stdout, a crash
+    before the first byte, a proxy's HTML. That kept a required CI gate green
+    for reasons having nothing to do with memkit.
+
+    A function rather than four lines inline so it can be driven with the
+    garbage a live turn will not produce on request.
+    """
+    try:
+        answer = json.loads(stdout)
+    except ValueError:
+        raise AssertionError(
+            "the turn produced no JSON to check, so nothing here can say the "
+            f"model was unreachable. stdout={stdout[:400]!r} "
+            f"stderr={stderr[:400]!r}"
+        ) from None
+    if not isinstance(answer, dict):
+        raise AssertionError(f"the turn's result is not an object: {answer!r}")
+    if answer.get("modelUsage"):
+        raise AssertionError(
+            "a model answered a turn this scenario needs to be unreachable — "
+            f"the route is not dead here: {answer.get('modelUsage')}"
+        )
+
+
 def claude_bin() -> str | None:
     return shutil.which("claude")
 

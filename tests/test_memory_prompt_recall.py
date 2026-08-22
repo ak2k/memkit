@@ -5876,9 +5876,15 @@ def test_the_shed_path_hands_out_nothing_it_cannot_stand_behind(tmp_path) -> Non
     #    surrogates through `os.fsdecode`, and a raise here happens inside the
     #    SIGTERM-masked window.
     undecodable = "- /m\udcff.md — d [matches 1/1 prompt terms: d]"
-    payload, _kept = hook._bounded_block([undecodable], 200)
+    # A budget that admits the frame, so there is a payload to encode: the
+    # clamp branch above returns nothing, which would pass this vacuously.
+    payload, kept = hook._bounded_block([undecodable], frame_only + 200)
+    assert kept, "nothing survived, so this says nothing about encoding"
     payload.encode()  # must not raise
     assert "\udcff" not in payload
+    # And the same through the measuring helper, which runs inside the masked
+    # window and is where the raise would land.
+    assert hook._nbytes(undecodable) > 0
 
 
 def test_a_shed_pointer_is_not_spent_and_not_reported_as_injected(tmp_path) -> None:

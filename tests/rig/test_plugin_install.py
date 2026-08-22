@@ -35,6 +35,7 @@ from rig import (
     NO_MODEL_ENV,
     REPO,
     Profile,
+    assert_no_model_answered,
     cli_tier_reason,
     harness_tier_reason,
     live_tier_reason,
@@ -96,6 +97,23 @@ def _soak(profile: Profile) -> list[dict]:
 
 
 # --- the rig's own safety and its instruments ---------------------------------
+
+
+def test_the_unreachable_turn_gate_refuses_a_result_it_cannot_read() -> None:
+    """The gate has to fail on garbage, not pass on it.
+
+    A turn that dispatches the hook and then dies with empty or non-JSON stdout
+    used to satisfy it, because the absence of `modelUsage` was checked in a
+    dict that had failed to parse — so a real endpoint, a proxy or a broken CLI
+    all kept a required check green. Driven directly, because a live turn will
+    not produce those on request.
+    """
+    assert_no_model_answered('{"is_error": true}', "")  # the ordinary case
+    for stdout in ("", "   ", "not json at all", "<html>bot wall</html>", "[]", "null"):
+        with pytest.raises(AssertionError):
+            assert_no_model_answered(stdout, "stderr")
+    with pytest.raises(AssertionError, match="a model answered"):
+        assert_no_model_answered('{"modelUsage": {"claude": {"in": 1}}}', "")
 
 
 def test_the_profile_guard_refuses_a_config_dir_that_is_not_scratch(tmp_path) -> None:
@@ -427,24 +445,7 @@ def _no_model(profile: Profile, prompt: str, *, cwd: Path) -> None:
             "are what bound it; a harness that stopped honouring them takes the "
             "full budget, measured at 184s on the pinned build."
         ) from None
-    # A STRUCTURED response is required before the absence below means
-    # anything. Initialising to `{}` and parsing under a suppressor made the
-    # assertion pass on empty or non-JSON stdout — so a real endpoint, a proxy,
-    # or a CLI that failed before emitting anything all kept this CI gate
-    # green, which is the silence the tier exists to break.
-    try:
-        answer = json.loads(out.stdout)
-    except ValueError:
-        raise AssertionError(
-            "the turn produced no JSON to check, so nothing here can say the "
-            f"model was unreachable. stdout={out.stdout[:400]!r} "
-            f"stderr={out.stderr[:400]!r}"
-        ) from None
-    assert isinstance(answer, dict), answer
-    assert not answer.get("modelUsage"), (
-        "a model answered a turn this scenario needs to be unreachable — "
-        f"the route is not dead here: {answer.get('modelUsage')}"
-    )
+    assert_no_model_answered(out.stdout, out.stderr)
 
 
 @harness_tier

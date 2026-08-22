@@ -310,11 +310,17 @@ def test_a_git_gated_case_fails_rather_than_skips_where_a_checkout_is_expected(
     check name. Only a context that DECLARES itself packaged may skip.
     """
     monkeypatch.delenv("MEMKIT_NO_CHECKOUT", raising=False)
-    monkeypatch.setattr(
-        "test_plugin_surface.REPO", tmp_path, raising=False
-    )
-    with pytest.raises(AssertionError, match="did not declare itself packaged"):
+    monkeypatch.setattr("test_plugin_surface.REPO", tmp_path, raising=False)
+    # A skip here would SKIP THIS CASE rather than fail it, which is the whole
+    # defect wearing the test's own clothes — so it is caught by name.
+    try:
         _needs_checkout()
+    except pytest.skip.Exception as skipped:
+        raise AssertionError(f"skipped where it must fail: {skipped}") from None
+    except AssertionError as failed:
+        assert "did not declare itself packaged" in str(failed), failed
+    else:
+        raise AssertionError("a missing checkout was accepted")
 
     # `Skipped` derives from BaseException, so it has to be named: catching
     # `Exception` here let the assertion skip the case it is asserting about.
@@ -1720,8 +1726,28 @@ def test_the_advertised_command_runs_from_the_agents_bash_tool(
     claim: a config path can contain a space, and a command an agent cannot
     paste is not a command.
     """
+    # A space, because quoting is part of the claim — and an INVISIBLE
+    # codepoint, because the emission pass strips those: a path quoted here
+    # and rewritten there names a file that does not exist, which is a command
+    # worse than none because it looks runnable.
     corpus = tmp_path / "spaced dir"
     config = _corpus(corpus)
+    hidden = _corpus(tmp_path / "hidden\u200bdir")
+    bare = _run(
+        root / "bin" / "memkit-recall", "--debug-config",
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(hidden),
+        },
+    )
+    assert bare.returncode == 0, bare.stderr
+    advertised_for_hidden = [
+        x for x in bare.stdout.splitlines() if x.startswith("search_cli:")
+    ]
+    assert advertised_for_hidden == ["search_cli: memkit-recall --search"], (
+        advertised_for_hidden
+    )
     env = dict(
         os.environ,
         HOME=str(tmp_path / "home"),
@@ -1889,6 +1915,31 @@ def test_the_soak_logs_growth_rule_is_published_where_a_consumer_reads_it() -> N
     assert '"concludes": false' in readme, "the discriminator is undocumented"
     assert "grows without a version bump" in readme
     assert "prompt_sha" in readme
+
+
+def test_the_rollout_runbook_verifies_both_channels() -> None:
+    """The per-host checks read `~/.claude/hooks`, a `/nix/store` symlink and a
+    consumer checkout — none of which a plugin install has — so on a host that
+    installed memkit as a plugin every one of them fails or passes vacuously.
+
+    That is the silent-failure mode the runbook's own opening says it exists to
+    prevent, and README sends every second-host adopter there with no channel
+    caveat.
+    """
+    rollout = (REPO / "docs" / "ROLLOUT.md").read_text(encoding="utf-8")
+    assert "## Per-host verify, plugin channel" in rollout
+    # The commands that block was written from, each run against a real
+    # install before it was written down.
+    for command in (
+        "claude plugin list",
+        "claude plugin details memkit@memkit",
+        "pluginConfigs",
+        "--debug-config",
+    ):
+        assert command in rollout, command
+    # And the nix block says which channel it is for, so a plugin adopter does
+    # not work through four checks that cannot apply.
+    assert "nix-channel checks" in rollout
 
 
 def test_no_document_still_offers_the_config_route_the_code_dropped() -> None:
