@@ -1674,25 +1674,25 @@ def test_the_advertised_command_runs_from_the_agents_bash_tool(
     assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr, advertised[0])
     assert "flange_torque_" in out.stdout, out.stdout
 
-    # And the DIAGNOSTIC form the dispatcher hands out beside it, which is the
-    # other command an agent is sent to run and which is built by swapping the
-    # mode flag. Rebuilding it from the binary name alone drops the
-    # `--config <path>`, leaving a command that is spelled right and inert.
-    dispatcher = _run(
-        root / "bin" / "memkit", "doctor",
-        env={**env, "PATH": os.environ["PATH"]},
-    )
-    debug = [
-        part.split("`")[0]
-        for part in dispatcher.stderr.split("`")
-        if part.startswith("memkit-recall") and "--debug-config" in part
-    ]
-    assert debug, dispatcher.stderr
-    probed = subprocess.run(
-        shlex.split(debug[0]), capture_output=True, text=True, timeout=120,
-        env=bash_tool, cwd=str(tmp_path), stdin=subprocess.DEVNULL,
-    )
-    assert probed.returncode == hook.EXIT_OK, (probed.returncode, probed.stdout, debug[0])
+    # And EVERY backticked command the dispatcher's two surfaces hand out —
+    # not the one that was fixed. These are the first things an agent probing a
+    # fresh install touches, and each of them is a command it will paste.
+    for args in (("doctor",), ("--help",)):
+        surface = _run(
+            root / "bin" / "memkit", *args, env={**env, "PATH": os.environ["PATH"]}
+        )
+        printed = re.findall(r"`([^`]+)`", surface.stdout + surface.stderr)
+        commands = [c for c in printed if c.split()[0].startswith("memkit")]
+        assert commands, (args, surface.stdout, surface.stderr)
+        for command in commands:
+            runnable = command.replace('"<terms>"', '"flange torque"')
+            probed = subprocess.run(
+                shlex.split(runnable), capture_output=True, text=True, timeout=120,
+                env=bash_tool, cwd=str(tmp_path), stdin=subprocess.DEVNULL,
+            )
+            assert probed.returncode == hook.EXIT_OK, (
+                args, runnable, probed.returncode, probed.stdout, probed.stderr
+            )
 
 
 def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> None:

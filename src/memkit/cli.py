@@ -137,7 +137,7 @@ def _parser() -> argparse.ArgumentParser:
         # cheapest probe an agent runs, and no config value could reach it.
         description=_meanwhile(
             "Set up and diagnose a memkit installation. To search one, see "
-            "`{search}`."
+            '`{search} "<terms>"`.'
         ),
         # The fallbacks belong on the top-level help too, not only on the
         # refusal an agent reaches by running the subcommand: `memkit --help`

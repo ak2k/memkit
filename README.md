@@ -148,9 +148,18 @@ let the code you installed choose which of your directories the hook reads and
 which binary runs it.
 
 **`bin/` is the agent's PATH, not your terminal's.** While the plugin is
-enabled, `memkit-recall --search "…"` works in the agent's Bash tool. It is not
-on your own `PATH` — nothing is added to your shell — so the same command typed
-into a terminal will not be found.
+enabled, `memkit-recall` is on the agent's Bash tool's `PATH`. It is not on your
+own — nothing is added to your shell — so the same command typed into a terminal
+will not be found.
+
+**It needs `--config` there.** A Bash-tool process gets the plugin's `bin/` and
+none of the plugin's environment (measured: `CLAUDE_PLUGIN_ROOT`,
+`CLAUDE_PLUGIN_DATA` and every `CLAUDE_PLUGIN_OPTION_*` unset), and both config
+routes above are environment variables — so a bare
+`memkit-recall --search "…"` there resolves no config and answers `inert`,
+exit 3. Run `memkit-recall --config <the path you passed to memkitConfig>
+--search "…"` instead. That is the form the hook's own pointer block prints, so
+following what memkit hands you is already right.
 
 The plugin's directory is **appended**, so any name already on your `PATH`
 wins (measured, not assumed). That is why the two names that matter are ones
@@ -332,8 +341,10 @@ that variable and takes the path from the two routes in
   read by every channel, so a value written for a pip install would otherwise
   travel to a plugin one and name a binary that is either absent (the agent
   gets exit 127) or, on a machine carrying both, the *other* install, searching
-  stores nobody pointed it at. `memory-recall --debug-config` prints a `!` line
-  when it has overridden the field.
+  stores nobody pointed it at. `--debug-config` prints a `!` line when it has
+  overridden the field — on a plugin install that is
+  `memkit-recall --config <path> --debug-config`, since the override only
+  happens on that channel and `memory-recall` is not the binary it ships.
 
   The **type check is not** ignored: a `search_cli` that is not a string is a
   `ConfigError` on every channel, which for the hook means degrading to inert
