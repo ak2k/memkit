@@ -80,6 +80,37 @@ def _soak(profile: Profile) -> list[dict]:
     return [json.loads(line) for line in log.read_text().splitlines()]
 
 
+# --- the staged payload itself ------------------------------------------------
+
+
+def test_the_staged_payload_is_what_the_channel_delivers(staged: Path) -> None:
+    """The rig's own instrument, because every scenario below inherits it.
+
+    A github install is a clone, so an untracked file is a file no adopter
+    receives. When staging was a copy of the working tree it delivered more
+    than the channel can — which makes an untracked wrapper pass here and be
+    missing for everyone, and lets a developer's own `memkit.json` sit at the
+    payload root of every rig install, where it used to decide what the hook
+    read.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=REPO,
+        capture_output=True, text=True, timeout=120, check=True,
+    )
+    tracked = {name for name in listed.stdout.split("\0") if name}
+    present = {
+        str(path.relative_to(staged))
+        for path in staged.rglob("*")
+        if path.is_file()
+    }
+    assert present <= tracked, sorted(present - tracked)
+    # And the wrappers survived the copy as executables — a staged 644 wrapper
+    # is a hook the harness cannot run, which would be a failure about the rig
+    # rather than about the plugin.
+    for wrapper in ("bin/memkit", "bin/memkit-hook", "bin/memkit-recall"):
+        assert os.access(staged / wrapper, os.X_OK), wrapper
+
+
 # --- CLI tier -----------------------------------------------------------------
 
 
