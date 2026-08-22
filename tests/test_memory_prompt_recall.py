@@ -2573,8 +2573,15 @@ def test_session_pointer_budget_stops_injection(monkeypatch, tmp_path, capsys) -
     # the BUDGET, not MAX_HITS — both cut eligible hits, and a notice that
     # only understood one of them would silently under-report on long
     # sessions, which is exactly where the budget starts biting.
-    assert out.count("\n- ") == 2
-    assert "…1 further match — search: memory-recall --search" in out
+    # Counted separately, because the notice is no longer a pointer line: it
+    # carries the reserved prefix that makes it identifiable as memkit's own,
+    # which a retrieved description cannot produce.
+    assert out.count("\n- ") == 1
+    assert out.count(f"\n{hook.NOTICE_PREFIX}") == 1
+    assert (
+        f"{hook.NOTICE_PREFIX} 1 further match not shown — "
+        "search: memory-recall --search" in out
+    )
     assert rec["truncated"] == 1
 
     # At the budget: gated, with no output at all.
@@ -2609,7 +2616,7 @@ def test_raising_the_cap_only_appends(monkeypatch, tmp_path, capsys) -> None:
         return [
             ln
             for ln in capsys.readouterr().out.splitlines()
-            if ln.startswith("- ") and "further match" not in ln
+            if ln.startswith("- ")
         ]
 
     # Separate sessions, because the dedup ledger would otherwise spend the
@@ -2776,7 +2783,7 @@ def test_truncation_notice_names_what_the_cap_cost(
     assert rec["scores"][0] == 1.0
     # The query goes in whole and sanitized: a notice whose command searches
     # for something other than what N was counted over is worse than none.
-    assert "- …1 further match — search: " in out
+    assert f"{hook.NOTICE_PREFIX} 1 further match not shown — search: " in out
     assert '--search "unionfs mount stale"' in out
 
 
@@ -4763,7 +4770,7 @@ def test_the_plugin_marker_can_only_ever_narrow_what_is_served(tmp_path) -> None
     marked = _hook(env, prompt, session="marker1")
     plain = _hook(without, prompt, session="marker0")
     assert marked.returncode == plain.returncode == 0, (marked.stderr, plain.stderr)
-    assert "further match" in marked.stdout, marked.stdout
+    assert hook.NOTICE_PREFIX in marked.stdout, marked.stdout
 
     # The POINTER SET is what "the same stores were served" means, and it is
     # identical. The advertised command is the one permitted divergence — it is
@@ -4772,12 +4779,18 @@ def test_the_plugin_marker_can_only_ever_narrow_what_is_served(tmp_path) -> None
     def _pointers(text: str) -> list[str]:
         return [
             line for line in text.splitlines()
-            if line.startswith("- ") and "further match" not in line
+            if line.startswith("- ")
         ]
 
     assert _pointers(marked.stdout) == _pointers(plain.stdout) != []
-    marked_notice = [x for x in marked.stdout.splitlines() if "further match" in x]
-    plain_notice = [x for x in plain.stdout.splitlines() if "further match" in x]
+    marked_notice = [
+        x for x in marked.stdout.splitlines()
+        if x.startswith(hook.NOTICE_PREFIX)
+    ]
+    plain_notice = [
+        x for x in plain.stdout.splitlines()
+        if x.startswith(hook.NOTICE_PREFIX)
+    ]
     assert len(marked_notice) == len(plain_notice) == 1
     assert marked_notice != plain_notice
     assert hook.PLUGIN_SEARCH_BINARY in marked_notice[0]
@@ -5366,10 +5379,16 @@ def test_the_emitted_block_is_framed_and_says_the_contents_are_data() -> None:
     # The pointers stay plain and visible — the emission surface is stdout, not
     # a JSON envelope, and that is the measured baseline the product rests on.
     assert "- a.md — something" in block
-    # And the one line in the block that IS memkit's own is called out, since
-    # the preamble's disclaimer otherwise covers memkit's own call to action
-    # along with the retrieved text it is about.
-    assert "meant to be acted on" in block
+    # No notice, so nothing is carved out: the sentence naming memkit's own
+    # line must not appear when there is no such line, or it points the model
+    # at whatever happens to close the block — which is retrieved content.
+    assert "meant to be acted on" not in block
+
+    with_notice = hook._framed(
+        ["- a.md — something", f"{hook.NOTICE_PREFIX} 2 further matches not shown"]
+    )
+    assert "meant to be acted on" in with_notice
+    assert f"`{hook.NOTICE_PREFIX}`" in with_notice
 
 
 def test_the_frame_ships_to_both_channels_and_its_shape_is_pinned(tmp_path) -> None:
@@ -5403,7 +5422,10 @@ def test_the_frame_ships_to_both_channels_and_its_shape_is_pinned(tmp_path) -> N
     # Identical, apart from any line naming a command — the channels ship
     # different binaries and that is the only thing the frame may differ by.
     def without_commands(text: str) -> list[str]:
-        return [x for x in text.splitlines() if "further match" not in x]
+        return [
+            x for x in text.splitlines()
+            if not x.startswith(hook.NOTICE_PREFIX)
+        ]
 
     assert without_commands(seen["nix"]) == without_commands(seen["plugin"])
 
@@ -5432,9 +5454,13 @@ def test_the_worst_case_payload_stays_inside_the_pipe_buffer_bound(
         monkeypatch.setitem(hook._LEX_SECTIONS, str(memory), "s" * 60)
         lines.append(hook._pointer_line(str(memory), ["term"] * 40, 40))
     query = " ".join(f"term{i:03d}" for i in range(40))
-    lines.append(f"- …99 further matches — search: {hook._search_cli()} \"{query}\"")
+    lines.append(
+        f"{hook.NOTICE_PREFIX} 99 further matches not shown — "
+        f'search: {hook._search_cli()} "{query}"'
+    )
 
-    payload = hook._bounded_block(lines)
+    payload, kept = hook._bounded_block(lines)
+    assert kept == lines, "the ordinary case shed something"
     assert len(payload.encode()) < hook.PIPE_BUFFER_BOUND, len(payload.encode())
     # With room to spare, because the point is a margin rather than a pass:
     # a payload at 99% of the bound is one description cap away from failing.
@@ -5478,17 +5504,21 @@ def test_the_bound_is_measured_in_bytes_rather_than_argued_from_characters(
     # bytes. A prompt at the gate's 4000-character limit can put 99 CJK
     # characters in each of them, and 40 x 99 x 3 bytes is the notice alone.
     query = " ".join("漢字識別子" * 20 for _ in range(40))
-    lines.append(f'- …99 further matches — search: memory-recall --search "{query}"')
+    lines.append(
+        f"{hook.NOTICE_PREFIX} 99 further matches not shown — "
+        f'search: memory-recall --search "{query}"'
+    )
 
     # The masked write goes through the bound, not around it. A direct call to
     # `_bounded_block` says nothing about which function `main` hands its lines
     # to, and that is where the check has to be.
     source = Path(hook.__file__).read_text(encoding="utf-8")
-    assert "sys.stdout.write(_bounded_block(lines))" in source
+    assert "payload, kept = _bounded_block(lines)" in source
+    assert "sys.stdout.write(payload)" in source
     assert "sys.stdout.write(_framed(" not in source
 
     assert len(hook._framed(lines).encode()) > hook.PIPE_BUFFER_BOUND
-    payload = hook._bounded_block(lines)
+    payload, _kept = hook._bounded_block(lines)
     assert len(payload.encode()) <= hook.PIPE_BUFFER_BOUND, len(payload.encode())
     # The frame survives the shedding: a block that lost its closing tag would
     # put everything after it back outside the data region.
@@ -5498,7 +5528,10 @@ def test_the_bound_is_measured_in_bytes_rather_than_argued_from_characters(
     # And the notice's QUERY is what gave way, not a pointer line: a shortened
     # query is still a runnable command, while a dropped pointer is a result
     # the prompt was owed.
-    assert payload.count("\n- ") == len(lines)
+    # Every pointer line survived; the notice is what gave way, and it no
+    # longer wears the pointer form.
+    assert payload.count("\n- ") == len(lines) - 1
+    assert payload.count(f"\n{hook.NOTICE_PREFIX}") == 1
 
 
 def test_nothing_reaches_stdout_inside_the_frame_unsanitized(tmp_path) -> None:
@@ -5586,6 +5619,102 @@ def test_a_search_cli_longer_than_a_command_is_a_config_error(tmp_path) -> None:
     assert len(f"memkit-recall --config {'d' * 200}/memkit.json --search") < (
         hook.SEARCH_CLI_MAX_CHARS
     )
+
+
+def test_the_shed_path_hands_out_nothing_it_cannot_stand_behind(tmp_path) -> None:
+    """Every branch of the shedding, driven — because all of it is new and none
+    of it ran.
+
+    The two byte-bound cases above assert the ordinary path and the one where
+    only the query gives way; nothing reached the pointer-drop loop or the
+    final clamp, and four separate defects lived in exactly those branches.
+    """
+    lines = [f"- /m{i}.md — {'d' * 400} [matches 1/1 prompt terms: d]" for i in range(4)]
+    query = "alpha beta gamma delta epsilon " * 20
+    notice = f'{hook.NOTICE_PREFIX} 9 further matches not shown — search: x --search "{query}"'
+
+    # 1. The query gives way first, and what is left is still a runnable
+    #    command: never `--search ""`, which exits 2 and tells an agent its own
+    #    invocation was wrong.
+    for budget in range(900, 4000, 137):
+        payload, kept = hook._bounded_block([*lines, notice], budget)
+        assert len(payload.encode()) <= budget, (budget, len(payload.encode()))
+        assert '--search ""' not in payload, budget
+        emitted = [x for x in kept if x.startswith(hook.NOTICE_PREFIX)]
+        for line in emitted:
+            terms = re.search(r'"([^"]*)"\s*$', line)
+            assert terms and terms.group(1).strip(), (budget, line)
+
+    # 2. Pointer lines go next, from the end, and the survivors stay a prefix —
+    #    which is what lets the caller spend exactly what was shown.
+    for budget in (800, 1200, 2000):
+        _payload, kept = hook._bounded_block([*lines, notice], budget)
+        pointers = [x for x in kept if x.startswith("- ")]
+        assert pointers == lines[: len(pointers)], budget
+
+    # 3. A budget under the frame's own overhead emits NOTHING rather than a
+    #    block bigger than the caller asked for. The write that cannot fit is
+    #    the whole thing this function exists to prevent.
+    frame_only = len(hook._framed([]).encode())
+    payload, kept = hook._bounded_block(lines, frame_only - 1)
+    assert payload == "" and kept == [], payload
+    payload, kept = hook._bounded_block(lines, frame_only)
+    assert len(payload.encode()) <= frame_only and kept == []
+
+    # 4. An undecodable filename does not raise. It reaches this as lone
+    #    surrogates through `os.fsdecode`, and a raise here happens inside the
+    #    SIGTERM-masked window.
+    undecodable = "- /m\udcff.md — d [matches 1/1 prompt terms: d]"
+    payload, _kept = hook._bounded_block([undecodable], 200)
+    payload.encode()  # must not raise
+    assert "\udcff" not in payload
+
+
+def test_a_shed_pointer_is_not_spent_and_not_reported_as_injected(tmp_path) -> None:
+    """A pointer dropped to fit the write was never shown.
+
+    Spending it against `POINTER_BUDGET` and listing it in the soak record's
+    `injected` burns a memory the agent never saw — and `shown` then refuses to
+    offer it again for the rest of the session, so the loss is permanent and
+    invisible: the record says it was delivered.
+    """
+    env = _env(tmp_path)
+    corpus = tmp_path / PERSONAL_DIR / "search"
+    # Three memories one prompt reaches, so the cap is the BYTE bound rather
+    # than relevance — which is the branch under test.
+    for name in ("alpha.md", "beta.md", "gamma.md"):
+        (corpus / name).write_text(
+            "---\ndescription: unionfs mount permissions go stale after a "
+            f"remount.\ntype: reference\n---\n\n# {name}\n\nStale mounts.\n"
+        )
+    # A bound admitting the frame and one pointer, so the rest must shed. Set
+    # in the child, because the constant is what the code under test reads.
+    out = subprocess.run(
+        ["python3", "-c",
+         "import os, sys;"
+         "sys.path.insert(0, os.environ['MEMKIT_SRC']);"
+         "from memkit import memory_prompt_recall as h;"
+         "h.PIPE_BUFFER_BOUND = h._nbytes(h._framed([])) + 200;"
+         "h.main()"],
+        input=json.dumps(
+            {"session_id": "shed1", "prompt": "unionfs mount permissions stale"}
+        ),
+        capture_output=True, text=True, timeout=60,
+        env=dict(env, MEMKIT_SRC=str(Path(hook.__file__).parent.parent)),
+    )
+    assert out.returncode == 0, out.stderr
+    shown = [x for x in out.stdout.splitlines() if x.startswith("- ")]
+    rec = _last_record(tmp_path)
+    assert rec["outcome"] == "injected", rec
+    assert rec.get("shed"), rec
+    # Exactly what was written, and nothing else.
+    assert len(rec["injected"]) == len(shown), (rec["injected"], shown)
+    for name in rec["injected"]:
+        assert any(name in line for line in shown), (name, shown)
+    state = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "shed1.json").read_text()
+    )
+    assert len(state["shown"]) == len(shown), state["shown"]
 
 
 def test_the_pointer_caps_the_budget_rests_on_are_still_the_caps() -> None:

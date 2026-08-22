@@ -1539,13 +1539,13 @@ def test_the_advertised_command_runs_from_the_agents_bash_tool(
         capture_output=True, text=True, timeout=120, env=env, cwd=str(tmp_path),
     )
     assert injected.returncode == 0, injected.stderr
-    # The notice line specifically — `- …N further matches — search: <cmd>` —
-    # rather than any line mentioning the word: the frame's own preamble names
-    # the shape too, and that sentence is not a command.
+    # The notice line specifically, found by the reserved prefix that makes it
+    # memkit's own — a retrieved description cannot start a line, which is what
+    # the frame's carve-out rests on.
     advertised = [
         line.split("search: ", 1)[1]
         for line in injected.stdout.splitlines()
-        if line.startswith("- ") and "further match" in line
+        if line.startswith(hook.NOTICE_PREFIX) and "search: " in line
     ]
     assert advertised, injected.stdout
 
