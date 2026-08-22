@@ -5026,9 +5026,22 @@ def test_a_kill_after_a_duplicate_is_recorded_still_leaves_killed(tmp_path) -> N
     log = state / "log.jsonl"
     outcomes = [json.loads(line)["outcome"] for line in log.read_text().splitlines()]
     assert outcomes == ["dup-registration", "killed"], outcomes
+    records = [json.loads(line) for line in log.read_text().splitlines()]
     # And the duplicate's own fields did not ride along on the prompt's record.
-    killed = json.loads(log.read_text().splitlines()[-1])
+    aside, killed = records
     assert "other_file" not in killed and killed["prompt_sha"], killed
+    # The discriminator the consumer filters on. Without it the only way to
+    # exclude this record from a per-prompt population is to know its name,
+    # which is the coupling the static enumeration exists to remove — and it
+    # carries a real session id, so it lands in that population by default.
+    assert aside["concludes"] is False, aside
+    assert "concludes" not in killed and "prompt_sha" not in aside, (aside, killed)
+    # And the contract a consumer codes against is published, not implied: the
+    # vocabulary grows without a version bump, so a reader needs the rule in
+    # writing rather than a name list it has to keep up with.
+    readme = (Path(hook.__file__).parent.parent.parent / "README.md").read_text()
+    assert '"concludes": false' in readme, "the discriminator is undocumented"
+    assert "grows without a version bump" in readme
 
 
 def test_two_registrations_serving_one_session_each_record_the_other(

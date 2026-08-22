@@ -90,18 +90,33 @@ REQUIRED_ENV = "MEMKIT_RIG_REQUIRED"
 # runs before it. Bedrock rather than a bogus `ANTHROPIC_BASE_URL`, because a
 # developer machine's keychain OAuth wins over both that and a bogus key
 # (measured) — this is the only route that is unreachable on a laptop and on a
-# credential-less runner alike. The retry ceilings are what make it FAST: with
-# them the turn ends in 1.2s, without them it was still retrying at 90s.
+# credential-less runner alike.
+#
+# THE REGION IS WHAT MAKES IT UNREACHABLE, not the endpoint override. Measured
+# on 2.1.239: with `AWS_REGION=us-east-1` the turn ends in 1.0s with
+# `403 The security token included in the request is invalid` — an AWS API
+# response, which a refused connection to 127.0.0.1:9 cannot produce — and
+# removing `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` entirely changes nothing (1.01s,
+# the same 403). The endpoint variable is ignored, so the "loopback discard"
+# this used to claim was a real outbound HTTPS request to
+# bedrock-runtime.us-east-1.amazonaws.com on every CI run — fast because AWS
+# answered promptly, and on a runner whose egress is blackholed rather than
+# refused it would have hung to the subprocess timeout for a reason that has
+# nothing to do with memkit.
+#
+# A region that cannot resolve moves the failure into DNS, before anything
+# leaves the machine: `bedrock-runtime.memkit-rig-nowhere-1.amazonaws.com` has
+# no address (checked), and the turn ends in 0.54s with the hook already
+# dispatched. The endpoint override is kept only so that a resolver which
+# wildcards every name still has nowhere to connect.
 NO_MODEL_ENV = {
     "CLAUDE_CODE_USE_BEDROCK": "1",
-    "AWS_REGION": "us-east-1",
+    "AWS_REGION": "memkit-rig-nowhere-1",
     "AWS_ACCESS_KEY_ID": "AKIAINVALIDINVALID00",
     "AWS_SECRET_ACCESS_KEY": "invalid",
-    # Discard, on the loopback: refused rather than routed anywhere.
     "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9",
-    # Belt and braces: the bedrock switch is what actually decides the route,
-    # but a profile carries a base URL for the live tier and this leaves no
-    # reachable endpoint under either name.
+    # A profile carries a base URL for the live tier; this leaves no reachable
+    # endpoint under that name either.
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
     "CLAUDE_CODE_MAX_RETRIES": "0",
     "ANTHROPIC_MAX_RETRIES": "0",

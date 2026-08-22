@@ -381,6 +381,31 @@ not be read at all) and `rebuilt` (the index was damaged and built again).
 A sweep that collects these files must take all three: an orphaned `.build`
 outliving its index reads as a real record of a corpus that is no longer there.
 
+#### `log.jsonl` — the soak log, and what a reader may assume of it
+
+One JSON object per line, appended by the hook on every invocation. It is read
+outside this repository — the nix consumer's analyzers compute injection rates
+from it and its test suite asserts that every outcome memkit can emit has been
+classified — so the growth rule is a contract rather than an implementation
+note.
+
+- **The `outcome` vocabulary grows without a version bump.** `v` is a hash of
+  the hook's own bytes, not a schema version; a new outcome is a normal change
+  and will arrive in one. A reader that partitions outcomes into populations
+  must therefore fail loudly on one it does not recognise rather than dropping
+  it from both halves — a silently unclassified outcome is a rate computed over
+  a denominator nobody checked.
+- **`"concludes": false` marks a record that is about the MACHINE, not about
+  the prompt.** Duplicate-registration detection writes one; the prompt it was
+  observed during writes its own record separately. Exclude these from any
+  per-prompt population. Keying that exclusion on the outcome's name instead
+  means learning each new name; the field is there so you do not have to.
+- **A record describing a prompt carries `prompt_sha` and `ms`.** Filtering on
+  `prompt_sha` is the shape-based way to get exactly the per-prompt population,
+  and it stays correct for any non-prompt record added later.
+- **What a record may contain is bounded**: hashes, counts, basenames, and the
+  sanitized query terms. Never raw prompt text, and never file contents.
+
 ## Retrieval disclosures
 
 Everything below was measured on **one single-author corpus of a few hundred

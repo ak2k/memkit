@@ -22,6 +22,7 @@ exit 0 and print nothing.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -328,19 +329,48 @@ def test_the_hook_the_harness_would_run_is_the_wrapper_and_it_answers(
 # renovate precisely because it can move.
 
 
+# Well under the uncapped retry budget rather than just over it. The fast path
+# measures around a second; the previous 180 s sat 4 s below the 184 s the full
+# budget takes on the pinned harness, so if the retry ceilings ever stopped
+# being honoured — the exact event this tier exists to catch — the difference
+# between a named failure and a bare `TimeoutExpired` was four seconds.
+NO_MODEL_TIMEOUT = 60
+
+
 def _no_model(profile: Profile, prompt: str, *, cwd: Path) -> None:
     """One real turn whose model call cannot succeed.
 
-    Nothing about the turn's own result is asserted, deliberately: with no
+    Nothing about the turn's own SUCCESS is asserted, deliberately: with no
     reachable model it legitimately fails, and gating on that would be gating
     on the half of the run this says nothing about. Hook dispatch precedes the
     model call, so the evidence is memkit's artifacts, written before the
     failure.
+
+    What IS asserted is that no model answered. A resolver that wildcards every
+    hostname, or a runner with a transparent proxy, would otherwise turn this
+    into a billed turn that passes for the wrong reason.
     """
-    profile.claude(
-        "-p", prompt, "--output-format", "json",
-        cwd=str(cwd), timeout=180, check=False,
-        extra_env=dict(NO_MODEL_ENV),
+    try:
+        out = profile.claude(
+            "-p", prompt, "--output-format", "json",
+            cwd=str(cwd), timeout=NO_MODEL_TIMEOUT, check=False,
+            extra_env=dict(NO_MODEL_ENV),
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            f"the turn ran past {NO_MODEL_TIMEOUT}s with the model unreachable. "
+            "The retry ceilings (CLAUDE_CODE_MAX_RETRIES, ANTHROPIC_MAX_RETRIES) "
+            "are what bound it; a harness that stopped honouring them takes the "
+            "full budget, measured at 184s on the pinned build."
+        )
+    answer = {}
+    # Parsing defensively and asserting OUTSIDE the suppression: an assert
+    # inside one is an assert that cannot fail.
+    with contextlib.suppress(ValueError):
+        answer = json.loads(out.stdout)
+    assert not answer.get("modelUsage"), (
+        "a model answered a turn this scenario needs to be unreachable — "
+        f"the route is not dead here: {answer.get('modelUsage')}"
     )
 
 

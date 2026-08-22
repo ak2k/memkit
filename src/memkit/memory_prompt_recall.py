@@ -2731,7 +2731,19 @@ def main() -> None:
             rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
             record = rec
         else:
-            record = {"outcome": outcome, "session": rec["session"], **kw}
+            # `concludes: false` is a DISCRIMINATOR, written rather than left
+            # to be inferred. The consumer's analyzers separate records by
+            # shape, and this record carries a real session id, so it lands in
+            # the population every rate is computed over — where it is a second
+            # record for a prompt that will write its own. Keying that
+            # exclusion on the outcome NAME is the coupling the static
+            # enumeration exists to remove; a field they can filter on is not.
+            record = {
+                "outcome": outcome,
+                "session": rec["session"],
+                "concludes": False,
+                **kw,
+            }
         with _sigterm_masked():
             _soak_log(record)
             if concludes:
