@@ -1670,6 +1670,23 @@ RETIRED_ROUTE_PHRASES = (
 ROUTE_DOCS = ("README.md", "docs/ROLLOUT.md")
 
 
+def test_the_soak_logs_growth_rule_is_published_where_a_consumer_reads_it() -> None:
+    """The outcome vocabulary is now a cross-repo contract: another
+    repository's analyzers compute injection rates from `log.jsonl`, and its
+    suite asserts every outcome memkit can emit has been classified.
+
+    So the rule a consumer codes against has to be in writing, not implied by
+    the producer's behaviour — and the discriminator in particular, since
+    without it the only way to exclude a non-prompt record from a per-prompt
+    population is to learn each new outcome's NAME, which is the coupling the
+    static enumeration exists to remove.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert '"concludes": false' in readme, "the discriminator is undocumented"
+    assert "grows without a version bump" in readme
+    assert "prompt_sha" in readme
+
+
 def test_no_document_still_offers_the_config_route_the_code_dropped() -> None:
     """An operator who follows a runbook naming a deleted route drops a
     `memkit.json` into the payload root and gets a plugin that installs,

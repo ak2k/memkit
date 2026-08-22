@@ -357,12 +357,14 @@ def _no_model(profile: Profile, prompt: str, *, cwd: Path) -> None:
             extra_env=dict(NO_MODEL_ENV),
         )
     except subprocess.TimeoutExpired:
-        pytest.fail(
+        # `pytest.fail` raises, but pyright cannot know that from here, and a
+        # `NoReturn` it cannot see is an "out is possibly unbound" below.
+        raise AssertionError(
             f"the turn ran past {NO_MODEL_TIMEOUT}s with the model unreachable. "
             "The retry ceilings (CLAUDE_CODE_MAX_RETRIES, ANTHROPIC_MAX_RETRIES) "
             "are what bound it; a harness that stopped honouring them takes the "
             "full budget, measured at 184s on the pinned build."
-        )
+        ) from None
     answer = {}
     # Parsing defensively and asserting OUTSIDE the suppression: an assert
     # inside one is an assert that cannot fail.
