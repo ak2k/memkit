@@ -8,8 +8,11 @@
 # the config question in particular is the memory-poisoning surface of the whole
 # design — the set of directories an every-prompt hook reads.
 #
-# POSIX sh only. The harness runs these with whatever `/bin/sh` is, and on a
-# stock macOS that is bash 3.2 in POSIX mode; nothing here may need bash 4.
+# POSIX sh only. The harness runs these with whatever `/bin/sh` is. On the
+# Linux workstations these are written for that is dash or bash 5, either of
+# which would take more than this file uses — the constraint comes from the
+# FLOOR case, a stock macOS where `/bin/sh` is bash 3.2 in POSIX mode. Nothing
+# here may need bash 4. Held by shellcheck --shell=sh in CI, on Linux.
 
 # Each wrapper derives the plugin tree from its own `$0` before sourcing this
 # file — it has to, since that is how it finds this file — so the derivation

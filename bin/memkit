@@ -8,7 +8,8 @@
 #
 # Two interpreters, because memkit has two floors and one machine need not
 # satisfy both. The dispatcher itself runs on the hook's interpreter — the 3.9
-# floor, which a stock macOS python meets — while CHECKER-BACKED work (a ledger
+# floor, which is what a stock macOS python meets and every current Linux
+# distribution clears — while CHECKER-BACKED work (a ledger
 # regeneration, any `--write`) needs 3.12 and refuses below it. This resolves
 # both and exports the second, so a subcommand that needs the checker finds a
 # route already decided rather than each one probing differently:
@@ -80,8 +81,8 @@ fi
 
 # The checker route, resolved once per invocation. A python that satisfies the
 # 3.12 floor runs THIS tree's checker, so the checker and the hook are the same
-# release by construction; `uvx` is the fallback for the stock-python mac,
-# where it provisions its own interpreter.
+# release by construction; `uvx` is the fallback wherever `python3` is older
+# than 3.12 — a stock mac, or an older LTS — and provisions its own.
 memkit_resolve_checker "$PY"
 
 MEMKIT_PLUGIN=1

@@ -1316,6 +1316,15 @@ def test_the_hook_wrapper_never_exits_non_zero(root, tmp_path, shimmed) -> None:
     assert len(messages) == 2, messages
 
 
+# CI's ubuntu runner is a non-root user, which is the environment these
+# adopters have. Under root nothing is unreadable, so a mode-000 case measures
+# the ordinary path and fails for a reason that is about the runner.
+needs_permissions = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root reads mode-000 files, so nothing is unreadable"
+)
+
+
+@needs_permissions
 @pytest.mark.parametrize(
     "wrapper,args,allowed",
     [
@@ -1456,6 +1465,51 @@ def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
     assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
+
+
+def test_what_argv0_a_shebang_script_receives_is_measured_not_assumed(
+    tmp_path,
+) -> None:
+    """The `$0` derivation rests on a kernel behaviour, and the measurement
+    behind it was taken on darwin.
+
+    The adopters are on Linux, and this repo's CI runs there — so the claim is
+    re-measured in the environment that matters rather than carried over. If
+    Linux ever passed argv[0] instead of execve's pathname, the wrappers'
+    slashed branch would stop being the one a PATH lookup takes and the
+    `command -v` fallback would become load-bearing without anything saying so.
+
+    Stated as an EITHER-OR rather than a platform assertion: both answers are
+    survivable — the wrappers handle a bare `$0` too — and what must not happen
+    is the code believing one while the kernel does the other.
+    """
+    probe = tmp_path / "bin"
+    probe.mkdir()
+    _shim(probe, "argv0-probe", 'printf "%s" "$0"')
+    env = {"PATH": f"{probe}:{os.environ['PATH']}", "HOME": str(tmp_path)}
+
+    by_path_lookup = subprocess.run(
+        ["argv0-probe"], capture_output=True, text=True, timeout=60, env=env
+    ).stdout
+    handed_to_sh = subprocess.run(
+        ["sh", "argv0-probe"], capture_output=True, text=True, timeout=60,
+        env=env, cwd=str(probe),
+    ).stdout
+
+    # A PATH lookup: whichever the kernel does, the wrappers cover it — the
+    # slashed branch walks up from the directory, and the slashless one goes
+    # through `command -v`. What this pins is that ONE of them is exercised.
+    assert by_path_lookup in (str(probe / "argv0-probe"), "argv0-probe"), (
+        by_path_lookup
+    )
+    # Handed to `sh` by name, there is no pathname to substitute, so this is
+    # the branch the bare-argv[0] cases below drive on every platform.
+    assert handed_to_sh == "argv0-probe", handed_to_sh
+    # And the docstring's claim about a PATH lookup, recorded where a change
+    # would be read rather than inferred.
+    assert ("/" in by_path_lookup) == (
+        by_path_lookup == str(probe / "argv0-probe")
+    )
 
 
 @pytest.mark.parametrize(
@@ -2082,8 +2136,15 @@ def test_the_rollout_runbook_verifies_both_channels() -> None:
         "claude plugin details memkit@memkit",
         "pluginConfigs",
         "--debug-config",
+        # Where derived state lands, in the form that is right on a Linux
+        # workstation as well as a mac.
+        "${XDG_CACHE_HOME:-$HOME/.cache}/memory-recall/",
     ):
         assert command in rollout, command
+    # And the plugin block says the nix sections are not for this adopter, who
+    # has no darwin-rebuild, no flake input and no consumer checkout.
+    plugin_block = rollout.split("## Per-host verify, plugin channel", 1)[1]
+    assert "NIX-FLEET rollout" in plugin_block
     # And the nix block says which channel it is for, so a plugin adopter does
     # not work through four checks that cannot apply.
     assert "nix-channel checks" in rollout

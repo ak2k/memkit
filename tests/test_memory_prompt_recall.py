@@ -4919,6 +4919,52 @@ def test_the_marker_is_bounded_and_replaces_a_file_it_cannot_read(
     assert [r["outcome"] for r in _marker(data)["records"]] == ["trust:unconfigured"]
 
 
+def test_derived_state_follows_xdg_cache_home(tmp_path, monkeypatch) -> None:
+    """Where the index, the soak log and the session ledgers live.
+
+    The adopters this plugin is for are on Linux workstations, where
+    `$XDG_CACHE_HOME` is a real setting rather than a convention nobody
+    exercises — a machine that points its cache elsewhere would otherwise get
+    every other tool's cache there and memkit's in `~/.cache`, and the README's
+    account of where derived state lives would be false on it. Nothing sets the
+    variable on a mac, so the floor case is unchanged.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert hook._state_dir() == str(tmp_path / "xdg" / "memory-recall")
+    assert (tmp_path / "xdg" / "memory-recall").is_dir()
+    # 0700 wherever it lands: the filenames are predictable.
+    assert oct((tmp_path / "xdg" / "memory-recall").stat().st_mode)[-3:] == "700"
+
+    # Unset is the XDG default and the mac's state.
+    monkeypatch.delenv("XDG_CACHE_HOME")
+    assert hook._state_dir() == str(tmp_path / "home" / ".cache" / "memory-recall")
+
+    # A RELATIVE value is ignored rather than honoured — the directory an
+    # every-prompt hook writes into is not the session's to choose, which is
+    # the same rule the wrappers apply to a relative config path.
+    monkeypatch.setenv("XDG_CACHE_HOME", "relative/cache")
+    assert hook._state_dir() == str(tmp_path / "home" / ".cache" / "memory-recall")
+
+
+def test_the_soak_log_really_lands_where_the_state_dir_says(tmp_path) -> None:
+    """End to end, because `_state_dir` having the right answer is not the same
+    as every writer using it."""
+    _corpus_of_three(tmp_path)
+    env = _env(tmp_path)
+    xdg = tmp_path / "xdg"
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "xdg1", "prompt": PROMPTS[0]}),
+        capture_output=True, text=True, timeout=60,
+        env=dict(env, XDG_CACHE_HOME=str(xdg)),
+    )
+    assert out.returncode == 0, out.stderr
+    assert (xdg / "memory-recall" / "log.jsonl").is_file()
+    assert (xdg / "memory-recall" / "xdg1.json").is_file()
+    assert not (tmp_path / ".cache" / "memory-recall" / "log.jsonl").exists()
+
+
 def test_a_relative_plugin_data_dir_writes_no_marker(tmp_path, monkeypatch) -> None:
     """A relative `CLAUDE_PLUGIN_DATA` made the every-prompt hook create
     `trust.json` inside whatever directory the session stands in — a write into

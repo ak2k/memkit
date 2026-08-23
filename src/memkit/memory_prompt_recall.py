@@ -2141,8 +2141,24 @@ def _display_path(path: str) -> str:
 def _state_dir() -> str:
     """Per-user 0700 cache dir, not world-writable /tmp: filenames are
     predictable, so a shared /tmp would allow symlink pre-planting. Also
-    stable across launch contexts, unlike macOS's per-context TMPDIR."""
-    d = os.path.expanduser("~/.cache/memory-recall")
+    stable across launch contexts, unlike macOS's per-context TMPDIR.
+
+    `$XDG_CACHE_HOME` when it is set to an absolute path, else `~/.cache` —
+    which is the XDG default and what a mac gets, since nothing sets the
+    variable there. It matters on a Linux workstation, where the adopters this
+    plugin is for actually are: a machine that points its cache elsewhere gets
+    every other tool's cache there and memkit's in a second place, and the
+    README's account of where derived state lives stops being true.
+
+    A relative value is ignored rather than honoured, for the same reason the
+    wrappers refuse a relative config path: the directory an every-prompt hook
+    writes into is not the session's to choose.
+    """
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg and os.path.isabs(xdg):
+        d = os.path.join(xdg, "memory-recall")
+    else:
+        d = os.path.expanduser("~/.cache/memory-recall")
     try:
         os.makedirs(d, mode=0o700, exist_ok=True)
     except OSError:

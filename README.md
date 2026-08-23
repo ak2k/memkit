@@ -202,8 +202,9 @@ came from.
 `claude plugin uninstall memkit` additionally removes the plugin's data
 directory — which holds only the refusal records above — unless you pass
 `--keep-data`. Your config, your index and your soak log live in
-`~/.cache/memory-recall/`, and your memories live wherever your config says;
-none of that is removed.
+`$XDG_CACHE_HOME/memory-recall/` — `~/.cache/memory-recall/` when that variable
+is unset, which is the case on a mac — and your memories live wherever your
+config says; none of that is removed.
 
 ### Plain Python
 
@@ -212,10 +213,20 @@ pip install git+https://github.com/ak2k/memkit
 export MEMKIT_CONFIG=/path/to/memkit.json
 ```
 
-The hook is stdlib-only and imports under **Python 3.9**, because a harness
-runs it with whatever `python3` the `PATH` resolves to. `memory-integrity`
-and `memory-eval` require **3.12**, and the checker says so by name on an
-older interpreter rather than dying on a syntax error.
+**Where this is expected to run.** A Linux workstation is the ordinary case,
+and the plugin channel is written for it: the hook, the wrappers and the rig
+scenarios all run on Linux in CI, on the same `ubuntu-latest` an adopter's
+machine resembles. macOS is supported and is where the FLOORS come from — a
+stock mac ships Python 3.9.6 and a `/bin/sh` that is bash 3.2 in POSIX mode, so
+the hook is stdlib-only and imports under **Python 3.9** and the wrappers are
+POSIX `sh` with no bashisms. Every Linux distribution worth installing on
+clears both, which is why those constraints are invisible there rather than
+absent.
+
+The hook takes whatever `python3` the `PATH` resolves to, so the floor is a
+floor rather than a target. `memory-integrity` and `memory-eval` require
+**3.12**, and the checker says so by name on an older interpreter rather than
+dying on a syntax error.
 
 Without a config, memkit is **inert**: no stores, zero pointers. That is a
 deliberate default, not an oversight — there is no ambient search path to guess
@@ -392,7 +403,10 @@ two-store corpus, a config, and the eval snapshot it produces.
 
 ### Derived state
 
-The lexical index and its sidecars live under `~/.cache/memory-recall/`, keyed
+The lexical index and its sidecars live under `$XDG_CACHE_HOME/memory-recall/`,
+or `~/.cache/memory-recall/` where that variable is unset — the XDG default, and
+what a mac gets. A relative `$XDG_CACHE_HOME` is ignored: the directory an
+every-prompt hook writes into is not the session's to choose. Keyed
 by a digest of the corpus root. All of it is disposable — delete any of it and
 the next run rebuilds from the corpus.
 
@@ -565,7 +579,8 @@ recall hook, which the harness runs with whatever `python3` the `PATH`
 resolves to, and `memkit.cli`, because the plugin's `bin/memkit` runs the
 dispatcher on that same interpreter — only checker-backed work routes to 3.12,
 and sending the whole dispatcher there would put `memkit doctor` out of reach
-on a stock-python mac, which is the machine that most needs to ask whether its
+on any machine whose `python3` is older than 3.12 — a stock mac is the case
+that forced it, and it is the machine that most needs to ask whether its
 install works. Add a module either entry point imports and it belongs in that
 list on the same commit; its 3.9 floor is otherwise unchecked, and the failure
 surfaces as a hook that silently retrieves nothing. The direction is easy to

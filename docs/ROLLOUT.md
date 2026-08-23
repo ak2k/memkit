@@ -207,6 +207,14 @@ The checks above read paths a plugin install does not have. These four were run
 against a real scratch install before being written here, which is the whole
 point of a verify procedure.
 
+The sections before this one are a NIX-FLEET rollout, written from a mixed
+darwin and NixOS estate. A colleague adopting through the plugin channel — the
+ordinary case, and normally a Linux workstation — needs this block and none of
+the rest: there is no `darwin-rebuild`, no flake input to pin, and no consumer
+checkout to keep clean. Paths below are written with `${CLAUDE_CONFIG_DIR}`
+rather than a hardcoded `~/.claude`, since that is what an adopter who has
+moved it will have.
+
 **1. The plugin is installed and enabled.**
 
     claude plugin list
@@ -244,6 +252,16 @@ yours or the agent's Bash tool — receives none of the plugin's environment, so
 without it both commands answer `inert` (exit 3) on a host that is serving
 correctly. `--debug-config` exits 0 and names the config and each store;
 `--search` exits 0 with pointer lines, 1 for no match, 3 for inert.
+
+**5. Derived state is where you expect it.**
+
+    ls "${XDG_CACHE_HOME:-$HOME/.cache}/memory-recall/"
+
+The index, the soak log and the session ledgers land under `$XDG_CACHE_HOME`
+when it is set — which on a Linux workstation it often is — and under
+`~/.cache` otherwise. An empty directory after a served prompt means the hook
+wrote somewhere else, which is worth knowing before you read the log as
+evidence of anything.
 
 **A silent exit 0 from the hook is not a healthy host.** The wrapper exits 0 on
 every path by design, including every refusal, so quiet means nothing on its
