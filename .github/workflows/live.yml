@@ -1,0 +1,91 @@
+name: Live rig
+
+# The rig's LIVE tier: the scenarios that take a real turn with a real model
+# answering, rather than with the model routed somewhere unreachable. They are
+# five of the rig's scenarios and they gate nothing in `check.yml`, because
+# every pull request would then need a model credential to merge.
+#
+# MANUAL ONLY, and that is a decision rather than an omission. The tier needs a
+# model credential this repository does not have, and both ways of shipping it
+# on a timer are worse than not shipping it:
+#
+#   - a schedule that runs without the credential fails every week, and a red
+#     badge that everybody has learned to ignore is worth less than no badge.
+#   - a schedule that SKIPS without the credential reports green for a tier it
+#     never ran, which is the lying-gate shape this repository refuses
+#     everywhere else — `MEMKIT_RIG_REQUIRED` exists precisely to turn that
+#     silence into a failure.
+#
+# So the schedule below is written and commented out. Uncomment it in the same
+# change that provisions `ANTHROPIC_API_KEY` in this repository's Actions
+# secrets, and not before: with the secret present the weekly run is a real
+# gate, and without it, neither form of it is.
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "17 9 * * 1"   # Mondays, 09:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-rig-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned for the same reason `check.yml` pins it: the rig asserts against
+  # this binary's observable behaviour, so an unpinned install turns somebody
+  # else's release into this repository's red build.
+  CLAUDE_CODE_VERSION: "2.1.238"
+  CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.claude-ci
+  # Both, deliberately. LIVE opts the tier in; REQUIRED turns a scenario that
+  # cannot start into a failure rather than a skip, which is the only way a
+  # manual run means anything.
+  MEMKIT_RIG_REQUIRED: "1"
+  MEMKIT_RIG_LIVE: "1"
+
+jobs:
+  live:
+    name: live
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The credential, checked BEFORE anything is installed. Without this the
+      # run fails several minutes later inside a scenario, and the message an
+      # operator gets is about a model call rather than about the secret.
+      - name: Credential
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set in this repository's Actions secrets."
+            echo "The live tier takes real turns with a real model; it cannot run without one."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Environment
+        run: |
+          uv venv --python 3.12
+          uv pip install --python .venv -e . pytest
+
+      - name: Claude Code (pinned)
+        run: |
+          npm install -g @anthropic-ai/claude-code@"$CLAUDE_CODE_VERSION"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          claude --version
+
+      # `tests/rig` only — the rest of the suite is `check.yml`'s job, and
+      # running it here would make a credential outage look like a code
+      # failure.
+      - name: Rig, live tier
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: .venv/bin/python -m pytest tests/rig -q
