@@ -63,6 +63,7 @@ flake's python 3.13 would notice.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import functools
 import hashlib
@@ -891,34 +892,82 @@ _SURROGATE = re.compile("[\ud800-\udfff]")
 # Anything that is in the model's input and not in the human's reading of the
 # transcript. Stated as a PROPERTY and then tested as one — an enumeration
 # under a comment defining a property is a list somebody has to keep up with,
-# and it was already behind: `\u061c` (ARABIC LETTER MARK) and the musical
-# format characters at `\U0001d173` are ordinary `Cf` codepoints that split
-# the frame tag, and neither was listed.
+# and every version of this list has been behind: `\u061c` (ARABIC LETTER MARK)
+# and the musical format characters at `\U0001d173` were plain `Cf` codepoints
+# nobody had written down, and the Hangul fillers added after those still left
+# the four MONGOLIAN FREE VARIATION SELECTORs — `Mn`, so in none of the
+# categories — carrying a forged closing tag through the defang intact.
 #
 # `Cf` is the bulk of it — zero-width spaces and joiners, the bidi controls,
 # soft hyphen, the Tags block's invisible ASCII alphabet. `Zl`/`Zp` are here
 # because they hide text by moving it to another line rather than by rendering
-# as nothing.
+# as nothing, and the property below deliberately excludes White_Space, so the
+# two halves genuinely cover different things.
 _INVISIBLE_CATEGORIES = frozenset({"Cf", "Zl", "Zp"})
-# And the ones no category collects, each because it renders as nothing while
-# carrying a codepoint. Named individually, since this is the part a reader has
-# to be able to check.
-_INVISIBLE_EXTRA = frozenset(
-    "\u034f"  # combining grapheme joiner
-    "\u17b4\u17b5"  # khmer inherent vowels, zero-width in practice
-    "\u2800"  # braille pattern blank
-    "\u115f\u1160"  # hangul choseong/jungseong fillers — the same family
-    "\u3164"  # hangul filler
-    "\uffa0"  # halfwidth hangul filler
-    + "".join(chr(c) for c in range(0xFE00, 0xFE10))  # variation selectors 1-16
-    + "".join(chr(c) for c in range(0xE0100, 0xE01F0))  # variation selectors 17-256
+# Unicode's own answer to "may a conforming renderer show nothing here":
+# Default_Ignorable_Code_Point, from DerivedCoreProperties.txt of UCD 17.0.0
+# (dated 2025-07-30) — 4174 codepoints, of which the categories above reach
+# about a tenth. It includes the RESERVED ranges, which is not an oversight to
+# trim: `U+FFF0..FFF8` and most of plane 14 are unassigned today, which is
+# exactly what makes them render as nothing everywhere while remaining
+# perfectly legal in a markdown file.
+#
+# Transcribed rather than derived at runtime, because `unicodedata` exposes no
+# such query and this module may import nothing outside the stdlib. The
+# version is named here for the same reason the excerpt under `tests/data/` is
+# committed verbatim: the test parses that file and holds this table to it, so
+# a transcription error is a failure rather than a shared assumption.
+_DEFAULT_IGNORABLE = (
+    (0x00AD, 0x00AD),       # Cf  SOFT HYPHEN
+    (0x034F, 0x034F),       # Mn  COMBINING GRAPHEME JOINER
+    (0x061C, 0x061C),       # Cf  ARABIC LETTER MARK
+    (0x115F, 0x1160),       # Lo  HANGUL CHOSEONG FILLER..HANGUL JUNGSEONG FILLER
+    (0x17B4, 0x17B5),       # Mn  KHMER VOWEL INHERENT AQ..KHMER VOWEL INHERENT AA
+    (0x180B, 0x180D),       # Mn  MONGOLIAN FREE VARIATION SELECTOR ONE..THREE
+    (0x180E, 0x180E),       # Cf  MONGOLIAN VOWEL SEPARATOR
+    (0x180F, 0x180F),       # Mn  MONGOLIAN FREE VARIATION SELECTOR FOUR
+    (0x200B, 0x200F),       # Cf  ZERO WIDTH SPACE..RIGHT-TO-LEFT MARK
+    (0x202A, 0x202E),       # Cf  LEFT-TO-RIGHT EMBEDDING..RIGHT-TO-LEFT OVERRIDE
+    (0x2060, 0x2064),       # Cf  WORD JOINER..INVISIBLE PLUS
+    (0x2065, 0x2065),       # Cn  <reserved-2065>
+    (0x2066, 0x206F),       # Cf  LEFT-TO-RIGHT ISOLATE..NOMINAL DIGIT SHAPES
+    (0x3164, 0x3164),       # Lo  HANGUL FILLER
+    (0xFE00, 0xFE0F),       # Mn  VARIATION SELECTOR-1..VARIATION SELECTOR-16
+    (0xFEFF, 0xFEFF),       # Cf  ZERO WIDTH NO-BREAK SPACE
+    (0xFFA0, 0xFFA0),       # Lo  HALFWIDTH HANGUL FILLER
+    (0xFFF0, 0xFFF8),       # Cn  <reserved-FFF0>..<reserved-FFF8>
+    (0x1BCA0, 0x1BCA3),     # Cf  SHORTHAND FORMAT LETTER OVERLAP..UP STEP
+    (0x1D173, 0x1D17A),     # Cf  MUSICAL SYMBOL BEGIN BEAM..MUSICAL SYMBOL END PHRASE
+    (0xE0000, 0xE0000),     # Cn  <reserved-E0000>
+    (0xE0001, 0xE0001),     # Cf  LANGUAGE TAG
+    (0xE0002, 0xE001F),     # Cn  <reserved-E0002>..<reserved-E001F>
+    (0xE0020, 0xE007F),     # Cf  TAG SPACE..CANCEL TAG
+    (0xE0080, 0xE00FF),     # Cn  <reserved-E0080>..<reserved-E00FF>
+    (0xE0100, 0xE01EF),     # Mn  VARIATION SELECTOR-17..VARIATION SELECTOR-256
+    (0xE01F0, 0xE0FFF),     # Cn  <reserved-E01F0>..<reserved-E0FFF>
 )
+# Flattened once at import, so the per-character check is a bisect over a tuple
+# of ints rather than a scan of pairs — this runs over every non-ASCII
+# character of every description on every prompt.
+_DI_STARTS = tuple(low for low, _ in _DEFAULT_IGNORABLE)
+_DI_ENDS = tuple(high for _, high in _DEFAULT_IGNORABLE)
+# And what neither reaches. Unicode classifies this one as a graphic symbol
+# (`So`) and pointedly not as Default_Ignorable, because in a braille font it
+# is a real, blank, six-dot cell — which is also why it hides text in every
+# other font.
+_INVISIBLE_EXTRA = frozenset("\u2800")  # braille pattern blank
+
+
+def _is_default_ignorable(point: int) -> bool:
+    index = bisect.bisect_right(_DI_STARTS, point) - 1
+    return index >= 0 and point <= _DI_ENDS[index]
 
 
 def _is_invisible(char: str) -> bool:
     return (
         unicodedata.category(char) in _INVISIBLE_CATEGORIES
         or char in _INVISIBLE_EXTRA
+        or _is_default_ignorable(ord(char))
     )
 
 
