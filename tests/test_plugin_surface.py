@@ -60,6 +60,15 @@ PAYLOAD = [
 ]
 
 
+# The real `sh`, located in THIS environment rather than assumed onto the
+# child's PATH. The cases below hand a wrapper to a shell deliberately — it is
+# the only way to leave `$0` bare, and the only way to get a trace — and the
+# child's PATH is a claim those same cases are making about what the wrapper
+# can reach. Resolving the binary here keeps the two apart: a case can say
+# "nothing but a shim is reachable" and still be run by a shell.
+SH = shutil.which("sh") or "/bin/sh"
+
+
 def _json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -556,7 +565,7 @@ exit 0
 def _run(
     wrapper: Path, *args: str, env: dict, cwd: Path | None = None, shell_trace=False
 ) -> subprocess.CompletedProcess:
-    argv = ["sh", "-x", str(wrapper)] if shell_trace else [str(wrapper)]
+    argv = [SH, "-x", str(wrapper)] if shell_trace else [str(wrapper)]
     return subprocess.run(
         [*argv, *args],
         capture_output=True, text=True, timeout=60, env=env,
@@ -583,7 +592,14 @@ class Shim:
 
     def __call__(self, **extra: str) -> dict[str, str]:
         env = {
-"PATH": f"{self.dir}:/usr/bin:/bin",
+            # The shim directory and NOTHING else. A PATH with `/usr/bin` on
+            # it makes two claims false at once: that the wrappers need no
+            # external command, and that the only `python3` a case can reach is
+            # the one it wrote. Both went unnoticed until a runner whose
+            # `/usr/bin/python3` meets the checker floor answered for a shim
+            # written to refuse, and a sandbox with no coreutils failed on a
+            # `head` nobody knew was there.
+            "PATH": str(self.dir),
             "HOME": str(self._home),
             "SHIM_OUT": str(self.out),
         }
@@ -1064,6 +1080,21 @@ def test_the_interpreter_field_is_read_out_of_the_shapes_a_config_takes(
     out = _run(root / "bin" / "memkit-hook", env=env)
     assert out.returncode == 0, out.stderr
     assert marker.is_file(), (shape, out.stderr, config.read_text())
+
+
+def test_the_shim_fixture_can_reach_nothing_it_did_not_write(shimmed) -> None:
+    """The fixture's PATH is a CLAIM the cases using it depend on, so it is
+    asserted here rather than left to be true by accident.
+
+    It was not: with `/usr/bin:/bin` appended, a runner whose system python3
+    meets the checker floor answered for a shim written to refuse it, and two
+    route cases asserted `uvx` and `none` against a machine that had neither
+    question. The failure was invisible on the author's platform, where the
+    system python is too old to qualify — which is the whole reason this line
+    is a test and not a comment.
+    """
+    assert shimmed()["PATH"] == str(shimmed.dir)
+    assert [p.name for p in shimmed.dir.iterdir()] == ["python3"]
 
 
 def test_a_config_path_that_is_merely_wrong_is_not_the_same_as_no_config(
@@ -1798,7 +1829,7 @@ def test_what_argv0_a_shebang_script_receives_is_measured_not_assumed(
         ["argv0-probe"], capture_output=True, text=True, timeout=60, env=env
     ).stdout
     handed_to_sh = subprocess.run(
-        ["sh", "argv0-probe"], capture_output=True, text=True, timeout=60,
+        [SH, "argv0-probe"], capture_output=True, text=True, timeout=60,
         env=env, cwd=str(probe),
     ).stdout
 
@@ -1856,7 +1887,7 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
     env = shimmed()
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     out = subprocess.run(
-        ["sh", wrapper, *args],
+        [SH, wrapper, *args],
         capture_output=True, text=True, timeout=60, env=env,
         cwd=str(root / "bin"), stdin=subprocess.DEVNULL,
     )
