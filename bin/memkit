@@ -57,10 +57,18 @@ fi
 
 . "$MEMKIT_ROOT/bin/lib/common.sh"
 
-if [ ! -r "$MEMKIT_ROOT/src/memkit/cli.py" ]; then
-    echo "memkit: the plugin payload is incomplete — no src/memkit/cli.py" >&2
-    exit 1
-fi
+# Everything the entry point's IMPORT reaches, not only the module named on
+# the `-m` line. `memkit.cli` imports the package, whose `__init__` imports the
+# hook module, so a guard on `cli.py` alone hands an unreadable hook module to
+# the import machinery: a raw PermissionError traceback where the sibling
+# wrappers print one `memkit:` sentence, on the surface an adopter reaches for
+# when something is already wrong.
+for _need in src/memkit/__init__.py src/memkit/memory_prompt_recall.py src/memkit/cli.py; do
+    if [ ! -r "$MEMKIT_ROOT/$_need" ]; then
+        echo "memkit: the plugin payload is incomplete — no $_need" >&2
+        exit 1
+    fi
+done
 
 CONFIG=$(memkit_resolve_config) || CONFIG=""
 if [ -n "$CONFIG" ]; then

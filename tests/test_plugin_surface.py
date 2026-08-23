@@ -1453,6 +1453,69 @@ def test_a_payload_that_cannot_be_READ_is_refused_not_exec_d(
     assert "cannot locate the plugin tree" in out.stderr, out.stderr
 
 
+# The reachable set differs by ENTRY POINT SHAPE, and that is the whole
+# finding: the hook and the search wrapper `exec` the hook module as a loose
+# file, which imports nothing from the package around it, while the dispatcher
+# runs `python -m memkit.cli` and so pulls in `__init__` and everything
+# `__init__` imports. Guarding the file named on the command line covered one
+# shape and not the other.
+@needs_permissions
+@pytest.mark.parametrize(
+    "wrapper,args,allowed,reachable",
+    [
+        ("memkit-hook", (), {0}, ("src/memkit/memory_prompt_recall.py",)),
+        ("memkit-recall", ("--search", "x"), {2, 4}, ("src/memkit/memory_prompt_recall.py",)),
+        (
+            "memkit",
+            ("--help",),
+            {1},
+            (
+                "src/memkit/__init__.py",
+                "src/memkit/memory_prompt_recall.py",
+                "src/memkit/cli.py",
+            ),
+        ),
+    ],
+)
+def test_each_payload_file_is_refused_on_its_own_not_only_as_a_set(
+    tmp_path, shimmed, wrapper, args, allowed, reachable
+) -> None:
+    """One unreadable file at a time, because shutting two at once lets either
+    guard answer for both.
+
+    The case above shuts `memory_prompt_recall.py` and `cli.py` together, so
+    the dispatcher's guard on `cli.py` fired and the run looked correct while
+    an unreadable HOOK MODULE went to `python -m` and came back as an import
+    traceback — the package's `__init__` imports it, and a guard that names
+    only the module on the `-m` line does not cover what that import reaches.
+
+    Each wrapper against every python file ITS OWN entry point reaches — see
+    the table above, which is where that difference is written down.
+    """
+    root = tmp_path / "payload"
+    for rel in PAYLOAD:
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / rel, dest)
+        dest.chmod(0o755 if rel.startswith("bin/") else 0o644)
+
+    for rel in reachable:
+        (root / rel).chmod(0o000)
+        try:
+            out = _run(root / "bin" / wrapper, *args, env=shimmed())
+        finally:
+            (root / rel).chmod(0o644)
+        assert out.returncode in allowed, (rel, out.returncode, out.stderr)
+        assert "Traceback" not in out.stderr, (rel, out.stderr)
+        assert out.stderr.startswith(f"{wrapper}: "), (rel, out.stderr)
+        assert "incomplete" in out.stderr, (rel, out.stderr)
+
+    # Non-vacuity: with nothing shut, the same invocation gets through to the
+    # payload — so the refusals above are the guard and not the environment.
+    ok = _run(root / "bin" / wrapper, *args, env=shimmed())
+    assert "incomplete" not in ok.stderr, ok.stderr
+
+
 def test_the_search_wrapper_says_it_could_not_start_rather_than_that_you_erred(
     root, tmp_path, shimmed
 ) -> None:
