@@ -583,7 +583,7 @@ class Shim:
 
     def __call__(self, **extra: str) -> dict[str, str]:
         env = {
-            "PATH": f"{self.dir}:/usr/bin:/bin",
+"PATH": f"{self.dir}:/usr/bin:/bin",
             "HOME": str(self._home),
             "SHIM_OUT": str(self.out),
         }
@@ -904,6 +904,166 @@ def test_a_relative_config_path_is_not_a_path_into_the_session_dir(
     assert out.returncode == 0, out.stderr
     assert not marker.exists(), "the session directory named the interpreter"
     assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+
+
+# --- the dependency contract -------------------------------------------------
+
+# Words that are shell syntax rather than a command, and the builtins the
+# wrappers are allowed to spend. Everything else a scrape finds is something
+# that has to be FOUND on a PATH the harness composed, which is the failure
+# this pins: a `head` nobody had noticed took the whole interpreter resolution
+# out inside a Linux nix sandbox, and the wrapper still exited 0.
+SHELL_SYNTAX = frozenset({
+    "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done",
+    "case", "esac", "in", "function", "select", "time",
+})
+ALLOWED_BUILTINS = frozenset({
+    "command", "printf", "echo", "read", "cd", "pwd", "export", "unset", "set",
+    "shift", "exec", "eval", "trap", "exit", "return", "break", "continue",
+    "local", "true", "false", "test",
+})
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+_REDIRECT = re.compile(r"^\d?[<>]+")
+_WORD = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*)")
+
+
+def _command_words(text: str) -> set[str]:
+    """Every word this text uses in command position.
+
+    Deliberately crude and deliberately DEFAULT-DENY: it over-collects rather
+    than under-collects, and the test subtracts the names that are allowed
+    instead of listing the ones that are not. A denylist of `sed`, `head`,
+    `grep` would have to be extended by the same person who added the command.
+    """
+    words: set[str] = set()
+    for raw in text.splitlines():
+        # A `#` only opens a comment at the start of a word — `${x#pat}` is a
+        # parameter expansion, and eating the rest of that line would hide any
+        # command after it.
+        line = re.sub(r"(^|\s)#.*$", r"\1", raw)
+        # Parameter expansions hold no command position, and their contents are
+        # full of the characters everything below splits on.
+        for _ in range(4):
+            line = re.sub(r"\$\{[^{}]*\}", "$X", line)
+        line = re.sub(r"'[^']*'", "''", line)
+        line = re.sub(r'"(?:\\.|[^"\\])*"', '""', line)
+        # `$(` and a backtick OPEN a command position; the rest merely end one.
+        for fragment in re.split(r"[;|&]+|\$\(|\)|`", line):
+            piece = fragment.strip()
+            while piece:
+                head, _, rest = piece.partition(" ")
+                # `for x in …` and `case x in …` name a variable and a subject,
+                # neither of which is ever run.
+                if head in ("for", "case", "select"):
+                    piece = ""
+                    break
+                if (
+                    head in SHELL_SYNTAX
+                    or _ASSIGNMENT.match(head)
+                    or _REDIRECT.match(head)
+                    or head in ("!", "{", "}", "(")
+                ):
+                    piece = rest.strip()
+                    continue
+                break
+            match = _WORD.match(piece)
+            if match:
+                words.add(match.group(1))
+    return words
+
+
+def test_the_wrappers_run_no_command_they_would_have_to_find() -> None:
+    """The dependency contract stated in `bin/lib/common.sh`, held to.
+
+    The PATH these run on belongs to the harness, and nothing obliges it to
+    carry coreutils. Reading one config field through `sed | head` was enough
+    to make the recorded interpreter unreadable inside a Linux nix sandbox
+    while the wrapper went on reporting healthy.
+    """
+    defined = set()
+    sources = {}
+    for rel in ("bin/lib/common.sh", "bin/memkit", "bin/memkit-hook", "bin/memkit-recall"):
+        sources[rel] = (REPO / rel).read_text(encoding="utf-8")
+        defined |= set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(\)", sources[rel], re.M))
+    external = {
+        rel: sorted(_command_words(text) - SHELL_SYNTAX - ALLOWED_BUILTINS - defined)
+        for rel, text in sources.items()
+    }
+    assert not any(external.values()), external
+    # Non-vacuity: the scrape really does see command words, and it really does
+    # see the ones that are allowed. A parser that collected nothing would pass
+    # the assertion above for the wrong reason.
+    seen = set().union(*(_command_words(t) for t in sources.values()))
+    assert {"command", "printf", "exec"} <= seen, sorted(seen)
+    assert defined >= {"memkit_resolve_config", "memkit_resolve_interpreter"}, defined
+
+
+@pytest.mark.parametrize(
+    "wrapper,args",
+    [("memkit-hook", ()), ("memkit-recall", ("--search", "x")), ("memkit", ("doctor",))],
+)
+def test_a_wrapper_still_works_with_nothing_on_its_path(
+    root, tmp_path, shimmed, wrapper, args
+) -> None:
+    """The same contract, driven rather than read — with an EMPTY PATH, which
+    is every missing coreutils at once.
+
+    The marker is the half that matters: an assertion that only checked stderr
+    would pass on a wrapper that read no config and exec'd nothing, which is
+    exactly what the missing `head` produced.
+    """
+    marker = tmp_path / "interpreter-ran.txt"
+    interpreter = _shim(tmp_path / "elsewhere", "python3", f'echo ran > "{marker}"')
+    config = _config_file(tmp_path / "memkit.json", interpreter=str(interpreter))
+    env = dict(
+        shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config)), PATH=""
+    )
+    out = _run(root / "bin" / wrapper, *args, env=env)
+    assert "not found" not in out.stderr, out.stderr
+    assert marker.is_file(), (
+        "the interpreter recorded in the config was never read or never run",
+        out.stderr,
+    )
+    # And the field really was parsed out of the file rather than guessed: the
+    # only python3 that could have answered is the one the config names, since
+    # the PATH holding the shim is gone too.
+    assert marker.read_text().strip() == "ran"
+
+
+# `interpreter` written the ways a config really carries it. The reader is
+# hand-rolled shell rather than a JSON parser — it has to be, since it may not
+# spend a command — so the shapes are driven rather than reasoned about.
+CONFIG_SHAPES = {
+    "compact": '{{"schema":1,"interpreter":"{py}"}}\n',
+    "pretty": '{{\n  "schema": 1,\n  "interpreter": "{py}"\n}}\n',
+    "padded": '{{\n  "schema": 1,\n  "interpreter"   :    "{py}"\n}}\n',
+    "tabbed": '{{\n\t"interpreter"\t:\t"{py}"\n}}\n',
+    # No trailing newline: `read` reports failure on that last line, and a loop
+    # that trusted its status would read every config except the ones an editor
+    # did not finish.
+    "unterminated": '{{"schema":1,"interpreter":"{py}"}}',
+    # The word as a plain string, before the real key. It is a complete
+    # `"interpreter"` with a comma after it rather than a colon, so a reader
+    # that scanned to the first occurrence and gave up would take this
+    # config's interpreter to be nothing at all.
+    "decoyed": '{{"tags":["interpreter","python"],"interpreter":"{py}"}}\n',
+}
+
+
+@pytest.mark.parametrize("shape", sorted(CONFIG_SHAPES))
+def test_the_interpreter_field_is_read_out_of_the_shapes_a_config_takes(
+    root, tmp_path, shimmed, shape
+) -> None:
+    """Every shape must reach the same interpreter, with an empty PATH so the
+    only thing that could have answered is the recorded one."""
+    marker = tmp_path / f"{shape}-ran.txt"
+    interpreter = _shim(tmp_path / "elsewhere", "python3", f'echo ran > "{marker}"')
+    config = tmp_path / "memkit.json"
+    config.write_text(CONFIG_SHAPES[shape].format(py=interpreter), encoding="utf-8")
+    env = dict(shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config)), PATH="")
+    out = _run(root / "bin" / "memkit-hook", env=env)
+    assert out.returncode == 0, out.stderr
+    assert marker.is_file(), (shape, out.stderr, config.read_text())
 
 
 def test_a_config_path_that_is_merely_wrong_is_not_the_same_as_no_config(

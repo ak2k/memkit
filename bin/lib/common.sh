@@ -13,6 +13,24 @@
 # which would take more than this file uses — the constraint comes from the
 # FLOOR case, a stock macOS where `/bin/sh` is bash 3.2 in POSIX mode. Nothing
 # here may need bash 4. Held by shellcheck --shell=sh in CI, on Linux.
+#
+# THE DEPENDENCY CONTRACT, and it is the empty set: no wrapper and nothing in
+# this file runs a command that is not a shell builtin. Not `sed`, not `head`,
+# not `grep` — nothing that has to be found on a PATH.
+#
+# The PATH these run on is composed by the harness, not by the adopter, and it
+# is not required to have coreutils on it. Reading the `interpreter` field
+# through `sed | head` was enough to break the whole resolution inside a Linux
+# nix sandbox, where neither exists: `head: not found`, the recorded
+# interpreter silently unread, and the wrapper still exiting 0 — an install
+# that answers nothing while reporting healthy. Every external command here is
+# one more way for that to happen on a machine nobody tested.
+#
+# `command -v`, `printf`, `read`, `cd`, `pwd` and `[` are builtins in every
+# shell that satisfies the floor above. `tests/test_plugin_surface.py` pins the
+# contract twice: it scrapes this file and the wrappers for anything that looks
+# like an external command, and it runs each wrapper with a PATH holding
+# nothing but a python shim.
 
 # Each wrapper derives the plugin tree from its own `$0` before sourcing this
 # file — it has to, since that is how it finds this file — so the derivation
@@ -259,8 +277,51 @@ memkit_interpreter_refused() {
 # the session's choice.
 memkit_config_interpreter() {
     [ -n "$1" ] && [ -f "$1" ] || return 1
-    _found=$(sed -n 's/.*"interpreter"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" \
-        2>/dev/null | head -n 1)
+    _found=""
+    # `read` reports failure on a final line with no newline, which is a line
+    # like any other — hence the second test.
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        _rest=$_line
+        # Every occurrence on the line, left to right, until one parses as a
+        # field. The key appearing inside some other field's VALUE is then a
+        # line that still yields the real one rather than a line that is
+        # skipped.
+        while :; do
+            case $_rest in
+                *'"interpreter"'*) _rest=${_rest#*'"interpreter"'} ;;
+                *) break ;;
+            esac
+            _value=$_rest
+            while :; do
+                case $_value in
+                    [[:blank:]]*) _value=${_value#?} ;;
+                    *) break ;;
+                esac
+            done
+            case $_value in
+                :*) _value=${_value#:} ;;
+                *) continue ;;
+            esac
+            while :; do
+                case $_value in
+                    [[:blank:]]*) _value=${_value#?} ;;
+                    *) break ;;
+                esac
+            done
+            case $_value in
+                '"'*) _value=${_value#\"} ;;
+                *) continue ;;
+            esac
+            case $_value in
+                *'"'*) _found=${_value%%\"*} ;;
+                *) continue ;;
+            esac
+            break
+        done
+        if [ -n "$_found" ]; then
+            break
+        fi
+    done < "$1"
     [ -n "$_found" ] || return 1
     _found=$(memkit_expand_home "$_found")
     if _why=$(memkit_path_refusal "$_found"); then
