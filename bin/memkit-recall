@@ -44,7 +44,12 @@ case $_self in
 esac
 MEMKIT_ROOT=$(cd "${_self%/*}/.." 2>/dev/null && pwd -P) || MEMKIT_ROOT=""
 
-if [ -z "${MEMKIT_ROOT:-}" ] || [ ! -f "$MEMKIT_ROOT/bin/lib/common.sh" ]; then
+# READABLE, not merely present. `[ -f ]` admits a file this process cannot
+# open, and what happens next is not a refusal: sourcing an unreadable
+# library is fatal on some /bin/sh, and `exec`ing an unreadable script
+# leaves CPython exiting 2 — the one status this file promises never to
+# return, because on UserPromptSubmit it hands the user their prompt back.
+if [ -z "${MEMKIT_ROOT:-}" ] || [ ! -r "$MEMKIT_ROOT/bin/lib/common.sh" ]; then
     echo "memkit-recall: cannot locate the plugin tree from $0" >&2
     exit 4
 fi
@@ -63,7 +68,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 HOOK_FILE="$MEMKIT_ROOT/src/memkit/memory_prompt_recall.py"
-if [ ! -f "$HOOK_FILE" ]; then
+if [ ! -r "$HOOK_FILE" ]; then
     echo "memkit-recall: the plugin payload is incomplete — no $HOOK_FILE" >&2
     exit 4
 fi

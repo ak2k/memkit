@@ -1248,6 +1248,51 @@ def test_the_hook_wrapper_never_exits_non_zero(root, tmp_path, shimmed) -> None:
     assert len(messages) == 2, messages
 
 
+@pytest.mark.parametrize(
+    "wrapper,args,allowed",
+    [
+        ("memkit-hook", (), {0}),
+        ("memkit-recall", ("--search", "x"), {2, 4}),
+        ("memkit", ("doctor",), {1}),
+    ],
+)
+def test_a_payload_that_cannot_be_READ_is_refused_not_exec_d(
+    tmp_path, shimmed, wrapper, args, allowed
+) -> None:
+    """`[ -f ]` admits a file this process cannot open, and the guard's whole
+    job is to stop before something else fails on it.
+
+    Measured on the hook wrapper: with the payload at mode 000 the guard passed
+    and `exec` reached CPython, which exits **2** when it cannot open the
+    script — the one status the file's own header says must never be returned,
+    because on UserPromptSubmit it hands the user their prompt back unanswered.
+    An unreadable `common.sh` is the same shape one line up: sourcing it is
+    fatal on some `/bin/sh`.
+
+    Each wrapper against ITS OWN documented set, because they do not share one:
+    the hook may only ever exit 0, and the other two have codes that mean
+    "could not start".
+    """
+    root = tmp_path / "payload"
+    for rel in PAYLOAD:
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / rel, dest)
+        dest.chmod(0o755 if rel.startswith("bin/") else 0o644)
+
+    for unreadable in ("src/memkit/memory_prompt_recall.py", "src/memkit/cli.py"):
+        (root / unreadable).chmod(0o000)
+    out = _run(root / "bin" / wrapper, *args, env=shimmed())
+    assert out.returncode in allowed, (wrapper, out.returncode, out.stderr)
+    assert "incomplete" in out.stderr, out.stderr
+
+    # And the library one rung up, which is sourced rather than exec'd.
+    (root / "bin" / "lib" / "common.sh").chmod(0o000)
+    out = _run(root / "bin" / wrapper, *args, env=shimmed())
+    assert out.returncode in allowed, (wrapper, out.returncode, out.stderr)
+    assert "cannot locate the plugin tree" in out.stderr, out.stderr
+
+
 def test_the_search_wrapper_says_it_could_not_start_rather_than_that_you_erred(
     root, tmp_path, shimmed
 ) -> None:
