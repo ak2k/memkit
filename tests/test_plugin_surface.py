@@ -138,7 +138,19 @@ def test_the_option_is_required_and_says_what_it_is_for() -> None:
     assert option["type"] == "string"
     for field in ("title", "description"):
         assert option[field].strip(), field
-    assert "init" in option["description"]
+    # The description is rendered by the harness during `/plugin install`, so
+    # it is the first screen a cold adopter reads — and it named
+    # `/memkit:init`, which this payload ships no `commands/` directory for and
+    # `cli.py` lists in `_PENDING`. The adopter runs it, gets nothing, has no
+    # config, and the plugin stays silently inert.
+    #
+    # So any command it names in the present tense must exist.
+    from memkit.cli import _HANDLERS, _PENDING
+
+    described = option["description"]
+    named = {n for n in (*_PENDING, *_HANDLERS) if f"/memkit:{n}" in described}
+    assert named <= set(_HANDLERS), sorted(named - set(_HANDLERS))
+    assert "manual in this build" in described, described
 
 
 def test_the_marketplace_entry_pins_a_commit_rather_than_a_branch() -> None:

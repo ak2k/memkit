@@ -129,7 +129,13 @@ def _meanwhile(template: str) -> str:
     if search.endswith("--search"):
         search_config = search[: -len("--search")] + "--debug-config"
     else:
-        search_config = f"{search.split()[0]} --debug-config"
+        # TOTAL, because this runs while the parser is being BUILT: `_parser()`
+        # calls `_meanwhile` for its description, so anything that raises here
+        # takes down every `memkit` invocation including `--help`, the cheapest
+        # probe an adopter runs. A whitespace-only `search_cli` is truthy, so
+        # `Config` keeps it and `split()` returns nothing to index.
+        head = search.split()
+        search_config = f"{head[0] if head else _self_name()} --debug-config"
     return template.format(search=search, search_config=search_config)
 
 # Subcommand -> the function that runs it, given the arguments this parser did

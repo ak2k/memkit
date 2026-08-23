@@ -4919,6 +4919,29 @@ def test_the_marker_is_bounded_and_replaces_a_file_it_cannot_read(
     assert [r["outcome"] for r in _marker(data)["records"]] == ["trust:unconfigured"]
 
 
+def test_a_relative_plugin_data_dir_writes_no_marker(tmp_path, monkeypatch) -> None:
+    """A relative `CLAUDE_PLUGIN_DATA` made the every-prompt hook create
+    `trust.json` inside whatever directory the session stands in — a write into
+    the user's repository from a hook whose whole answer in this state is that
+    it will not touch anything.
+
+    The wrappers already refuse that spelling when resolving a config; this was
+    the one place the rule was not applied.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, "plugindata")
+    (tmp_path / "plugindata").mkdir()
+    assert hook._marker_path() is None
+    hook._marker_append("trust:unconfigured")
+    assert not (tmp_path / "plugindata" / hook.MARKER_NAME).exists()
+    assert list(tmp_path.rglob(hook.MARKER_NAME)) == []
+
+    # And an absolute one still works, or this is "never write a marker".
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(tmp_path / "plugindata"))
+    hook._marker_append("trust:unconfigured")
+    assert (tmp_path / "plugindata" / hook.MARKER_NAME).is_file()
+
+
 def test_a_marker_that_cannot_be_written_costs_the_prompt_nothing(
     tmp_path, monkeypatch
 ) -> None:
@@ -5529,13 +5552,21 @@ def test_the_emitted_block_is_framed_and_says_the_contents_are_data() -> None:
     # No notice, so nothing is carved out: the sentence naming memkit's own
     # line must not appear when there is no such line, or it points the model
     # at whatever happens to close the block — which is retrieved content.
-    assert "meant to be acted on" not in block
+    assert "written by memkit itself" not in block
 
     with_notice = hook._framed(
         ["- a.md — something", f"{hook.NOTICE_PREFIX} 2 further matches not shown"]
     )
-    assert "meant to be acted on" in with_notice
+    assert "written by memkit itself" in with_notice
     assert f"`{hook.NOTICE_PREFIX}`" in with_notice
+    # PROVENANCE only. The sentence must not tell the model that the pointer
+    # lines are inert: the paragraph two clauses earlier asks it to read the
+    # ones whose matched terms are load-bearing, and a carve-out claiming the
+    # marked line is the only one "meant to be acted on" contradicts that —
+    # a model resolving it literally declines to open any memory, which is the
+    # entire payload.
+    assert "meant to be acted on" not in with_notice, with_notice
+    assert "read the ones whose matched terms are load-bearing" in with_notice
 
 
 def test_the_frame_ships_to_both_channels_and_its_shape_is_pinned(tmp_path) -> None:

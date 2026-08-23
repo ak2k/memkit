@@ -20,7 +20,7 @@
     "memkitConfig": {
       "type": "string",
       "title": "memkit config file",
-      "description": "Absolute path to the JSON config naming your memory stores. The plugin is inert until this file exists — /memkit:init creates it at the default path below. Nothing is read from your machine before then.",
+      "description": "Absolute path to the JSON config naming your memory stores. The plugin is inert until this file exists, and writing it is manual in this build — the schema and a worked example are in the project README under Config. An init command will create it at the default path below in a later release. Nothing is read from your machine before then.",
       "default": "~/.cache/memory-recall/memkit.json",
       "required": true
     }

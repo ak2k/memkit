@@ -200,12 +200,21 @@ def test_hookdump_records_the_argv_and_env_it_exists_to_record(tmp_path) -> None
         env={**profile.env(), "MEMKIT_RIG_MARKER": "present"},
     )
     dumps = profile.dumps("UserPromptSubmit")
-    assert len(dumps) == 1, dumps
+    assert len(dumps) == 1, len(dumps)
     record = dumps[0]
-    assert record["argv"] == ["UserPromptSubmit"], record
-    assert record["payload"]["prompt"] == "hello", record
-    assert record["env"]["MEMKIT_RIG_MARKER"] == "present", record
-    assert record["cwd"] and record["raw_len"] > 0, record
+    # FIELD-SCOPED failure messages. A record deliberately holds
+    # `dict(os.environ)` of the spawned process and the whole prompt, and this
+    # case runs unconditionally in the `python` job — whose logs are public for
+    # a public repo. Passing the record as the assertion message copies the
+    # runner's ambient environment into them, which is the bound
+    # `tests/rig/__init__.py` states these records must not cross.
+    assert record["argv"] == ["UserPromptSubmit"], record["argv"]
+    assert record["payload"]["prompt"] == "hello", record["payload"]
+    assert record["env"]["MEMKIT_RIG_MARKER"] == "present", (
+        record["env"].get("MEMKIT_RIG_MARKER")
+    )
+    assert record["cwd"], "no cwd recorded"
+    assert record["raw_len"] > 0, record["raw_len"]
 
 
 # --- the staged payload itself ------------------------------------------------

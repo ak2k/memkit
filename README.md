@@ -172,8 +172,15 @@ have resolved first and searched the wrong stores without saying so, which is a
 wrong answer wearing a right one's clothes. The exception is `memkit` itself,
 which collides with this project's own console script — if you also have memkit
 installed via pip or nix, a bare `memkit` in the agent's shell is that one.
-Invoke the plugin's copy by path when it has to be that copy:
-`"$CLAUDE_PLUGIN_ROOT"/bin/memkit`.
+Invoke the plugin's copy by path when it has to be that copy. **Not through
+`$CLAUDE_PLUGIN_ROOT`** — that variable is set only inside processes the plugin
+itself spawns, so in your terminal and in the agent's Bash tool it is empty and
+the command expands to `/bin/memkit`. Build the path from the cache instead:
+
+```
+PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
+"$(ls -d "$PLUGIN"/*/bin/memkit | tail -1)" --help
+```
 
 **If you disable the plugin**, the hook stops and the store is untouched — it
 lives outside every plugin-managed path by design. Retrieval is still available
@@ -363,6 +370,16 @@ that variable and takes the path from the two routes in
   `ConfigError` on every channel, which for the hook means degrading to inert
   and for the CLIs means exit 2. That is deliberate too — one file travels
   between channels, so a config that is broken for one of them is broken.
+- **`interpreter`** — an absolute path to the python that runs the hook, and
+  the plugin channel is where it matters. There the wrapper resolves an
+  interpreter itself, preferring this value and falling back to whatever
+  `python3` the launching shell's `PATH` gives it — which on a machine with
+  direnv, mise or an activated venv is not a python you chose. The nix channel
+  bakes its interpreter in and ignores this. It must be **absolute and
+  canonical**: a value with `..`, `//` or `/./` in it, or under `/proc` or
+  `/dev/fd`, names a different file depending on which directory the session
+  stands in, so it is refused with a line on stderr and the `PATH` probe
+  answers instead. `~` is expanded.
 - **`eval.cases`** — three slices. `suite` pairs a prompt with the *basename*
   of the memory it is about; the tier is resolved at run time from where the
   file lives now, so promoting a memory from `search/` to `hot/` flips its
