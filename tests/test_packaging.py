@@ -226,26 +226,50 @@ def _import_closure(start: Path) -> set[Path]:
     return seen
 
 
-def _hook_import_closure() -> set[Path]:
-    """Every file the recall hook can reach at import time, transitively."""
-    return _import_closure(HOOK)
+# The two entry points a 3.9 interpreter may execute. The hook, because the
+# harness runs it with whatever `python3` the PATH resolves to. The dispatcher,
+# because the plugin's `bin/memkit` runs it on that same interpreter: only
+# checker-backed work routes to 3.12, and sending the whole dispatcher there
+# would put `memkit doctor` out of reach on a stock-python mac, which is the
+# machine that most needs to ask whether its install works.
+ENTRY_POINTS_39 = (HOOK, PKG / "cli.py")
 
 
-def test_the_39_config_covers_exactly_the_hooks_import_path() -> None:
-    """The hook's floor is 3.9 because the harness runs it with whatever
-    `python3` the PATH resolves to, and that config's `include` is a
-    hand-written file list — so a module the hook grows an import of is
-    unchecked at 3.9 until somebody remembers to add it. What that costs is
-    invisible: a hook that raises on import is reported by the harness as
-    nothing at all, which is also what a corpus with nothing to say looks like.
+def _floor_39_closure() -> set[Path]:
+    """Every file a 3.9 interpreter can reach from either entry point."""
+    return set().union(*(_import_closure(entry) for entry in ENTRY_POINTS_39))
 
-    The direction is the easy half to invert. `cli.py` imports the hook, and
-    that does not put `cli.py` on the hook's import path — nothing puts it in
-    front of the harness's interpreter.
+
+def test_the_39_config_covers_exactly_the_39_entry_points() -> None:
+    """That config's `include` is a hand-written file list, so a module either
+    entry point grows an import of is unchecked at 3.9 until somebody remembers
+    to add it. What that costs is invisible: a file that raises on import is
+    reported by the harness as nothing at all, which is also what a corpus with
+    nothing to say looks like.
+
+    The direction is the easy half to invert. A module that merely IMPORTS one
+    of these does not belong here — nothing puts it in front of the 3.9
+    interpreter.
     """
     config = json.loads((REPO / "pyrightconfig-hook39.json").read_text())
     listed = {(REPO / p).resolve() for p in config["include"]}
-    assert listed == _hook_import_closure()
+    assert listed == _floor_39_closure()
+
+
+def test_the_dispatcher_is_in_the_39_floor_because_a_wrapper_runs_it_there() -> None:
+    """The pin above is an equality against a closure, so it would stay green
+    if `cli.py` were dropped from BOTH the config and the entry-point list in
+    one edit. This is the half that says which entry points there are, and it
+    is a claim about `bin/memkit`: that file execs `memkit.cli` with the same
+    interpreter the hook wrapper resolves, and nothing else connects the two.
+    """
+    wrapper = (REPO / "bin" / "memkit").read_text(encoding="utf-8")
+    assert "-m memkit.cli" in wrapper
+    assert PKG / "cli.py" in set(ENTRY_POINTS_39)
+    assert HOOK in _import_closure(PKG / "cli.py"), (
+        "cli.py no longer imports the hook — check whether it still answers to "
+        "the 3.9 floor before editing this"
+    )
 
 
 def test_the_closure_helper_sees_the_import_shapes_real_code_uses(tmp_path) -> None:

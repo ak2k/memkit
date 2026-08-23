@@ -105,9 +105,17 @@
           # git is not a convenience here: the citation cases build real commits
           # in a tmpdir and the checker's staleness pass shells out to
           # `git log`. Without it the suites would skip their way to green.
+          # MEMKIT_NO_CHECKOUT marks the one context where a git-gated case may
+          # legitimately skip. The store copy has no `.git`, so those cases
+          # cannot run here — and without the marker they SKIP everywhere,
+          # including the plain-python leg where they are the gate. `pkgs.git`
+          # above is not the missing half: git is present, the checkout is not.
           suite =
             name: file:
-            pkgs.runCommand "memkit-${name}" { nativeBuildInputs = [ pkgs.git ]; } ''
+            pkgs.runCommand "memkit-${name}" {
+              nativeBuildInputs = [ pkgs.git ];
+              MEMKIT_NO_CHECKOUT = "1";
+            } ''
               cd ${inputs.self}
               ${pytestEnv}/bin/pytest -q --no-header -p no:cacheprovider ${file} 2>&1 | tee $out
             '';
@@ -133,7 +141,14 @@
             "test_cli.py" = "cli-tests";
             "test_packaging.py" = "packaging-tests";
             "test_eval.py" = "eval-tests";
+            "test_plugin_surface.py" = "plugin-tests";
           };
+          # Top-level FILES only, which quietly excludes `tests/rig/` — and
+          # that exclusion is deliberate rather than incidental. Those
+          # scenarios drive the real `claude` binary against a scratch profile,
+          # and the nix sandbox has neither the binary nor a network. They gate
+          # on the plain-python leg, which installs a pinned Claude Code for
+          # exactly that.
           suiteFiles = lib.filterAttrs (
             n: t: t == "regular" && lib.hasPrefix "test_" n && lib.hasSuffix ".py" n
           ) (builtins.readDir "${inputs.self}/tests");

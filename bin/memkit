@@ -1,0 +1,109 @@
+#!/bin/sh
+# `memkit <subcommand>` — the dispatcher the skills invoke.
+#
+# A plugin install never pip-installs the package, so the `memkit` console
+# script declared in pyproject.toml reaches nobody here: `bin/` is what a
+# plugin puts on the agent's PATH, and this file is the only `memkit` an
+# adopter gets. It runs the same `memkit.cli` module the console script does.
+#
+# Two interpreters, because memkit has two floors and one machine need not
+# satisfy both. The dispatcher itself runs on the hook's interpreter — the 3.9
+# floor, which is what a stock macOS python meets and every current Linux
+# distribution clears — while CHECKER-BACKED work (a ledger
+# regeneration, any `--write`) needs 3.12 and refuses below it. This resolves
+# both and exports the second, so a subcommand that needs the checker finds a
+# route already decided rather than each one probing differently:
+#
+#   MEMKIT_CHECKER_ROUTE   python | uvx | none
+#   MEMKIT_CHECKER_CMD     the command to run it with, empty when none
+#
+# HOW A CONSUMER MUST SPLIT `MEMKIT_CHECKER_CMD`: on whitespace, and nothing
+# cleverer. It is a space-joined string, so a python whose path contains a
+# space breaks it — `command -v` can return one — and the contract is written
+# down now, before a consumer exists to be broken by a later change of mind.
+# A consumer that needs to survive that path must read MEMKIT_CHECKER_ROUTE and
+# rebuild the command itself rather than quoting its way out of this one.
+#
+# `none` is a state, not an error, and it is deliberately not fatal here.
+# Refusing at this level would take out `--help` and diagnosis — the two things
+# an adopter in that state most needs — on behalf of a subcommand they did not
+# run. The refusal belongs to the operation that cannot proceed without it.
+
+set -u
+
+# The name this wrapper answers to, for every message bin/lib/common.sh emits
+# on its behalf. Declared before the library is sourced, because the shared
+# messages sit beside per-wrapper exit codes and a message naming the wrong
+# binary sends an agent to the wrong exit-code table.
+MEMKIT_SELF=memkit
+
+# The plugin tree, from this file's own path. See bin/lib/common.sh.
+_self=$0
+case $_self in
+    */*) : ;;
+    *) _self=$(command -v -- "$_self" 2>/dev/null || printf '%s' "$_self") ;;
+esac
+MEMKIT_ROOT=$(cd "${_self%/*}/.." 2>/dev/null && pwd -P) || MEMKIT_ROOT=""
+
+# READABLE, not merely present. `[ -f ]` admits a file this process cannot
+# open, and what happens next is not a refusal: sourcing an unreadable
+# library is fatal on some /bin/sh, and `exec`ing an unreadable script
+# leaves CPython exiting 2 — the one status this file promises never to
+# return, because on UserPromptSubmit it hands the user their prompt back.
+if [ -z "${MEMKIT_ROOT:-}" ] || [ ! -r "$MEMKIT_ROOT/bin/lib/common.sh" ]; then
+    echo "memkit: cannot locate the plugin tree from $0" >&2
+    exit 1
+fi
+
+. "$MEMKIT_ROOT/bin/lib/common.sh"
+
+# Everything the entry point's IMPORT reaches, not only the module named on
+# the `-m` line. `memkit.cli` imports the package, whose `__init__` imports the
+# hook module, so a guard on `cli.py` alone hands an unreadable hook module to
+# the import machinery: a raw PermissionError traceback where the sibling
+# wrappers print one `memkit:` sentence, on the surface an adopter reaches for
+# when something is already wrong.
+for _need in src/memkit/__init__.py src/memkit/memory_prompt_recall.py src/memkit/cli.py; do
+    if [ ! -r "$MEMKIT_ROOT/$_need" ]; then
+        echo "memkit: the plugin payload is incomplete — no $_need" >&2
+        exit 1
+    fi
+done
+
+CONFIG=$(memkit_resolve_config) || CONFIG=""
+if [ -n "$CONFIG" ]; then
+    MEMKIT_CONFIG=$CONFIG
+    export MEMKIT_CONFIG
+else
+    unset MEMKIT_CONFIG
+fi
+
+PY=$(memkit_resolve_interpreter "$CONFIG") || PY=""
+if [ -z "$PY" ]; then
+    memkit_no_interpreter_message "$CONFIG" >&2
+    # 1, and the dispatcher's own table says what it means. Not 2 — that is
+    # "you invoked this wrongly", and an agent reading it retries with
+    # different arguments against a machine that cannot run memkit at all.
+    exit 1
+fi
+
+# The checker route, resolved once per invocation. A python that satisfies the
+# 3.12 floor runs THIS tree's checker, so the checker and the hook are the same
+# release by construction; `uvx` is the fallback wherever `python3` is older
+# than 3.12 — a stock mac, or an older LTS — and provisions its own.
+memkit_resolve_checker "$PY"
+
+MEMKIT_PLUGIN=1
+export MEMKIT_PLUGIN
+
+# The package, from this tree. Prepended rather than appended: an adopter with
+# a pip-installed memkit of another version must not have it answer for the
+# plugin's own subcommands.
+if [ -n "${PYTHONPATH:-}" ]; then
+    PYTHONPATH="$MEMKIT_ROOT/src:$PYTHONPATH"
+else
+    PYTHONPATH="$MEMKIT_ROOT/src"
+fi
+export PYTHONPATH
+
+exec "$PY" -m memkit.cli "$@"

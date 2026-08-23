@@ -39,17 +39,50 @@ concurrency:
 permissions:
   contents: read
 
+# WHY EVERYTHING BELOW IS A STEP RATHER THAN A JOB. Branch protection pins a
+# fixed list of required context names, and a context is a JOB. So a new job is
+# a context no protected branch is waiting for — green by never being required,
+# until somebody remembers to add it. `automerge.yml` keeps the list of names
+# that are required; this file keeps the reason there are no others.
+#
+# The cost is that a slow step serialises behind the ones before it. That is the
+# trade, and it is the right way round while every job here is single-digit
+# minutes.
+
 env:
   # renovate: datasource=pypi depName=ruff
   RUFF_VERSION: "0.15.14"
   # renovate: datasource=pypi depName=pyright
   PYRIGHT_VERSION: "1.1.406"
+  # The harness memkit registers a hook into. Pinned for the same reason the
+  # linters are — a validator that is "whatever shipped this morning" turns a
+  # tightened rule upstream into a red PR nobody changed anything for — and
+  # additionally because the plugin's claims are measured against a specific
+  # build: the option-name mangling, the trailing slash on the plugin root, the
+  # exit-2-blocks-the-turn behaviour the zero-argument pin rests on. When
+  # renovate moves this, the scenarios below are what re-measure them.
+  # renovate: datasource=npm depName=@anthropic-ai/claude-code
+  CLAUDE_CODE_VERSION: "2.1.238"
 
 jobs:
   python:
     name: python
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # The pin cannot drift mid-run, and an autoupdate would also rewrite the
+      # binary the steps below make claims about.
+      DISABLE_AUTOUPDATER: "1"
+      # A scratch profile for everything that runs `claude`. Nothing here needs
+      # auth — validation and plugin installs are local file operations — and a
+      # config dir named explicitly is one that cannot pick up a runner's
+      # leftovers.
+      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.claude-ci
+      # The rig's harness tier is a GATE here, so a missing `claude` fails it
+      # rather than skipping it. Without this the step below still reports
+      # green when the install step above has quietly stopped working, which is
+      # the same silence the tier exists to break.
+      MEMKIT_RIG_REQUIRED: "1"
     steps:
       # fetch-depth 0 because the version is dynamic: hatch-vcs reads git
       # describe at build time, and a shallow clone gives it nothing to read.
@@ -73,6 +106,16 @@ jobs:
           uv venv --python 3.12
           uv pip install --python .venv -e . pytest
 
+      # Before the suites, not after: `tests/rig/` drives this binary, and a
+      # rig scenario whose dependency arrives one step too late does not fail —
+      # it SKIPS, which is the shape of a gate that stopped gating without
+      # anybody noticing.
+      - name: Claude Code (pinned)
+        run: |
+          npm install -g @anthropic-ai/claude-code@"$CLAUDE_CODE_VERSION"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          claude --version
+
       # One invocation covers both moved suites (pyproject sets
       # testpaths = ["tests"]): the hook's pytest suite and the integrity
       # checker's unittest suite, which pytest collects natively. The
@@ -80,6 +123,13 @@ jobs:
       # test_the_description_cap_stays_under_the_hooks_truncation — it asserts
       # MAX_DESC_CHARS < hook.DESC_KEEP_CHARS < hook.DESC_MAX_CHARS and that
       # the checker's own message quotes the hook's number.
+      # `tests/rig`'s harness tier rides in here: it installs the plugin
+      # through the pinned binary and takes a real turn with the model routed
+      # somewhere unreachable, because hook dispatch precedes the model call.
+      # That is the only context in which the harness rather than a test
+      # produces CLAUDE_PLUGIN_OPTION_MEMKITCONFIG — a repo-wide rename of the
+      # assumed prefix otherwise leaves every check green and every adopter's
+      # plugin inert.
       - name: Test suites (hook pytest + integrity unittest)
         run: .venv/bin/python -m pytest -q
 
@@ -95,15 +145,29 @@ jobs:
       - name: Ruff
         run: uvx ruff@${{ env.RUFF_VERSION }} check .
 
+      # The wrappers are POSIX sh and they are the config-delivery path — the
+      # one that decides which directories an every-prompt hook reads. Ruff and
+      # pyright see none of it, so without this the only language in the repo
+      # with no lint at all would be the one holding that decision.
+      #
+      # `--shell=sh` rather than trusting the shebang: the harness runs these
+      # with whatever `/bin/sh` is, which on a stock macOS is bash in POSIX
+      # mode, and a bashism that works on the author's machine is a wrapper
+      # that fails on an adopter's.
+      # shellcheck ships in the GitHub-hosted ubuntu image, so there is nothing
+      # to install. If that ever stops being true the step fails on a missing
+      # command, which is the right failure: a linter that silently is not
+      # there is a linter nobody notices the absence of.
+      - name: Shellcheck — the plugin wrappers
+        run: |
+          shellcheck --version
+          shellcheck --shell=sh bin/memkit bin/memkit-hook bin/memkit-recall \
+            bin/lib/common.sh
+
       # The package, at its own 3.12 floor. `pyrightconfig.json` has been in
       # the tree since the first commit and nothing ran it, so its errors
       # accumulated where only somebody running pyright by hand would meet
       # them. A config that gates nothing is a config that drifts.
-      #
-      # A STEP inside this job, deliberately not a job of its own: branch
-      # protection pins the five context names, and a new job adds a sixth
-      # context that no protected branch is waiting for — green by never
-      # being required.
       - name: Pyright — the package
         env:
           PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
@@ -119,10 +183,31 @@ jobs:
       # PYRIGHT_PYTHON_FORCE_VERSION nails the npm-side pyright to the same
       # version as the pypi wrapper; without it pyright-python is free to
       # fetch a newer node package at runtime and the pin is decorative.
-      - name: Pyright — the hook's 3.9 floor
+      - name: Pyright — the 3.9 floor (hook and dispatcher)
         env:
           PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
         run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig-hook39.json
+
+      # R10, the admission gate. TWO invocations, because the validator picks
+      # its mode from what it is pointed at and the two modes check different
+      # things — measured on 2.1.238, after the single-invocation version of
+      # this step passed a manifest with `author` deleted:
+      #
+      #   the repo root  -> validates the MARKETPLACE, and the plugin manifests
+      #                     it lists for SCHEMA ERRORS only (`plugins[0]
+      #                     plugin.json → …`). Metadata warnings are not raised
+      #                     through this path.
+      #   the plugin.json -> validates the PLUGIN manifest, warnings included:
+      #                     no author, no description, no version. Under
+      #                     `--strict` those are what fails.
+      #
+      # Gating on exit STATUS rather than on the output: 0 on a pass, 1 on both
+      # a strict warning and a hard error. The output still goes to the job log,
+      # because "Validation failed" with the reason is what somebody reads next.
+      - name: Plugin manifests — validate --strict
+        run: |
+          claude plugin validate . --strict
+          claude plugin validate .claude-plugin/plugin.json --strict
 
   wordlist:
     name: wordlist

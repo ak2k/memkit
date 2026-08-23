@@ -120,6 +120,13 @@ layout; for those, step 3's drill is optional and step 4 can be a sweep.
 Four checks. The middle two prove the tool is installed and answers; the first
 and last are the ones that catch the conversion defect.
 
+**These four are nix-channel checks.** They read `~/.claude/hooks`, a
+`/nix/store` symlink and a consumer checkout, none of which a plugin install
+has — so on a host that installed memkit as a Claude Code plugin every one of
+them either fails or passes vacuously. Use [the plugin-channel
+block](#per-host-verify-plugin-channel) below instead; the two are alternatives,
+not stages.
+
 **1. The hooks path is a real directory, and every entry resolves.**
 
     test -L ~/.claude/hooks && echo "FAIL: still a symlink"
@@ -193,6 +200,73 @@ files, or untracked `*.backup` entries beside them, are the conversion defect
 written into your working tree: stop rolling out and repair this host first.
 Do not `git clean` that directory before you have looked — the `.backup` files
 are the only remaining copies of what those tracked files used to hold.
+
+## Per-host verify, plugin channel
+
+The checks above read paths a plugin install does not have. These four were run
+against a real scratch install before being written here, which is the whole
+point of a verify procedure.
+
+The sections before this one are a NIX-FLEET rollout, written from a mixed
+darwin and NixOS estate. A colleague adopting through the plugin channel — the
+ordinary case, and normally a Linux workstation — needs this block and none of
+the rest: there is no `darwin-rebuild`, no flake input to pin, and no consumer
+checkout to keep clean. Paths below are written with `${CLAUDE_CONFIG_DIR}`
+rather than a hardcoded `~/.claude`, since that is what an adopter who has
+moved it will have.
+
+**1. The plugin is installed and enabled.**
+
+    claude plugin list
+
+`memkit@memkit` must appear with `Status: ✔ enabled`. Absent means the install
+did not land; present-and-disabled means somebody turned it off.
+
+**2. It registered its hook.**
+
+    claude plugin details memkit@memkit
+
+`Hooks (1)` and `UserPromptSubmit`. **`Hooks (0)` is the failure this check
+exists for** — it is what an install from a marketplace pin whose commit
+carries no payload looks like, and every other signal on that host says
+success.
+
+**3. The option reached the harness.**
+
+    python3 -c 'import json,os,sys;print(json.load(open(os.path.expanduser(
+      sys.argv[1])))["pluginConfigs"]["memkit@memkit"]["options"])' \
+      "${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json"
+
+`{'memkitConfig': '<absolute path>'}`. An empty result is an install that
+skipped `--config`, which is inert by design and says nothing at runtime.
+
+**4. Retrieval resolves and the stores answer.**
+
+    PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
+    RECALL="$(ls -d "$PLUGIN"/*/bin/memkit-recall | tail -1)"
+    "$RECALL" --config <the path from check 3> --debug-config
+    "$RECALL" --config <the path from check 3> --search "<a term in your store>"
+
+`--config` is not optional here and is the reason this block exists: a shell —
+yours or the agent's Bash tool — receives none of the plugin's environment, so
+without it both commands answer `inert` (exit 3) on a host that is serving
+correctly. `--debug-config` exits 0 and names the config and each store;
+`--search` exits 0 with pointer lines, 1 for no match, 3 for inert.
+
+**5. Derived state is where you expect it.**
+
+    ls "${XDG_CACHE_HOME:-$HOME/.cache}/memory-recall/"
+
+The index, the soak log and the session ledgers land under `$XDG_CACHE_HOME`
+when it is set — which on a Linux workstation it often is — and under
+`~/.cache` otherwise. An empty directory after a served prompt means the hook
+wrote somewhere else, which is worth knowing before you read the log as
+evidence of anything.
+
+**A silent exit 0 from the hook is not a healthy host.** The wrapper exits 0 on
+every path by design, including every refusal, so quiet means nothing on its
+own — check 2 and check 4 are what distinguish a serving install from a refused
+one.
 
 ## Rollback
 
@@ -337,6 +411,23 @@ Or point one rebuild at a local tree with `--override-input memkit <path>`.
 This is deliberately **not** the default and deliberately not wired into the
 module: it is the ambient-configuration path the design rejects, kept available
 for a human debugging deliberately and never for a host.
+
+**The plugin channel does not weaken that rejection.** A plugin install
+delivers the config path through the harness — a typed `userConfig` option set
+at install time, else a file in the plugin's own data directory, **and nothing
+else**: a config inside the payload would let the code you installed choose
+which of your directories an every-prompt hook reads. Its wrapper exports
+`MEMKIT_CONFIG` from whichever of those answered. What matters for this section is the other half: when none of
+them answers, the wrapper **unsets** the variable rather than leaving it. So a
+machine that has both channels — a nix-managed hook and a plugin install, which
+is the author's own case — cannot have the plugin quietly serve whatever config
+the launching shell exported. Delivery is per install and harness-controlled,
+which is the same property `configFile` gets by baking the path into the
+wrapper, arrived at by a different route.
+
+The escape hatch above still works while a plugin is installed, and it is still
+a human-only path: `MEMKIT_CONFIG=…` in front of a checkout's hook affects that
+one invocation and nothing the harness runs.
 
 **Promotion threshold.** Keep it an informal workaround while it stays rare. It
 becomes a supported first-class dev mode — a documented flag, a module option,

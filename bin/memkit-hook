@@ -1,0 +1,103 @@
+#!/bin/sh
+# The UserPromptSubmit registration in hooks/hooks.json points here.
+#
+# Its whole job is to put three facts into the hook's environment that the
+# harness gives a plugin no way to declare — which interpreter, which config,
+# and that this process came from a plugin at all — and then get out of the
+# way. `hooks/hooks.json` has no env field, and a GUI-launched harness has no
+# shell environment to inherit one from, so without this file the hook would be
+# reading whatever `MEMKIT_CONFIG` the launching context happened to carry:
+# ambient configuration, which is the one thing the design rejects outright.
+#
+# THE EXIT CONTRACT. This hook runs on every prompt and must never block one.
+# Exit 2 on UserPromptSubmit does not merely fail — it blocks the turn and
+# hands the user their prompt back unanswered (measured on 2.1.238). So every
+# path here exits 0, including every refusal, and the refusals speak on stderr
+# where doctor and the harness's debug log can read them.
+#
+# `exec`, and not for the saved process. The harness SIGTERMs the process it
+# spawned at the declared timeout, and the hook's flush-on-kill handler is what
+# turns that kill into a soak record instead of silence. A wrapper that waited
+# on a child would absorb that signal and leave the hook to be killed with
+# nothing written — the one outcome the soak log exists to expose.
+
+set -u
+
+# The name this wrapper answers to, for every message bin/lib/common.sh emits
+# on its behalf. Declared before the library is sourced, because the shared
+# messages sit beside per-wrapper exit codes and a message naming the wrong
+# binary sends an agent to the wrong exit-code table.
+MEMKIT_SELF=memkit-hook
+
+# ARGUMENTS ARE IGNORED, deliberately, and this is the second of two
+# independent guards on the same failure. The hook file is dual-mode: no
+# arguments means read a payload off stdin, any argument at all means the
+# search CLI — where argparse answers an unrecognised flag with exit 2, i.e. a
+# blocked prompt on every turn. `hooks.json` passing zero arguments is pinned
+# by a text test; this line is what holds if that pin is ever edited away.
+if [ "$#" -gt 0 ]; then
+    echo "memkit-hook: ignoring $# argument(s) — this wrapper takes none" >&2
+fi
+
+# The plugin tree, from this file's own path. See bin/lib/common.sh for why it
+# is spelled this way; it is inline because it is how this finds that.
+_self=$0
+case $_self in
+    */*) : ;;
+    *) _self=$(command -v -- "$_self" 2>/dev/null || printf '%s' "$_self") ;;
+esac
+MEMKIT_ROOT=$(cd "${_self%/*}/.." 2>/dev/null && pwd -P) || MEMKIT_ROOT=""
+
+# READABLE, not merely present. `[ -f ]` admits a file this process cannot
+# open, and what happens next is not a refusal: sourcing an unreadable
+# library is fatal on some /bin/sh, and `exec`ing an unreadable script
+# leaves CPython exiting 2 — the one status this file promises never to
+# return, because on UserPromptSubmit it hands the user their prompt back.
+if [ -z "${MEMKIT_ROOT:-}" ] || [ ! -r "$MEMKIT_ROOT/bin/lib/common.sh" ]; then
+    echo "memkit-hook: cannot locate the plugin tree from $0" >&2
+    exit 0
+fi
+
+. "$MEMKIT_ROOT/bin/lib/common.sh"
+
+HOOK_FILE="$MEMKIT_ROOT/src/memkit/memory_prompt_recall.py"
+if [ ! -r "$HOOK_FILE" ]; then
+    echo "memkit-hook: the plugin payload is incomplete — no $HOOK_FILE" >&2
+    exit 0
+fi
+
+CONFIG=$(memkit_resolve_config) || CONFIG=""
+
+# A HARD override, in both directions. Setting it when a rung answered is the
+# obvious half; UNSETTING it when none did is the half that matters. An adopter
+# who also has a nix or pip memkit on this machine may well have MEMKIT_CONFIG
+# exported in the shell that launched the harness, and inheriting it would make
+# the plugin serve a config nobody pointed it at — ambient discovery arriving
+# by the back door. No rung, no config, inert.
+if [ -n "$CONFIG" ]; then
+    MEMKIT_CONFIG=$CONFIG
+    export MEMKIT_CONFIG
+else
+    unset MEMKIT_CONFIG
+fi
+
+PY=$(memkit_resolve_interpreter "$CONFIG") || PY=""
+if [ -z "$PY" ]; then
+    memkit_no_interpreter_message "$CONFIG" >&2
+    exit 0
+fi
+
+# The memkit-owned plugin marker. The trust gate keys on THIS rather than on
+# `CLAUDE_PLUGIN_DATA` because this wrapper is reachable only through a plugin
+# registration — an unambiguous signal that depends on no harness env contract
+# that could change — and because the two variables are independent: the gate
+# must still decide when the data dir is unset.
+MEMKIT_PLUGIN=1
+export MEMKIT_PLUGIN
+
+# Zero arguments to the hook, which is what keeps it in hook mode. The file is
+# byte-identical to the one the nix channel installs and the one the tests
+# import, so `_VERSION` — a sha256 of these bytes, stamped on every soak record
+# — is the same number whichever channel served the prompt. That is what makes
+# the log comparable across install channels.
+exec "$PY" "$HOOK_FILE"

@@ -1,7 +1,7 @@
 """`memkit <subcommand>` — the dispatcher the setup and diagnosis commands hang off.
 
-A fourth console script rather than more flags on `memory-recall`, because
-these are a different job. `memory-recall` searches; what an adopter needs
+A fourth console script rather than more flags on the search CLI, because
+these are a different job. That one searches; what an adopter needs
 before they can search is a way to set the thing up and a way to ask whether
 it worked, and both of those write or read things that have nothing to do with
 retrieval. Keeping them apart is also what lets a skill pre-approve one exact
@@ -22,13 +22,13 @@ import sys
 from collections.abc import Callable
 
 from memkit.memory_prompt_recall import (
-    DEFAULT_SEARCH_CLI,
     EXIT_INERT,
     EXIT_NO_MATCH,
     _search_cli,
+    _self_name,
 )
 
-# This binary's exit codes, and deliberately NOT `memory-recall`'s. They are
+# This binary's exit codes, and deliberately NOT the search CLI's. They are
 # different commands with different jobs, so sharing a vocabulary would mean
 # every future addition to one had to make sense for the other; a skill
 # branching on `memkit doctor` should read this table and nothing else.
@@ -42,6 +42,19 @@ from memkit.memory_prompt_recall import (
 # forever.
 EXIT_USAGE = 2
 EXIT_NOT_IN_BUILD = 4
+# Emitted by the plugin's `bin/memkit` wrapper and never by this module: it is
+# what a caller gets when the dispatcher could not be STARTED — no interpreter
+# resolved, or the plugin payload is incomplete. Declared here anyway, because
+# the table an agent branches on has to be complete to be usable, and a code
+# that appears only in a shell script is a code nobody can look up. Deliberately
+# not EXIT_USAGE: "you invoked this wrongly" sends a caller to retry with
+# different arguments against a machine that cannot run memkit at all.
+EXIT_NO_RUNTIME = 1
+# The reciprocal note, because the two tables SWAP these two numbers and only
+# one direction was written down. `memkit-recall` exits 4 for the three
+# conditions this exits 1 for — and 1 on its table means "the stores were
+# searched and nothing matched", the code that tells an agent to stop looking.
+# That is the dangerous direction of the collision.
 
 # What `memkit` will route, with the one-line summary `--help` shows and the
 # thing to reach for meanwhile. Listed before they exist on purpose: the reader
@@ -67,7 +80,8 @@ _PENDING: dict[str, tuple[str, str]] = {
         f"Exit {EXIT_INERT} there means there was nothing to search — no "
         "config, or no store on disk and in scope for this directory — and "
         f"stderr names which; exit {EXIT_NO_MATCH} means the stores were "
-        "searched and nothing matched",
+        "searched and nothing matched. Those codes are that command's, not "
+        "this one's: the two tables swap 1 and 4",
     ),
     "init": (
         "create a store and wire this machine up to it",
@@ -81,9 +95,9 @@ def _meanwhile(template: str) -> str:
     """Fill a `meanwhile` template with the commands this install exposes.
 
     `_search_cli()` is what the hook's own truncation notice advertises, so the
-    refusal and the pointer block name the same binary by construction. It
-    falls back to the shipped default when no config resolves, which is the
-    only case where there is nothing better to say.
+    refusal and the pointer block name the same command by construction —
+    including the `--config <path>` prefix the plugin channel adds, without
+    which the command is inert in the Bash tool the agent would run it from.
 
     Nothing about the config may take this down. A refusal is what a caller
     reaches when something is already wrong, so it is the last surface that
@@ -94,13 +108,35 @@ def _meanwhile(template: str) -> str:
     """
     try:
         search = _search_cli()
-        # The debug form is the search command with its mode flag swapped,
-        # since `search_cli` is spelled `<binary> --search`.
-        binary = search.split()[0]
     except Exception:
-        search = DEFAULT_SEARCH_CLI
-        binary = search.split()[0]
-    return template.format(search=search, search_config=f"{binary} --debug-config")
+        # `_self_name()` rather than the module constant: this branch is
+        # reachable whenever the config raises something `load_config` does not
+        # convert to `ConfigError` — `json.load` on a deeply nested file raises
+        # `RecursionError`, which is neither — and falling back to the shipped
+        # default there hands a plugin adopter a binary their channel does not
+        # ship. It reads only `os.environ` and cannot itself raise.
+        search = f"{_self_name()} --search"
+    # The debug form is the search command with its MODE FLAG swapped, not the
+    # binary re-derived: on the plugin channel the command carries
+    # `--config <path>`, which is the half that makes it runnable from the
+    # agent's Bash tool, and rebuilding from the first word alone dropped it.
+    #
+    # The swap is CONDITIONAL on the suffix being there, and the fallback is
+    # what it replaced: `re.sub` on a string that does not end in `--search`
+    # returns it unchanged, so the diagnostic form would silently become the
+    # search command — a command that needs terms, handed to an agent as the
+    # thing to run to see what resolved.
+    if search.endswith("--search"):
+        search_config = search[: -len("--search")] + "--debug-config"
+    else:
+        # TOTAL, because this runs while the parser is being BUILT: `_parser()`
+        # calls `_meanwhile` for its description, so anything that raises here
+        # takes down every `memkit` invocation including `--help`, the cheapest
+        # probe an adopter runs. A whitespace-only `search_cli` is truthy, so
+        # `Config` keeps it and `split()` returns nothing to index.
+        head = search.split()
+        search_config = f"{head[0] if head else _self_name()} --debug-config"
+    return template.format(search=search, search_config=search_config)
 
 # Subcommand -> the function that runs it, given the arguments this parser did
 # not consume. Empty today.
@@ -110,17 +146,26 @@ _HANDLERS: dict[str, Callable[[list[str]], int]] = {}
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="memkit",
-        description="Set up and diagnose a memkit installation. "
-        "To search one, see `memory-recall --search`.",
+        # Through `_meanwhile` like every other command this prints. Hardcoded,
+        # this line named a binary the plugin channel does not ship on the
+        # cheapest probe an agent runs, and no config value could reach it.
+        description=_meanwhile(
+            "Set up and diagnose a memkit installation. To search one, see "
+            '`{search} "<terms>"`.'
+        ),
         # The fallbacks belong on the top-level help too, not only on the
         # refusal an agent reaches by running the subcommand: `memkit --help`
         # is the cheaper probe and the one tried first, and it was answering
         # with two names and no way forward.
         epilog="Not in this build yet:\n"
         + "\n".join(f"  {n}: {_meanwhile(m)}" for n, (_, m) in _PENDING.items())
-        + f"\n\nExit codes: 0 ok / {EXIT_USAGE} usage error or unknown "
-        f"subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but is not in "
-        "this build",
+        + f"\n\nExit codes: 0 ok / {EXIT_NO_RUNTIME} memkit could not start at "
+        f"all (stderr names what is missing) / {EXIT_USAGE} usage error or "
+        f"unknown subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but "
+        "is not in this build."
+        "\nThe search CLI's table is its own and swaps these two: there "
+        f"{EXIT_NO_RUNTIME} means nothing matched and {EXIT_NOT_IN_BUILD} "
+        "means it could not start.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = ap.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")
