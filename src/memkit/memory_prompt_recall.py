@@ -3345,6 +3345,20 @@ def main() -> None:
             kept_pointers = [x for x in kept if not x.startswith(NOTICE_PREFIX)]
             fresh = fresh[: len(kept_pointers)]
             overlaps = overlaps[: len(kept_pointers)]
+            # THE LEDGER TOO, which is the half that outlives the prompt.
+            # `shown` and `injected` were trimmed and `spent` was not, so a
+            # memory the agent never saw permanently consumed one of the
+            # session's POINTER_BUDGET slots — and past the budget it is worse:
+            # `_replace` had already evicted a pointer that really was
+            # delivered in favour of one about to be shed, and reported that
+            # eviction as real. Rebuilt from the survivors rather than patched.
+            picks = picks[: len(kept_pointers)]
+            if room > 0:
+                ledger = dict(spent)
+                ledger.update({p: _evidence(m, t) for p, m, t in picks})
+                evicted = []
+            else:
+                picks, ledger, evicted = _replace(spent, [e for e in picks])
             rec["shed"] = shed
         delivered = True
         with _sigterm_masked():

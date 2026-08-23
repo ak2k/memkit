@@ -5971,6 +5971,18 @@ def test_a_shed_pointer_is_not_spent_and_not_reported_as_injected(tmp_path) -> N
         (tmp_path / ".cache" / "memory-recall" / "shed1.json").read_text()
     )
     assert len(state["shown"]) == len(shown), state["shown"]
+    # THE LEDGER, which is the half that outlives the prompt. `shown` and
+    # `injected` were trimmed and `spent` was not, so a memory the agent never
+    # saw permanently consumed one of the session's POINTER_BUDGET slots — a
+    # session that ever hit the byte bound stopped recalling long before it
+    # should, with nothing in the log saying so.
+    assert len(state["spent"]) == len(shown), state["spent"]
+    assert set(state["spent"]) == set(state["shown"]), (state["spent"], state["shown"])
+    # And nothing is reported as evicted that a survivor did not displace: past
+    # the budget `_replace` runs over the picks that were shed too, so an
+    # eviction attributed to a pointer nobody saw is an eviction that did not
+    # happen.
+    assert not rec.get("evicted"), rec
 
 
 def test_the_pointer_caps_the_budget_rests_on_are_still_the_caps() -> None:
