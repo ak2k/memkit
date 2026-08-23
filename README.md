@@ -151,6 +151,12 @@ the payload is a clone of a pinned commit, so a config shipped inside it would
 let the code you installed choose which of your directories the hook reads and
 which binary runs it.
 
+A `memkitConfig` path that is set but **wrong** — not there, or there and
+unreadable — is named on stderr rather than quietly ignored, and the two are
+reported apart because the remedies are. So `config: none` with nothing on
+stderr means the option was never set; `config: none` with a line about it
+means the path was.
+
 **`bin/` is the agent's PATH, not your terminal's.** While the plugin is
 enabled, `memkit-recall` is on the agent's Bash tool's `PATH`. It is not on your
 own — nothing is added to your shell — so the same command typed into a terminal

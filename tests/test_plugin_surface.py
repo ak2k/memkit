@@ -64,6 +64,14 @@ def _json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# CI's ubuntu runner is a non-root user, which is the environment these
+# adopters have. Under root nothing is unreadable, so a mode-000 case measures
+# the ordinary path and fails for a reason that is about the runner.
+needs_permissions = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root reads mode-000 files, so nothing is unreadable"
+)
+
+
 def _needs_checkout() -> None:
     """Skip only where a checkout genuinely cannot exist, and FAIL elsewhere.
 
@@ -898,6 +906,89 @@ def test_a_relative_config_path_is_not_a_path_into_the_session_dir(
     assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
 
 
+def test_a_config_path_that_is_merely_wrong_is_not_the_same_as_no_config(
+    root, tmp_path, shimmed
+) -> None:
+    """A typo in `memkitConfig` must reach the adopter, and only the shape
+    rules reached them.
+
+    `/home/them/memkti.json` is absolute, canonical, and outside every
+    respelling the refusal helper knows — so the rung falls through in silence
+    and every diagnostic this build has says `config: none`, byte for byte what
+    an install that never set the option says. The one person who can be sure a
+    config exists is the one who typed the path, and this was the state that
+    told them nothing.
+
+    The two failures are separated because the remedies are: a path that is not
+    there is a typo or an uninstalled file, and a path that is there and shut
+    is a permission on a file the adopter believes they own.
+    """
+    missing = tmp_path / "not-installed" / "memkit.json"
+    said = {}
+    for label, path in (("missing", missing), ("present", _config_file(tmp_path / "real.json"))):
+        out = _run(
+            root / "bin" / "memkit-hook",
+            env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(path)),
+        )
+        # Still zero. This runs on UserPromptSubmit, where any other status
+        # takes the user's prompt away from them over a config typo.
+        assert out.returncode == 0, (label, out.returncode, out.stderr)
+        said[label] = out.stderr
+    assert str(missing) in said["missing"], said["missing"]
+    assert "does not exist" in said["missing"], said["missing"]
+    # The control that makes the assertion above mean something: a config that
+    # IS there says nothing at all, so the line is about this state and not
+    # about the option being set.
+    assert said["present"] == "", said["present"]
+
+    # And no option at all stays silent too — the state the message exists to
+    # be distinguishable from.
+    quiet = _run(root / "bin" / "memkit-hook", env=shimmed())
+    assert quiet.returncode == 0, quiet.stderr
+    assert quiet.stderr == "", quiet.stderr
+    assert said["missing"] != quiet.stderr
+
+    # Rung 2 deliberately does NOT do this. `$CLAUDE_PLUGIN_DATA/memkit.json`
+    # is absent on every plugin install until something writes it, so a line
+    # about it would fire on every prompt of the normal pre-init state.
+    data = tmp_path / "plugindata"
+    data.mkdir()
+    pre_init = _run(root / "bin" / "memkit-hook", env=shimmed(CLAUDE_PLUGIN_DATA=str(data)))
+    assert pre_init.returncode == 0, pre_init.stderr
+    assert pre_init.stderr == "", pre_init.stderr
+
+    # The README teaches the pair, because reading `config: none` correctly
+    # depends on knowing whether anything was said beside it.
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "`config: none` with nothing on\nstderr means the option was never set" in readme
+
+
+@needs_permissions
+def test_a_config_this_process_cannot_open_says_so_rather_than_going_quiet(
+    root, tmp_path, shimmed
+) -> None:
+    """The other half of the rung's readability check, and a different remedy.
+
+    `[ -r ]` answers false for a file that is not there and for one that is
+    there behind a mode, and an adopter chasing the second while being told the
+    first goes looking in the wrong place.
+    """
+    shut = _config_file(tmp_path / "shut.json")
+    shut.chmod(0o000)
+    try:
+        out = _run(
+            root / "bin" / "memkit-hook",
+            env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(shut)),
+        )
+    finally:
+        shut.chmod(0o644)
+    assert out.returncode == 0, (out.returncode, out.stderr)
+    assert "cannot be read" in out.stderr, out.stderr
+    assert "does not exist" not in out.stderr, out.stderr
+    # The hook did not go on to use it — the rung was abandoned, not retried.
+    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+
+
 def test_a_relative_plugin_data_dir_is_not_a_path_into_the_session_dir(
     root, tmp_path, shimmed
 ) -> None:
@@ -1314,14 +1405,6 @@ def test_the_hook_wrapper_never_exits_non_zero(root, tmp_path, shimmed) -> None:
         for lib in (False, True)
     }
     assert len(messages) == 2, messages
-
-
-# CI's ubuntu runner is a non-root user, which is the environment these
-# adopters have. Under root nothing is unreadable, so a mode-000 case measures
-# the ordinary path and fails for a reason that is about the runner.
-needs_permissions = pytest.mark.skipif(
-    os.geteuid() == 0, reason="root reads mode-000 files, so nothing is unreadable"
-)
 
 
 @needs_permissions

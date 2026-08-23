@@ -154,6 +154,24 @@ memkit_resolve_config() {
                 "Ignoring it; this install will behave as if no config was given." >&2
             _candidate=""
         fi
+        # A path that is merely WRONG passes every shape rule above, so
+        # without this the option that was set and the option that was never
+        # set produce the same silence and the same `config: none` — and the
+        # adopter who typed the path is the one person who can be certain a
+        # config exists. Said only for this rung: rung 2's file is absent on
+        # every plugin install until something writes it, which is a state, not
+        # a mistake, and a line about it on every prompt would be noise.
+        if [ -n "$_candidate" ] && [ ! -r "$_candidate" ]; then
+            if [ -e "$_candidate" ]; then
+                _why="exists but cannot be read by this process"
+            else
+                _why="does not exist"
+            fi
+            printf '%s\n' \
+                "$MEMKIT_SELF: the memkitConfig option names \"$_candidate\", which $_why." \
+                "Ignoring it; this install will behave as if no config was given." >&2
+            _candidate=""
+        fi
         [ -n "$_candidate" ] && [ -r "$_candidate" ] && {
             printf '%s\n' "$_candidate"
             return 0
