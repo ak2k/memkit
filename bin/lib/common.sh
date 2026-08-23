@@ -49,6 +49,39 @@ MEMKIT_SELF=${MEMKIT_SELF:-memkit}
 # into an install command, not a shell word the shell ever expanded, so a
 # config named `~/.cache/...` arrives with a literal tilde and every rung below
 # would silently miss it.
+# The one admission rule for every path this library will act on, as an exit
+# status: 0 admits, non-zero refuses and names the reason on stdout.
+#
+# ONE helper because the rule is one rule. The interpreter field had all three
+# arms and the config rungs had only the first, which is the wider blast
+# radius guarded more weakly: a config decides which directories the
+# every-prompt hook reads AND which binary it execs, so on Linux —
+# this repo's CI and the nix channel — `/proc/self/cwd/memkit.json` is
+# absolute, passes a leading-slash test, and resolves through the running
+# process, handing the hook whatever `memkit.json` the session's directory
+# holds.
+#
+# No realpath, deliberately: resolving costs a fork on every prompt, and
+# requiring the value to be CANONICAL is the same guarantee for free, because a
+# canonical absolute path has exactly one spelling and cannot reach a
+# process-relative tree under another.
+memkit_path_refusal() {
+    case $1 in
+        "") printf '%s\n' "is empty" ;;
+        *//* | */./* | */../* | */. | */..)
+            printf '%s\n' \
+                "is not a canonical path, so what it names depends on who resolves it"
+            ;;
+        /proc/* | /dev/fd/*)
+            printf '%s\n' \
+                "the kernel resolves through this process, so it names whatever directory the session stands in"
+            ;;
+        /*) return 1 ;;
+        *) printf '%s\n' "is not an absolute path" ;;
+    esac
+    return 0
+}
+
 memkit_expand_home() {
     # shellcheck disable=SC2088  # the LITERAL tilde is what this matches: the
     # value never passed through a shell, so an unexpanded `~` is the input,
@@ -112,22 +145,25 @@ memkit_expand_home() {
 memkit_resolve_config() {
     if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITCONFIG:-}" ]; then
         _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")
-        case $_candidate in
-            /*) ;;
-            *) _candidate="" ;;
-        esac
-        [ -n "$_candidate" ] && [ -f "$_candidate" ] && {
+        if _why=$(memkit_path_refusal "$_candidate"); then
+            printf '%s\n' \
+                "$MEMKIT_SELF: the memkitConfig option names \"$_candidate\", which $_why." \
+                "Ignoring it; this install will behave as if no config was given." >&2
+            _candidate=""
+        fi
+        [ -n "$_candidate" ] && [ -r "$_candidate" ] && {
             printf '%s\n' "$_candidate"
             return 0
         }
     fi
     if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
-        _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_DATA")/memkit.json
-        case $_candidate in
-            /*) ;;
-            *) _candidate="" ;;
-        esac
-        [ -n "$_candidate" ] && [ -f "$_candidate" ] && {
+        # The DIRECTORY is what the rule is about, checked before the
+        # basename is appended: `/proc/self/cwd` and `/proc/self/cwd/memkit.json`
+        # are the same admission question.
+        _candidate=""
+        memkit_path_refusal "$(memkit_expand_home "$CLAUDE_PLUGIN_DATA")" >/dev/null \
+            || _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_DATA")/memkit.json
+        [ -n "$_candidate" ] && [ -r "$_candidate" ] && {
             printf '%s\n' "$_candidate"
             return 0
         }
@@ -206,37 +242,10 @@ memkit_config_interpreter() {
         2>/dev/null | head -n 1)
     [ -n "$_found" ] || return 1
     _found=$(memkit_expand_home "$_found")
-    case $_found in
-        *//* | */./* | */../* | */. | */..)
-            # CANONICAL, and this arm has to come first. The two prefixes below
-            # are a literal test, and the kernel normalises before it resolves —
-            # so `//proc/self/cwd/python3`, `/./proc/…`, `/tmp/../proc/…`,
-            # `/dev//fd/3/…` and `/./dev/fd/3/…` all name exactly what the next
-            # arm refuses while walking past it. Measured: six spellings
-            # admitted, one refused.
-            #
-            # Still no realpath. Resolving costs a fork on every prompt, and
-            # requiring the value to be canonical is the same guarantee for
-            # free: a canonical absolute path cannot reach a process-relative
-            # tree by another name, because there is only one spelling of it.
-            # The cost is that a config recording a legitimate but
-            # non-canonical path is refused — which the message says out loud,
-            # and which the PATH probe covers.
-            memkit_interpreter_refused "$_found" \
-                "is not a canonical path, so what it names depends on who resolves it"
-            return 1
-            ;;
-        /proc/* | /dev/fd/*)
-            memkit_interpreter_refused "$_found" \
-                "the kernel resolves through this process, so it names whatever directory the session stands in"
-            return 1
-            ;;
-        /*) ;;
-        *)
-            memkit_interpreter_refused "$_found" "is not an absolute path"
-            return 1
-            ;;
-    esac
+    if _why=$(memkit_path_refusal "$_found"); then
+        memkit_interpreter_refused "$_found" "$_why"
+        return 1
+    fi
     printf '%s\n' "$_found"
 }
 

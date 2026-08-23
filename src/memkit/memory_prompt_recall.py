@@ -148,6 +148,15 @@ PLUGIN_CONFIG_ROUTES = (
 # handed to an agent.
 DEFAULT_SEARCH_CLI = f"{SEARCH_BINARY} --search"
 PLUGIN_SEARCH_CLI = f"{PLUGIN_SEARCH_BINARY} --search"
+# What the plugin channel advertises when no config has resolved — the state
+# between install and init. The PLACEHOLDER is the point: a bare
+# `memkit-recall --search` answers `inert`, exit 3, in the shell an agent runs
+# it in, and the dispatcher's own text then says exit 3 means "no config" — the
+# one conclusion the `--config` interpolation exists to prevent. The wording
+# matches the README's, so the two surfaces teach the same command.
+PLUGIN_SEARCH_CLI_UNCONFIGURED = (
+    f"{PLUGIN_SEARCH_BINARY} --config <the path you passed to memkitConfig> --search"
+)
 # What a command an agent runs can reasonably be. Generous — the plugin
 # channel's own form carries an absolute config path — and finite, which is the
 # point: this value is interpolated into a block written with SIGTERM held.
@@ -1208,7 +1217,7 @@ def _advertised_search_cli(cfg: Config | None) -> str:
     """
     if _plugin_install():
         if cfg is None:
-            return PLUGIN_SEARCH_CLI
+            return PLUGIN_SEARCH_CLI_UNCONFIGURED
         # Local import, like argparse below: the hook path runs on every
         # prompt and reaches this only when a notice is rendered.
         import shlex

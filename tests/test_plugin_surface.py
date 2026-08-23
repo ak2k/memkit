@@ -942,6 +942,62 @@ def test_every_wrapper_declares_the_name_it_answers_to() -> None:
         assert text.index(f"MEMKIT_SELF={wrapper}") < sourced, wrapper
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/proc/self/cwd/memkit.json",
+        "//etc/memkit.json",
+        "/./etc/memkit.json",
+        "/tmp/../etc/memkit.json",
+        "/dev/fd/3/memkit.json",
+        "relative/memkit.json",
+    ],
+)
+def test_a_config_rung_admits_only_what_the_interpreter_rule_admits(
+    root, tmp_path, shimmed, value
+) -> None:
+    """One admission rule, applied to the whole class it names.
+
+    The interpreter field refused non-canonical and process-relative paths and
+    the config rungs tested only for a leading slash — the wider blast radius
+    guarded more weakly, since a config decides which directories the
+    every-prompt hook reads AND which binary it execs. On Linux, which is this
+    repo's CI and the nix channel, `/proc/self/cwd/memkit.json` is absolute,
+    passes a leading-slash test, and resolves through the running process.
+
+    Driven with a file that really is there at the non-canonical spelling, so
+    a refusal cannot be confused with the path not existing.
+    """
+    data = tmp_path / "data"
+    data.mkdir()
+    _config_file(data / "memkit.json")
+    noncanonical = f"{tmp_path}/./data/memkit.json"
+    for rung, env in (
+        ("option", shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=noncanonical)),
+        ("data dir", shimmed(CLAUDE_PLUGIN_DATA=f"{tmp_path}/./data")),
+    ):
+        out = _run(root / "bin" / "memkit-hook", env=env)
+        assert out.returncode == 0, (rung, out.stderr)
+        assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", rung
+
+    # The class itself, one spelling per run, through the option.
+    out = _run(
+        root / "bin" / "memkit-hook",
+        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=value),
+    )
+    assert out.returncode == 0, out.stderr
+    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", value
+
+    # And a canonical absolute path is still served, or this is "refuse
+    # everything" wearing a rule's clothes.
+    good = _config_file(tmp_path / "good" / "memkit.json")
+    assert _run(
+        root / "bin" / "memkit-hook",
+        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(good)),
+    ).returncode == 0
+    assert shimmed.read()["MEMKIT_CONFIG"] == str(good)
+
+
 def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> None:
     """Absolute is not the same as fixed. `/proc/self/cwd/python3` is resolved
     by the kernel through the RUNNING process, so it names an executable in
@@ -1750,7 +1806,23 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         if config is not None and config.name != "raising.json":
             assert "memkit-recall --config " in surfaces["truncation"], state
         else:
-            assert "memkit-recall" in surfaces["dispatcher refusal"], state
+            # PRE-INIT, and the command must still name `--config`. A bare
+            # `memkit-recall --search` answers `inert`, exit 3, in the shell
+            # the dispatcher runs in — and the refusal beside it says exit 3
+            # means "no config", which is the one conclusion the `--config`
+            # interpolation exists to prevent. There is no path to fill in
+            # yet, so it carries the placeholder the README uses.
+            refusal = surfaces["dispatcher refusal"]
+            assert "memkit-recall" in refusal, refusal
+            if config is None:
+                # The pre-init state specifically. A config that RAISES cannot
+                # know a path to name — `_meanwhile`'s fallback is reached
+                # precisely because resolving it failed — so the placeholder is
+                # claimed only where there is a path the adopter could supply.
+                assert "memkit-recall --config " in refusal, refusal
+                assert "memkitConfig" in refusal, refusal
+                bare = f"`{hook.PLUGIN_SEARCH_BINARY} --search"
+                assert bare not in refusal, refusal
 
 
 def test_the_advertised_command_runs_from_the_agents_bash_tool(
@@ -1904,9 +1976,27 @@ def _resolver_rungs() -> set[str]:
     #
     # So `_candidate` must be the only sink, and then classifying the
     # assignments classifies the routes.
-    printed = set(re.findall(r"""printf\s+'%s\\n'\s+(\S+)""", body))
-    assert printed <= {'"$_candidate"'}, sorted(printed - {'"$_candidate"'})
-    candidates = set(re.findall(r"^\s*_candidate=(\S.*?)\s*$", body, re.M))
+    # EQUALITY, not subset, which is what anchors this on a non-empty match:
+    # the regex is keyed on one spelling, so a rung written with `echo` printed
+    # nothing this could see and the subset held vacuously. A rung spelled
+    # `if [ -f "$HOME/.memkit.json" ]; then echo "$HOME/.memkit.json"; fi` is a
+    # live admission route reachable from any home directory, and it left the
+    # whole file green.
+    # Statements redirected to STDERR are not sinks: the resolver's answer is
+    # what it writes to stdout, and a refusal message written the same way is
+    # not an admission route. Removed before scraping, continuations included.
+    to_stdout = re.sub(r"printf(?:\\\n|[^\n])*?>&2", "", body)
+    printed = set(re.findall(r"""printf\s+'%s\\n'\s+(\S+)""", to_stdout))
+    assert printed == {'"$_candidate"'}, sorted(printed)
+    # And no OTHER way of writing to stdout, since the equality above only
+    # constrains the spelling it can see.
+    for other in ("echo ", "printf '%s'", "cat ", "tee ", ">&1"):
+        assert other not in to_stdout, (other, to_stdout)
+    # An assignment counts wherever the line puts it — a rung written
+    # `… || _candidate=<expr>` is a rung.
+    candidates = set(
+        re.findall(r"^\s*(?:\|\||&&)?\s*_candidate=(\S.*?)\s*$", body, re.M)
+    )
     # An empty assignment is the rejection arm of the absoluteness guard, not a
     # route: `_candidate=""` is how a non-absolute value is dropped.
     return {c for c in candidates if c not in ('""', "''")}
