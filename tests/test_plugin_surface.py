@@ -182,10 +182,44 @@ def test_the_marketplace_entry_pins_a_commit_rather_than_a_branch() -> None:
     """
     entry = _json(MARKETPLACE)["plugins"][0]
     source = entry["source"]
-    assert source["source"] == "github"
-    assert source["repo"] == "ak2k/memkit"
     assert re.fullmatch(r"[0-9a-f]{40}", source["sha"]), source
     assert "ref" not in source, "a ref beside a sha is dead config — sha wins"
+
+
+def test_the_source_is_one_an_adopter_without_ssh_keys_can_clone() -> None:
+    """`{"source": "github"}` clones over SSH with no HTTPS fallback, so an
+    adopter without GitHub SSH keys gets `Permission denied (publickey)` from
+    `install` — after `marketplace add` has already succeeded, because THAT
+    fetch does fall back to HTTPS. Measured on 2.1.x from a scratch profile
+    with no credentials.
+
+    The `url` type takes the clone URL verbatim, so an `https://` one is
+    anonymous. It is the same repository and the same pinned sha; only the
+    transport changes.
+
+    An `ssh://` or `git@` url here would reintroduce the failure while
+    satisfying every other assertion in this file, which is why the scheme is
+    asserted rather than the host.
+    """
+    source = _json(MARKETPLACE)["plugins"][0]["source"]
+    assert source["source"] == "url", (
+        "the `github` source type is SSH-first and has no HTTPS fallback", source
+    )
+    url = source["url"]
+    assert url.startswith("https://"), (
+        "an adopter with no SSH keys cannot clone this", url
+    )
+    assert "@" not in url.split("//", 1)[1].split("/", 1)[0], (
+        "userinfo in the host means SSH or a credential nobody has", url
+    )
+    # Still this repository, and still the pin the rest of the file reasons
+    # about — the transport is the only thing that changed.
+    assert url.rstrip("/").endswith("/ak2k/memkit.git"), url
+    # And the README says so, because "do I need a GitHub account for this"
+    # is the question the old form answered wrongly and silently. The claim is
+    # only true while the source type above holds it up.
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "anonymously over HTTPS" in readme, "the README does not say it"
 
 
 # The paragraph that tells an adopter the marketplace route is not live yet.

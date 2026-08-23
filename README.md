@@ -93,6 +93,9 @@ That registers the `UserPromptSubmit` hook and puts the plugin's `bin/` on the
 agent's `PATH`. It reads nothing and says nothing until you give it a config —
 see below.
 
+**No GitHub credentials needed.** Both steps clone anonymously over HTTPS, so
+neither a GitHub account nor SSH keys are required to install this.
+
 **What the marketplace serves you.** The entry pins a released commit sha, so
 `marketplace add` does not mean "whatever is on main". A release moves the pin,
 and until it does, updating the marketplace changes nothing about the code in
