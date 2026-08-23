@@ -2157,6 +2157,45 @@ def test_both_channels_inert_messages_name_only_their_own_routes(
     assert f"${hook.CONFIG_ENV}" in direct_help.stdout, direct_help.stdout
 
 
+def test_a_whitespace_only_search_cli_does_not_take_down_the_dispatcher(
+    root, tmp_path
+) -> None:
+    """`_parser()` calls `_meanwhile` while BUILDING its description, so
+    anything that raises there takes down every `memkit` invocation — including
+    `--help`, the cheapest probe an adopter or an agent runs, and the one the
+    dispatcher's docstring says nothing about the config may break.
+
+    A whitespace-only `search_cli` is truthy, so `Config` keeps it and
+    `split()` returns nothing to index.
+    """
+    real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")}
+    for value in ("   ", "\t", " \n "):
+        config = _config_file(tmp_path / "ws.json", search_cli=value)
+        for args in (("--help",), ("doctor",)):
+            out = _run(
+                root / "bin" / "memkit", *args,
+                env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config)},
+            )
+            assert "IndexError" not in out.stderr, (value, args, out.stderr)
+            assert "memkit-recall" in (out.stdout + out.stderr), (value, args)
+
+            # And OFF the plugin channel, which is where the value is actually
+            # honoured: on the plugin channel the advertised command is this
+            # channel's own, so the config's whitespace never reaches the
+            # split that raised.
+            direct = subprocess.run(
+                ["python3", "-m", "memkit.cli", *args],
+                capture_output=True, text=True, timeout=120,
+                env={
+                    **real,
+                    "MEMKIT_CONFIG": str(config),
+                    "PYTHONPATH": str(REPO / "src"),
+                },
+            )
+            assert "IndexError" not in direct.stderr, (value, args, direct.stderr)
+            assert "memory-recall" in (direct.stdout + direct.stderr), (value, args)
+
+
 def test_the_help_epilog_carries_every_exit_code_this_binary_can_produce(
     root, tmp_path
 ) -> None:
