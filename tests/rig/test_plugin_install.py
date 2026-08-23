@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from rig import (
     REPO,
     Profile,
     assert_no_model_answered,
+    assert_scratch_config_dir,
     cli_tier_reason,
     harness_tier_reason,
     live_tier_reason,
@@ -116,36 +118,70 @@ def test_the_unreachable_turn_gate_refuses_a_result_it_cannot_read() -> None:
         assert_no_model_answered('{"modelUsage": {"claude": {"in": 1}}}', "")
 
 
-def test_the_profile_guard_refuses_a_config_dir_that_is_not_scratch(tmp_path) -> None:
-    """The rig's headline safety claim, which nothing checked.
+# Values the guard must refuse, and the reason each one is here. `$HOME` is
+# scratch in every caller, so a guard deriving the real home from it passes all
+# of them — which is what the driver's own copy did.
+NOT_SCRATCH = [
+    Path(pwd.getpwuid(os.getuid()).pw_dir) / ".claude",
+    Path(pwd.getpwuid(os.getuid()).pw_dir),
+    Path(pwd.getpwuid(os.getuid()).pw_dir) / "projects" / "somewhere",
+    Path("/"),
+    Path("/etc"),
+]
+
+
+def test_the_scratch_guard_refuses_every_config_dir_that_is_not_scratch(
+    tmp_path,
+) -> None:
+    """The rig's headline safety property, DRIVEN.
 
     `claude plugin install` writes wherever `CLAUDE_CONFIG_DIR` points and the
-    author's own profile carries a live memkit registration, so the guard is
-    what stands between a scenario and that profile. A guard nobody has watched
-    refuse is a guard nobody has watched.
+    author's own profile carries a live memkit registration, so this is what
+    stands between a scenario and that profile. It is now a positive
+    allowlist — the temp tree or a cache dir — because the two negative tests
+    it replaces both derived the real home from `$HOME`, which every caller has
+    already redirected into the scratch tree.
     """
-    scratch = Profile(tmp_path / "rig")
-    scratch._guard()  # the ordinary case must stay silent
+    assert_scratch_config_dir(tmp_path / "rig" / "claude-config")
+    Profile(tmp_path / "ok")._guard()  # the ordinary case stays silent
 
-    for unsafe in (Path.home() / ".claude", Path.home() / "somewhere-else"):
+    for unsafe in NOT_SCRATCH:
+        with pytest.raises(AssertionError):
+            assert_scratch_config_dir(unsafe)
         hijacked = Profile(tmp_path / "rig2")
         hijacked.config_dir = unsafe
         with pytest.raises(AssertionError):
             hijacked._guard()
 
 
-def test_the_pty_driver_refuses_a_config_dir_that_is_not_scratch() -> None:
-    """The same claim on the one entry point that is a separate process.
+def test_the_pty_driver_refuses_through_the_same_guard(tmp_path) -> None:
+    """The sibling that is a separate process, and could not share the parent's
+    copy — which is how it ended up with a guard that could not refuse.
 
-    `Profile._guard` cannot reach it — the driver is spawned with an
-    environment and makes its own decision — and it checked only that the
-    variable was SET, so any value at all let it drive a real session against
-    the author's own profile.
+    RUN rather than grepped: the case this replaces read the driver's source
+    and asserted two substrings were present, so it proved the guard was
+    written and never that it refuses. Driven with `HOME` scratch and
+    `CLAUDE_CONFIG_DIR` pointing at the real profile, which is the exact shape
+    that walked past it.
     """
-    driver = (RIG_DIR / "drive_interactive.py").read_text(encoding="utf-8")
-    body = driver[driver.index("def main(") :]
-    assert "realpath" in body, body
-    assert '".claude"' in body, body
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    project = tmp_path / "project"
+    project.mkdir()
+    out = subprocess.run(
+        [sys.executable, str(RIG_DIR / "drive_interactive.py"), str(project), "hi", "5"],
+        capture_output=True, text=True, timeout=120,
+        env={
+            "PATH": os.environ["PATH"],
+            # Scratch, exactly as `Profile.env()` sets it — this is what made
+            # the previous guard blind.
+            "HOME": str(tmp_path / "scratch-home"),
+            "CLAUDE_CONFIG_DIR": str(real_home / ".claude"),
+        },
+    )
+    assert out.returncode != 0, out.stdout
+    assert "not a scratch config dir" in (out.stdout + out.stderr), out.stderr
+    # And it never reached the harness: a spawn would say so.
+    assert "claude" not in out.stdout.lower() or "not a scratch" in out.stderr
 
 
 def test_hookdump_records_the_argv_and_env_it_exists_to_record(tmp_path) -> None:

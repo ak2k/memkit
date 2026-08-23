@@ -24,8 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
-
-import pexpect
+from pathlib import Path
 
 
 def main() -> int:
@@ -35,22 +34,26 @@ def main() -> int:
     project, prompt = sys.argv[1], sys.argv[2]
     seconds = int(sys.argv[3]) if len(sys.argv) > 3 else 180
 
-    # SCRATCH, not merely set. `Profile._guard` makes this check for everything
-    # it spawns; this script is spawned as a subprocess and had only the
-    # weaker half, so it would have driven a real session against the author's
-    # own profile — which carries a live memkit registration — as long as the
-    # variable pointed anywhere at all.
+    # SCRATCH, not merely set — and through the SAME helper `Profile._guard`
+    # uses. This script runs as a separate process, so it cannot share the
+    # parent's copy; keeping its own was how it ended up deriving the real home
+    # from `$HOME`, which every caller has already redirected into the scratch
+    # tree. The guard then could not refuse anything.
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
     assert config_dir, (
         "refusing to drive a session against the real profile — "
         "CLAUDE_CONFIG_DIR must name a scratch directory"
     )
-    resolved = os.path.realpath(config_dir)
-    real = os.path.realpath(os.path.expanduser("~"))
-    assert resolved != os.path.join(real, ".claude"), resolved
-    assert not resolved.startswith(real + os.sep) or ".cache" in resolved.split(
-        os.sep
-    ), f"CLAUDE_CONFIG_DIR is inside the real home: {resolved}"
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from rig import assert_scratch_config_dir
+
+    assert_scratch_config_dir(config_dir)
+
+    # AFTER the guard, deliberately. `pexpect` is what spawns, and importing it
+    # at module scope meant a refusal could not be reached without the
+    # dependency present — so the one check standing between this script and a
+    # real profile ran second to a `ModuleNotFoundError`.
+    import pexpect
 
     child = pexpect.spawn(
         "claude",

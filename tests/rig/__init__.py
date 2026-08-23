@@ -77,9 +77,11 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 RIG = Path(__file__).resolve().parent
@@ -163,6 +165,40 @@ def assert_no_model_answered(stdout: str, stderr: str) -> None:
             "a model answered a turn this scenario needs to be unreachable — "
             f"the route is not dead here: {answer.get('modelUsage')}"
         )
+
+
+def assert_scratch_config_dir(config_dir: str | Path) -> None:
+    """Refuse any config dir that is not a scratch one. THE rig safety rule.
+
+    A POSITIVE test, and that is the fix rather than a detail: the two negative
+    ones it replaces both derived the real home from `os.path.expanduser("~")`,
+    i.e. from `$HOME` — which every caller has already redirected into the
+    scratch tree. So with `HOME` scratch and `CLAUDE_CONFIG_DIR=~/.claude` both
+    of them passed and the driver would have started a real `claude` session
+    against the author's live profile, which carries a memkit registration.
+    `Profile._guard` escaped that only because it runs in the parent.
+
+    `pwd` rather than `$HOME` for the real home, and containment in the
+    system's temp tree for the allowlist. One home for both callers, because
+    the sibling that got it wrong is a separate process and could not share the
+    parent's copy.
+    """
+    resolved = Path(os.path.realpath(str(config_dir)))
+    real_home = Path(os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir))
+    # A cache dir is the one place under a real home a scratch profile may
+    # legitimately live; nothing else under it qualifies.
+    scratch_roots = [
+        Path(os.path.realpath(tempfile.gettempdir())),
+        real_home / ".cache",
+    ]
+    # ONE message for every way this refuses, so a caller can recognise the
+    # refusal without matching on which arm produced it.
+    assert (
+        str(config_dir)
+        and resolved != real_home
+        and resolved != real_home / ".claude"
+        and any(root == resolved or root in resolved.parents for root in scratch_roots)
+    ), f"not a scratch config dir: {resolved} (allowed under {scratch_roots})"
 
 
 def claude_bin() -> str | None:
@@ -305,10 +341,7 @@ class Profile:
         writes wherever `CLAUDE_CONFIG_DIR` points, and the author's own
         profile has a live memkit registration in it.
         """
-        resolved = self.config_dir.resolve()
-        real = Path.home().resolve()
-        assert resolved != (real / ".claude"), resolved
-        assert real not in resolved.parents or ".cache" in resolved.parts, resolved
+        assert_scratch_config_dir(self.config_dir)
 
     def claude(
         self, *args: str, timeout: int = 120, check: bool = True, **kw
