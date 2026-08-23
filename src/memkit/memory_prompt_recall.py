@@ -996,6 +996,152 @@ FRAME_TAG = "memkit-pointers"
 _FRAME_LITERAL = re.compile(r"<[\s/\\]*" + FRAME_TAG, re.IGNORECASE)
 
 
+# Grapheme-cluster continuation: Unicode's `Extend` and `SpacingMark`, from
+# GraphemeBreakProperty.txt of UCD 17.0.0 (dated 2025-06-30) — 2618 codepoints
+# in 334 ranges, packed as text and expanded once at import because 334 tuples
+# of source is not a thing anybody audits.
+#
+# This is the answer to "which marks render as part of the token": Unicode's
+# own, rather than a judgement about `Mn` versus `Mc` versus `Me`. Extend is
+# the nonspacing and enclosing marks, SpacingMark the combining marks that take
+# an advance width of their own — and both are in the SAME grapheme cluster as
+# the character before them, which is exactly what a reader sees as one
+# character. `Mc` earns its place on that test even though it is visible: a
+# Devanagari matra is a piece of the letter it follows, not a letter break.
+#
+# Version-pinned rather than asked of `unicodedata` for a measured reason: the
+# 3.9 floor this hook targets carries UCD 13.0.0, where 257 of these are not
+# yet marks of any category and a `unicodedata.category` rule leaves every one
+# of them a carrier. The category check below is kept as well, for the marks a
+# UCD newer than this table adds.
+_GRAPHEME_CONTINUES_PACKED = """\
+    0300..036F 0483..0489 0591..05BD 05BF 05C1..05C2 05C4..05C5 05C7
+    0610..061A 064B..065F 0670 06D6..06DC 06DF..06E4 06E7..06E8
+    06EA..06ED 0711 0730..074A 07A6..07B0 07EB..07F3 07FD 0816..0819
+    081B..0823 0825..0827 0829..082D 0859..085B 0897..089F 08CA..08E1
+    08E3..0903 093A..093C 093E..094F 0951..0957 0962..0963 0981..0983
+    09BC 09BE..09C4 09C7..09C8 09CB..09CD 09D7 09E2..09E3 09FE
+    0A01..0A03 0A3C 0A3E..0A42 0A47..0A48 0A4B..0A4D 0A51 0A70..0A71
+    0A75 0A81..0A83 0ABC 0ABE..0AC5 0AC7..0AC9 0ACB..0ACD 0AE2..0AE3
+    0AFA..0AFF 0B01..0B03 0B3C 0B3E..0B44 0B47..0B48 0B4B..0B4D
+    0B55..0B57 0B62..0B63 0B82 0BBE..0BC2 0BC6..0BC8 0BCA..0BCD 0BD7
+    0C00..0C04 0C3C 0C3E..0C44 0C46..0C48 0C4A..0C4D 0C55..0C56
+    0C62..0C63 0C81..0C83 0CBC 0CBE..0CC4 0CC6..0CC8 0CCA..0CCD
+    0CD5..0CD6 0CE2..0CE3 0CF3 0D00..0D03 0D3B..0D3C 0D3E..0D44
+    0D46..0D48 0D4A..0D4D 0D57 0D62..0D63 0D81..0D83 0DCA 0DCF..0DD4
+    0DD6 0DD8..0DDF 0DF2..0DF3 0E31 0E33..0E3A 0E47..0E4E 0EB1
+    0EB3..0EBC 0EC8..0ECE 0F18..0F19 0F35 0F37 0F39 0F3E..0F3F
+    0F71..0F84 0F86..0F87 0F8D..0F97 0F99..0FBC 0FC6 102D..1037
+    1039..103E 1056..1059 105E..1060 1071..1074 1082 1084..1086 108D
+    109D 135D..135F 1712..1715 1732..1734 1752..1753 1772..1773
+    17B4..17D3 17DD 180B..180D 180F 1885..1886 18A9 1920..192B
+    1930..193B 1A17..1A1B 1A55..1A5E 1A60 1A62 1A65..1A7C 1A7F
+    1AB0..1ADD 1AE0..1AEB 1B00..1B04 1B34..1B44 1B6B..1B73 1B80..1B82
+    1BA1..1BAD 1BE6..1BF3 1C24..1C37 1CD0..1CD2 1CD4..1CE8 1CED 1CF4
+    1CF7..1CF9 1DC0..1DFF 200C 20D0..20F0 2CEF..2CF1 2D7F 2DE0..2DFF
+    302A..302F 3099..309A A66F..A672 A674..A67D A69E..A69F A6F0..A6F1
+    A802 A806 A80B A823..A827 A82C A880..A881 A8B4..A8C5 A8E0..A8F1 A8FF
+    A926..A92D A947..A953 A980..A983 A9B3..A9C0 A9E5 AA29..AA36 AA43
+    AA4C..AA4D AA7C AAB0 AAB2..AAB4 AAB7..AAB8 AABE..AABF AAC1
+    AAEB..AAEF AAF5..AAF6 ABE3..ABEA ABEC..ABED FB1E FE00..FE0F
+    FE20..FE2F FF9E..FF9F 101FD 102E0 10376..1037A 10A01..10A03
+    10A05..10A06 10A0C..10A0F 10A38..10A3A 10A3F 10AE5..10AE6
+    10D24..10D27 10D69..10D6D 10EAB..10EAC 10EFA..10EFF 10F46..10F50
+    10F82..10F85 11000..11002 11038..11046 11070 11073..11074
+    1107F..11082 110B0..110BA 110C2 11100..11102 11127..11134
+    11145..11146 11173 11180..11182 111B3..111C0 111C9..111CC
+    111CE..111CF 1122C..11237 1123E 11241 112DF..112EA 11300..11303
+    1133B..1133C 1133E..11344 11347..11348 1134B..1134D 11357
+    11362..11363 11366..1136C 11370..11374 113B8..113C0 113C2 113C5
+    113C7..113CA 113CC..113D0 113D2 113E1..113E2 11435..11446 1145E
+    114B0..114C3 115AF..115B5 115B8..115C0 115DC..115DD 11630..11640
+    116AB..116B7 1171D..1171F 11722..1172B 1182C..1183A 11930..11935
+    11937..11938 1193B..1193E 11940 11942..11943 119D1..119D7
+    119DA..119E0 119E4 11A01..11A0A 11A33..11A39 11A3B..11A3E 11A47
+    11A51..11A5B 11A8A..11A99 11B60..11B67 11C2F..11C36 11C38..11C3F
+    11C92..11CA7 11CA9..11CB6 11D31..11D36 11D3A 11D3C..11D3D
+    11D3F..11D45 11D47 11D8A..11D8E 11D90..11D91 11D93..11D97
+    11EF3..11EF6 11F00..11F01 11F03 11F34..11F3A 11F3E..11F42 11F5A
+    13440 13447..13455 1611E..1612F 16AF0..16AF4 16B30..16B36 16F4F
+    16F51..16F87 16F8F..16F92 16FE4 16FF0..16FF1 1BC9D..1BC9E
+    1CF00..1CF2D 1CF30..1CF46 1D165..1D169 1D16D..1D172 1D17B..1D182
+    1D185..1D18B 1D1AA..1D1AD 1D242..1D244 1DA00..1DA36 1DA3B..1DA6C
+    1DA75 1DA84 1DA9B..1DA9F 1DAA1..1DAAF 1E000..1E006 1E008..1E018
+    1E01B..1E021 1E023..1E024 1E026..1E02A 1E08F 1E130..1E136 1E2AE
+    1E2EC..1E2EF 1E4EC..1E4EF 1E5EE..1E5EF 1E6E3 1E6E6 1E6EE..1E6EF
+    1E6F5 1E8D0..1E8D6 1E944..1E94A 1F3FB..1F3FF E0020..E007F
+    E0100..E01EF
+"""
+
+
+def _unpack_ranges(packed: str) -> tuple[tuple[int, int], ...]:
+    spans = []
+    for token in packed.split():
+        low, _, high = token.partition("..")
+        spans.append((int(low, 16), int(high or low, 16)))
+    return tuple(spans)
+
+
+_GRAPHEME_CONTINUES = _unpack_ranges(_GRAPHEME_CONTINUES_PACKED)
+_GC_STARTS = tuple(low for low, _ in _GRAPHEME_CONTINUES)
+_GC_ENDS = tuple(high for _, high in _GRAPHEME_CONTINUES)
+
+
+def _continues_grapheme(char: str) -> bool:
+    """True where a reader sees this as part of the character before it."""
+    point = ord(char)
+    index = bisect.bisect_right(_GC_STARTS, point) - 1
+    return (index >= 0 and point <= _GC_ENDS[index]) or unicodedata.category(
+        char
+    ).startswith("M")
+
+
+def _skeleton(text: str) -> tuple[str, list[int]]:
+    """(text as a reader's eye groups it, index of each kept character).
+
+    The marks come out so the tag can be MATCHED through them; the index is
+    what puts the match back on the original, so nothing is removed from a line
+    that was not forging a frame tag.
+    """
+    kept: list[str] = []
+    offsets: list[int] = []
+    for position, char in enumerate(text):
+        if _continues_grapheme(char):
+            continue
+        kept.append(char)
+        offsets.append(position)
+    return "".join(kept), offsets
+
+
+def _defang_frame(text: str) -> str:
+    """The frame's own delimiters, neutralised wherever a reader would resolve
+    one — including where the characters spelling it are not adjacent.
+
+    A description that closed the frame would put everything after it back
+    outside the data region, which is the whole point of having one. Stripping
+    the invisibles upstream closes the respellings that render as nothing; this
+    closes the ones that render as a MARK, where `</memkit́-pointers>` shows an
+    accent on the `t` and reads as the closing tag anyway. Those cannot be
+    stripped from text generally — an accent is what makes `café` that word —
+    so they are removed from a COPY, matched there, and the span they were
+    hiding is replaced in the original.
+    """
+    text = _FRAME_LITERAL.sub("(" + FRAME_TAG, text)
+    # A forged tag needs a `<`, and almost no description has one — which is
+    # what keeps the second pass off the every-prompt budget.
+    if "<" not in text or text.isascii():
+        return text
+    skeleton, offsets = _skeleton(text)
+    if len(skeleton) == len(text):
+        return text
+    # From the end, so an earlier match's offsets are still the ones measured.
+    for match in reversed(list(_FRAME_LITERAL.finditer(skeleton))):
+        start = offsets[match.start()]
+        stop = offsets[match.end() - 1] + 1
+        text = text[:start] + "(" + FRAME_TAG + text[stop:]
+    return text
+
+
 def strip_unsafe(text: str) -> str:
     """Everything that could stop this being display text, removed — and the
     spacing left exactly as it was.
@@ -1023,7 +1169,7 @@ def strip_unsafe(text: str) -> str:
     text = _ANSI.sub("", text)
     text = _CONTROL.sub(" ", text)
     text = _strip_invisible(text)
-    return _FRAME_LITERAL.sub("(memkit-pointers", text)
+    return _defang_frame(text)
 
 
 def sanitize(text: str) -> str:
