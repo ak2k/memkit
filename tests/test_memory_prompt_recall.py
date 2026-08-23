@@ -6133,6 +6133,71 @@ def test_a_shed_pointer_is_not_spent_and_not_reported_as_injected(tmp_path) -> N
     assert not rec.get("evicted"), rec
 
 
+def test_past_the_budget_a_shed_pointer_evicts_nobody(tmp_path) -> None:
+    """The other shed branch, and the one where being wrong costs the most.
+
+    Past POINTER_BUDGET a pointer is not free — it is paid for by EVICTING the
+    weakest thing the session already holds. `_replace` runs before the block
+    is measured, so if the bound then sheds the newcomer that bought the
+    eviction, the session has thrown away a pointer it really did deliver in
+    exchange for one nobody ever saw, and the record reports that trade as
+    real. Unlike the `room > 0` case there is no way back: the evicted path is
+    still in `shown`, so it will never be offered again.
+
+    The case above drives the fresh-session half of the same shed. This one
+    seeds a full ledger of weak incumbents so the replacement branch is what
+    runs.
+    """
+    env = _env(tmp_path)
+    corpus = tmp_path / PERSONAL_DIR / "search"
+    for name in ("alpha.md", "beta.md", "gamma.md"):
+        (corpus / name).write_text(
+            "---\ndescription: unionfs mount permissions go stale after a "
+            f"remount.\ntype: reference\n---\n\n# {name}\n\nStale mounts.\n"
+        )
+    # A full ledger of weak incumbents: room is exactly 0, and every one of
+    # them is beatable, so `_replace` really does have replacements to make.
+    incumbents = [f"/gone/old{i}.md" for i in range(hook.POINTER_BUDGET)]
+    state_dir = tmp_path / ".cache" / "memory-recall"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "shed2.json").write_text(
+        json.dumps({"shown": incumbents, "spent": dict.fromkeys(incumbents, 0.01)})
+    )
+    out = subprocess.run(
+        ["python3", "-c",
+         "import os, sys;"
+         "sys.path.insert(0, os.environ['MEMKIT_SRC']);"
+         "from memkit import memory_prompt_recall as h;"
+         "h.PIPE_BUFFER_BOUND = h._nbytes(h._framed([])) + 200;"
+         "h.main()"],
+        input=json.dumps(
+            {"session_id": "shed2", "prompt": "unionfs mount permissions stale"}
+        ),
+        capture_output=True, text=True, timeout=60,
+        env=dict(env, MEMKIT_SRC=str(Path(hook.__file__).parent.parent)),
+    )
+    assert out.returncode == 0, out.stderr
+    shown = [x for x in out.stdout.splitlines() if x.startswith("- ")]
+    rec = _last_record(tmp_path)
+    # The branch really was the replacement one, and the bound really did bite.
+    assert rec["outcome"] == "injected", rec
+    assert rec.get("shed"), rec
+    assert 0 < len(shown) < 3, shown
+    state = json.loads((state_dir / "shed2.json").read_text())
+    # One eviction per delivered pointer. Not per pointer `_replace` was
+    # offered before the bound cut the block down.
+    assert len(rec.get("evicted", [])) == len(shown), (rec.get("evicted"), shown)
+    assert len(state["spent"]) == hook.POINTER_BUDGET, len(state["spent"])
+    # And the ledger holds exactly what was written out, plus the incumbents
+    # that were never displaced — no shed path bought anything.
+    fresh = [p for p in state["spent"] if p not in incumbents]
+    assert len(fresh) == len(shown), (fresh, shown)
+    for path in fresh:
+        assert any(os.path.basename(path) in line for line in shown), (path, shown)
+    survivors = [p for p in incumbents if p in state["spent"]]
+    assert len(survivors) == hook.POINTER_BUDGET - len(shown), len(survivors)
+
+
 def test_the_pointer_caps_the_budget_rests_on_are_still_the_caps() -> None:
     """The audit above is only a bound on the WORST case while these are what
     bounds it. Each of them is a number somebody could raise for a good local
