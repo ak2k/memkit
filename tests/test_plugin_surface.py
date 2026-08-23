@@ -244,6 +244,73 @@ def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
         )
 
 
+def test_the_uvx_spec_and_the_readme_name_the_same_rev() -> None:
+    """The one route that resolves code from GitHub at run time, and the
+    sentence an adopter reads about it.
+
+    Unpinned, it resolved whatever `main` held, so a machine on an older
+    release routed checker work through a newer checker with nothing saying so.
+    The README describes it as pinned; that description is only true while the
+    shell agrees, and the two are edited by different hands at different times.
+    """
+    shell = COMMON_SH.read_text(encoding="utf-8")
+    match = re.search(r'^MEMKIT_UVX_SPEC="([^"]+)"', shell, re.M)
+    assert match, "MEMKIT_UVX_SPEC is not assigned a literal"
+    spec = match.group(1)
+    # A rev, not a bare repository URL — `git+…/memkit` means main.
+    assert "@" in spec.rsplit("/", 1)[-1], spec
+    assert (REPO / "README.md").read_text(encoding="utf-8").count(spec) >= 1, (
+        "the README does not quote the spec the shell actually uses", spec
+    )
+
+
+def test_every_relative_link_in_the_readme_resolves() -> None:
+    """A README that points at a file nobody shipped is worse than one that
+    points nowhere: it reads as an assurance that the detail exists somewhere.
+
+    `docs/ADMISSION.md` is the reason this is here — the plugin section sends
+    an adopter to it before they install a hook that runs on every prompt.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    targets = [
+        target
+        for target in re.findall(r"\]\(([^)\s]+)\)", readme)
+        if not target.startswith(("http://", "https://", "#", "mailto:"))
+    ]
+    missing = [t for t in targets if not (REPO / t.split("#", 1)[0]).exists()]
+    assert not missing, missing
+    # Non-vacuity: there ARE relative links, and the one this exists for is
+    # among them.
+    assert "docs/ADMISSION.md" in targets, targets
+
+
+def test_the_admission_note_answers_what_it_claims_to() -> None:
+    """What an adopter receives and where the trust boundary sits — the two
+    questions the plugin section defers to it.
+
+    Pinned by SUBJECT rather than by prose, so the note can be rewritten
+    without this becoming a spelling test: what may not happen is the note
+    quietly losing the half about admission while keeping the inventory.
+    """
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    for subject in (
+        "memkitConfig",
+        "$CLAUDE_PLUGIN_DATA",
+        "MEMKIT_CONFIG",
+        "interpreter",
+        "UserPromptSubmit",
+    ):
+        assert subject in note, subject
+    # The count it states is the count the pin actually carries, because a
+    # number in prose is the first thing to go stale.
+    _needs_checkout()
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    listed = _git("ls-tree", "-r", "--name-only", sha)
+    assert listed.returncode == 0, listed.stderr
+    count = len(listed.stdout.split())
+    assert f"**{count} files" in note, (count, "not the number the note states")
+
+
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:
     """`claude plugin tag` refuses to tag a release when they disagree, which
     is late: by then the version in the entry is what adopters resolve."""

@@ -97,34 +97,35 @@ see below.
 `marketplace add` does not mean "whatever is on main". A release moves the pin,
 and until it does, updating the marketplace changes nothing about the code in
 your sessions. This matters more here than for most plugins: the payload is a
-hook that runs before every prompt you type.
+hook that runs before every prompt you type. What arrives is the whole tracked
+tree at that sha — more than the hook needs, and worth knowing about before you
+install a prompt hook: [docs/ADMISSION.md](docs/ADMISSION.md) says what is in
+it and where the trust boundary sits.
 
-One exception, stated because the promise above is otherwise stronger than the
-code: the `uvx` fallback used for checker work on a machine with no Python 3.12
-resolves `git+https://github.com/ak2k/memkit` at **main**, not at the pinned
-sha. Nothing on the every-prompt path uses it — it is reached only by a
-subcommand that regenerates a ledger — and the rev pin lands with the first
-tagged release, for the same reason the marketplace sha does.
+The `uvx` fallback used for checker work on a machine with no Python 3.12
+resolves `git+https://github.com/ak2k/memkit@v0.1.0` — the release tag, not
+`main`. Nothing on the every-prompt path uses it; it is reached only by a
+subcommand that regenerates a ledger.
 
-**Not yet installable from this marketplace.** The pin still names a commit
-from before the plugin existed, because a release commit is the only thing that
-can name itself. The first tagged release moves it.
+**Check that it took.** `claude plugin details memkit@memkit` reports the hooks
+it registered: `Hooks (1)` is a working install and `Hooks (0)` is not. Worth
+running once, because a memkit that installed correctly and has not been given
+a config is *also* silent by design (see below) — so from the outside it looks
+exactly like one that installed nothing.
 
-Until it does, **the install above does not fail — it succeeds and gives you
-nothing**, and that is worth stating because the two states are hard to tell
-apart here. Measured on 2.1.239: `marketplace add` succeeds, `install` exits 0
-and prints `✔ Successfully installed plugin: memkit@memkit`, `claude plugin
-list` reports it `enabled`, and the only sign anything is wrong is a warning
-that blames the `--config` flag — `--config was given but plugin
-"memkit@memkit" declares no userConfig options` — because the commit it cloned
-has no plugin manifest to declare them in. `claude plugin details memkit@memkit`
-is the command that tells you: it reports `Hooks (0)`. A correctly installed
-memkit that has not been given a config is *also* silent by design (see below),
-so without that command the two look the same from the outside.
+**One wrinkle in this first release, stated because it is visible.** A release
+commit cannot name itself, so the pin names the commit *before* this one. The
+copy you install is therefore the tree as it stood one commit back, and it
+carries that commit's text rather than this one's: its README still says memkit
+is not yet installable from this marketplace (it is — this is the corrected
+copy), and its `uvx` spec is still the unpinned `main` form described above as
+pinned. Neither affects the hook, which is byte-identical in both. The next
+release's pin absorbs both.
 
-Install from a clone instead: `claude plugin marketplace add <path to your
-checkout>`, with the entry's `source` set to `"./"`. Both halves of that are
-what `tests/rig/` does to exercise the real install path.
+**Installing from a clone**, which is what you want while developing against
+your own checkout: `claude plugin marketplace add <path to your checkout>`,
+with the entry's `source` set to `"./"`. Both halves of that are what
+`tests/rig/` does to exercise the real install path.
 
 **Setting it up is manual in this build.** `/memkit:init` — the consented,
 journalled setup this is designed around — has not landed yet, so for now write
