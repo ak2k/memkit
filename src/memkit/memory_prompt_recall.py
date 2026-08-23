@@ -893,6 +893,7 @@ _INVISIBLE_EXTRA = frozenset(
     "\u034f"  # combining grapheme joiner
     "\u17b4\u17b5"  # khmer inherent vowels, zero-width in practice
     "\u2800"  # braille pattern blank
+    "\u115f\u1160"  # hangul choseong/jungseong fillers — the same family
     "\u3164"  # hangul filler
     "\uffa0"  # halfwidth hangul filler
     + "".join(chr(c) for c in range(0xFE00, 0xFE10))  # variation selectors 1-16
