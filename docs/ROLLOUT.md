@@ -15,8 +15,8 @@ transfers.
 
 ## The one unsafe window
 
-The harness invokes the hook by path — `~/.claude/hooks/memory-prompt-recall.py`
-in a `settings.json` the harness reads, not something memkit controls. Before
+Claude Code invokes the hook by path — `~/.claude/hooks/memory-prompt-recall.py`
+in a `settings.json` it reads, not something memkit controls. Before
 cutover the consumer carries that file in-tree; after cutover memkit's
 home-manager module writes it. So there is exactly one interval where the path
 names nothing:
@@ -59,7 +59,7 @@ and a hook that resolves looks exactly like one that loops until you try to
 resolve it. Worth knowing which ones survive: memkit's two files are *new* at
 cutover, so they can point at real content and answer correctly while the hooks
 that were already tracked are dead. A memkit-focused verify therefore passes on
-a host whose harness is broken — which is why check 1 below tests every entry
+a host whose Claude Code hooks are broken — which is why check 1 tests every entry
 rather than the two this repository owns.
 
 ### Converting a host
@@ -187,7 +187,7 @@ a repeated identical prompt returns **zero bytes**. That is the deduplication
 working, not a fault, and it is the easiest way to talk yourself into
 diagnosing a healthy host.
 
-This probe bypasses the harness's own wiring, so finish with a real session on
+This probe bypasses Claude Code's own wiring, so finish with a real session on
 a prompt you know is good: only that exercises the `settings.json` entry, and
 a settings-side breakage looks identical to a healthy host from the shell.
 
@@ -231,7 +231,7 @@ exists for** — it is what an install from a marketplace pin whose commit
 carries no payload looks like, and every other signal on that host says
 success.
 
-**3. The option reached the harness.**
+**3. The option reached Claude Code.**
 
     python3 -c 'import json,os,sys;print(json.load(open(os.path.expanduser(
       sys.argv[1])))["pluginConfigs"]["memkit@memkit"]["options"])' \
@@ -292,7 +292,7 @@ confusing error to meet while rolling something back.
 
 This restores the directory symlink and the in-tree hook files **together**,
 which is the property that makes it safe: the layout conversion and the file
-removals were one commit, so undoing it cannot leave the harness pointing at a
+removals were one commit, so undoing it cannot leave Claude Code pointing at a
 path that neither side provides. The same single-command discipline applies —
 a revert pulled but not rebuilt parks the host in the same dangling window,
 just from the other direction.
@@ -325,8 +325,8 @@ Two caveats worth naming before you reach for the fast path:
 - **Who owns the lock.** If your consumer treats an automated dependency bot as
   the sole `flake.lock` writer, a hand-rolled lock edit fights it: the next
   bot run may re-open the very bump you reverted. Pin the rev in `flake.url`
-  (not just the lock) and say in the PR body why, or the rollback is temporary
-  by construction.
+  (not just the lock) and say in the PR body why, or the rollback will not
+  outlast the next bot run.
 
 An emergency local rollback — `--override-input memkit <older-path-or-rev>` on
 one host's rebuild — is legitimate to stop the bleeding on that host, but it
@@ -387,7 +387,7 @@ safe:
       -> merge
       -> host rebuild
 
-Every stage is load-bearing. The eval gate is the only pre-merge check that
+No stage is redundant. The eval gate is the only pre-merge check that
 sees the real corpus, and the rebuild is the only thing that puts new bytes on
 a host.
 
@@ -413,7 +413,7 @@ module: it is the ambient-configuration path the design rejects, kept available
 for a human debugging deliberately and never for a host.
 
 **The plugin channel does not weaken that rejection.** A plugin install
-delivers the config path through the harness — a typed `userConfig` option set
+delivers the config path through Claude Code — a typed `userConfig` option set
 at install time, else a file in the plugin's own data directory, **and nothing
 else**: a config inside the payload would let the code you installed choose
 which of your directories an every-prompt hook reads. Its wrapper exports
@@ -421,13 +421,13 @@ which of your directories an every-prompt hook reads. Its wrapper exports
 them answers, the wrapper **unsets** the variable rather than leaving it. So a
 machine that has both channels — a nix-managed hook and a plugin install, which
 is the author's own case — cannot have the plugin quietly serve whatever config
-the launching shell exported. Delivery is per install and harness-controlled,
+the launching shell exported. Delivery is per install and controlled by Claude Code,
 which is the same property `configFile` gets by baking the path into the
 wrapper, arrived at by a different route.
 
 The escape hatch above still works while a plugin is installed, and it is still
 a human-only path: `MEMKIT_CONFIG=…` in front of a checkout's hook affects that
-one invocation and nothing the harness runs.
+one invocation and nothing Claude Code runs.
 
 **Promotion threshold.** Keep it an informal workaround while it stays rare. It
 becomes a supported first-class dev mode — a documented flag, a module option,

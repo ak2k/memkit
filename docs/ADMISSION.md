@@ -68,7 +68,7 @@ those come from the config, and the config comes from you:
 
 So the payload is code you can read that acts on decisions you made elsewhere.
 The thing worth auditing before installing is not this tree's size; it is
-`bin/memkit-hook` and `bin/lib/common.sh`, which are 550 lines of POSIX shell
+`bin/memkit-hook` and `bin/lib/common.sh`, which are about 550 lines of POSIX shell
 between them — mostly comment — and run no command that is not a shell builtin.
 
 ## Reproducing these numbers
