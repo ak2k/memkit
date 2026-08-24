@@ -13,8 +13,8 @@
       "version": "0.1.0",
       "category": "productivity",
       "source": {
-        "source": "github",
-        "repo": "ak2k/memkit",
+        "source": "url",
+        "url": "https://github.com/ak2k/memkit.git",
         "sha": "32e02ad2aa136694420bb591b8069665a9aa735b"
       }
     }
