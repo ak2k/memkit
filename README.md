@@ -3,7 +3,7 @@
 Four console scripts over one tiered markdown memory store, and one config
 file that tells all of them where the store is.
 
-- **`memory-recall`** — a `UserPromptSubmit` hook for an agent harness. It
+- **`memory-recall`** — a `UserPromptSubmit` hook for Claude Code. It
   reads the prompt, searches the store lexically, and injects up to a few
   **pointers** — `path — description` lines — so the model can decide what to
   open. It never injects file contents. It also runs on demand:
@@ -12,7 +12,7 @@ file that tells all of them where the store is.
   dead links, dangling wikilinks, and prose path citations. `--write`
   regenerates the search ledgers from frontmatter.
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
-  data, supplied in config; the harness ships case-free.
+  data, supplied in config; memkit ships none.
 - **`memkit`** — the dispatcher the setup and diagnosis subcommands hang off.
   A skeleton in this build: `memkit --help` lists `doctor` and `init`, says
   they have not landed, and names what to reach for meanwhile.
@@ -49,7 +49,7 @@ assuming any measured claim generalises to your corpus.
 ```
 
 The home-manager module installs the package and writes the hook entries into
-your harness's hooks directory:
+Claude Code's hooks directory:
 
 ```nix
 {
@@ -116,14 +116,13 @@ running once, because a memkit that installed correctly and has not been given
 a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.
 
-**One wrinkle in this first release, stated because it is visible.** A release
-commit cannot name itself, so the pin names the commit *before* this one. The
-copy you install is therefore the tree as it stood one commit back, and it
-carries that commit's text rather than this one's: its README still says memkit
-is not yet installable from this marketplace (it is — this is the corrected
-copy), and its `uvx` spec is still the unpinned `main` form described above as
-pinned. Neither affects the hook, which is byte-identical in both. The next
-release's pin absorbs both.
+**One wrinkle in this first release.** A release commit cannot name itself, so
+the pin names an earlier commit. The copy you install is the tree as it stood
+before this release, and it carries that tree's text rather than this one's:
+its README still says memkit is not yet installable from this marketplace (it
+is — this is the corrected copy), and its `uvx` spec is still the unpinned
+`main` form described above as pinned. Neither affects the hook, which is
+byte-identical in both. The next release's pin absorbs both.
 
 **Installing from a clone**, which is what you want while developing against
 your own checkout: `claude plugin marketplace add <path to your checkout>`,
@@ -137,7 +136,7 @@ path you passed to `--config`. Until that file exists the plugin is **inert**:
 the hook exits 0, prints nothing, reads no directory of yours, and records the
 refusal in the plugin's own data directory, where a future `memkit doctor` can
 report it. Whether you can read that file yourself depends on
-`$CLAUDE_PLUGIN_DATA`, which the harness exports to the plugin's own processes
+`$CLAUDE_PLUGIN_DATA`, which Claude Code exports to the plugin's own processes
 and not to your shell — so today the record is for the tool rather than for
 you; `claude plugin details memkit@memkit` is what you can check by hand. That is the intended
 state, not a failure — but nothing will surface pointers until you write the
@@ -145,7 +144,7 @@ file.
 
 The config path reaches the hook through the `memkitConfig` option above, or
 through `$CLAUDE_PLUGIN_DATA/memkit.json`, in that order — and through nothing
-else. Both are environment variables the harness exports into the hook process
+else. Both are environment variables Claude Code exports into the hook process
 (`CLAUDE_PLUGIN_OPTION_MEMKITCONFIG` and `CLAUDE_PLUGIN_DATA`), and both must
 name an absolute path. `$MEMKIT_CONFIG` is not among them: an every-prompt hook's list of
 directories is not the ambient environment's decision to make, which is the
@@ -193,15 +192,15 @@ PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
 ```
 
 **If you disable the plugin**, the hook stops and the store is untouched — it
-lives outside every plugin-managed path by design. Retrieval is still available
-out of harness, with no install:
+lives outside every plugin-managed path by design. Retrieval still works
+without Claude Code, and with no install:
 
 ```
 uvx --from git+https://github.com/ak2k/memkit memory-recall \
   --search "<terms>" --config ~/.cache/memory-recall/memkit.json
 ```
 
-**Debugging what the harness told the hook.** `tests/rig/hookdump.py` is a
+**Debugging what Claude Code told the hook.** `tests/rig/hookdump.py` is a
 standalone recorder: register it on any hook event in a scratch
 `CLAUDE_CONFIG_DIR` and it writes one JSON file per invocation with the argv,
 the environment, the cwd and the payload. It is how the claims in this section
@@ -271,7 +270,7 @@ a plugin install puts on the agent's PATH, shares this table:
 | 1 | the stores were searched and nothing matched | there is no such memory |
 | 2 | the search itself failed, wholly or in part — an unparseable config, a `--dir`/`--config` that is not there, some corpus that could not be opened, or arguments that make no sense | fix what stderr names; never read as absence |
 | 3 | **inert**: nothing to search — no config, or no store on disk and in scope for this directory | stderr names which; this is *not* a claim of absence |
-| 4 | the search never started — no plugin tree found, an incomplete payload, or no interpreter to run it with. Only the plugin's `memkit-recall` wrapper emits this; stderr names what is missing | nothing about the query or the config will change it. Note that `memkit`'s own table below gives 4 a different meaning |
+| 4 | the search never started — no plugin tree found, an incomplete payload, or no interpreter to run it with. Only the plugin's `memkit-recall` wrapper emits this; stderr names what is missing | nothing about the query or the config will change it. `memkit`'s own table below gives 4 a different meaning |
 
 Why 4 rather than 2 for that last one: 2 says "what you asked for is wrong",
 and all three of the states it names send a caller to fix its own request —
@@ -351,7 +350,7 @@ that variable and takes the path from the two routes in
 
 - **`schema`** — a reader that meets a higher number fails rather than reading
   half a config. For the hook, "fails" means degrading to inert and recording
-  why: it is fail-open by construction and must never block a prompt.
+  why: it is fail-open and must never block a prompt.
 - **`roots`** — named, each with a resolution `kind`. `path` is `~`-expanded
   when the config is *read*, so redirecting `HOME` redirects the whole tool.
   `git_toplevel` follows the checkout you are standing in. `config_relative`
@@ -566,8 +565,8 @@ reports every context.
 
 `tests/rig/` drives the real `claude` binary against a scratch profile, because
 what the plugin claims — that a manifest option reaches a hook's environment,
-that an installed wrapper emits pointers — are claims about a harness this repo
-does not own, and every one of them fails silently. Two tiers: the CLI tier
+that an installed wrapper emits pointers — are claims about Claude Code, which
+this repo does not own, and every one of them fails silently. Two tiers: the CLI tier
 needs only the binary and runs in CI, while the live tier needs a model and is
 opt-in.
 
@@ -585,7 +584,7 @@ writes).
 `src/`, `tests/` and `tools/` by directory, so a new file is covered there with
 no edit. `pyrightconfig-hook39.json` is an explicit file list, and it must name
 every file a **3.9 interpreter can execute**. That is two entry points: the
-recall hook, which the harness runs with whatever `python3` the `PATH`
+recall hook, which Claude Code runs with whatever `python3` the `PATH`
 resolves to, and `memkit.cli`, because the plugin's `bin/memkit` runs the
 dispatcher on that same interpreter — only checker-backed work routes to 3.12,
 and sending the whole dispatcher there would put `memkit doctor` out of reach

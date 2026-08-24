@@ -226,6 +226,11 @@ def test_the_source_is_one_an_adopter_without_ssh_keys_can_clone() -> None:
 # It is load-bearing rather than decorative: at a pin whose commit carries no
 # payload the install SUCCEEDS and registers nothing, so nothing an adopter is
 # told to run distinguishes it from a correct install waiting for a config.
+#
+# The BOLD MARKERS are part of the match, and they are what keeps this from
+# firing on the release-wrinkle paragraph, which carries the same words
+# unbolded to describe what the INSTALLED copy still says — so emphasising that
+# sentence would fail this case with a message about the marketplace pin.
 NOT_YET_INSTALLABLE = "**Not yet installable from this marketplace.**"
 
 
