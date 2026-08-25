@@ -22,7 +22,7 @@
   },
   "customManagers": [
     {
-      "description": "Tool pins in .github/workflows/check.yml. ruff and pyright are invoked through `uvx <tool>@<version>` so that CI is reproducible rather than 'whatever shipped this morning' — which means nothing else would ever tell us they had gone stale. The marker comment sits directly above the env var it names.",
+      "description": "Tool pins in .github/workflows/*.yml. ruff and pyright are invoked through `uvx <tool>@<version>` so that CI is reproducible rather than 'whatever shipped this morning' — which means nothing else would ever tell us they had gone stale. The marker comment sits directly above the env var it names, and EVERY workflow that pins CLAUDE_CODE_VERSION carries one: three of them do, a bump must move all three together, and a pin without the marker is one this manager cannot see — live.yml had exactly that and silently forked off check.yml's build. test_every_workflow_pins_the_same_claude_code_build is the assertion that keeps them equal.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^\\.github/workflows/.+\\.ya?ml$/"

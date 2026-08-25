@@ -38,7 +38,9 @@ tree before it runs a binary that writes. That assertion is not decoration —
 author's own profile carries a live memkit registration that a stray install
 would sit beside.
 
-Three tiers, and the split is what keeps CI honest:
+Four tiers, and the split is what keeps CI honest. The first three are
+OFFLINE by construction — they stage the working tree as a marketplace that
+serves itself in place — and the fourth is the one that is not:
 
   CLI tier     — needs only the `claude` binary. Marketplace add, install,
                  validate, and reading back what got registered. It never
@@ -55,6 +57,18 @@ Three tiers, and the split is what keeps CI honest:
                  local proxy. Opt-in through `MEMKIT_RIG_LIVE=1`, because a
                  scenario that silently skips in CI and only ever runs on one
                  machine is a scenario nobody should read as a gate.
+  REMOTE tier  — needs the NETWORK, and it is the only tier that does. Every
+                 other tier stages the working tree, which is the right thing
+                 to test on a pull request and is exactly wrong for one
+                 question: whether the thing an adopter actually types works.
+                 `marketplace add ak2k/memkit` fetches MAIN's manifest from
+                 github, and `install` clones the sha that manifest pins over
+                 the transport it names — neither of which any staged copy can
+                 exercise, because staging rewrites the source to `./`. Opt-in
+                 through `MEMKIT_RIG_REMOTE=1`, and out of the default run for
+                 the same reason the live tier is: a scenario that reaches the
+                 internet must say so rather than surprise somebody's `pytest`.
+                 No credential of any kind — that is the property under test.
 
 **WHAT A GREEN CI DOES NOT COVER**, recorded here because the next reader's
 question is what the required checks mean. Two claims live only in the live
@@ -65,6 +79,15 @@ across several real turns. A scheduled live run is the fix and it waits for the
 first tagged release; until then, a harness bump is checked by a human running
 `MEMKIT_RIG_LIVE=1 pytest tests/rig` and saying so in the PR, which is what
 `renovate.json` dashboard-gates that bump for.
+
+The remote tier is invisible to every merge too, and for a different reason: it
+gates on a schedule rather than on a pull request, because a required check
+that clones from github fails on github's bad afternoon. What that buys is
+what it costs — a transport regression is caught within a day of landing
+rather than at the moment it lands. It is also the gap that let a `github`-type
+source, which clones over SSH with no HTTPS fallback, reach v0.1.0: no
+automated check had ever fetched the real manifest, so the one thing every
+adopter does was the one thing nothing did.
 
 `MEMKIT_RIG_REQUIRED=1` (set by the `python` job) turns a missing `claude` into
 a FAILURE rather than a skip for the harness tier. A gate that skips itself
@@ -99,6 +122,17 @@ DEFAULT_PROXY = "http://127.0.0.1:18317"
 # convenience — CI. See the tier note above for why a skip is the wrong answer
 # there.
 REQUIRED_ENV = "MEMKIT_RIG_REQUIRED"
+# The remote tier's opt-in. Separate from LIVE_ENV rather than folded into it,
+# because the two tiers need different things and either can be available
+# without the other: a runner has network and no model credential, and the
+# author's laptop behind the local proxy has a model and may be offline.
+REMOTE_ENV = "MEMKIT_RIG_REMOTE"
+
+# The repository the remote tier reaches, spelled the way an adopter types it
+# into `claude plugin marketplace add`. Owner/repo shorthand rather than a URL,
+# because the shorthand is what the README documents and what the harness then
+# resolves — and how it resolves it is part of what this tier measures.
+REMOTE_MARKETPLACE = "ak2k/memkit"
 
 # Routes the model call somewhere that cannot answer, without touching what
 # runs before it. Bedrock rather than a bogus `ANTHROPIC_BASE_URL`, because a
@@ -234,12 +268,41 @@ def require_claude() -> str:
 
 
 def live_tier_reason() -> str | None:
-    """Why the live tier cannot run here, or None when it can."""
-    if (reason := cli_tier_reason()) is not None:
-        return reason
+    """Why the live tier cannot run here, or None when it can.
+
+    The OPT-IN is checked first and the required declaration second, which is
+    the order the harness tier already used and the order this one was missing.
+    `live.yml` sets `MEMKIT_RIG_REQUIRED=1` and says in its own comments that
+    it does so to turn a scenario that cannot start into a failure — but the
+    binary check came first here, so a run whose `npm install -g` step had
+    quietly stopped working skipped all five scenarios and reported green. That
+    is the lying gate this module exists to refuse, in the file that refuses it.
+    """
     if os.environ.get(LIVE_ENV) != "1":
         return f"{LIVE_ENV}=1 not set — the live tier needs a model to answer"
-    return None
+    if os.environ.get(REQUIRED_ENV) == "1":
+        return None
+    return cli_tier_reason()
+
+
+def remote_tier_reason() -> str | None:
+    """Why the remote tier cannot run here, or None when it can.
+
+    Two gates in a deliberate order. The opt-in first, so a bare `pytest` never
+    reaches github — a test run that silently makes network calls is a test run
+    somebody has to discover. Then the required declaration, so that a caller
+    that HAS opted in gets a failure rather than a skip when the binary is
+    missing: the whole point of this tier is a claim nothing else in the repo
+    checks, and a skipped scenario reports exactly like a passing one.
+    """
+    if os.environ.get(REMOTE_ENV) != "1":
+        return (
+            f"{REMOTE_ENV}=1 not set — the remote tier clones from github, so "
+            "it is opt-in rather than part of a bare `pytest`"
+        )
+    if os.environ.get(REQUIRED_ENV) == "1":
+        return None
+    return cli_tier_reason()
 
 
 class Profile:
@@ -370,16 +433,48 @@ class Profile:
 
     # --- plugin lifecycle ----------------------------------------------------
 
-    def marketplace_add(self, path: Path) -> subprocess.CompletedProcess[str]:
-        return self.claude("plugin", "marketplace", "add", str(path))
+    def marketplace_add(
+        self, path: Path | str, *, timeout: int = 120
+    ) -> subprocess.CompletedProcess[str]:
+        """Add a marketplace by path, or by whatever spelling the harness
+        resolves — `owner/repo` for the remote tier, which is the only caller
+        that passes something other than a directory and the only one that
+        needs the longer timeout a clone can take.
+        """
+        return self.claude(
+            "plugin", "marketplace", "add", str(path), timeout=timeout
+        )
 
     def install(
-        self, spec: str, *, config: dict[str, str] | None = None
+        self,
+        spec: str,
+        *,
+        config: dict[str, str] | None = None,
+        timeout: int = 120,
+        check: bool = True,
+        **kw,
     ) -> subprocess.CompletedProcess[str]:
+        """`--yes` and `--config` in one non-interactive command, the way an
+        agent installs.
+
+        `check=False` is for the scenarios whose subject is the FAILURE — a
+        source type that cannot clone without a credential — where a raised
+        AssertionError would hide the exit status the case is about.
+        """
         args = ["plugin", "install", spec, "--yes"]
         for key, value in (config or {}).items():
             args += ["--config", f"{key}={value}"]
-        return self.claude(*args)
+        return self.claude(*args, timeout=timeout, check=check, **kw)
+
+    def details(self, spec: str) -> subprocess.CompletedProcess[str]:
+        """The harness's own component inventory for an installed plugin.
+
+        The one readback that distinguishes an install which REGISTERED
+        something from one that merely exited 0. A pin whose commit carries no
+        `hooks/hooks.json` installs perfectly and reports `Hooks (0)`, and
+        nothing else an adopter runs tells the two apart — measured.
+        """
+        return self.claude("plugin", "details", spec, check=False)
 
     def installed(self) -> list[dict]:
         out = self.claude("plugin", "list", "--json")
@@ -476,3 +571,62 @@ def stage_plugin(dest: Path, repo: Path = REPO) -> Path:
         entry["source"] = "./"
     manifest.write_text(json.dumps(blob, indent=2), encoding="utf-8")
     return dest
+
+
+# --- the corpus a scenario points an install at, and the record it reads back -
+#
+# Both used to live as module-privates in `test_plugin_install.py`. They are
+# here because a second tier now needs them and two copies of "which corpus"
+# and "what counts as a soak record" is two chances to answer the same question
+# differently — which would make the harness tier and the remote tier look like
+# they agree when they had measured different things.
+
+
+def fixture_config(profile: Profile, repo: Path = REPO) -> Path:
+    """The invented two-store corpus, COPIED into the profile's own HOME.
+
+    Copied rather than pointed at, for two independent reasons. The hook writes
+    an index and a `.build` record beside the config, and the eval snapshot and
+    the corpus belong to the repo — a scenario must not be able to touch them.
+    And the resulting path is one no rung but the install option can name, so a
+    pointer to a memory in this store is proof the option arrived.
+    """
+    fixtures = profile.home / "fixtures"
+    shutil.copytree(repo / "tests" / "fixtures", fixtures)
+    return fixtures / "memkit.json"
+
+
+def soak_records(profile: Profile) -> list[dict]:
+    """Every soak record this profile's hook has written, oldest first.
+
+    An ABSENT log is an empty list rather than an error: it is the honest
+    answer for the scenarios whose subject is a hook that correctly refused to
+    run, and the callers that need one assert on the emptiness themselves with
+    a message that says what they expected.
+
+    A MALFORMED log is neither. The soak log is memkit's own artifact and the
+    evidence every no-model scenario rests on, so a line that will not parse is
+    a failure about the product — not a `ValueError` from a test helper, which
+    is what a bare `json.loads` in a comprehension produced.
+    """
+    log = profile.home / ".cache" / "memory-recall" / "log.jsonl"
+    if not log.is_file():
+        return []
+    records = []
+    for number, line in enumerate(log.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            raise AssertionError(
+                f"{log} line {number} is not JSON, so the soak log cannot say "
+                f"what the hook did: {line[:200]!r}"
+            ) from None
+        if not isinstance(record, dict) or "outcome" not in record:
+            raise AssertionError(
+                f"{log} line {number} is not a soak record — every record "
+                f"carries an `outcome`: {record!r}"
+            )
+        records.append(record)
+    return records
