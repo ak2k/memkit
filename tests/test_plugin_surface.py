@@ -307,9 +307,31 @@ def test_the_uvx_spec_and_the_readme_name_the_same_rev() -> None:
     spec = match.group(1)
     # A rev, not a bare repository URL — `git+…/memkit` means main.
     assert "@" in spec.rsplit("/", 1)[-1], spec
-    assert (REPO / "README.md").read_text(encoding="utf-8").count(spec) >= 1, (
-        "the README does not quote the spec the shell actually uses", spec
-    )
+    # EVERY rev the docs quote for this repository, not merely one of them.
+    # Requiring a single match was enough while the README named the spec once;
+    # pinning the `Leaving` recipe gave it a second call site, and a rev can now
+    # go stale in one place while the other keeps the case green. `docs/STORE.md`
+    # carries a third.
+    rev = spec.rsplit("@", 1)[1]
+    quoted = {}
+    for rel in ("README.md", "docs/STORE.md"):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        quoted[rel] = set(
+            re.findall(r"git\+https://github\.com/ak2k/memkit@([\w.]+)", text)
+        )
+    assert quoted["README.md"], "the README does not quote the spec at all"
+    for rel, revs in quoted.items():
+        assert revs <= {rev}, (rel, sorted(revs), rev)
+    # And no `uvx --from` call site is UNPINNED, which is how the uninstall
+    # recipe shipped for two releases: somebody checking their store survives an
+    # uninstall got a different build than the one they were running. Scoped to
+    # `uvx`, because the pip channel's `pip install git+…/memkit` is deliberately
+    # unpinned — that channel installs the CLIs from main and says so.
+    for rel in ("README.md", "docs/STORE.md"):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        assert not re.search(
+            r"uvx --from git\+https://github\.com/ak2k/memkit(?![@\w.])", text
+        ), rel
 
 
 def test_every_relative_link_in_the_readme_resolves() -> None:
