@@ -5267,10 +5267,29 @@ def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
     # And the table does not invent values the hook cannot write.
     listed = set(re.findall(r"`(gate:[a-z:]+|injected|deduped|floored|killed|error|output-lost)`", table))
     assert listed <= emitted, sorted(listed - emitted)
-    # The prompt-shape gates are named as a set in the source, and every one of
-    # them is in the table: that set is what main() dispatches on, so a gate
-    # added there and missed here is a silent state with no row.
-    for gate in hook.PROMPT_SHAPE_GATES:
+    # The dispatch set has to BE what `prompt_gate` returns, not a subset of
+    # it. main() answers these without looking at a store; a gate the function
+    # can return and the set omits falls through to the store path and is
+    # recorded as something else entirely — and shrinking the set would
+    # otherwise make this loop check fewer things and still pass.
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "prompt_gate"
+    )
+    returned = {
+        n.value.value for n in ast.walk(fn)
+        if isinstance(n, ast.Return)
+        and isinstance(n.value, ast.Constant)
+        and isinstance(n.value.value, str)
+    }
+    assert returned, "prompt_gate returns no literals — the scrape is blind"
+    # `gate:stopwords` is deliberately outside the set: `gate:nodirs` outranks
+    # it, so it is answered after the store check rather than before.
+    assert returned - {"gate:stopwords"} == hook.PROMPT_SHAPE_GATES, (
+        sorted(hook.PROMPT_SHAPE_GATES), sorted(returned)
+    )
+    for gate in returned:
         assert f"`{gate}`" in table, gate
 
 def test_every_outcome_the_hook_writes_is_named_where_it_is_written() -> None:

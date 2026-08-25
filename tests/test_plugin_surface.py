@@ -2821,8 +2821,12 @@ def test_the_silent_gates_section_names_every_gate_the_hook_applies() -> None:
     assert f"under {_number_word(hook.MIN_PROMPT_WORDS)} words" in section, (
         hook.MIN_PROMPT_WORDS, section[:400]
     )
+    assert f"over {hook.PROMPT_MAX_CHARS} characters" in section, (
+        hook.PROMPT_MAX_CHARS, "the paste ceiling has no row"
+    )
     for gate in ("already fired this session", "envelope", "disabled",
-                 "config: none", "corpus", "session budget"):
+                 "config: none", "corpus", "session budget",
+                 "began with `/`", "all common words", "ran out of time"):
         assert gate in section, gate
     # The cross-check command is reachable where the reader is standing, and
     # the section says plainly that the CLI is not subject to the prompt gates.
@@ -2979,6 +2983,51 @@ def test_the_two_checker_help_surfaces_are_readable(module, prog) -> None:
     for maintainer_only in ("uv run --script", "deliberate one-file break",
                             "KTD", "shebang the rest of this author"):
         assert maintainer_only not in text, maintainer_only
+
+
+def test_the_verification_block_checks_the_installed_path() -> None:
+    """The check has to exercise the config the HOOK reads.
+
+    Checking the path the reader meant to install reports a healthy store while
+    the hook is inert, and a one-character typo in `memkitConfig` is the
+    likeliest install mistake there is — the one state where a green light is
+    worse than no light.
+    """
+    for heading in ("## Quick start", "## Why nothing appeared"):
+        section = _readme_section(heading)
+        if '"$RECALL"' not in section:
+            continue
+        for line in _fenced_command_lines(section):
+            if not line.startswith('"$RECALL"'):
+                continue
+            # A literal path here is the defect: it is the reader's intention,
+            # not the installed option.
+            assert "/.config/" not in line and "/.cache/" not in line, line
+            assert "--config" in line, line
+    quick = _readme_section("## Quick start")
+    assert "pluginConfigs" in quick, "the block never reads settings.json back"
+    assert '--config "$MEMKIT_CFG"' in quick, quick[-900:]
+
+
+def test_the_config_location_is_not_a_cache_directory() -> None:
+    """The config is the one file in this design that nothing regenerates.
+
+    `memkit init` is not in this build, so a purged cache directory returns the
+    install to inert permanently — and the README tells the reader, two
+    sections from where it used to put the file, that everything under
+    `~/.cache/memory-recall/` is disposable.
+    """
+    default = _json(PLUGIN_MANIFEST)["userConfig"]["memkitConfig"]["default"]
+    assert "/.cache/" not in default, default
+    quick = _readme_section("## Quick start")
+    written = re.search(r"cat > (\S*memkit\.json) <<'EOF'", quick)
+    assert written, quick[:400]
+    assert "/.cache/" not in written.group(1), written.group(1)
+    # The manifest offers what the page tells you to create, so an adopter who
+    # takes the default and one who follows the page land in the same place.
+    assert written.group(1).replace("~", "") == default.replace("~", ""), (
+        written.group(1), default
+    )
 
 
 # --- what the inert message says a config can arrive by ----------------------
