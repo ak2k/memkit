@@ -132,6 +132,7 @@ payload. A commit cannot name its own sha, so the installed copy carries the
 pin of the release before it — comparing against that file reports tampering on
 a perfectly clean install.
 
-The repository commands do not work inside the installed copy either: it is a
-shallow clone at the pinned commit, so `git ls-tree <sha>` there answers
-`fatal: not a tree object`.
+The repository commands above do not work inside the installed copy *with the
+pinned sha*: it is a shallow clone, so `git ls-tree <that sha>` answers
+`fatal: not a tree object` there. `git ls-tree -r HEAD` works and returns the
+same 57.

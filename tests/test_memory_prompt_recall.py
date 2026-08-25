@@ -5267,9 +5267,15 @@ def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
         if not name.startswith("cli:") and f"`{name}`" not in table
     )
     assert not missing, missing
-    # And the table does not invent values the hook cannot write.
+    # And the table does not invent values the hook cannot write — with one
+    # allowance, narrowly drawn: a value a PREVIOUS RELEASE writes belongs
+    # here, because the log an adopter is reading was written by the release
+    # they installed, not by main. It has to say so in the same breath, so the
+    # allowance cannot be used to smuggle in a name nothing ever wrote.
     listed = set(re.findall(r"`(gate:[a-z:]+|injected|deduped|floored|killed|error|output-lost)`", table))
-    assert listed <= emitted, sorted(listed - emitted)
+    for name in sorted(listed - emitted):
+        mentions = [ln for ln in table.splitlines() if f"`{name}`" in ln]
+        assert any("releases before" in ln for ln in mentions), (name, mentions)
     # The dispatch set has to BE what `prompt_gate` returns, not a subset of
     # it. main() answers these without looking at a store; a gate the function
     # can return and the set omits falls through to the store path and is
