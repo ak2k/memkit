@@ -307,6 +307,41 @@ rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
 host — the hook fails open, so a broken rollout is silent. It carries a verify
 block per channel; the nix one reads paths a plugin install does not have.
 
+## Your store
+
+A store is a directory of markdown files. Point a config at it and the next
+prompt searches it — you do not need ledgers, a particular layout, or even
+frontmatter to get pointers.
+
+A memory is one file, one claim:
+
+```markdown
+---
+name: postgres-connection-pool
+description: PgBouncer in transaction mode breaks session-scoped features — prepared statements, advisory locks, and SET LOCAL do not survive.
+type: reference
+---
+
+# PgBouncer transaction mode
+
+Transaction pooling hands a different backend to every transaction, so
+anything the client thinks is session state is gone by the next statement.
+```
+
+Ask *"why do prepared statements break under pgbouncer transaction pooling"*
+and that file arrives as a pointer:
+
+```
+- ~/notes/search/postgres-connection-pool.md — PgBouncer in transaction mode breaks session-scoped features — … [matches 5/7 prompt terms: prepared, statements, pgbouncer, transaction, pooling] [section: PgBouncer transaction mode]
+```
+
+`description:` is the whole of what the agent sees before deciding to open the
+file, so write it as the claim rather than a title. Everything else about
+stores — what is searched and what is skipped, how a pointer gets chosen, the
+160-character cap, git, archiving, the optional checker, and a paste-able
+`CLAUDE.md` block for letting your agent write the memories — is in
+[docs/STORE.md](docs/STORE.md).
+
 ## Config
 
 One JSON file, read by all of them. `--config PATH` where a tool takes one,

@@ -81,6 +81,14 @@ needs_permissions = pytest.mark.skipif(
 )
 
 
+def _readme_section(heading: str) -> str:
+    """One `## ` section of the README, heading to next heading of that level."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    start = text.index(heading)
+    nxt = text.find("\n## ", start + len(heading))
+    return text[start : nxt if nxt != -1 else len(text)]
+
+
 def _needs_checkout() -> None:
     """Skip only where a checkout genuinely cannot exist, and FAIL elsewhere.
 
@@ -2568,6 +2576,122 @@ def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> No
         env={"PATH": os.environ["PATH"], "HOME": str(tmp_path)},
     )
     assert "memory-recall" in set(COMMANDISH.findall(out.stdout + out.stderr))
+
+
+# --- the store guidance ------------------------------------------------------
+
+STORE_DOC = REPO / "docs" / "STORE.md"
+
+
+def _first_markdown_block(text: str) -> str:
+    """The first ```markdown fence's contents."""
+    match = re.search(r"```markdown\n(.*?)```", text, re.S)
+    assert match, "no ```markdown block"
+    return match.group(1)
+
+
+def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
+    """The example is executed, not illustrated.
+
+    A worked example is the first thing an adopter copies and the first thing
+    to rot: the description cap, the frontmatter keys and the pointer's shape
+    are all things this repository changes, and a README that demonstrates a
+    memory nobody ever retrieved is worse than none — it fails on their
+    machine, where they have no way to tell their store from our example.
+
+    So the file is taken out of the doc, dropped into a scratch store, and the
+    real hook is asked the question the doc says to ask it.
+    """
+    memory = _first_markdown_block(STORE_DOC.read_text(encoding="utf-8"))
+    assert memory.lstrip().startswith("---"), memory[:80]
+
+    store = tmp_path / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "search" / "postgres-connection-pool.md").write_text(
+        memory, encoding="utf-8"
+    )
+    config = _config_file(
+        tmp_path / "memkit.json",
+        roots={"notes": {"kind": "path", "path": str(store)}},
+        stores=[{
+            "id": "notes", "role": "project", "dir": ".",
+            "live_root": "notes", "edit_root": "notes",
+        }],
+    )
+    prompt = "why do prepared statements break under pgbouncer transaction pooling"
+    out = subprocess.run(
+        ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py")],
+        input=json.dumps({"session_id": "storedoc", "prompt": prompt}),
+        capture_output=True, text=True, timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path),
+             "MEMKIT_CONFIG": str(config)},
+    )
+    assert out.returncode == 0, out.stderr
+    pointers = [ln for ln in out.stdout.splitlines() if ln.startswith("- ")]
+    assert len(pointers) == 1, out.stdout
+
+    # The description the doc shows is the description the agent gets.
+    described = re.search(r"^description:\s*(.+)$", memory, re.M)
+    assert described, memory[:200]
+    assert described.group(1).strip() in pointers[0], (described.group(1), pointers[0])
+
+    # And the doc's rendered pointer is not a hand-drawn picture of one: the
+    # terms it claims matched are the terms that matched.
+    claimed = re.search(r"\[matches (\d+)/(\d+) prompt terms: ([^\]]+)\]", STORE_DOC.read_text(encoding="utf-8"))
+    assert claimed, "the doc shows no pointer"
+    actual = re.search(r"\[matches (\d+)/(\d+) prompt terms: ([^\]]+)\]", pointers[0])
+    assert actual, pointers[0]
+    assert claimed.groups() == actual.groups(), (claimed.groups(), actual.groups())
+
+
+def test_the_store_docs_name_only_commands_this_channel_ships(root) -> None:
+    """Every `memkit…` command the store guidance hands out has to exist where
+    the reader is standing.
+
+    The guidance is written for a plugin adopter, whose `PATH` carries the
+    plugin's `bin/` and nothing else of memkit's — so a command borrowed from
+    the pip channel reads as instruction and answers `command not found`. The
+    checker is the live trap: it is a console script pip and nix install and
+    the plugin does NOT ship, which is why the doc routes it through `uvx`.
+    """
+    shipped = {
+        entry.name
+        for entry in (root / "bin").iterdir()
+        if entry.is_file() and os.access(entry, os.X_OK)
+    }
+    assert "memkit-recall" in shipped, shipped
+    # Fence markers first: a ``` line pairs with the inline backticks around
+    # it and the scrape then reads the whole document as one code span, which
+    # finds nothing and passes.
+    def inline(text: str) -> list[str]:
+        body = "\n".join(
+            ln for ln in text.splitlines() if not ln.lstrip().startswith("```")
+        )
+        return re.findall(r"`([^`\n]+)`", body)
+
+    surfaces = {
+        "docs/STORE.md": STORE_DOC.read_text(encoding="utf-8"),
+        "README.md#your-store": _readme_section("## Your store"),
+    }
+    for where, text in surfaces.items():
+        for command in inline(text):
+            head = command.split()[0] if command.split() else ""
+            if not COMMANDISH.fullmatch(head):
+                continue
+            assert head in shipped, (where, command, sorted(shipped))
+    # Non-vacuity: the scrape sees the command the guidance really does hand
+    # out, so a section that named nothing could not pass quietly.
+    found = {
+        c.split()[0]
+        for c in inline(surfaces["docs/STORE.md"])
+        if c.split() and COMMANDISH.fullmatch(c.split()[0])
+    }
+    assert "memkit-recall" in found, found
+    # The checker is named, and only ever behind `uvx --from`.
+    doc = surfaces["docs/STORE.md"]
+    for match in re.finditer(r"memory-integrity", doc):
+        line = doc[doc.rfind("\n", 0, match.start()) + 1 : match.end()]
+        assert "uvx --from" in line, line
 
 
 # --- what the inert message says a config can arrive by ----------------------
