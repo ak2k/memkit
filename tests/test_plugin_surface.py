@@ -2747,8 +2747,22 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
         )
         assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr)
         assert "pgbouncer.md" in out.stdout, out.stdout
-        # And no `/./` in the path the adopter is handed, which is what the
-        # minimal config's `"dir": "."` used to produce.
+        # And no `/./` in the paths this config makes memkit print. The
+        # pointer path is `~`-relative and normalises on its way through that,
+        # so the diagnostic is where the raw join shows: it prints the store
+        # directory as resolved, and `"dir": "."` joined raw put a `/./`
+        # through the middle of it.
+        diag = subprocess.run(
+            ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+             "--config", str(config), "--debug-config"],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": os.environ["PATH"], "HOME": tmp},
+        )
+        assert diag.returncode == hook.EXIT_OK, diag.stderr
+        # The exact directory, with nothing appended: a raw join of `.` prints
+        # `<store>/.`, and asserting on a substring like `/./` misses it.
+        assert f"store notes: {notes} [" in diag.stdout, diag.stdout
+        assert f"corpus:  {notes} —" in diag.stdout, diag.stdout
         assert "/./" not in out.stdout, out.stdout
 
 
