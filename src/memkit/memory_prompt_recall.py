@@ -418,8 +418,13 @@ class Config:
         raise ConfigError(f"{self.path}: root {name!r} has unknown kind {kind!r}")
 
     def store_dir(self, store: Store, which: str = "live") -> str:
+        # Normalised, because this path is not only opened — it is PRINTED, in
+        # every pointer the model reads and in every diagnostic line. The
+        # smallest config a store can have says `"dir": "."`, and joining that
+        # raw puts a `/./` in the middle of every path an adopter is shown, on
+        # the one surface whose whole job is to be pasted into `open()`.
         root = store.live_root if which == "live" else store.edit_root
-        return os.path.join(self.root(root), store.dir)
+        return os.path.normpath(os.path.join(self.root(root), store.dir))
 
     def searched_stores(self) -> list:
         """Stores this session may read, in config order.
@@ -635,6 +640,19 @@ def _use_config(path: str | None) -> None:
 # exactly the load-bearing tokens (a five-word question naming one host,
 # was wrongly gated at the previous minimum of 6).
 MIN_PROMPT_WORDS = 3
+
+# The paste ceiling. A prompt this long is a stack trace, a log excerpt or a
+# file somebody dropped in; its vocabulary is not what they are asking about,
+# and retrieving on it returns noise at the top of every such prompt.
+PROMPT_MAX_CHARS = 4000
+
+# Every outcome `prompt_gate` can return for something about the PROMPT'S SHAPE
+# rather than about the machine or the corpus — the set main() answers without
+# looking at a store, and the set the docs enumerate. Named once so a new gate
+# cannot be added to prompt_gate and missed at the dispatch below.
+PROMPT_SHAPE_GATES = frozenset(
+    {"gate:envelope", "gate:empty", "gate:slash", "gate:short", "gate:long"}
+)
 # Harness envelopes: scaffolding the harness addresses to the agent, not a
 # question the user asked. On the author's corpus 14.9% of search-reaching
 # traffic is one of these, and the shipped hook injects on 100% of them at the
@@ -1264,6 +1282,25 @@ def _store_live_dir(cfg, store, searched: list) -> str | None:
         return None
     live = cfg.store_dir(store, "live")
     return _search_root(live) if os.path.isdir(live) else None
+
+
+def _corpus_files(root: str) -> int:
+    """How many files retrieval would consider under `root`.
+
+    Shares the RULES with the indexing walk — `EXCLUDE_DIRS` and
+    `EXCLUDE_BASENAMES` are the module's, not a second copy — and not the walk
+    itself: that one collects sizes and mtimes to decide what to reindex, and
+    this runs on a diagnostic whose contract is that it opens no index.
+    """
+    total = 0
+    for _dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
+        total += sum(
+            1
+            for name in filenames
+            if name.endswith(".md") and name not in EXCLUDE_BASENAMES
+        )
+    return total
 
 
 def _store_state(cfg, store, searched: list) -> str:
@@ -2842,14 +2879,20 @@ def prompt_gate(stripped: str) -> str | None:
     # scaffolding vocabulary out of the index entirely.
     if _is_envelope(stripped):
         return "gate:envelope"
-    # Nothing to do on short prompts, slash commands, pasted blobs.
-    if (
-        not stripped
-        or stripped.startswith("/")
-        or len(stripped.split()) < MIN_PROMPT_WORDS
-        or len(stripped) > 4000
-    ):
-        return "gate:shape"
+    # One name per cause. These were a single `gate:shape` and the collapse
+    # was not survivable: the same value had to be read as "a person typed
+    # something too short to search" in one argument and "a user pasted a blob"
+    # in another, and those are different populations. A record whose reader
+    # cannot tell which gate fired cannot answer the question the record exists
+    # for, and the triage table's remedy differs per cause.
+    if not stripped:
+        return "gate:empty"
+    if stripped.startswith("/"):
+        return "gate:slash"
+    if len(stripped.split()) < MIN_PROMPT_WORDS:
+        return "gate:short"
+    if len(stripped) > PROMPT_MAX_CHARS:
+        return "gate:long"
     if build_query(stripped) is None:
         return "gate:stopwords"
     return None
@@ -3382,7 +3425,7 @@ def main() -> None:
     # the prompt whatever its vocabulary. Splitting the call is what preserves
     # that order without restating any condition.
     gate = prompt_gate(stripped)
-    if gate in ("gate:envelope", "gate:shape"):
+    if gate in PROMPT_SHAPE_GATES:
         return done(gate)
     if not _search_dirs():
         # No config, or one this build could not honour. Both leave the hook
@@ -3806,6 +3849,27 @@ def _print_config(state: tuple) -> int:
         gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
         state_shown = _store_state(display, store, shown_searched)
         print(f"store {store.id}: {live} [{store.role}; {gated}; {state_shown}]")
+        # WHERE retrieval will actually look, and how much is there. Without
+        # these two facts a green line above is compatible with an empty
+        # corpus and with a corpus the tiering rule has moved out from under:
+        # `<store>/search` becomes the root the moment it exists, so creating
+        # it mid-migration strands every file still above it — retrievable one
+        # prompt, gone the next, with the store directory unchanged on disk and
+        # every other line here still reading `searched`.
+        if state_shown == "searched":
+            corpus = _search_root(live)
+            count = _corpus_files(corpus)
+            print(f"  corpus:  {corpus} — {count} file{'' if count == 1 else 's'}")
+            if corpus != live:
+                stranded = _corpus_files(live) - count
+                if stranded > 0:
+                    print(
+                        f"  ! {stranded} markdown file"
+                        f"{'' if stranded == 1 else 's'} under {live} "
+                        f"{'is' if stranded == 1 else 'are'} outside the corpus "
+                        "root and will not be retrieved — move them into "
+                        f"{os.path.basename(corpus)}/"
+                    )
 
         twin = served_by_id.get(store.id)
         if twin is None:
@@ -4076,6 +4140,20 @@ def search_cli(argv: list[str]) -> int:
         if _CONFIG_ERROR:
             print(f"{_self_name()}: {_CONFIG_ERROR}", file=sys.stderr)
             return EXIT_ERROR
+        # WHAT was searched, on stderr, without touching the exit contract.
+        # grep's silence is right when the caller knows the corpus; here the
+        # caller is often an adopter checking whether their install works, and
+        # a bare exit 1 cannot be told from a wrong config or a crash. stdout
+        # stays empty so a pipeline still sees no matches.
+        looked = [os.path.expanduser(d) for d in (dirs or _search_dirs())]
+        corpora = [_search_root(d) for d in looked if os.path.isdir(d)]
+        files = sum(_corpus_files(c) for c in corpora)
+        where = ", ".join(_display_path(c) for c in corpora) or "no directory"
+        print(
+            f"{_self_name()}: no match in {files} file"
+            f"{'' if files == 1 else 's'} under {where}",
+            file=sys.stderr,
+        )
         return EXIT_NO_MATCH
     print("\n".join(lines))
     return EXIT_OK

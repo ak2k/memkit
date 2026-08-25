@@ -23,6 +23,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,14 @@ def _json(path: Path) -> dict:
 needs_permissions = pytest.mark.skipif(
     os.geteuid() == 0, reason="root reads mode-000 files, so nothing is unreadable"
 )
+
+
+def _readme_section(heading: str) -> str:
+    """One `## ` section of the README, heading to next heading of that level."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    start = text.index(heading)
+    nxt = text.find("\n## ", start + len(heading))
+    return text[start : nxt if nxt != -1 else len(text)]
 
 
 def _needs_checkout() -> None:
@@ -321,6 +330,22 @@ def test_every_relative_link_in_the_readme_resolves() -> None:
     # Non-vacuity: there ARE relative links, and the one this exists for is
     # among them.
     assert "docs/ADMISSION.md" in targets, targets
+
+    # And every in-page link resolves to a heading that exists. The README now
+    # carries a table of contents and cross-links between sections, and a
+    # heading rename breaks those silently — GitHub renders a dead anchor as a
+    # jump to the top of the page, which reads as the link working.
+    anchors = {
+        re.sub(r"[^a-z0-9 -]", "", heading.lower()).replace(" ", "-")
+        # `####` too: GitHub anchors every heading level, and the nav block
+        # links to one.
+        for heading in re.findall(r"^#{2,6} (.+)$", readme, re.M)
+    }
+    inpage = re.findall(r"\]\(#([^)]+)\)", readme)
+    assert inpage, "no in-page links at all"
+    assert not [a for a in inpage if a not in anchors], (
+        sorted({a for a in inpage if a not in anchors}), sorted(anchors)
+    )
 
 
 def test_the_admission_note_answers_what_it_claims_to() -> None:
@@ -2568,6 +2593,444 @@ def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> No
         env={"PATH": os.environ["PATH"], "HOME": str(tmp_path)},
     )
     assert "memory-recall" in set(COMMANDISH.findall(out.stdout + out.stderr))
+
+
+# --- the store guidance ------------------------------------------------------
+
+STORE_DOC = REPO / "docs" / "STORE.md"
+
+
+def _worked_memory_block(text: str) -> str:
+    """The ```markdown fence holding the worked memory FILE.
+
+    Identified by its frontmatter rather than by position: the document has
+    other markdown fences — the `CLAUDE.md` import line, the agent block — and
+    "the first one" silently became one of those the moment another was added
+    above it, which is a test that goes on passing about the wrong text.
+    """
+    blocks = [
+        b for b in re.findall(r"```markdown\n(.*?)```", text, re.S)
+        if b.lstrip().startswith("---")
+    ]
+    assert len(blocks) == 1, f"{len(blocks)} markdown blocks carry frontmatter"
+    return blocks[0]
+
+
+def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
+    """The example is executed, not illustrated.
+
+    A worked example is the first thing an adopter copies and the first thing
+    to rot: the description cap, the frontmatter keys and the pointer's shape
+    are all things this repository changes, and a README that demonstrates a
+    memory nobody ever retrieved is worse than none — it fails on their
+    machine, where they have no way to tell their store from our example.
+
+    So the file is taken out of the doc, dropped into a scratch store, and the
+    real hook is asked the question the doc says to ask it.
+    """
+    memory = _worked_memory_block(STORE_DOC.read_text(encoding="utf-8"))
+    assert memory.lstrip().startswith("---"), memory[:80]
+
+    store = tmp_path / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "search" / "postgres-connection-pool.md").write_text(
+        memory, encoding="utf-8"
+    )
+    config = _config_file(
+        tmp_path / "memkit.json",
+        roots={"notes": {"kind": "path", "path": str(store)}},
+        stores=[{
+            "id": "notes", "role": "project", "dir": ".",
+            "live_root": "notes", "edit_root": "notes",
+        }],
+    )
+    prompt = "why do prepared statements break under pgbouncer transaction pooling"
+    out = subprocess.run(
+        ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py")],
+        input=json.dumps({"session_id": "storedoc", "prompt": prompt}),
+        capture_output=True, text=True, timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path),
+             "MEMKIT_CONFIG": str(config)},
+    )
+    assert out.returncode == 0, out.stderr
+    pointers = [ln for ln in out.stdout.splitlines() if ln.startswith("- ")]
+    assert len(pointers) == 1, out.stdout
+
+    # The description the doc shows is the description the agent gets.
+    described = re.search(r"^description:\s*(.+)$", memory, re.M)
+    assert described, memory[:200]
+    assert described.group(1).strip() in pointers[0], (described.group(1), pointers[0])
+
+    # The pointer the doc PRINTS quotes the description the doc SHOWS. Without
+    # this the two halves of the example drift apart silently: the file and the
+    # assertion both come from the doc, so editing the frontmatter alone keeps
+    # this case green while the rendered line goes on quoting the old text.
+    shown = STORE_DOC.read_text(encoding="utf-8")
+    rendered = next(
+        ln for ln in shown.splitlines()
+        if ln.startswith("- ~/notes/search/postgres-connection-pool.md")
+    )
+    assert described.group(1).strip() in rendered, (described.group(1), rendered)
+
+    # And the doc's rendered pointer is not a hand-drawn picture of one: the
+    # terms it claims matched are the terms that matched.
+    claimed = re.search(r"\[matches (\d+)/(\d+) prompt terms: ([^\]]+)\]", STORE_DOC.read_text(encoding="utf-8"))
+    assert claimed, "the doc shows no pointer"
+    actual = re.search(r"\[matches (\d+)/(\d+) prompt terms: ([^\]]+)\]", pointers[0])
+    assert actual, pointers[0]
+    assert claimed.groups() == actual.groups(), (claimed.groups(), actual.groups())
+
+
+def test_the_store_docs_name_only_commands_this_channel_ships(root) -> None:
+    """Every `memkit…` command the store guidance hands out has to exist where
+    the reader is standing.
+
+    The guidance is written for a plugin adopter, whose `PATH` carries the
+    plugin's `bin/` and nothing else of memkit's — so a command borrowed from
+    the pip channel reads as instruction and answers `command not found`. The
+    checker is the live trap: it is a console script pip and nix install and
+    the plugin does NOT ship, which is why the doc routes it through `uvx`.
+    """
+    shipped = {
+        entry.name
+        for entry in (root / "bin").iterdir()
+        if entry.is_file() and os.access(entry, os.X_OK)
+    }
+    assert "memkit-recall" in shipped, shipped
+    # A code span never spans a line, and saying so is what keeps a ``` fence
+    # from pairing with the inline backticks below it and swallowing the
+    # document into one match — which finds nothing and passes.
+    def inline(text: str) -> list[str]:
+        return re.findall(r"`([^`\n]+)`", text)
+
+    surfaces = {
+        "docs/STORE.md": STORE_DOC.read_text(encoding="utf-8"),
+        "README.md#your-store": _readme_section("## Your store"),
+    }
+    for where, text in surfaces.items():
+        for command in inline(text):
+            head = command.split()[0] if command.split() else ""
+            if not COMMANDISH.fullmatch(head):
+                continue
+            assert head in shipped, (where, command, sorted(shipped))
+    # Non-vacuity: the scrape sees the command the guidance really does hand
+    # out, so a section that named nothing could not pass quietly.
+    found = {
+        c.split()[0]
+        for c in inline(surfaces["docs/STORE.md"])
+        if c.split() and COMMANDISH.fullmatch(c.split()[0])
+    }
+    assert "memkit-recall" in found, found
+    # The checker is named, and only ever behind `uvx --from`.
+    doc = surfaces["docs/STORE.md"]
+    for match in re.finditer(r"memory-integrity", doc):
+        line = doc[doc.rfind("\n", 0, match.start()) + 1 : match.end()]
+        assert "uvx --from" in line, line
+
+
+def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
+    """The four lines the Quick start tells a cold adopter to save.
+
+    It is the first thing they type that can be wrong, and it is printed twice
+    — once in Quick start and once leading `## Config`. So it is parsed out of
+    the README, written to disk, pointed at a real store, and searched.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    # Two copies: the one Quick start writes with a heredoc, and the one
+    # `## Config` prints as JSON. They are the same four lines and must stay
+    # so — an adopter who reads both and finds them different has to work out
+    # which is current.
+    written = re.findall(
+        r"cat > [^\n]*memkit\.json <<'EOF'\n(.*?)EOF", readme, re.S
+    )
+    printed = [
+        b for b in re.findall(r"```json\n(.*?)```", readme, re.S)
+        if '"schema"' in b and len(b.splitlines()) <= 5
+    ]
+    assert len(written) == 1, f"{len(written)} heredoc configs in the README"
+    assert len(printed) == 1, f"{len(printed)} printed minimal configs"
+    assert written[0].strip() == printed[0].strip(), (written[0], printed[0])
+    spec = json.loads(written[0])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        notes = Path(tmp) / "notes"
+        notes.mkdir()
+        (notes / "pgbouncer.md").write_text(
+            "---\ndescription: PgBouncer in transaction mode breaks "
+            "session-scoped features.\n---\n\n# PgBouncer\n\nbody\n"
+        )
+        # Only the root's path is swapped — every other field is the README's.
+        spec["roots"]["notes"]["path"] = str(notes)
+        config = Path(tmp) / "memkit.json"
+        config.write_text(json.dumps(spec))
+        out = subprocess.run(
+            ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+             "--config", str(config), "--search", "pgbouncer transaction pooling"],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": os.environ["PATH"], "HOME": tmp},
+        )
+        assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr)
+        assert "pgbouncer.md" in out.stdout, out.stdout
+        # And no `/./` in the paths this config makes memkit print. The
+        # pointer path is `~`-relative and normalises on its way through that,
+        # so the diagnostic is where the raw join shows: it prints the store
+        # directory as resolved, and `"dir": "."` joined raw put a `/./`
+        # through the middle of it.
+        diag = subprocess.run(
+            ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+             "--config", str(config), "--debug-config"],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": os.environ["PATH"], "HOME": tmp},
+        )
+        assert diag.returncode == hook.EXIT_OK, diag.stderr
+        # The exact directory, with nothing appended: a raw join of `.` prints
+        # `<store>/.`, and asserting on a substring like `/./` misses it.
+        assert f"store notes: {notes} [" in diag.stdout, diag.stdout
+        assert f"corpus:  {notes} —" in diag.stdout, diag.stdout
+        assert "/./" not in out.stdout, out.stdout
+
+
+def test_the_description_limit_the_docs_teach_is_the_one_the_checker_enforces() -> None:
+    """Three numbers stand behind this and only one is the author's.
+
+    `docs/STORE.md` tells a person — and the paste-able block tells their agent
+    — what length to write to. If that drifts above the checker's cap, every
+    memory either fails the check or is written to a length that will be
+    rejected, and the doc is the last place anyone would look for the cause.
+    """
+    from memkit import memory_integrity as checker
+
+    doc = STORE_DOC.read_text(encoding="utf-8")
+    assert f"under {checker.MAX_DESC_CHARS} characters" in doc, checker.MAX_DESC_CHARS
+    assert f"over **{checker.MAX_DESC_CHARS}**" in doc
+    assert f"at most **{hook.DESC_KEEP_CHARS}**" in doc
+    # The agent is told the author's number, not the hook's ceiling.
+    assert f"under {checker.MAX_DESC_CHARS} characters, that would make me open" in doc
+    assert "under 160 characters" not in doc, "the old number survives somewhere"
+
+
+def test_the_silent_gates_section_names_every_gate_the_hook_applies() -> None:
+    """`## Why nothing appeared` is the answer to the most common adopter
+    question, and it is only worth having if it is complete.
+
+    The three-word floor is pinned to the constant rather than to prose: it is
+    the gate an adopter meets first, because two distinctive words is the
+    natural smoke test.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("## Why nothing appeared")
+    section = readme[start : readme.index("\n## ", start + 10)]
+    assert f"under {_number_word(hook.MIN_PROMPT_WORDS)} words" in section, (
+        hook.MIN_PROMPT_WORDS, section[:400]
+    )
+    assert f"over {hook.PROMPT_MAX_CHARS} characters" in section, (
+        hook.PROMPT_MAX_CHARS, "the paste ceiling has no row"
+    )
+    for gate in ("already fired this session", "envelope", "disabled",
+                 "config: none", "corpus", "session budget",
+                 "began with `/`", "all common words", "ran out of time",
+                 "installed mid-session"):
+        assert gate in section, gate
+    # The cross-check command is reachable where the reader is standing, and
+    # the section says plainly that the CLI is not subject to the prompt gates.
+    assert '"$RECALL" --config <your config> --search' in section
+    assert "applies fewer\ngates than the hook" in section
+
+
+def _number_word(n: int) -> str:
+    return {2: "two", 3: "three", 4: "four"}.get(n, str(n))
+
+
+# Sections that show a reader commands to type in THEIR OWN shell. The plugin
+# puts `bin/` on the agent's PATH and nothing on the user's, so a bare plugin
+# binary here is a `command not found` handed to somebody who is already
+# checking whether the install worked. It has now been written twice.
+TERMINAL_SECTIONS = ("## Quick start", "## Why nothing appeared")
+
+
+def _fenced_command_lines(text: str) -> list[str]:
+    """Every line inside a ``` fence that looks like a command being run."""
+    out = []
+    for block in re.findall(r"\n```[a-z]*\n(.*?)```", text, re.S):
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", "{", "}", "-", "|")):
+                continue
+            # JSON bodies sit in these fences too (the heredoc'd config). A
+            # leading quote does NOT disqualify a line — `"$RECALL" …` is the
+            # correct form this check exists to require.
+            if '":' in stripped or stripped.startswith('"schema"'):
+                continue
+            out.append(stripped)
+    return out
+
+
+def test_no_reader_facing_section_tells_a_terminal_to_run_a_plugin_binary(
+    root,
+) -> None:
+    """The channel-correct-command invariant, on the surfaces a reader pastes
+    from.
+
+    `memkit-recall` exists — it is in the plugin's `bin/` — so the scrape that
+    checks a command against what the plugin SHIPS passes it happily. The
+    failure is about WHERE: on a plugin install that directory is added to the
+    agent's `PATH` and to nothing else, so the same command typed into a
+    terminal exits 127. The README says so, hundreds of lines below the paste.
+
+    This is the check that shape needs: in the sections written for someone at
+    their own prompt, a plugin binary may only appear reached by path.
+    """
+    plugin_binaries = {
+        entry.name
+        for entry in (root / "bin").iterdir()
+        if entry.is_file() and os.access(entry, os.X_OK)
+    }
+    assert "memkit-recall" in plugin_binaries, plugin_binaries
+
+    offenders = []
+    for heading in TERMINAL_SECTIONS:
+        section = _readme_section(heading)
+        for line in _fenced_command_lines(section):
+            head = line.split()[0].strip('"')
+            if head in plugin_binaries:
+                offenders.append((heading, line))
+    assert not offenders, offenders
+
+    # Non-vacuity, in both directions. The scrape really does read these
+    # sections' command lines, and each section really does hand out a way to
+    # run the search — reached by path, through the derivation.
+    for heading in TERMINAL_SECTIONS:
+        section = _readme_section(heading)
+        lines = _fenced_command_lines(section)
+        assert lines, heading
+        assert any('"$RECALL"' in line for line in lines), heading
+        assert 'plugins/cache/memkit/memkit' in section, heading
+
+
+def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
+    """Steps 3 and 4, executed in order in a scratch HOME.
+
+    Both have failed on paste before: step 3 wrote into
+    `~/.cache/memory-recall/`, which an unconfigured install deliberately does
+    not create, and step 4 put the memory where a later step would strand it.
+    A quick start is the one part of a document that has to run.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    section = _readme_section("## Quick start")
+    # The two heredoc blocks are the steps that touch the filesystem; the
+    # install and the read-backs need Claude Code and a real install.
+    blocks = re.findall(r"\n```\n(mkdir -p .*?)```", section, re.S)
+    assert len(blocks) == 2, f"{len(blocks)} filesystem steps in Quick start"
+    script = "set -e\n" + "\n".join(blocks)
+    ran = subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+    )
+    assert ran.returncode == 0, (ran.returncode, ran.stderr, script)
+
+    # And the store it just built answers the question the step says to ask.
+    # Wherever the section says to put it — read out of the heredoc rather than
+    # hardcoded, so moving the recommended location cannot leave this asserting
+    # about the old one.
+    written = re.search(r"cat > (\S*memkit\.json) <<'EOF'", section)
+    assert written, section[:400]
+    config = Path(written.group(1).replace("~", str(home), 1))
+    assert config.is_file(), sorted(str(x) for x in home.rglob("*.json"))
+    out = subprocess.run(
+        ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+         "--config", str(config), "--search",
+         "why do prepared statements break under pgbouncer transaction pooling"],
+        capture_output=True, text=True, timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+    )
+    assert out.returncode == hook.EXIT_OK, (out.returncode, out.stdout, out.stderr)
+    # The pointer the top of the README promises — same file, same section tag.
+    assert "postgres-connection-pool.md" in out.stdout, out.stdout
+    assert "[section: PgBouncer transaction mode]" in out.stdout, out.stdout
+    # The memory lands where an agent following STORE.md would also write, so
+    # the two recipes compose without taking retrieval away.
+    assert (home / "notes" / "search" / "postgres-connection-pool.md").is_file()
+
+
+@pytest.mark.parametrize(
+    "module,prog",
+    [("memkit.memory_integrity", "memory-integrity"),
+     ("memkit.eval_memory_recall", "memory-eval")],
+)
+def test_the_two_checker_help_surfaces_are_readable(module, prog) -> None:
+    """`--help` is the only documentation these two commands have.
+
+    Both passed the module docstring to argparse's default formatter, which
+    reflows it: a layout table became one run-on paragraph, and the design
+    rationale written for the next maintainer was printed to whoever asked for
+    help. The other two entry points already use the raw formatter.
+    """
+    out = subprocess.run(
+        ["python3", "-m", module, "--help"],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PYTHONPATH": str(REPO / "src")},
+    )
+    assert out.returncode == 0, out.stderr
+    text = out.stdout
+    assert f"usage: {prog}" in text, text[:200]
+    # Structure survived. The default formatter collapses every authored line
+    # break, so a description that still has paragraphs is the whole check.
+    described = text[text.index("\n\n") : text.index("options:")]
+    assert described.count("\n\n") >= 2, described
+    # It says what the exit codes mean, which is what "errors teach" needs from
+    # a command whose whole output is a verdict.
+    assert "exit codes:" in text, text
+    assert "\n  0  " in text and "\n  1  " in text, text
+    # And it is not the module docstring: that text is for the next maintainer.
+    for maintainer_only in ("uv run --script", "deliberate one-file break",
+                            "KTD", "shebang the rest of this author"):
+        assert maintainer_only not in text, maintainer_only
+
+
+def test_the_verification_block_checks_the_installed_path() -> None:
+    """The check has to exercise the config the HOOK reads.
+
+    Checking the path the reader meant to install reports a healthy store while
+    the hook is inert, and a one-character typo in `memkitConfig` is the
+    likeliest install mistake there is — the one state where a green light is
+    worse than no light.
+    """
+    for heading in ("## Quick start", "## Why nothing appeared"):
+        section = _readme_section(heading)
+        if '"$RECALL"' not in section:
+            continue
+        for line in _fenced_command_lines(section):
+            if not line.startswith('"$RECALL"'):
+                continue
+            # A literal path here is the defect: it is the reader's intention,
+            # not the installed option.
+            assert "/.config/" not in line and "/.cache/" not in line, line
+            assert "--config" in line, line
+    quick = _readme_section("## Quick start")
+    assert "pluginConfigs" in quick, "the block never reads settings.json back"
+    assert '--config "$MEMKIT_CFG"' in quick, quick[-900:]
+
+
+def test_the_config_location_is_not_a_cache_directory() -> None:
+    """The config is the one file in this design that nothing regenerates.
+
+    `memkit init` is not in this build, so a purged cache directory returns the
+    install to inert permanently — and the README tells the reader, two
+    sections from where it used to put the file, that everything under
+    `~/.cache/memory-recall/` is disposable.
+    """
+    default = _json(PLUGIN_MANIFEST)["userConfig"]["memkitConfig"]["default"]
+    assert "/.cache/" not in default, default
+    quick = _readme_section("## Quick start")
+    written = re.search(r"cat > (\S*memkit\.json) <<'EOF'", quick)
+    assert written, quick[:400]
+    assert "/.cache/" not in written.group(1), written.group(1)
+    # The manifest offers what the page tells you to create, so an adopter who
+    # takes the default and one who follows the page land in the same place.
+    assert written.group(1).replace("~", "") == default.replace("~", ""), (
+        written.group(1), default
+    )
 
 
 # --- what the inert message says a config can arrive by ----------------------

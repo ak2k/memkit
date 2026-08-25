@@ -2499,7 +2499,7 @@ def test_four_word_question_passes_the_gate(tmp_path, monkeypatch) -> None:
     log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
     assert log.is_file()
     rec = json.loads(log.read_text().splitlines()[-1])
-    assert rec["outcome"] == "gate:nodirs"  # NOT gate:shape
+    assert rec["outcome"] == "gate:nodirs"  # NOT a prompt-shape gate
 
 
 # --- soak log ------------------------------------------------------------------
@@ -3051,7 +3051,7 @@ def test_soak_log_written_for_gated_prompt(tmp_path) -> None:
     )
     log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
     rec = json.loads(log.read_text().splitlines()[-1])
-    assert rec["outcome"] == "gate:shape"
+    assert rec["outcome"] == "gate:short"
     assert rec["words"] == 1
     assert "ms" in rec and "prompt_sha" in rec
     # never the prompt text itself
@@ -3151,7 +3151,7 @@ def test_a_short_envelope_is_recorded_as_an_envelope_not_a_shape(
     tmp_path, monkeypatch
 ) -> None:
     """Under MIN_PROMPT_WORDS the shape gate would refuse it too, and which
-    gate gets the credit is not cosmetic: `gate:shape` reads in the soak log
+    gate gets the credit is not cosmetic: `gate:short` reads in the soak log
     as "a person typed something too short to search", which is the population
     every rate is taken over. The envelope gate has to come first in both
     directions — this is the short one, the long one is
@@ -3170,12 +3170,12 @@ def test_a_short_envelope_is_recorded_as_an_envelope_not_a_shape(
 
 GATE_CASES = [
     ("<bash-stdout>ok</bash-stdout>", "gate:envelope"),
-    ("/deploy the fleet to every host", "gate:shape"),
+    ("/deploy the fleet to every host", "gate:slash"),
     # Two content words: build_query answers this one, so a GATED rule written
     # as `build_query(...) is None` — what the inverted join used — calls it
     # searchable while production refuses it. The case that rule cannot see.
-    ("deploy nixos", "gate:shape"),
-    ("word " * 1000, "gate:shape"),
+    ("deploy nixos", "gate:short"),
+    ("word " * 1000, "gate:long"),
     ("the and of", "gate:stopwords"),
 ]
 
@@ -3333,9 +3333,9 @@ def test_envelope_gate_beats_the_shape_gate_at_any_length(
 ) -> None:
     """An envelope is an envelope at any length.
 
-    A notification past the 4000-char shape limit would otherwise be recorded
-    as gate:shape, which reads in the soak log as "a user pasted a blob" — the
-    one thing the stratification exists to tell apart."""
+    A notification past the paste ceiling would otherwise be recorded as
+    gate:long, which reads in the soak log as "a user pasted a blob" — the one
+    thing the stratification exists to tell apart."""
     monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path))
     long_env = (
         "<task-notification id=9>" + ("status ok. " * 500) + "</task-notification>"
@@ -3550,6 +3550,98 @@ def test_no_config_is_not_an_empty_corpus(tmp_path) -> None:
     assert empty_cfg.returncode == hook.EXIT_OK
     assert inert_cfg.returncode == hook.EXIT_INERT
     assert "inert" in inert_cfg.stdout
+
+
+def _flat_store(tmp_path: Path, names: tuple[str, ...]) -> tuple[Path, dict]:
+    """A store whose `dir` holds the memories directly — no `search/` yet.
+
+    The shared `_env` fixture already lays out `search/`, which is the state
+    AFTER the migration under test; this is the state before it.
+    """
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    for name in names:
+        (notes / name).write_text(
+            f"---\ndescription: unionfs mount notes {name}\n---\n\n# {name}\n\nbody\n"
+        )
+    config = tmp_path / "flat.json"
+    config.write_text(json.dumps({
+        "schema": hook.SCHEMA,
+        "roots": {"notes": {"kind": "path", "path": str(notes)}},
+        "stores": [{"id": "notes", "dir": ".", "live_root": "notes"}],
+    }))
+    return notes, dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+
+
+def test_the_diagnostic_names_the_corpus_it_will_actually_read(tmp_path) -> None:
+    """`searched` beside a store directory is not enough to diagnose with.
+
+    The tiering rule takes `<store>/search` as the corpus root the moment that
+    directory exists, so creating it and moving one file — the only kind of
+    migration a person actually does — strands every file still above it. The
+    store directory is unchanged on disk, `--search` still answers for what
+    moved, and every other line of this output still reads `searched`. Driven
+    rather than reasoned: the same store is asked before and after.
+    """
+    notes, env = _flat_store(tmp_path, ("alpha.md", "beta.md", "gamma.md"))
+    flat = _cli(tmp_path, "--debug-config", env=env)
+    assert flat.returncode == hook.EXIT_OK, flat.stderr
+    # The corpus root and its size, both, because either alone leaves a failure
+    # invisible: the right directory with nothing in it, or a count taken
+    # somewhere the hook will not look.
+    assert f"corpus:  {notes} — 3 files" in flat.stdout, flat.stdout
+    assert "outside the corpus root" not in flat.stdout, flat.stdout
+    before = _cli(tmp_path, "--search", "unionfs beta", env=env)
+    assert "beta.md" in before.stdout, before.stdout
+
+    # Now the partial migration, one file deep.
+    (notes / "search").mkdir()
+    (notes / "alpha.md").rename(notes / "search" / "alpha.md")
+    part = _cli(tmp_path, "--debug-config", env=env)
+    assert part.returncode == hook.EXIT_OK, part.stderr
+    assert f"corpus:  {notes / 'search'} — 1 file" in part.stdout, part.stdout
+    assert "2 markdown files" in part.stdout, part.stdout
+    assert "outside the corpus root and will not be retrieved" in part.stdout
+    assert "move them into search/" in part.stdout, part.stdout
+
+    # And the warning is about RETRIEVAL, not about the directory: the file
+    # left above the corpus root really is gone from what the hook returns,
+    # while the one that moved still answers. That pair is the failure the
+    # line exists to make visible — retrieval that still works, for less.
+    after = _cli(tmp_path, "--search", "unionfs beta", env=env)
+    assert "beta.md" not in after.stdout, after.stdout
+    assert "alpha.md" in after.stdout, after.stdout
+
+
+def test_a_no_match_search_says_what_it_searched(tmp_path) -> None:
+    """Exit 1 with no output cannot be told from a wrong config or a crash.
+
+    This is the command both the quick start and the triage table nominate as
+    the instrument for "why did nothing appear", so its silence lands on
+    someone who is already unsure whether the install works. stdout stays empty
+    — a pipeline still sees no matches — and the exit code is untouched.
+    """
+    notes, env = _flat_store(tmp_path, ("alpha.md", "beta.md"))
+    out = _cli(tmp_path, "--search", "zzzq nothing matches this", env=env)
+    assert out.returncode == hook.EXIT_NO_MATCH, (out.returncode, out.stderr)
+    assert out.stdout == "", out.stdout
+    assert "no match in 2 files under" in out.stderr, out.stderr
+    assert str(notes) in out.stderr or "~" in out.stderr, out.stderr
+
+    # A hit still prints on stdout and says nothing on stderr, so the line
+    # above is about the no-match state and not about every run.
+    hit = _cli(tmp_path, "--search", "unionfs beta", env=env)
+    assert hit.returncode == hook.EXIT_OK, hit.stderr
+    assert "no match" not in hit.stderr, hit.stderr
+
+
+def test_the_singular_corpus_line_reads_as_english(tmp_path) -> None:
+    """One file is a file, not 1 files — this output is read by people at the
+    moment they are already confused."""
+    _, env = _flat_store(tmp_path, ("only.md",))
+    out = _cli(tmp_path, "--debug-config", env=env)
+    assert "— 1 file\n" in out.stdout, out.stdout
+    assert "1 files" not in out.stdout, out.stdout
 
 
 def test_a_config_that_cannot_be_honoured_is_not_an_empty_corpus(tmp_path) -> None:
@@ -4411,7 +4503,7 @@ def test_no_argv_still_reads_the_hook_payload_from_stdin(tmp_path) -> None:
     )
     assert out.returncode == 0  # fail-open, unlike the CLI
     rec = _last_record(tmp_path)
-    assert rec["outcome"] == "gate:shape" and rec["session"] != "cli"
+    assert rec["outcome"] == "gate:short" and rec["session"] != "cli"
 
 
 # --- the time budget ---------------------------------------------------------
@@ -4550,7 +4642,7 @@ def test_a_kill_as_the_record_lands_leaves_exactly_one(tmp_path) -> None:
     # `killed` record for the same prompt. Every rate the analyzers report is a
     # count over records, so one prompt with two records is one prompt counted
     # twice. Masking SIGTERM across the pair closes it. Measured on main as
-    # ['gate:shape', 'killed'].
+    # ['gate:short', 'killed'].
     records = tmp_path / "records.jsonl"
     proc = subprocess.run(
         ["python3", "-c", _KILL_AS_THE_RECORD_LANDS, HOOK, str(records)],
@@ -4561,7 +4653,7 @@ def test_a_kill_as_the_record_lands_leaves_exactly_one(tmp_path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     outcomes = [json.loads(x)["outcome"] for x in records.read_text().splitlines()]
-    assert outcomes == ["gate:shape"], outcomes
+    assert outcomes == ["gate:short"], outcomes
 
 
 def test_the_module_imports_under_python_39(tmp_path) -> None:
@@ -5150,6 +5242,64 @@ def _hook_outcomes() -> set[str]:
                 raise AssertionError(f"outcome is not a literal at line {node.lineno}")
     return outcomes
 
+
+
+def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
+    """The soak log is the artifact the docs send a debugger to, so its
+    vocabulary has to be decodable from the docs.
+
+    Scraped from the hook the way the CONSUMER scrapes it — the same two
+    shapes its own tripwire reads — so a new outcome fails here as well as
+    there, and the table cannot quietly fall behind the code.
+    """
+    emitted = _hook_outcomes()
+    assert len(emitted) > 8, sorted(emitted)
+    # Anchored on THIS FILE, not on the installed module. The packaged nix leg
+    # runs these tests from the source tree against a hook in the store, so
+    # walking up from `hook.__file__` lands in site-packages.
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(
+        encoding="utf-8"
+    )
+    start = readme.index("**The outcome vocabulary.**")
+    table = readme[start : readme.index("\n\n", readme.index("| `cli:*`", start))]
+    missing = sorted(
+        name for name in emitted
+        if not name.startswith("cli:") and f"`{name}`" not in table
+    )
+    assert not missing, missing
+    # And the table does not invent values the hook cannot write — with one
+    # allowance, narrowly drawn: a value a PREVIOUS RELEASE writes belongs
+    # here, because the log an adopter is reading was written by the release
+    # they installed, not by main. It has to say so in the same breath, so the
+    # allowance cannot be used to smuggle in a name nothing ever wrote.
+    listed = set(re.findall(r"`(gate:[a-z:]+|injected|deduped|floored|killed|error|output-lost)`", table))
+    for name in sorted(listed - emitted):
+        mentions = [ln for ln in table.splitlines() if f"`{name}`" in ln]
+        assert any("releases before" in ln for ln in mentions), (name, mentions)
+    # The dispatch set has to BE what `prompt_gate` returns, not a subset of
+    # it. main() answers these without looking at a store; a gate the function
+    # can return and the set omits falls through to the store path and is
+    # recorded as something else entirely — and shrinking the set would
+    # otherwise make this loop check fewer things and still pass.
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "prompt_gate"
+    )
+    returned = {
+        n.value.value for n in ast.walk(fn)
+        if isinstance(n, ast.Return)
+        and isinstance(n.value, ast.Constant)
+        and isinstance(n.value.value, str)
+    }
+    assert returned, "prompt_gate returns no literals — the scrape is blind"
+    # `gate:stopwords` is deliberately outside the set: `gate:nodirs` outranks
+    # it, so it is answered after the store check rather than before.
+    assert returned - {"gate:stopwords"} == hook.PROMPT_SHAPE_GATES, (
+        sorted(hook.PROMPT_SHAPE_GATES), sorted(returned)
+    )
+    for gate in returned:
+        assert f"`{gate}`" in table, gate
 
 def test_every_outcome_the_hook_writes_is_named_where_it_is_written() -> None:
     """`dup-registration` was written by a bare `_soak_log` dict literal, so

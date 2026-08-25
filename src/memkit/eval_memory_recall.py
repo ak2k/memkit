@@ -443,7 +443,35 @@ def verdict(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
+    # See the note in memory_integrity.main: the module docstring is a
+    # maintainer's document and argparse's default formatter reflows its usage
+    # list into one run-on line.
+    ap = argparse.ArgumentParser(
+        prog="memory-eval",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Score retrieval against your own cases and gate on a snapshot.\n"
+            "\n"
+            "The cases live in your config under `eval`; memkit ships none,\n"
+            "because a case pairs a prompt with the filenames it should\n"
+            "surface and those are your memories. Each run scores the\n"
+            "configured slices and compares them against the committed\n"
+            "snapshot, so what fails is a CHANGE in behaviour rather than an\n"
+            "absolute score."
+        ),
+        epilog=(
+            "typical use:\n"
+            "  memory-eval                      run the configured suite and gate\n"
+            "  memory-eval -v                   + per-case detail\n"
+            "  memory-eval --update-snapshot    accept this run as the baseline\n"
+            "\n"
+            "exit codes:\n"
+            "  0  the gating slices held — or a snapshot was written, which is\n"
+            "     an acceptance and exits 0 even on a red run\n"
+            "  1  a gating slice regressed, or the run could not start. The\n"
+            "     message names which, and what to do about it."
+        ),
+    )
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument(
         "--config",
