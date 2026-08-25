@@ -4121,6 +4121,20 @@ def search_cli(argv: list[str]) -> int:
         if _CONFIG_ERROR:
             print(f"{_self_name()}: {_CONFIG_ERROR}", file=sys.stderr)
             return EXIT_ERROR
+        # WHAT was searched, on stderr, without touching the exit contract.
+        # grep's silence is right when the caller knows the corpus; here the
+        # caller is often an adopter checking whether their install works, and
+        # a bare exit 1 cannot be told from a wrong config or a crash. stdout
+        # stays empty so a pipeline still sees no matches.
+        looked = [os.path.expanduser(d) for d in (dirs or _search_dirs())]
+        corpora = [_search_root(d) for d in looked if os.path.isdir(d)]
+        files = sum(_corpus_files(c) for c in corpora)
+        where = ", ".join(_display_path(c) for c in corpora) or "no directory"
+        print(
+            f"{_self_name()}: no match in {files} file"
+            f"{'' if files == 1 else 's'} under {where}",
+            file=sys.stderr,
+        )
         return EXIT_NO_MATCH
     print("\n".join(lines))
     return EXIT_OK

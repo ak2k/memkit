@@ -1110,7 +1110,34 @@ def check(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    # A short user-facing description and a raw formatter, because the module
+    # docstring is written for the next maintainer: argparse's default reflow
+    # fuses its layout table into a paragraph that parses as nothing, and ships
+    # design rationale to whoever typed `--help`.
+    ap = argparse.ArgumentParser(
+        prog="memory-integrity",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Check a memory store's layout, ledgers, frontmatter and links.\n"
+            "\n"
+            "Reads the same config the hook does and checks every store it\n"
+            "names. Retrieval does not need any of this — a store that fails\n"
+            "here is still searched — so run it when you want the ledgers\n"
+            "regenerated or the links verified, not to make memkit work.\n"
+            "\n"
+            "It bootstraps nothing. A store it will pass needs MEMORY.md and\n"
+            "SEARCH.md to exist (empty is fine) and both hot/ and search/ to\n"
+            "be there; `--write` fills SEARCH.md's rows from your frontmatter\n"
+            "and does not create the files."
+        ),
+        epilog=(
+            "exit codes:\n"
+            "  0  every store checked out clean (warnings do not fail)\n"
+            "  1  a store has errors, or the run could not start — no config,\n"
+            "     an unparseable one, or one naming no stores. The first line\n"
+            "     of output names which."
+        ),
+    )
     ap.add_argument(
         "--config",
         metavar="PATH",

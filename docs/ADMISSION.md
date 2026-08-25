@@ -115,11 +115,20 @@ On the machine, against what was actually installed. This is the stronger
 check — it asks the clone which commit it is, rather than counting files:
 
 ```
-cd "$(ls -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/cache/memkit/memkit/*/ | tail -1)"
-git rev-parse HEAD          # must equal the sha in .claude-plugin/marketplace.json
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+cd "$(ls -d "$CFG"/plugins/cache/memkit/memkit/*/ | tail -1)"
+git rev-parse HEAD          # must equal the pin below
 git status --porcelain      # must be empty: nothing edited the payload after the clone
+
+python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["plugins"][0]["source"]["sha"])' \
+  "$CFG"/plugins/marketplaces/memkit/.claude-plugin/marketplace.json
 ```
 
-The repository commands do not work inside the installed copy: it is a shallow
-clone at the pinned commit, so `git ls-tree <sha>` there answers `fatal: not a
-tree object`.
+Compare against the **marketplace clone's** manifest, not the one inside the
+payload. A commit cannot name its own sha, so the installed copy carries the
+pin of the release before it — comparing against that file reports tampering on
+a perfectly clean install.
+
+The repository commands do not work inside the installed copy either: it is a
+shallow clone at the pinned commit, so `git ls-tree <sha>` there answers
+`fatal: not a tree object`.

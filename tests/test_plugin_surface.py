@@ -331,6 +331,20 @@ def test_every_relative_link_in_the_readme_resolves() -> None:
     # among them.
     assert "docs/ADMISSION.md" in targets, targets
 
+    # And every in-page link resolves to a heading that exists. The README now
+    # carries a table of contents and cross-links between sections, and a
+    # heading rename breaks those silently — GitHub renders a dead anchor as a
+    # jump to the top of the page, which reads as the link working.
+    anchors = {
+        re.sub(r"[^a-z0-9 -]", "", heading.lower()).replace(" ", "-")
+        for heading in re.findall(r"^#{2,3} (.+)$", readme, re.M)
+    }
+    inpage = re.findall(r"\]\(#([^)]+)\)", readme)
+    assert inpage, "no in-page links at all"
+    assert not [a for a in inpage if a not in anchors], (
+        sorted({a for a in inpage if a not in anchors}), sorted(anchors)
+    )
+
 
 def test_the_admission_note_answers_what_it_claims_to() -> None:
     """What an adopter receives and where the trust boundary sits — the two
@@ -2720,13 +2734,21 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
     the README, written to disk, pointed at a real store, and searched.
     """
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    blocks = [
+    # Two copies: the one Quick start writes with a heredoc, and the one
+    # `## Config` prints as JSON. They are the same four lines and must stay
+    # so — an adopter who reads both and finds them different has to work out
+    # which is current.
+    written = re.findall(
+        r"cat > [^\n]*memkit\.json <<'EOF'\n(.*?)EOF", readme, re.S
+    )
+    printed = [
         b for b in re.findall(r"```json\n(.*?)```", readme, re.S)
         if '"schema"' in b and len(b.splitlines()) <= 5
     ]
-    assert len(blocks) == 2, f"{len(blocks)} minimal configs in the README"
-    assert blocks[0] == blocks[1], "the two copies have drifted apart"
-    spec = json.loads(blocks[0])
+    assert len(written) == 1, f"{len(written)} heredoc configs in the README"
+    assert len(printed) == 1, f"{len(printed)} printed minimal configs"
+    assert written[0].strip() == printed[0].strip(), (written[0], printed[0])
+    spec = json.loads(written[0])
 
     with tempfile.TemporaryDirectory() as tmp:
         notes = Path(tmp) / "notes"
@@ -2802,14 +2824,121 @@ def test_the_silent_gates_section_names_every_gate_the_hook_applies() -> None:
     for gate in ("already fired this session", "envelope", "disabled",
                  "config: none", "corpus", "session budget"):
         assert gate in section, gate
-    # The cross-check command is the one this channel ships, and the section
-    # says plainly that the CLI is not subject to the prompt gates.
-    assert "memkit-recall --config <your config> --search" in section
+    # The cross-check command is reachable where the reader is standing, and
+    # the section says plainly that the CLI is not subject to the prompt gates.
+    assert '"$RECALL" --config <your config> --search' in section
     assert "applies fewer\ngates than the hook" in section
 
 
 def _number_word(n: int) -> str:
     return {2: "two", 3: "three", 4: "four"}.get(n, str(n))
+
+
+# Sections that show a reader commands to type in THEIR OWN shell. The plugin
+# puts `bin/` on the agent's PATH and nothing on the user's, so a bare plugin
+# binary here is a `command not found` handed to somebody who is already
+# checking whether the install worked. It has now been written twice.
+TERMINAL_SECTIONS = ("## Quick start", "## Why nothing appeared")
+
+
+def _fenced_command_lines(text: str) -> list[str]:
+    """Every line inside a ``` fence that looks like a command being run."""
+    out = []
+    for block in re.findall(r"\n```[a-z]*\n(.*?)```", text, re.S):
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", "{", "}", "-", "|")):
+                continue
+            # JSON bodies sit in these fences too (the heredoc'd config). A
+            # leading quote does NOT disqualify a line — `"$RECALL" …` is the
+            # correct form this check exists to require.
+            if '":' in stripped or stripped.startswith('"schema"'):
+                continue
+            out.append(stripped)
+    return out
+
+
+def test_no_reader_facing_section_tells_a_terminal_to_run_a_plugin_binary(
+    root,
+) -> None:
+    """The channel-correct-command invariant, on the surfaces a reader pastes
+    from.
+
+    `memkit-recall` exists — it is in the plugin's `bin/` — so the scrape that
+    checks a command against what the plugin SHIPS passes it happily. The
+    failure is about WHERE: on a plugin install that directory is added to the
+    agent's `PATH` and to nothing else, so the same command typed into a
+    terminal exits 127. The README says so, hundreds of lines below the paste.
+
+    This is the check that shape needs: in the sections written for someone at
+    their own prompt, a plugin binary may only appear reached by path.
+    """
+    plugin_binaries = {
+        entry.name
+        for entry in (root / "bin").iterdir()
+        if entry.is_file() and os.access(entry, os.X_OK)
+    }
+    assert "memkit-recall" in plugin_binaries, plugin_binaries
+
+    offenders = []
+    for heading in TERMINAL_SECTIONS:
+        section = _readme_section(heading)
+        for line in _fenced_command_lines(section):
+            head = line.split()[0].strip('"')
+            if head in plugin_binaries:
+                offenders.append((heading, line))
+    assert not offenders, offenders
+
+    # Non-vacuity, in both directions. The scrape really does read these
+    # sections' command lines, and each section really does hand out a way to
+    # run the search — reached by path, through the derivation.
+    for heading in TERMINAL_SECTIONS:
+        section = _readme_section(heading)
+        lines = _fenced_command_lines(section)
+        assert lines, heading
+        assert any('"$RECALL"' in line for line in lines), heading
+        assert 'plugins/cache/memkit/memkit' in section, heading
+
+
+def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
+    """Steps 3 and 4, executed in order in a scratch HOME.
+
+    Both have failed on paste before: step 3 wrote into
+    `~/.cache/memory-recall/`, which an unconfigured install deliberately does
+    not create, and step 4 put the memory where a later step would strand it.
+    A quick start is the one part of a document that has to run.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    section = _readme_section("## Quick start")
+    # The two heredoc blocks are the steps that touch the filesystem; the
+    # install and the read-backs need Claude Code and a real install.
+    blocks = re.findall(r"\n```\n(mkdir -p .*?)```", section, re.S)
+    assert len(blocks) == 2, f"{len(blocks)} filesystem steps in Quick start"
+    script = "set -e\n" + "\n".join(blocks)
+    ran = subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+    )
+    assert ran.returncode == 0, (ran.returncode, ran.stderr, script)
+
+    # And the store it just built answers the question the step says to ask.
+    config = home / ".cache" / "memory-recall" / "memkit.json"
+    assert config.is_file(), sorted(p.name for p in (home / ".cache").rglob("*"))
+    out = subprocess.run(
+        ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+         "--config", str(config), "--search",
+         "why do prepared statements break under pgbouncer transaction pooling"],
+        capture_output=True, text=True, timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+    )
+    assert out.returncode == hook.EXIT_OK, (out.returncode, out.stdout, out.stderr)
+    # The pointer the top of the README promises — same file, same section tag.
+    assert "postgres-connection-pool.md" in out.stdout, out.stdout
+    assert "[section: PgBouncer transaction mode]" in out.stdout, out.stdout
+    # The memory lands where an agent following STORE.md would also write, so
+    # the two recipes compose without taking retrieval away.
+    assert (home / "notes" / "search" / "postgres-connection-pool.md").is_file()
 
 
 # --- what the inert message says a config can arrive by ----------------------

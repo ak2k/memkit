@@ -13,7 +13,8 @@ When it fires, this is what lands in the prompt:
 - [Quick start](#quick-start) — install to first pointer
 - [Your store](#your-store) — what a memory file is · [docs/STORE.md](docs/STORE.md) for the rest
 - [Why nothing appeared](#why-nothing-appeared) — every silent gate, in the order you hit them
-- [Config](#config) · [Exit codes](#exit-codes) · [Install (details)](#install-details)
+- [The four commands](#the-four-commands) · [Config](#config) · [Exit codes](#exit-codes)
+- [Install (details)](#install-details) — the other two channels, and every caveat
 - [Retrieval disclosures](#retrieval-disclosures) — what was measured, and on what
 - [docs/ADMISSION.md](docs/ADMISSION.md) — what an install puts on your machine
 - [docs/ROLLOUT.md](docs/ROLLOUT.md) — fleet rollout and rollback
@@ -24,6 +25,14 @@ Pre-1.0 and shaped by one deployment. The interfaces below are the
 ones its own consumer uses; treat them as unstable until this repo has a
 second adopter. See [Retrieval disclosures](#retrieval-disclosures) before
 assuming any measured claim generalises to your corpus.
+
+**This page describes `main`; the marketplace installs a release.** What
+`/plugin install` puts on your machine is the tree at the sha pinned in
+[`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json), so between
+releases this page can describe behaviour your copy does not have yet. Releases
+follow merged behaviour changes rather than a calendar, and each one re-aligns
+the two. Where a behaviour has landed here and not in a release, this page marks
+it *(from the next release)*.
 
 Bugs, questions, and the second adopter's experience:
 [github.com/ak2k/memkit/issues](https://github.com/ak2k/memkit/issues). If you
@@ -64,42 +73,59 @@ it surfaces.
 enabled — a disabled plugin still reports it — which is why `plugin list` comes
 first.
 
-**3. Write the config.** Four lines is the whole minimum:
+**3. Write the config.** Four lines is the whole minimum. The directory does
+not exist yet — an unconfigured install deliberately creates no state — so make
+it first:
 
-```json
+```
+mkdir -p ~/.cache/memory-recall
+cat > ~/.cache/memory-recall/memkit.json <<'EOF'
 { "schema": 1,
   "roots": { "notes": { "kind": "path", "path": "~/notes" } },
   "stores": [ { "id": "notes", "dir": ".", "live_root": "notes" } ] }
+EOF
 ```
 
-Save it at the path you passed to `memkitConfig`. Everything else on the
-[Config](#config) page is optional.
+Everything else on the [Config](#config) page is optional.
 
-**4. Write one memory and ask for it.**
+**4. Write one memory and ask for it.** Memories go in `search/` — make it now
+even for your first file, so nothing has to move later. (Creating `search/`
+under a store that already has memories above it takes those out of retrieval:
+[Your store](#your-store).)
 
 ```
-mkdir -p ~/notes
-cat > ~/notes/pgbouncer.md <<'EOF'
+mkdir -p ~/notes/search
+cat > ~/notes/search/postgres-connection-pool.md <<'EOF'
 ---
 description: PgBouncer in transaction mode breaks session-scoped features — prepared statements, advisory locks, and SET LOCAL do not survive.
 ---
+
+# PgBouncer transaction mode
+
 Transaction pooling hands a different backend to every transaction.
 EOF
 ```
 
-Then ask Claude Code *"why do prepared statements break under pgbouncer
-transaction pooling"* and the pointer at the top of this page is what arrives.
+Now ask Claude Code *"why do prepared statements break under pgbouncer
+transaction pooling"*, and the pointer at the top of this page is what arrives.
 
-To confirm from outside a session — the CLI applies fewer gates than the hook,
-see [Why nothing appeared](#why-nothing-appeared):
+**Checking it by hand.** `memkit-recall` is on the *agent's* `PATH`, not your
+shell's — nothing is added to your terminal — so from your own shell reach the
+installed copy by path:
 
 ```
-memkit-recall --config ~/.cache/memory-recall/memkit.json --debug-config
-memkit-recall --config ~/.cache/memory-recall/memkit.json --search "pgbouncer pooling"
+PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
+RECALL="$(ls -d "$PLUGIN"/*/bin/memkit-recall | tail -1)"
+
+"$RECALL" --config ~/.cache/memory-recall/memkit.json --debug-config
+"$RECALL" --config ~/.cache/memory-recall/memkit.json --search "pgbouncer pooling"
 ```
 
-`--debug-config` prints the config it resolved, the corpus directory each store
-will actually be read from, and how many files are in it.
+`--debug-config` prints the config it resolved and, per store, the directory
+retrieval will read *(from the next release: also its file count, and a warning
+naming any memories stranded outside it)*. `--search` applies fewer gates than
+the hook — see [Why nothing appeared](#why-nothing-appeared) — so it answering
+while a session stays quiet is information, not a contradiction.
 
 ## Your store
 
@@ -144,12 +170,21 @@ way blocks your prompt — so this is the list, in the order a prompt meets them
 
 The fastest triage is to ask the CLI the same question. **It applies fewer
 gates than the hook**, so a `--search` that answers while the session stays
-quiet localises the problem to this list rather than to your store:
+quiet localises the problem to this list rather than to your store. On a plugin
+install `memkit-recall` is on the agent's `PATH` and not your shell's, so from
+your own terminal reach it by path:
 
 ```
-memkit-recall --config <your config> --debug-config     # config, corpus, file counts
-memkit-recall --config <your config> --search "<terms>" # would anything match at all
+PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
+RECALL="$(ls -d "$PLUGIN"/*/bin/memkit-recall | tail -1)"
+
+"$RECALL" --config <your config> --debug-config      # what resolved, and from where
+"$RECALL" --config <your config> --search "<terms>"  # would anything match at all
 ```
+
+Inside Claude Code's Bash tool the bare name works, since that is the `PATH`
+the plugin adds to. On a pip or nix install the command is `memory-recall` and
+is on your own `PATH`.
 
 | what stopped it | how you can tell | what to do |
 |---|---|---|
@@ -159,7 +194,7 @@ memkit-recall --config <your config> --search "<terms>" # would anything match a
 | **The prompt was under three words** | `--search` with the same words answers; the session did not | this is deliberate — a two-word prompt has no subject to retrieve on |
 | **The same prompt already fired this session** | the first identical prompt got pointers | deliberate: a memory is offered once per session |
 | **The prompt began with an editor or tool envelope** | the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
-| **The corpus is not where you think** | `--debug-config` prints the corpus root, its file count, and names files stranded outside it | move them, or point `dir` at the right directory |
+| **The corpus is not where you think** | `--debug-config` prints the corpus root *(from the next release: its file count, and a line naming files stranded outside it)*. On a release that predates that, the checker finds the same thing today — it reports `STRAY-ROOT: ./<file>` for a memory left above `search/` | move them, or point `dir` at the right directory |
 | **Nothing matched well enough** | `--search` exits 1 | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
 | **The session budget is spent** | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
 
@@ -179,7 +214,30 @@ it hit. A plugin install that has never been configured writes no log at all —
 creating the shared state directory is a mutation nobody asked for — and
 records its refusals in `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/data/memkit-memkit/trust.json`
 instead. That path is derived, not a stable interface, but `cat` it and the
-`"outcome":"trust:unconfigured"` line is the answer.
+`"outcome"` is the answer.
+
+One limit worth knowing before you read it: a `memkitConfig` that is **set but
+wrong** records `trust:unconfigured`, the same value as never having been
+configured. The wrapper refuses the path before the hook runs, so the hook never
+learns a config was named. `--debug-config` separates the two — it names the
+path and says it does not exist — which is why step 2 of the
+[Quick start](#quick-start) reads the option back out of `settings.json`.
+
+## The four commands
+
+- **`memory-recall`** — the `UserPromptSubmit` hook, and the same retrieval on
+  demand: `memory-recall --search "<terms>"`. A plugin install ships this as
+  `memkit-recall`; see [Both names, once](#install-details).
+- **`memory-integrity`** — the store's checker. Layout, ledgers, frontmatter,
+  dead links, dangling wikilinks, and prose path citations. `--write`
+  regenerates the search ledgers from frontmatter. Optional — retrieval needs
+  none of it, and a plugin install does not ship it
+  ([docs/STORE.md](docs/STORE.md#the-ledgers-and-whether-you-need-them)).
+- **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
+  data, supplied in config; memkit ships none.
+- **`memkit`** — the dispatcher the setup and diagnosis subcommands hang off.
+  A skeleton in this build: `memkit --help` lists `doctor` and `init`, says
+  they have not landed, and names what to reach for meanwhile.
 
 ## Config
 
@@ -333,8 +391,14 @@ older readers mistaking a new failure state for a healthy one. Today it is
 held the write lock, so nothing was counted), `unreadable` (the corpus could
 not be read at all) and `rebuilt` (the index was damaged and built again).
 
-A sweep that collects these files must take all three: an orphaned `.build`
-outliving its index reads as a real record of a corpus that is no longer there.
+One more file per session: `<session-uuid>.json`, holding the once-per-session
+dedup ledger. It is disposable — deleting it lets that session offer a memory
+again — and one is written per session, so a long-lived cache directory
+accumulates them.
+
+A sweep that collects these files must take the index, its `.root` and its
+`.build` together: an orphaned `.build` outliving its index reads as a real
+record of a corpus that is no longer there.
 
 #### `log.jsonl` — the soak log, and what a reader may assume of it
 
@@ -606,7 +670,9 @@ it up. Use pip when you want the CLIs (searching a store by hand, running the
 checker or the eval); pick the plugin channel if what you want is pointers in
 your prompts.
 
-**Where this is expected to run.** A Linux workstation is the ordinary case,
+### Where this runs, and what it needs
+
+A Linux workstation is the ordinary case,
 and the plugin channel is written for it: the hook, the wrappers and the rig
 scenarios all run on Linux in CI, on the same `ubuntu-latest` an adopter's
 machine resembles. macOS is supported and is where the FLOORS come from — a
@@ -649,22 +715,6 @@ Rolling this out across more than one machine, verifying a host afterwards, and
 rolling it back: [docs/ROLLOUT.md](docs/ROLLOUT.md). Read it before the second
 host — the hook fails open, so a broken rollout is silent. It carries a verify
 block per channel; the nix one reads paths a plugin install does not have.
-
-## The four commands
-
-- **`memory-recall`** — the `UserPromptSubmit` hook, and the same retrieval on
-  demand: `memory-recall --search "<terms>"`. A plugin install ships this as
-  `memkit-recall`; see [Both names, once](#install-details).
-- **`memory-integrity`** — the store's checker. Layout, ledgers, frontmatter,
-  dead links, dangling wikilinks, and prose path citations. `--write`
-  regenerates the search ledgers from frontmatter. Optional — retrieval needs
-  none of it, and a plugin install does not ship it
-  ([docs/STORE.md](docs/STORE.md#the-ledgers-and-whether-you-need-them)).
-- **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
-  data, supplied in config; memkit ships none.
-- **`memkit`** — the dispatcher the setup and diagnosis subcommands hang off.
-  A skeleton in this build: `memkit --help` lists `doctor` and `init`, says
-  they have not landed, and names what to reach for meanwhile.
 
 ## Retrieval disclosures
 
@@ -726,8 +776,11 @@ not instructions — paths and descriptions are file contents, and every one of
 them is sanitized before it is rendered, so a memory cannot close the block or
 smuggle control characters through it. The block is the frame plus one line per
 pointer: **559 bytes fixed** on any prompt that fires, plus the pointer lines
-themselves, which are as long as your descriptions. A prompt that retrieves
-nothing costs nothing — the hook writes no block at all.
+themselves, which are as long as your descriptions. When the per-prompt cap cuts
+matches, a truncation notice is added carrying the search command to see the
+rest — measured at **another ~460 bytes**, since it quotes your config path and
+the whole query. A prompt that retrieves nothing costs nothing: the hook writes
+no block at all.
 
 **Injection is pointers, never content.** Content injection is the recorded
 context-pollution failure of comparable tools. A pointer costs tens of tokens

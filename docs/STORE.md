@@ -15,12 +15,23 @@ frontmatter to be retrievable.
   exists, otherwise the store directory itself. So a flat folder of notes
   works.
 
-  **Migrate in one step.** The moment `search/` exists it becomes the corpus
-  root, and every file still above it stops being retrieved — the files are
-  untouched on disk, `--search` still answers for whatever moved, and nothing
-  else changes. Create the directory and move all of it together.
-  `--debug-config` prints the corpus root, its file count, and a line naming
-  any files stranded outside it:
+  **Start in `search/`, or migrate in one step.** The moment `search/` exists
+  it becomes the corpus root, and every file still above it stops being
+  retrieved — the files are untouched on disk, `--search` still answers for
+  whatever moved, and nothing else changes.
+
+  This is easiest to trip without meaning to: the agent block at the bottom of
+  this page writes memories to `<store>/search/`, so on a flat store the first
+  memory your agent writes takes every earlier one out of retrieval. The
+  [Quick start](../README.md#quick-start) therefore creates `search/` from the
+  first file, and so should you. If you already have a flat store, move all of
+  it in one step.
+
+  The checker catches the stranded state today — it reports
+  `STRAY-ROOT: ./<file>` for a memory above `search/` — and `--debug-config`
+  will name them too from the next release.
+  From the next release, `--debug-config` prints the corpus root, its file
+  count, and a line naming any files stranded outside it:
 
   ```
   store notes: /home/you/notes [project; always; searched]
@@ -135,6 +146,14 @@ useful questions historical ones: when did this become true, who changed it,
 what did it say before. `git log` answers those and memkit has no reason to
 reimplement it, and `git pull` is how a store shared between machines or people
 stays shared.
+
+**Sharing a store with other people is a trust decision.** Every description in
+it is rendered into your prompts, so anyone who can push to that repository can
+put text in front of your agent. memkit's frame says the block is data and
+sanitizes every line — a description cannot close the frame or smuggle control
+characters — but it cannot make the content true, and a plausible wrong memory
+is the thing it does not defend against. Review pulls into a shared store the
+way you would review code.
 
 The checker is the one part that uses git, and only when the store is inside a
 repository: it dates memories against a base ref to find citations that have
