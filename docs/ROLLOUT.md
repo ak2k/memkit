@@ -13,6 +13,13 @@ drill, which found the layout defect below. Host names and aliases here are
 placeholders (`$CONSUMER` is the consumer checkout); the shapes are what
 transfers.
 
+**If you installed through the Claude Code plugin**, the section you want is
+[Per-host verify, plugin channel](#per-host-verify-plugin-channel), and it is
+the only one here that applies to you. Everything before it — the unsafe
+window, the layout conversion, the nix per-host checks — is about a fleet
+managed by the home-manager module, and its commands read paths a plugin
+install does not have.
+
 ## The one unsafe window
 
 Claude Code invokes the hook by path — `~/.claude/hooks/memory-prompt-recall.py`

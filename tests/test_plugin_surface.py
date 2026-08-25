@@ -337,7 +337,9 @@ def test_every_relative_link_in_the_readme_resolves() -> None:
     # jump to the top of the page, which reads as the link working.
     anchors = {
         re.sub(r"[^a-z0-9 -]", "", heading.lower()).replace(" ", "-")
-        for heading in re.findall(r"^#{2,3} (.+)$", readme, re.M)
+        # `####` too: GitHub anchors every heading level, and the nav block
+        # links to one.
+        for heading in re.findall(r"^#{2,6} (.+)$", readme, re.M)
     }
     inpage = re.findall(r"\]\(#([^)]+)\)", readme)
     assert inpage, "no in-page links at all"

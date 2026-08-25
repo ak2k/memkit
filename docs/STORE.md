@@ -136,6 +136,31 @@ editor or tool envelope all return nothing from the hook and answer normally
 from the CLI. The full list, in the order a prompt meets them, is
 [Why nothing appeared](../README.md#why-nothing-appeared).
 
+## One store or two
+
+Most people want one: a personal store in `~/notes`, always searched, private to
+you. Start there.
+
+A second store earns its place when the memories belong to a **project** rather
+than to you — things a teammate cloning the repository should get, and that you
+do not want surfacing while you work on something else. Keep it inside that
+checkout and gate it:
+
+```json
+{ "id": "project", "role": "project", "dir": "docs/memories",
+  "live_root": "canonical", "cwd_gate": { "root": "canonical" } }
+```
+
+`cwd_gate` is what makes it a project store: the store is searched only from
+sessions inside that root, including its git worktrees. Without it, a project's
+memories follow you into every unrelated session.
+
+Two things about the list itself. It is **ordered**, and the order is a
+contract — retrieval interleaves hits across stores in the order you write them,
+so the store you put first is the one that wins a tie. And `role` is a label:
+this build validates it and prints it in `--debug-config`, and nothing reads it.
+The behaviour comes from `cwd_gate` and the ordering, not from the word.
+
 ## Git is the management layer
 
 memkit does not manage your memories. Retrieval never runs git — it walks the

@@ -15,6 +15,7 @@ When it fires, this is what lands in the prompt:
 - [Why nothing appeared](#why-nothing-appeared) — every silent gate, in the order you hit them
 - [The four commands](#the-four-commands) · [Config](#config) · [Exit codes](#exit-codes)
 - [Install (details)](#install-details) — the other two channels, and every caveat
+- [Leaving](#leaving) — disable, uninstall, and what survives either
 - [Retrieval disclosures](#retrieval-disclosures) — what was measured, and on what
 - [docs/ADMISSION.md](docs/ADMISSION.md) — what an install puts on your machine
 - [docs/ROLLOUT.md](docs/ROLLOUT.md) — fleet rollout and rollback
@@ -595,6 +596,8 @@ see below.
 **No GitHub credentials needed.** Both steps clone anonymously over HTTPS, so
 neither a GitHub account nor SSH keys are required to install this.
 
+#### What you are installing
+
 **What the marketplace serves you.** The entry pins a released commit sha, so
 `marketplace add` does not mean "whatever is on main". A release moves the pin,
 and until it does, updating the marketplace changes nothing about the code in
@@ -635,6 +638,8 @@ your own checkout: `claude plugin marketplace add <path to your checkout>`,
 with the entry's `source` set to `"./"`. Both halves of that are what
 `tests/rig/` does to exercise the real install path.
 
+#### Configuring it
+
 **Setting it up is manual in this build.** `/memkit:init` — the consented,
 journalled setup this is designed around — has not landed yet, so for now write
 the config by hand (schema and a worked example under [Config](#config)) at the
@@ -671,6 +676,8 @@ reported apart because the remedies are. So `config: none` with nothing on
 stderr means the option was never set; `config: none` with a line about it
 means the path was.
 
+#### Using it from a shell
+
 **`bin/` is the agent's PATH, not your terminal's.** While the plugin is
 enabled, `memkit-recall` is on the agent's Bash tool's `PATH`. It is not on your
 own — nothing is added to your shell — so the same command typed into a terminal
@@ -702,6 +709,16 @@ PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
 "$(ls -d "$PLUGIN"/*/bin/memkit | tail -1)" --help
 ```
 
+**Debugging what Claude Code told the hook.** `tests/rig/hookdump.py` is a
+standalone recorder: register it on any hook event in a scratch
+`CLAUDE_CONFIG_DIR` and it writes one JSON file per invocation with the argv,
+the environment, the cwd and the payload. It is how the claims in this section
+were measured. Its records hold the WHOLE environment — `ANTHROPIC_API_KEY`
+included — and the whole prompt, so keep them inside the scratch profile they
+came from.
+
+#### Leaving
+
 **If you disable the plugin**, the hook stops and the store is untouched — it
 lives outside every plugin-managed path by design. Retrieval still works
 without Claude Code, and with no install:
@@ -710,14 +727,6 @@ without Claude Code, and with no install:
 uvx --from git+https://github.com/ak2k/memkit memory-recall \
   --search "<terms>" --config ~/.config/memkit/memkit.json
 ```
-
-**Debugging what Claude Code told the hook.** `tests/rig/hookdump.py` is a
-standalone recorder: register it on any hook event in a scratch
-`CLAUDE_CONFIG_DIR` and it writes one JSON file per invocation with the argv,
-the environment, the cwd and the payload. It is how the claims in this section
-were measured. Its records hold the WHOLE environment — `ANTHROPIC_API_KEY`
-included — and the whole prompt, so keep them inside the scratch profile they
-came from.
 
 `claude plugin uninstall memkit` additionally removes the plugin's data
 directory — which holds only the refusal records above — unless you pass
