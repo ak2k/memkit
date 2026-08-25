@@ -8,7 +8,7 @@ number here is read out of the tree at the pinned sha rather than remembered.
 
 `/plugin install memkit@memkit` clones **the whole tracked tree** at the sha
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
-subset chosen for the hook. At the sha this release pins that is **62 files,
+subset chosen for the hook. At the sha this release pins that is **63 files,
 about 1.3 MiB**:
 
 | what | files | why it is there |
@@ -16,8 +16,8 @@ about 1.3 MiB**:
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/` | 13 | the payload proper — the wrappers, the hook module, the manifests |
 | `tests/` | 27 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 16 | likewise |
-| `README.md`, `LICENSE`, `NOTICE`, `docs/ROLLOUT.md`, `docs/STORE.md`, `docs/ADMISSION.md` | 6 | including this file |
-| `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the 57. Varies with your git version |
+| `README.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 7 | including this file |
+| `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |
 
 Measured on a real install: the tracked files above, plus a `.git` of **roughly
 44 more files and about 0.7 MiB** — roughly, because the sample hooks and pack
@@ -134,5 +134,7 @@ a perfectly clean install.
 
 The repository commands above do not work inside the installed copy *with the
 pinned sha*: it is a shallow clone, so `git ls-tree <that sha>` answers
-`fatal: not a tree object` there. `git ls-tree -r HEAD` works and returns the
-same 57.
+`fatal: not a tree object` there. `git ls-tree -r HEAD` works, and returns the
+same count as the table above — the release procedure derives that number from
+the tree this file ships in, so the two agree by construction rather than by
+somebody remembering.

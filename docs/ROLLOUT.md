@@ -210,7 +210,7 @@ are the only remaining copies of what those tracked files used to hold.
 
 ## Per-host verify, plugin channel
 
-The checks above read paths a plugin install does not have. These four were run
+The checks above read paths a plugin install does not have. These five were run
 against a real scratch install before being written here, which is the whole
 point of a verify procedure.
 

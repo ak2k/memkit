@@ -307,9 +307,31 @@ def test_the_uvx_spec_and_the_readme_name_the_same_rev() -> None:
     spec = match.group(1)
     # A rev, not a bare repository URL — `git+…/memkit` means main.
     assert "@" in spec.rsplit("/", 1)[-1], spec
-    assert (REPO / "README.md").read_text(encoding="utf-8").count(spec) >= 1, (
-        "the README does not quote the spec the shell actually uses", spec
-    )
+    # EVERY rev the docs quote for this repository, not merely one of them.
+    # Requiring a single match was enough while the README named the spec once;
+    # pinning the `Leaving` recipe gave it a second call site, and a rev can now
+    # go stale in one place while the other keeps the case green. `docs/STORE.md`
+    # carries a third.
+    rev = spec.rsplit("@", 1)[1]
+    quoted = {}
+    for rel in ("README.md", "docs/STORE.md"):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        quoted[rel] = set(
+            re.findall(r"git\+https://github\.com/ak2k/memkit@([\w.]+)", text)
+        )
+    assert quoted["README.md"], "the README does not quote the spec at all"
+    for rel, revs in quoted.items():
+        assert revs <= {rev}, (rel, sorted(revs), rev)
+    # And no `uvx --from` call site is UNPINNED, which is how the uninstall
+    # recipe shipped for two releases: somebody checking their store survives an
+    # uninstall got a different build than the one they were running. Scoped to
+    # `uvx`, because the pip channel's `pip install git+…/memkit` is deliberately
+    # unpinned — that channel installs the CLIs from main and says so.
+    for rel in ("README.md", "docs/STORE.md"):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        assert not re.search(
+            r"uvx --from git\+https://github\.com/ak2k/memkit(?![@\w.])", text
+        ), rel
 
 
 def test_every_relative_link_in_the_readme_resolves() -> None:
@@ -365,14 +387,39 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
         "UserPromptSubmit",
     ):
         assert subject in note, subject
-    # The count it states is the count the pin actually carries, because a
-    # number in prose is the first thing to go stale.
+    # The count it states is the count of THIS TREE, not of the currently
+    # pinned sha, and the difference is the whole of how a release works here.
+    #
+    # A release is two pull requests (docs/RELEASING.md): the first carries the
+    # release state, the second moves the pin to the first one's squash commit.
+    # So while the release-state PR is open, the pin still names the PREVIOUS
+    # release — and this file is describing the tree it is sitting in, which is
+    # the tree the next pin will name and the one an adopter will install.
+    # Anchoring on the pin instead would demand the previous release's numbers
+    # in the commit whose job is to update them.
+    #
+    # It is also the command the note's own "Reproducing these numbers" block
+    # tells a reader to run, which is where the stale figure was found: the doc
+    # said 57 while `git ls-tree -r HEAD` returned 62.
+    # `ls-files` rather than `ls-tree HEAD`: the two agree in a clean checkout —
+    # which is what an adopter's installed copy is, and what the recipe runs
+    # there — and only `ls-files` sees a file the release commit has staged but
+    # not yet committed, which is the state this case runs in while the release
+    # is being written.
     _needs_checkout()
-    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
-    listed = _git("ls-tree", "-r", "--name-only", sha)
+    listed = _git("ls-files")
     assert listed.returncode == 0, listed.stderr
     count = len(listed.stdout.split())
     assert f"**{count} files" in note, (count, "not the number the note states")
+    # Stated ONCE. Both stale figures the final review found were second copies
+    # of the total — one in the `.git` row ("on top of the 57"), one closing the
+    # reproduce recipe ("returns the same 57") — sitting far from the headline
+    # somebody had updated. A number that appears twice is a number that will
+    # disagree with itself; the other places that need it now refer to it
+    # instead of repeating it.
+    assert note.count(f"{count} files") == 1, (
+        count, [ln for ln in note.splitlines() if f"{count} files" in ln]
+    )
 
 
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:
@@ -2679,6 +2726,27 @@ def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
     actual = re.search(r"\[matches (\d+)/(\d+) prompt terms: ([^\]]+)\]", pointers[0])
     assert actual, pointers[0]
     assert claimed.groups() == actual.groups(), (claimed.groups(), actual.groups())
+
+
+def test_the_release_procedure_is_written_down_and_reachable() -> None:
+    """The mechanics are two PRs in an order that is not guessable, and the
+    reasoning survived only in review threads until now.
+
+    Pinned by SUBJECT, not by prose: what may not happen is the file losing the
+    half that explains WHY two, or the half that says which commit to tag —
+    both of which have been got wrong once each.
+    """
+    note = (REPO / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    for subject in ("two pull requests", "cannot name its own sha", "squash",
+                    "marketplace.json", "MEMKIT_UVX_SPEC", "from the next release",
+                    "gate:shape", "hatch-vcs"):
+        assert subject in note, subject
+    # The tag goes on the release-state commit, which is the instruction the
+    # whole document exists to make unmissable.
+    assert re.search(r"[Tt]ag .{0,40}\bS1\b", note), "the tag target is not named"
+    # And it is reachable: a procedure nobody can find is one nobody follows.
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "docs/RELEASING.md" in readme, "the README does not link the procedure"
 
 
 def test_the_store_docs_name_only_commands_this_channel_ships(root) -> None:

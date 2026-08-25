@@ -5283,6 +5283,15 @@ def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
     # before — the exemption above only says a listed value must be dated, and
     # would let this one quietly disappear.
     assert "`gate:shape`" in table, "the value 0.1.0 writes is undocumented"
+    # The two the scrape cannot see. They are returned by the trust gate rather
+    # than written through `done`, and they land in `trust.json` rather than the
+    # soak log — which is exactly how a table claiming totality came to omit
+    # them while the same section sent the reader to that file.
+    source = Path(hook.__file__).read_text(encoding="utf-8")
+    trust = set(re.findall(r'"(trust:[a-z-]+)"', source))
+    assert len(trust) == 2, sorted(trust)
+    for name in trust:
+        assert f"`{name}`" in table, name
     # The dispatch set has to BE what `prompt_gate` returns, not a subset of
     # it. main() answers these without looking at a store; a gate the function
     # can return and the set omits falls through to the store path and is
