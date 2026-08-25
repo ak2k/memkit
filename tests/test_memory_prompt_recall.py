@@ -5276,6 +5276,13 @@ def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
     for name in sorted(listed - emitted):
         mentions = [ln for ln in table.splitlines() if f"`{name}`" in ln]
         assert any("releases before" in ln for ln in mentions), (name, mentions)
+    # And the one value a SHIPPED release writes that this build does not.
+    # `gate:shape` was four causes under one name until 0.2.0 split them; a
+    # machine still on 0.1.0 is writing it now, and this table is what decodes
+    # that log. Drop the row when nobody is reading a 0.1.x log any more, not
+    # before — the exemption above only says a listed value must be dated, and
+    # would let this one quietly disappear.
+    assert "`gate:shape`" in table, "the value 0.1.0 writes is undocumented"
     # The dispatch set has to BE what `prompt_gate` returns, not a subset of
     # it. main() answers these without looking at a store; a gate the function
     # can return and the set omits falls through to the store path and is
