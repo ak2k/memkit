@@ -3552,6 +3552,76 @@ def test_no_config_is_not_an_empty_corpus(tmp_path) -> None:
     assert "inert" in inert_cfg.stdout
 
 
+def _flat_store(tmp_path: Path, names: tuple[str, ...]) -> tuple[Path, dict]:
+    """A store whose `dir` holds the memories directly — no `search/` yet.
+
+    The shared `_env` fixture already lays out `search/`, which is the state
+    AFTER the migration under test; this is the state before it.
+    """
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    for name in names:
+        (notes / name).write_text(
+            f"---\ndescription: unionfs mount notes {name}\n---\n\n# {name}\n\nbody\n"
+        )
+    config = tmp_path / "flat.json"
+    config.write_text(json.dumps({
+        "schema": hook.SCHEMA,
+        "roots": {"notes": {"kind": "path", "path": str(notes)}},
+        "stores": [{"id": "notes", "dir": ".", "live_root": "notes"}],
+    }))
+    return notes, dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+
+
+def test_the_diagnostic_names_the_corpus_it_will_actually_read(tmp_path) -> None:
+    """`searched` beside a store directory is not enough to diagnose with.
+
+    The tiering rule takes `<store>/search` as the corpus root the moment that
+    directory exists, so creating it and moving one file — the only kind of
+    migration a person actually does — strands every file still above it. The
+    store directory is unchanged on disk, `--search` still answers for what
+    moved, and every other line of this output still reads `searched`. Driven
+    rather than reasoned: the same store is asked before and after.
+    """
+    notes, env = _flat_store(tmp_path, ("alpha.md", "beta.md", "gamma.md"))
+    flat = _cli(tmp_path, "--debug-config", env=env)
+    assert flat.returncode == hook.EXIT_OK, flat.stderr
+    # The corpus root and its size, both, because either alone leaves a failure
+    # invisible: the right directory with nothing in it, or a count taken
+    # somewhere the hook will not look.
+    assert f"corpus:  {notes} — 3 files" in flat.stdout, flat.stdout
+    assert "outside the corpus root" not in flat.stdout, flat.stdout
+    before = _cli(tmp_path, "--search", "unionfs beta", env=env)
+    assert "beta.md" in before.stdout, before.stdout
+
+    # Now the partial migration, one file deep.
+    (notes / "search").mkdir()
+    (notes / "alpha.md").rename(notes / "search" / "alpha.md")
+    part = _cli(tmp_path, "--debug-config", env=env)
+    assert part.returncode == hook.EXIT_OK, part.stderr
+    assert f"corpus:  {notes / 'search'} — 1 file" in part.stdout, part.stdout
+    assert "2 markdown files" in part.stdout, part.stdout
+    assert "outside the corpus root and will not be retrieved" in part.stdout
+    assert "move them into search/" in part.stdout, part.stdout
+
+    # And the warning is about RETRIEVAL, not about the directory: the file
+    # left above the corpus root really is gone from what the hook returns,
+    # while the one that moved still answers. That pair is the failure the
+    # line exists to make visible — retrieval that still works, for less.
+    after = _cli(tmp_path, "--search", "unionfs beta", env=env)
+    assert "beta.md" not in after.stdout, after.stdout
+    assert "alpha.md" in after.stdout, after.stdout
+
+
+def test_the_singular_corpus_line_reads_as_english(tmp_path) -> None:
+    """One file is a file, not 1 files — this output is read by people at the
+    moment they are already confused."""
+    _, env = _flat_store(tmp_path, ("only.md",))
+    out = _cli(tmp_path, "--debug-config", env=env)
+    assert "— 1 file\n" in out.stdout, out.stdout
+    assert "1 files" not in out.stdout, out.stdout
+
+
 def test_a_config_that_cannot_be_honoured_is_not_an_empty_corpus(tmp_path) -> None:
     query = "sprocket backlash gearbox rebuild"
     empty = _cli(tmp_path, "--search", query)

@@ -418,8 +418,13 @@ class Config:
         raise ConfigError(f"{self.path}: root {name!r} has unknown kind {kind!r}")
 
     def store_dir(self, store: Store, which: str = "live") -> str:
+        # Normalised, because this path is not only opened — it is PRINTED, in
+        # every pointer the model reads and in every diagnostic line. The
+        # smallest config a store can have says `"dir": "."`, and joining that
+        # raw puts a `/./` in the middle of every path an adopter is shown, on
+        # the one surface whose whole job is to be pasted into `open()`.
         root = store.live_root if which == "live" else store.edit_root
-        return os.path.join(self.root(root), store.dir)
+        return os.path.normpath(os.path.join(self.root(root), store.dir))
 
     def searched_stores(self) -> list:
         """Stores this session may read, in config order.
@@ -1264,6 +1269,25 @@ def _store_live_dir(cfg, store, searched: list) -> str | None:
         return None
     live = cfg.store_dir(store, "live")
     return _search_root(live) if os.path.isdir(live) else None
+
+
+def _corpus_files(root: str) -> int:
+    """How many files retrieval would consider under `root`.
+
+    Shares the RULES with the indexing walk — `EXCLUDE_DIRS` and
+    `EXCLUDE_BASENAMES` are the module's, not a second copy — and not the walk
+    itself: that one collects sizes and mtimes to decide what to reindex, and
+    this runs on a diagnostic whose contract is that it opens no index.
+    """
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
+        total += sum(
+            1
+            for name in filenames
+            if name.endswith(".md") and name not in EXCLUDE_BASENAMES
+        )
+    return total
 
 
 def _store_state(cfg, store, searched: list) -> str:
@@ -3806,6 +3830,27 @@ def _print_config(state: tuple) -> int:
         gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
         state_shown = _store_state(display, store, shown_searched)
         print(f"store {store.id}: {live} [{store.role}; {gated}; {state_shown}]")
+        # WHERE retrieval will actually look, and how much is there. Without
+        # these two facts a green line above is compatible with an empty
+        # corpus and with a corpus the tiering rule has moved out from under:
+        # `<store>/search` becomes the root the moment it exists, so creating
+        # it mid-migration strands every file still above it — retrievable one
+        # prompt, gone the next, with the store directory unchanged on disk and
+        # every other line here still reading `searched`.
+        if state_shown == "searched":
+            corpus = _search_root(live)
+            count = _corpus_files(corpus)
+            print(f"  corpus:  {corpus} — {count} file{'' if count == 1 else 's'}")
+            if corpus != live:
+                stranded = _corpus_files(live) - count
+                if stranded > 0:
+                    print(
+                        f"  ! {stranded} markdown file"
+                        f"{'' if stranded == 1 else 's'} under {live} "
+                        f"{'is' if stranded == 1 else 'are'} outside the corpus "
+                        "root and will not be retrieved — move them into "
+                        f"{os.path.basename(corpus)}/"
+                    )
 
         twin = served_by_id.get(store.id)
         if twin is None:
