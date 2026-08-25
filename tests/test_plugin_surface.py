@@ -2828,7 +2828,8 @@ def test_the_silent_gates_section_names_every_gate_the_hook_applies() -> None:
     )
     for gate in ("already fired this session", "envelope", "disabled",
                  "config: none", "corpus", "session budget",
-                 "began with `/`", "all common words", "ran out of time"):
+                 "began with `/`", "all common words", "ran out of time",
+                 "installed mid-session"):
         assert gate in section, gate
     # The cross-check command is reachable where the reader is standing, and
     # the section says plainly that the CLI is not subject to the prompt gates.
