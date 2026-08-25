@@ -5254,7 +5254,10 @@ def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
     """
     emitted = _hook_outcomes()
     assert len(emitted) > 8, sorted(emitted)
-    readme = (Path(hook.__file__).parent.parent.parent / "README.md").read_text(
+    # Anchored on THIS FILE, not on the installed module. The packaged nix leg
+    # runs these tests from the source tree against a hook in the store, so
+    # walking up from `hook.__file__` lands in site-packages.
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(
         encoding="utf-8"
     )
     start = readme.index("**The outcome vocabulary.**")
