@@ -620,10 +620,14 @@ running once, because a memkit that installed correctly and has not been given
 a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.
 
-**What the installed copy is.** A release commit cannot name itself, so the pin
-names the commit before it, and what you install is the tree as it stood then —
-including that tree's documentation. Immediately after a release that is a
-difference of one commit; the gap grows as `main` moves, and any behaviour
+**What the installed copy is.** The pin names the release commit itself, so what
+you install carries this release's version, its `uvx` tag and its copy of these
+documents. That takes two pull requests to arrange — a commit cannot name its
+own sha, so one carries the release and a second moves the pin to it — and
+[docs/RELEASING.md](docs/RELEASING.md) explains why. The only commit missing
+from your copy is that second one, which is the pin and nothing else.
+
+`main` then moves ahead of the pin until the next release, and any behaviour
 described here that a release has not carried yet is marked
 *(from the next release)*.
 
