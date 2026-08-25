@@ -2635,6 +2635,17 @@ def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
     assert described, memory[:200]
     assert described.group(1).strip() in pointers[0], (described.group(1), pointers[0])
 
+    # The pointer the doc PRINTS quotes the description the doc SHOWS. Without
+    # this the two halves of the example drift apart silently: the file and the
+    # assertion both come from the doc, so editing the frontmatter alone keeps
+    # this case green while the rendered line goes on quoting the old text.
+    shown = STORE_DOC.read_text(encoding="utf-8")
+    rendered = next(
+        ln for ln in shown.splitlines()
+        if ln.startswith("- ~/notes/search/postgres-connection-pool.md")
+    )
+    assert described.group(1).strip() in rendered, (described.group(1), rendered)
+
     # And the doc's rendered pointer is not a hand-drawn picture of one: the
     # terms it claims matched are the terms that matched.
     claimed = re.search(r"\[matches (\d+)/(\d+) prompt terms: ([^\]]+)\]", STORE_DOC.read_text(encoding="utf-8"))
@@ -2660,14 +2671,11 @@ def test_the_store_docs_name_only_commands_this_channel_ships(root) -> None:
         if entry.is_file() and os.access(entry, os.X_OK)
     }
     assert "memkit-recall" in shipped, shipped
-    # Fence markers first: a ``` line pairs with the inline backticks around
-    # it and the scrape then reads the whole document as one code span, which
-    # finds nothing and passes.
+    # A code span never spans a line, and saying so is what keeps a ``` fence
+    # from pairing with the inline backticks below it and swallowing the
+    # document into one match — which finds nothing and passes.
     def inline(text: str) -> list[str]:
-        body = "\n".join(
-            ln for ln in text.splitlines() if not ln.lstrip().startswith("```")
-        )
-        return re.findall(r"`([^`\n]+)`", body)
+        return re.findall(r"`([^`\n]+)`", text)
 
     surfaces = {
         "docs/STORE.md": STORE_DOC.read_text(encoding="utf-8"),
