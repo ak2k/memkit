@@ -640,6 +640,19 @@ def _use_config(path: str | None) -> None:
 # exactly the load-bearing tokens (a five-word question naming one host,
 # was wrongly gated at the previous minimum of 6).
 MIN_PROMPT_WORDS = 3
+
+# The paste ceiling. A prompt this long is a stack trace, a log excerpt or a
+# file somebody dropped in; its vocabulary is not what they are asking about,
+# and retrieving on it returns noise at the top of every such prompt.
+PROMPT_MAX_CHARS = 4000
+
+# Every outcome `prompt_gate` can return for something about the PROMPT'S SHAPE
+# rather than about the machine or the corpus — the set main() answers without
+# looking at a store, and the set the docs enumerate. Named once so a new gate
+# cannot be added to prompt_gate and missed at the dispatch below.
+PROMPT_SHAPE_GATES = frozenset(
+    {"gate:envelope", "gate:empty", "gate:slash", "gate:short", "gate:long"}
+)
 # Harness envelopes: scaffolding the harness addresses to the agent, not a
 # question the user asked. On the author's corpus 14.9% of search-reaching
 # traffic is one of these, and the shipped hook injects on 100% of them at the
@@ -2866,14 +2879,20 @@ def prompt_gate(stripped: str) -> str | None:
     # scaffolding vocabulary out of the index entirely.
     if _is_envelope(stripped):
         return "gate:envelope"
-    # Nothing to do on short prompts, slash commands, pasted blobs.
-    if (
-        not stripped
-        or stripped.startswith("/")
-        or len(stripped.split()) < MIN_PROMPT_WORDS
-        or len(stripped) > 4000
-    ):
-        return "gate:shape"
+    # One name per cause. These were a single `gate:shape` and the collapse
+    # was not survivable: the same value had to be read as "a person typed
+    # something too short to search" in one argument and "a user pasted a blob"
+    # in another, and those are different populations. A record whose reader
+    # cannot tell which gate fired cannot answer the question the record exists
+    # for, and the triage table's remedy differs per cause.
+    if not stripped:
+        return "gate:empty"
+    if stripped.startswith("/"):
+        return "gate:slash"
+    if len(stripped.split()) < MIN_PROMPT_WORDS:
+        return "gate:short"
+    if len(stripped) > PROMPT_MAX_CHARS:
+        return "gate:long"
     if build_query(stripped) is None:
         return "gate:stopwords"
     return None
@@ -3406,7 +3425,7 @@ def main() -> None:
     # the prompt whatever its vocabulary. Splitting the call is what preserves
     # that order without restating any condition.
     gate = prompt_gate(stripped)
-    if gate in ("gate:envelope", "gate:shape"):
+    if gate in PROMPT_SHAPE_GATES:
         return done(gate)
     if not _search_dirs():
         # No config, or one this build could not honour. Both leave the hook

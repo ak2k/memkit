@@ -17,10 +17,13 @@ about 1.2 MiB**:
 | `tests/` | 26 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 14 | likewise |
 | `README.md`, `LICENSE`, `NOTICE`, `docs/ROLLOUT.md` | 4 | the docs that were in the tree at that pin |
-| `.git/` | — | the clone's own history: **44 more files and about 0.7 MiB**, on top of the 57 |
+| `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the 57. Varies with your git version |
 
-Measured on a real install: **101 files, 2.1 MiB** land in the plugin cache, of
-which 57 / 1.2 MiB are the tracked tree above and the rest is `.git`. It is
+Measured on a real install: the 57 tracked files above, plus a `.git` of
+**roughly 44 more files and about 0.7 MiB** — roughly, because the sample hooks
+and pack indexes git writes vary by git version, and a second machine measured
+48. The tracked-tree numbers are exact; the clone's are not, and the argument
+rests on the exact ones. It is
 there because the plugin system installs by cloning, and it is what makes the
 verification below possible.
 

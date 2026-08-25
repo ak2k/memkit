@@ -2499,7 +2499,7 @@ def test_four_word_question_passes_the_gate(tmp_path, monkeypatch) -> None:
     log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
     assert log.is_file()
     rec = json.loads(log.read_text().splitlines()[-1])
-    assert rec["outcome"] == "gate:nodirs"  # NOT gate:shape
+    assert rec["outcome"] == "gate:nodirs"  # NOT a prompt-shape gate
 
 
 # --- soak log ------------------------------------------------------------------
@@ -3051,7 +3051,7 @@ def test_soak_log_written_for_gated_prompt(tmp_path) -> None:
     )
     log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
     rec = json.loads(log.read_text().splitlines()[-1])
-    assert rec["outcome"] == "gate:shape"
+    assert rec["outcome"] == "gate:short"
     assert rec["words"] == 1
     assert "ms" in rec and "prompt_sha" in rec
     # never the prompt text itself
@@ -3151,7 +3151,7 @@ def test_a_short_envelope_is_recorded_as_an_envelope_not_a_shape(
     tmp_path, monkeypatch
 ) -> None:
     """Under MIN_PROMPT_WORDS the shape gate would refuse it too, and which
-    gate gets the credit is not cosmetic: `gate:shape` reads in the soak log
+    gate gets the credit is not cosmetic: `gate:short` reads in the soak log
     as "a person typed something too short to search", which is the population
     every rate is taken over. The envelope gate has to come first in both
     directions — this is the short one, the long one is
@@ -3170,12 +3170,12 @@ def test_a_short_envelope_is_recorded_as_an_envelope_not_a_shape(
 
 GATE_CASES = [
     ("<bash-stdout>ok</bash-stdout>", "gate:envelope"),
-    ("/deploy the fleet to every host", "gate:shape"),
+    ("/deploy the fleet to every host", "gate:slash"),
     # Two content words: build_query answers this one, so a GATED rule written
     # as `build_query(...) is None` — what the inverted join used — calls it
     # searchable while production refuses it. The case that rule cannot see.
-    ("deploy nixos", "gate:shape"),
-    ("word " * 1000, "gate:shape"),
+    ("deploy nixos", "gate:short"),
+    ("word " * 1000, "gate:long"),
     ("the and of", "gate:stopwords"),
 ]
 
@@ -3333,9 +3333,9 @@ def test_envelope_gate_beats_the_shape_gate_at_any_length(
 ) -> None:
     """An envelope is an envelope at any length.
 
-    A notification past the 4000-char shape limit would otherwise be recorded
-    as gate:shape, which reads in the soak log as "a user pasted a blob" — the
-    one thing the stratification exists to tell apart."""
+    A notification past the paste ceiling would otherwise be recorded as
+    gate:long, which reads in the soak log as "a user pasted a blob" — the one
+    thing the stratification exists to tell apart."""
     monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path))
     long_env = (
         "<task-notification id=9>" + ("status ok. " * 500) + "</task-notification>"
@@ -4503,7 +4503,7 @@ def test_no_argv_still_reads_the_hook_payload_from_stdin(tmp_path) -> None:
     )
     assert out.returncode == 0  # fail-open, unlike the CLI
     rec = _last_record(tmp_path)
-    assert rec["outcome"] == "gate:shape" and rec["session"] != "cli"
+    assert rec["outcome"] == "gate:short" and rec["session"] != "cli"
 
 
 # --- the time budget ---------------------------------------------------------
@@ -4642,7 +4642,7 @@ def test_a_kill_as_the_record_lands_leaves_exactly_one(tmp_path) -> None:
     # `killed` record for the same prompt. Every rate the analyzers report is a
     # count over records, so one prompt with two records is one prompt counted
     # twice. Masking SIGTERM across the pair closes it. Measured on main as
-    # ['gate:shape', 'killed'].
+    # ['gate:short', 'killed'].
     records = tmp_path / "records.jsonl"
     proc = subprocess.run(
         ["python3", "-c", _KILL_AS_THE_RECORD_LANDS, HOOK, str(records)],
@@ -4653,7 +4653,7 @@ def test_a_kill_as_the_record_lands_leaves_exactly_one(tmp_path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     outcomes = [json.loads(x)["outcome"] for x in records.read_text().splitlines()]
-    assert outcomes == ["gate:shape"], outcomes
+    assert outcomes == ["gate:short"], outcomes
 
 
 def test_the_module_imports_under_python_39(tmp_path) -> None:
@@ -5242,6 +5242,36 @@ def _hook_outcomes() -> set[str]:
                 raise AssertionError(f"outcome is not a literal at line {node.lineno}")
     return outcomes
 
+
+
+def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
+    """The soak log is the artifact the docs send a debugger to, so its
+    vocabulary has to be decodable from the docs.
+
+    Scraped from the hook the way the CONSUMER scrapes it — the same two
+    shapes its own tripwire reads — so a new outcome fails here as well as
+    there, and the table cannot quietly fall behind the code.
+    """
+    emitted = _hook_outcomes()
+    assert len(emitted) > 8, sorted(emitted)
+    readme = (Path(hook.__file__).parent.parent.parent / "README.md").read_text(
+        encoding="utf-8"
+    )
+    start = readme.index("**The outcome vocabulary.**")
+    table = readme[start : readme.index("\n\n", readme.index("| `cli:*`", start))]
+    missing = sorted(
+        name for name in emitted
+        if not name.startswith("cli:") and f"`{name}`" not in table
+    )
+    assert not missing, missing
+    # And the table does not invent values the hook cannot write.
+    listed = set(re.findall(r"`(gate:[a-z:]+|injected|deduped|floored|killed|error|output-lost)`", table))
+    assert listed <= emitted, sorted(listed - emitted)
+    # The prompt-shape gates are named as a set in the source, and every one of
+    # them is in the table: that set is what main() dispatches on, so a gate
+    # added there and missed here is a silent state with no row.
+    for gate in hook.PROMPT_SHAPE_GATES:
+        assert f"`{gate}`" in table, gate
 
 def test_every_outcome_the_hook_writes_is_named_where_it_is_written() -> None:
     """`dup-registration` was written by a bare `_soak_log` dict literal, so

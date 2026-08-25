@@ -2923,8 +2923,13 @@ def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
     assert ran.returncode == 0, (ran.returncode, ran.stderr, script)
 
     # And the store it just built answers the question the step says to ask.
-    config = home / ".cache" / "memory-recall" / "memkit.json"
-    assert config.is_file(), sorted(p.name for p in (home / ".cache").rglob("*"))
+    # Wherever the section says to put it — read out of the heredoc rather than
+    # hardcoded, so moving the recommended location cannot leave this asserting
+    # about the old one.
+    written = re.search(r"cat > (\S*memkit\.json) <<'EOF'", section)
+    assert written, section[:400]
+    config = Path(written.group(1).replace("~", str(home), 1))
+    assert config.is_file(), sorted(str(x) for x in home.rglob("*.json"))
     out = subprocess.run(
         ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
          "--config", str(config), "--search",

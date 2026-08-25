@@ -49,7 +49,7 @@ account or SSH keys — both clones are anonymous over HTTPS.
 ```
 claude plugin marketplace add ak2k/memkit
 claude plugin install memkit@memkit --yes \
-  --config memkitConfig="$HOME/.cache/memory-recall/memkit.json"
+  --config memkitConfig="$HOME/.config/memkit/memkit.json"
 ```
 
 **2. Check it registered, and that the option arrived.** The install prints the
@@ -73,13 +73,14 @@ it surfaces.
 enabled — a disabled plugin still reports it — which is why `plugin list` comes
 first.
 
-**3. Write the config.** Four lines is the whole minimum. The directory does
-not exist yet — an unconfigured install deliberately creates no state — so make
-it first:
+**3. Write the config.** Four lines is the whole minimum. Put it somewhere you
+would keep a dotfile — **not** under `~/.cache/`, which this page tells you
+elsewhere is disposable and which the platform may purge; the config is the one
+file here that nothing regenerates. Pass this path to `memkitConfig` in step 1:
 
 ```
-mkdir -p ~/.cache/memory-recall
-cat > ~/.cache/memory-recall/memkit.json <<'EOF'
+mkdir -p ~/.config/memkit
+cat > ~/.config/memkit/memkit.json <<'EOF'
 { "schema": 1,
   "roots": { "notes": { "kind": "path", "path": "~/notes" } },
   "stores": [ { "id": "notes", "dir": ".", "live_root": "notes" } ] }
@@ -114,12 +115,33 @@ shell's — nothing is added to your terminal — so from your own shell reach t
 installed copy by path:
 
 ```
-PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+PLUGIN="$CFG/plugins/cache/memkit/memkit"
 RECALL="$(ls -d "$PLUGIN"/*/bin/memkit-recall | tail -1)"
 
-"$RECALL" --config ~/.cache/memory-recall/memkit.json --debug-config
-"$RECALL" --config ~/.cache/memory-recall/memkit.json --search "pgbouncer pooling"
+# the config the HOOK will use — read back out of settings.json, not retyped
+MEMKIT_CFG="$(python3 -c 'import json,os,sys;print(json.load(open(os.path.expanduser(
+  sys.argv[1])))["pluginConfigs"]["memkit@memkit"]["options"]["memkitConfig"])' \
+  "$CFG/settings.json")"
+test -f "$MEMKIT_CFG" || echo "the installed option names a file that is not there: $MEMKIT_CFG"
+
+"$RECALL" --config "$MEMKIT_CFG" --debug-config
+"$RECALL" --config "$MEMKIT_CFG" --search "pgbouncer pooling"
 ```
+
+Feeding the read-back into `--debug-config` is the point: checking the path
+*you* meant to install will report a healthy store while the hook reads a
+different one, and a one-character typo in `memkitConfig` is the likeliest
+install mistake there is.
+
+**When a change takes effect.** Editing the config needs no restart — the hook
+re-reads it on every prompt, measured: a session whose config named no stores
+started returning pointers on the next prompt after the file gained one, same
+session, nothing relaunched. The same goes for adding, editing or archiving a
+memory. Installing, enabling or disabling the plugin is different: Claude Code
+reads its hook registrations when a session starts, so **start a new session
+after an install** — that is also why step 2 checks `plugin list` rather than
+trusting the install's success line.
 
 `--debug-config` prints the config it resolved and, per store, the directory
 retrieval will read *(from the next release: also its file count, and a warning
@@ -191,17 +213,46 @@ is on your own `PATH`.
 | **The plugin is disabled** | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (1)` | re-enable it |
 | **No config reached the hook** | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Quick start](#quick-start) step 2 |
 | **The config path is wrong** | `--debug-config` says the path does not exist | fix the path and re-run the install command |
-| **The prompt was under three words** | `--search` with the same words answers; the session did not | this is deliberate — a two-word prompt has no subject to retrieve on |
-| **The same prompt already fired this session** | the first identical prompt got pointers | deliberate: a memory is offered once per session |
-| **The prompt began with an editor or tool envelope** | the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
-| **The corpus is not where you think** | `--debug-config` prints the corpus root *(from the next release: its file count, and a line naming files stranded outside it)*. On a release that predates that, the checker finds the same thing today — it reports `STRAY-ROOT: ./<file>` for a memory left above `search/` | move them, or point `dir` at the right directory |
-| **Nothing matched well enough** | `--search` exits 1 | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
+| **The prompt was under three words** | `outcome":"gate:short"`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
+| **The prompt began with `/`** | `gate:slash` | deliberate: a slash command is an instruction to Claude Code, not a question about your work. Every slash command lands here |
+| **The prompt was over 4000 characters** | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste |
+| **The prompt was all common words** | `gate:stopwords` | "is it the" leaves no term to search on |
+| **The same prompt already fired this session** | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session |
+| **The prompt began with an editor or tool envelope** | `gate:envelope`; the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
+| **The hook ran out of time** | `killed` | it is registered with a 15-second timeout and gives up rather than delaying your prompt. A first run on a large store builds the index; the next one is fast |
+| **The corpus is not where you think** | `--debug-config` prints the corpus root *(from the next release: its file count, and a line naming files stranded outside it)*. On an older release: a pip or nix install has the checker, which reports `STRAY-ROOT: ./<file>` for a memory left above `search/`; a plugin install does not ship it, so `ls` your store root for markdown sitting above `search/` | move them, or point `dir` at the right directory |
+| **Nothing matched well enough** | `--search` exits 1 *(from the next release: and prints `no match in N files under <root>`)* | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
 | **The session budget is spent** | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
 
-The three deliberate prompt gates — the three-word floor, the once-per-session
-rule, and the envelope prefix — are the reason the hook and `--search` can
-honestly disagree about the same words. `memkit doctor`, which would run this
+The prompt-shape gates — the three-word floor, the slash prefix, the paste
+ceiling, the all-stopword case and the envelope prefix — are the reason the hook
+and `--search` can honestly disagree about the same words: `--search` applies
+none of them. So do the once-per-session rule and the session budget, which are
+about the session rather than the words. `memkit doctor`, which would run this
 list for you, is not in this build.
+
+**The outcome vocabulary.** Each record's `outcome` names what happened, and
+these are all of them:
+
+| outcome | meaning |
+|---|---|
+| `injected` | pointers were written into the prompt |
+| `gate:envelope` · `gate:empty` · `gate:slash` · `gate:short` · `gate:long` · `gate:stopwords` | the prompt's shape, per the table above |
+| `gate:nodirs` | nothing to search: no config, or no store on disk and in scope here |
+| `nomatch` | the stores were searched and nothing came back |
+| `deduped` | every match had already been offered this session |
+| `floored` | matches existed and none cleared the relevance bar |
+| `gate:budget:weak` | the session's 30 pointers are spent and nothing beat the weakest |
+| `gate:budget` | the same, on a session ledger written before this build recorded per-pointer evidence — that budget cannot be reasoned about, so it is terminal |
+| `dup-registration` | two installs on one machine registered the same hook. Not a prompt outcome — it carries `"concludes": false` and is written beside the record the prompt makes for itself |
+| `killed` | the hook was stopped — timeout, or the session ended |
+| `output-lost` | pointers were built and the write did not land |
+| `error` | an unexpected failure; the record names the exception type |
+| `cli:*` | written by `--search`, not by a prompt. `"concludes": false` marks these |
+
+One record per prompt, so when two gates could apply the record names one — a
+repeated prompt whose other match was below the bar records `floored`, not
+`deduped`.
 
 To see the hook working at all, submit a prompt and read the last soak record:
 
@@ -365,8 +416,14 @@ The lexical index and its sidecars live under `$XDG_CACHE_HOME/memory-recall/`,
 or `~/.cache/memory-recall/` where that variable is unset — the XDG default, and
 what a mac gets. A relative `$XDG_CACHE_HOME` is ignored: the directory an
 every-prompt hook writes into is not the session's to choose. Keyed
-by a digest of the corpus root. All of it is disposable — delete any of it and
-the next run rebuilds from the corpus.
+by a digest of the corpus root. Everything memkit writes here is disposable —
+delete any of it and the next run rebuilds from the corpus.
+
+Your **config** is not, and it may be living here: earlier versions of this page
+put it at `~/.cache/memory-recall/memkit.json`, and the plugin offered that as
+its default. Nothing regenerates it — `memkit init` is not in this build — so if
+yours is under `~/.cache/`, move it somewhere a cache sweep will not reach and
+re-run the install command with the new path.
 
 - `fts5-<digest>.db` — the SQLite FTS5 index.
 - `fts5-<digest>.root` — which corpus root that digest is for. Advisory; the
@@ -521,7 +578,7 @@ or, from a shell, in one non-interactive command:
 ```
 claude plugin marketplace add ak2k/memkit
 claude plugin install memkit@memkit --yes \
-  --config memkitConfig="$HOME/.cache/memory-recall/memkit.json"
+  --config memkitConfig="$HOME/.config/memkit/memkit.json"
 ```
 
 That registers the `UserPromptSubmit` hook and puts the plugin's `bin/` on the
@@ -572,12 +629,11 @@ the config by hand (schema and a worked example under [Config](#config)) at the
 path you passed to `--config`. Until that file exists the plugin is **inert**:
 the hook exits 0, prints nothing, reads no directory of yours, and records the
 refusal in the plugin's own data directory, where a future `memkit doctor` can
-report it. Whether you can read that file yourself depends on
-`$CLAUDE_PLUGIN_DATA`, which Claude Code exports to the plugin's own processes
-and not to your shell — so today the record is for the tool rather than for
-you; `claude plugin details memkit@memkit` is what you can check by hand. That is the intended
-state, not a failure — but nothing will surface pointers until you write the
-file.
+report it. You can read it now: the directory is derived rather than secret —
+`"${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/data/memkit-memkit/trust.json` —
+and [Why nothing appeared](#why-nothing-appeared) says what its `outcome` means.
+It is not a stable interface. That is the intended state, not a failure — but
+nothing will surface pointers until you write the config.
 
 The config path reaches the hook through the `memkitConfig` option above, or
 through `$CLAUDE_PLUGIN_DATA/memkit.json`, in that order — and through no other
@@ -638,7 +694,7 @@ without Claude Code, and with no install:
 
 ```
 uvx --from git+https://github.com/ak2k/memkit memory-recall \
-  --search "<terms>" --config ~/.cache/memory-recall/memkit.json
+  --search "<terms>" --config ~/.config/memkit/memkit.json
 ```
 
 **Debugging what Claude Code told the hook.** `tests/rig/hookdump.py` is a
