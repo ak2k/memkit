@@ -16,7 +16,7 @@ When it fires, this is what lands in the prompt:
 - [The four commands](#the-four-commands) · [Config](#config) · [Exit codes](#exit-codes)
 - [Install (details)](#install-details) — the other two channels, and every caveat
 - [Leaving](#leaving) — disable, uninstall, and what survives either
-- [Retrieval disclosures](#retrieval-disclosures) — what was measured, and on what
+- [Retrieval disclosures](#retrieval-disclosures) — what was measured, on what, and what a pointer costs per prompt
 - [docs/ADMISSION.md](docs/ADMISSION.md) — what an install puts on your machine
 - [docs/ROLLOUT.md](docs/ROLLOUT.md) — fleet rollout and rollback
 
@@ -234,7 +234,8 @@ about the session rather than the words. `memkit doctor`, which would run this
 list for you, is not in this build.
 
 **The outcome vocabulary.** Each record's `outcome` names what happened, and
-these are all of them:
+these are all of them — the first thirteen in `log.jsonl`, the last two in the
+`trust.json` an unconfigured install writes instead:
 
 | outcome | meaning |
 |---|---|
@@ -251,6 +252,8 @@ these are all of them:
 | `output-lost` | pointers were built and the write did not land |
 | `error` | an unexpected failure; the record names the exception type |
 | `cli:*` | written by `--search`, not by a prompt. `"concludes": false` marks these |
+| `trust:unconfigured` | **`trust.json`, not the soak log** — the install has no config on any route it reads, so the hook refused before it would have created the shared state directory |
+| `trust:config-error` | the same file: a config was found and could not be used — unreadable, unparseable, or a schema this build does not speak |
 
 One record per prompt, so when two gates could apply the record names one — a
 repeated prompt whose other match was below the bar records `floored`, not
@@ -282,7 +285,7 @@ path and says it does not exist — which is why step 2 of the
 
 - **`memory-recall`** — the `UserPromptSubmit` hook, and the same retrieval on
   demand: `memory-recall --search "<terms>"`. A plugin install ships this as
-  `memkit-recall`; see [Both names, once](#install-details).
+  `memkit-recall`; see [Both names, once](#both-names-once).
 - **`memory-integrity`** — the store's checker. Layout, ledgers, frontmatter,
   dead links, dangling wikilinks, and prose path citations. `--write`
   regenerates the search ledgers from frontmatter. Optional — retrieval needs
@@ -607,7 +610,7 @@ install a prompt hook: [docs/ADMISSION.md](docs/ADMISSION.md) says what is in
 it and where the trust boundary sits.
 
 The `uvx` fallback used for checker work on a machine with no Python 3.12
-resolves `git+https://github.com/ak2k/memkit@v0.2.0` — the release tag, not
+resolves `git+https://github.com/ak2k/memkit@v0.2.1` — the release tag, not
 `main`. Nothing on the every-prompt path uses it; it is reached only by a
 subcommand that regenerates a ledger.
 
@@ -720,7 +723,7 @@ lives outside every plugin-managed path by design. Retrieval still works
 without Claude Code, and with no install:
 
 ```
-uvx --from git+https://github.com/ak2k/memkit memory-recall \
+uvx --from git+https://github.com/ak2k/memkit@v0.2.1 memory-recall \
   --search "<terms>" --config ~/.config/memkit/memkit.json
 ```
 
@@ -768,7 +771,9 @@ deliberate default, not an oversight — there is no ambient search path to gues
 at. The *hook* stays silent and exits 0 whatever happens, because a hook that
 fails any other way blocks a prompt; the CLIs say which state they are in.
 
-**Both names, once.** The commands below are spelled `memory-recall`, which is
+#### Both names, once
+
+The commands below are spelled `memory-recall`, which is
 what pip and nix install. A plugin install ships `memkit-recall` instead and no
 `memory-recall` at all — the names differ on purpose, because plugin `bin/` is
 appended to the agent's `PATH` and a second `memory-recall` would win the
@@ -883,6 +888,10 @@ CI regenerates and diffs it — so edit the generator, never the wordlist:
 uv run tools/generate-common-words.py         # regenerate
 uv run tools/check-wordlist-reproducible.py   # what CI asserts
 ```
+
+Cutting a release is two pull requests in a specific order, for a mechanical
+reason worth reading before you try it:
+[docs/RELEASING.md](docs/RELEASING.md).
 
 CI runs the same things twice over, once per install story: a plain-python leg
 (`uv venv` + editable install, then the suites, the fixture eval, ruff, two
