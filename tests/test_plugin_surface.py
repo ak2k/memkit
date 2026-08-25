@@ -2941,6 +2941,41 @@ def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
     assert (home / "notes" / "search" / "postgres-connection-pool.md").is_file()
 
 
+@pytest.mark.parametrize(
+    "module,prog",
+    [("memkit.memory_integrity", "memory-integrity"),
+     ("memkit.eval_memory_recall", "memory-eval")],
+)
+def test_the_two_checker_help_surfaces_are_readable(module, prog) -> None:
+    """`--help` is the only documentation these two commands have.
+
+    Both passed the module docstring to argparse's default formatter, which
+    reflows it: a layout table became one run-on paragraph, and the design
+    rationale written for the next maintainer was printed to whoever asked for
+    help. The other two entry points already use the raw formatter.
+    """
+    out = subprocess.run(
+        ["python3", "-m", module, "--help"],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PYTHONPATH": str(REPO / "src")},
+    )
+    assert out.returncode == 0, out.stderr
+    text = out.stdout
+    assert f"usage: {prog}" in text, text[:200]
+    # Structure survived. The default formatter collapses every authored line
+    # break, so a description that still has paragraphs is the whole check.
+    described = text[text.index("\n\n") : text.index("options:")]
+    assert described.count("\n\n") >= 2, described
+    # It says what the exit codes mean, which is what "errors teach" needs from
+    # a command whose whole output is a verdict.
+    assert "exit codes:" in text, text
+    assert "\n  0  " in text and "\n  1  " in text, text
+    # And it is not the module docstring: that text is for the next maintainer.
+    for maintainer_only in ("uv run --script", "deliberate one-file break",
+                            "KTD", "shebang the rest of this author"):
+        assert maintainer_only not in text, maintainer_only
+
+
 # --- what the inert message says a config can arrive by ----------------------
 
 # One phrase per rung `memkit_resolve_config` really tries. The mapping is the

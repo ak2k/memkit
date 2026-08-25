@@ -3613,6 +3613,28 @@ def test_the_diagnostic_names_the_corpus_it_will_actually_read(tmp_path) -> None
     assert "alpha.md" in after.stdout, after.stdout
 
 
+def test_a_no_match_search_says_what_it_searched(tmp_path) -> None:
+    """Exit 1 with no output cannot be told from a wrong config or a crash.
+
+    This is the command both the quick start and the triage table nominate as
+    the instrument for "why did nothing appear", so its silence lands on
+    someone who is already unsure whether the install works. stdout stays empty
+    — a pipeline still sees no matches — and the exit code is untouched.
+    """
+    notes, env = _flat_store(tmp_path, ("alpha.md", "beta.md"))
+    out = _cli(tmp_path, "--search", "zzzq nothing matches this", env=env)
+    assert out.returncode == hook.EXIT_NO_MATCH, (out.returncode, out.stderr)
+    assert out.stdout == "", out.stdout
+    assert "no match in 2 files under" in out.stderr, out.stderr
+    assert str(notes) in out.stderr or "~" in out.stderr, out.stderr
+
+    # A hit still prints on stdout and says nothing on stderr, so the line
+    # above is about the no-match state and not about every run.
+    hit = _cli(tmp_path, "--search", "unionfs beta", env=env)
+    assert hit.returncode == hook.EXIT_OK, hit.stderr
+    assert "no match" not in hit.stderr, hit.stderr
+
+
 def test_the_singular_corpus_line_reads_as_english(tmp_path) -> None:
     """One file is a file, not 1 files — this output is read by people at the
     moment they are already confused."""
