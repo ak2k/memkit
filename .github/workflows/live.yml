@@ -36,6 +36,14 @@ env:
   # Pinned for the same reason `check.yml` pins it: the rig asserts against
   # this binary's observable behaviour, so an unpinned install turns somebody
   # else's release into this repository's red build.
+  #
+  # The marker below is not decoration. Without it renovate's custom manager
+  # never saw this line, so a bump moved check.yml alone and this file went on
+  # measuring a build nothing else in the repository used — a pin that had
+  # quietly become a fork. The three workflow pins are now asserted equal by
+  # `test_every_workflow_pins_the_same_claude_code_build`, and the marker is
+  # what lets one renovate branch keep them that way.
+  # renovate: datasource=npm depName=@anthropic-ai/claude-code
   CLAUDE_CODE_VERSION: "2.1.238"
   CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.claude-ci
   # Both, deliberately. LIVE opts the tier in; REQUIRED turns a scenario that

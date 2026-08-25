@@ -1,7 +1,11 @@
 """Scenarios that run the real `claude` binary against a scratch profile.
 
 Everything here is a claim about a harness this repo does not own, so nothing
-here can be settled by reading memkit's own files. Two tiers:
+here can be settled by reading memkit's own files. Three tiers, and all three
+install a STAGED copy of the working tree — which is what makes them safe on a
+pull request and is why they can say nothing about the transport an adopter
+clones over. That question has its own file and its own tier:
+`test_remote_install.py`.
 
   CLI tier — needs the binary and nothing else. Validation, marketplace add,
     install, and reading back what got registered. Runs in CI, which installs
@@ -39,9 +43,11 @@ from rig import (
     assert_no_model_answered,
     assert_scratch_config_dir,
     cli_tier_reason,
+    fixture_config,
     harness_tier_reason,
     live_tier_reason,
     require_claude,
+    soak_records,
     stage_plugin,
 )
 from rig import (
@@ -79,23 +85,12 @@ def profile(tmp_path) -> Profile:
     return Profile(tmp_path / "rig")
 
 
-def _fixture_config(profile: Profile) -> Path:
-    """The invented two-store corpus, inside the profile's own HOME.
-
-    Copied rather than pointed at: the hook writes an index and a `.build`
-    record beside nothing, but the eval snapshot and the corpus itself belong
-    to the repo and a scenario must not be able to touch them.
-    """
-    fixtures = profile.home / "fixtures"
-    shutil.copytree(REPO / "tests" / "fixtures", fixtures)
-    return fixtures / "memkit.json"
-
-
-def _soak(profile: Profile) -> list[dict]:
-    log = profile.home / ".cache" / "memory-recall" / "log.jsonl"
-    if not log.is_file():
-        return []
-    return [json.loads(line) for line in log.read_text().splitlines()]
+# Both of these moved into `rig/__init__.py` when the remote tier started
+# needing them: which corpus an install is pointed at, and what counts as a
+# soak record, are answers the two tiers must not be free to give differently.
+# The local names stay because every scenario below reads better for them.
+_fixture_config = fixture_config
+_soak = soak_records
 
 
 # --- the rig's own safety and its instruments ---------------------------------

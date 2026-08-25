@@ -1,0 +1,146 @@
+name: Remote install
+
+# The one check that installs memkit the way an adopter does: `claude plugin
+# marketplace add ak2k/memkit` against MAIN's manifest on github, then
+# `install` of the sha that manifest pins, over the transport it names, on a
+# runner carrying no credential of any kind.
+#
+# WHY IT EXISTS. Every other check stages the working tree as a marketplace
+# that serves itself in place, which is the right thing to test on a pull
+# request and cannot observe the transport at all — staging rewrites the
+# `source` away. That gap shipped: v0.1.0's entry was
+# `{"source": "github", "repo": "ak2k/memkit"}`, which clones over SSH with no
+# HTTPS fallback, so `marketplace add` succeeded and `install` died with
+# `Permission denied (publickey)` for every adopter without GitHub SSH keys —
+# with all five required contexts green.
+#
+# WHAT A RED RUN MEANS, roughly in order of likelihood:
+#
+#   1. A TRANSPORT REGRESSION. `.claude-plugin/marketplace.json` names a source
+#      an anonymous machine cannot clone — a `github` source type, or an
+#      `ssh://`/`git@` url. The scenario says so by name at the manifest
+#      assertion, before it reaches an install.
+#   2. A HARNESS BUMP BROKE INSTALL. `CLAUDE_CODE_VERSION` below moved and the
+#      new build resolves `owner/repo`, the `url` source type, `--config`, or
+#      the `plugin details` inventory differently. The failure names which of
+#      those it could not do.
+#   3. A MARKETPLACE SCHEMA CHANGE. The pinned harness rejects a manifest it
+#      used to accept, or accepts it and registers nothing — `Hooks (1)` in the
+#      component inventory is the assertion that catches the silent half.
+#   4. THE PIN NAMES A COMMIT THAT IS NOT A PLUGIN. An install at a sha whose
+#      tree carries no `hooks/hooks.json` reports `Successfully installed` and
+#      wires up nothing; the payload-minimum assertion names the missing file.
+#   5. GITHUB. A clone that runs past the timeout says so in its own message
+#      rather than reading as a memkit failure.
+#
+# WHAT TO CHECK FIRST: `.claude-plugin/marketplace.json` on main, then
+# reproduce in a scratch profile —
+#
+#   CLAUDE_CONFIG_DIR=$(mktemp -d) HOME=$(mktemp -d) \
+#     claude plugin marketplace add ak2k/memkit
+#
+# — which is the same two commands the scenario runs. The whole tier is
+# `MEMKIT_RIG_REMOTE=1 pytest tests/rig/test_remote_install.py`.
+#
+# NO SECRETS ARE REFERENCED IN THIS FILE, and that is the property under test
+# rather than an omission: the claim is that a machine with no credential can
+# install this plugin. The one turn it takes has the model route pointed
+# somewhere that cannot resolve, because hook dispatch precedes the model call
+# and memkit's own artifacts are the evidence.
+on:
+  # Daily rather than on every pull request. A required check that clones from
+  # github is a check that fails on github's bad afternoon, and this is not one
+  # of the five contexts branch protection waits for — see the job name note
+  # below. The cost is that a transport regression is caught within a day of
+  # landing rather than at the moment it lands, which is the right trade for a
+  # file that changes about once a release.
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+  # And immediately on the change that can cause it. `.claude-plugin/` is the
+  # manifest this workflow guards; nothing else in the tree can alter what an
+  # adopter is served.
+  #
+  # A `paths:` filter here is safe where check.yml's would not be, and the
+  # difference is the trigger rather than the filter. check.yml's comment
+  # records the deadlock: a path-filtered job on `pull_request` never REPORTS,
+  # so a required context by that name stays permanently pending and the PR is
+  # unmergeable. This filter is on `push` to an already-merged main, and this
+  # workflow reports no required context, so a run that does not happen blocks
+  # nothing.
+  push:
+    branches: [main]
+    paths:
+      - ".claude-plugin/**"
+
+concurrency:
+  group: remote-install-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The same pin as check.yml and live.yml, and the equality is a TEST rather
+  # than a convention: `test_every_workflow_pins_the_same_claude_code_build`
+  # fails if these three drift. The renovate marker is what keeps them moving
+  # together — the custom manager matches every workflow file, so one bump
+  # branch edits all three, and a pin without the marker is a pin renovate
+  # cannot see.
+  # renovate: datasource=npm depName=@anthropic-ai/claude-code
+  CLAUDE_CODE_VERSION: "2.1.238"
+  CLAUDE_CONFIG_DIR: ${{ github.workspace }}/.claude-ci
+  # The tier's opt-in. Without it every scenario below skips, which is the
+  # shape of green this repository refuses.
+  MEMKIT_RIG_REMOTE: "1"
+  # And the declaration that turns a scenario that cannot START into a failure
+  # rather than a skip: a runner whose `npm install -g` step quietly stopped
+  # working must go red, not report a green it never earned.
+  MEMKIT_RIG_REQUIRED: "1"
+
+jobs:
+  # NOT one of branch protection's five required contexts, and the name is
+  # chosen so it cannot become one by accident: `python`, `wordlist` and the
+  # three `nix (…)` legs are the required list that `automerge.yml` keeps, and
+  # `test_the_remote_install_workflow_touches_no_required_context` asserts this
+  # file's job names are disjoint from it. A scheduled workflow that shared a
+  # required name would report that context on a schedule and gate merges on
+  # github's uptime.
+  remote-install:
+    name: remote-install
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # The pin cannot drift mid-run, and an autoupdate would also rewrite the
+      # binary the scenarios make claims about.
+      DISABLE_AUTOUPDATER: "1"
+    steps:
+      # fetch-depth 0 for the same reason check.yml needs it: the version is
+      # dynamic and hatch-vcs reads `git describe` at install time.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Environment
+        run: |
+          uv venv --python 3.12
+          uv pip install --python .venv -e . pytest
+
+      # Same shape as check.yml's step, deliberately: the pin, an explicit
+      # config dir, and a `--version` that fails the job here rather than
+      # inside a scenario.
+      - name: Claude Code (pinned)
+        run: |
+          npm install -g @anthropic-ai/claude-code@"$CLAUDE_CODE_VERSION"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          claude --version
+
+      # This file only. The rest of `tests/rig` gates on check.yml's `python`
+      # job, and re-running it here would make a github outage look like a
+      # code failure.
+      - name: Rig, remote tier
+        run: .venv/bin/python -m pytest tests/rig/test_remote_install.py -q

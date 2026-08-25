@@ -561,19 +561,31 @@ pyright passes — the package at its 3.12 floor, then the 3.9 entry points — 
 the plugin manifests through `claude plugin validate --strict` at a pinned
 Claude Code) and a nix leg (`nix flake check` on x86_64-linux, aarch64-linux and
 aarch64-darwin). Neither trigger is path-filtered, so a docs-only change still
-reports every context.
+reports every context. Two more workflows report nothing a merge waits for:
+`remote-install.yml` installs from github daily (and on any change to
+`.claude-plugin/`), and `live.yml` runs the model-backed tier by hand.
 
 `tests/rig/` drives the real `claude` binary against a scratch profile, because
 what the plugin claims — that a manifest option reaches a hook's environment,
 that an installed wrapper emits pointers — are claims about Claude Code, which
-this repo does not own, and every one of them fails silently. Two tiers: the CLI tier
-needs only the binary and runs in CI, while the live tier needs a model and is
-opt-in.
+this repo does not own, and every one of them fails silently. Four tiers, and
+each names its own dependency: the CLI and harness tiers need only the binary
+and run in CI, the live tier needs a model, and the remote tier needs the
+network.
 
 ```
-pytest tests/rig                          # CLI tier
+pytest tests/rig                          # CLI + harness tiers
 MEMKIT_RIG_LIVE=1 pytest tests/rig        # + the scenarios that need a model
+MEMKIT_RIG_REMOTE=1 pytest tests/rig      # + the install from github itself
 ```
+
+The remote tier is the only one that leaves the machine, which is why it is
+opt-in and why it runs on a daily workflow rather than on a pull request. Every
+other tier stages the working tree as a marketplace serving itself in place,
+so none of them can see the TRANSPORT — and a marketplace entry that could
+only be cloned with SSH keys is how v0.1.0 shipped an install that failed for
+everyone while every check was green. It installs from `ak2k/memkit` at the sha
+main's manifest pins, with no credential of any kind.
 
 The live tier expects an Anthropic-compatible endpoint in `ANTHROPIC_BASE_URL`
 (it never touches your real credentials or your real `~/.claude` — every

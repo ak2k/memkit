@@ -421,6 +421,132 @@ def test_ci_runs_the_rigs_harness_tier_as_a_gate_rather_than_a_courtesy() -> Non
     assert REQUIRED_ENV not in elsewhere, "declared outside the job that runs it"
 
 
+# --- the workflows as a set --------------------------------------------------
+#
+# Three files now install the same pinned Claude Code, and the pin is the
+# repository's statement about which harness build its measured claims were
+# measured against. Nothing in yaml connects three copies of a version string,
+# so the connection is here.
+
+WORKFLOWS = REPO / ".github" / "workflows"
+# `renovate.json`'s custom manager matches this exact shape: a marker comment
+# and then the assignment on the next line. A pin without the marker is a pin
+# renovate cannot see.
+PINNED_HARNESS = re.compile(
+    r"#\s*renovate:\s*datasource=npm\s+depName=@anthropic-ai/claude-code\s*\n"
+    r'\s*CLAUDE_CODE_VERSION:\s*"([^"]+)"'
+)
+ANY_HARNESS_PIN = re.compile(r'^\s*CLAUDE_CODE_VERSION:\s*"([^"]+)"', re.MULTILINE)
+
+
+def test_every_workflow_pins_the_same_claude_code_build() -> None:
+    """One harness version across every workflow, and every pin visible to
+    renovate.
+
+    Both halves are the gate, and the second is what makes the first
+    maintainable. `live.yml` carried an unmarked copy of the pin, so renovate's
+    custom manager never saw it: a bump moved `check.yml` alone and the live
+    tier went on measuring a build nothing else in the repository used. An
+    equality assertion without the markers would just turn that drift into a
+    red build somebody has to fix by hand every time.
+
+    The claims this pin carries — the option-name mangling, the trailing slash
+    on the plugin root, exit 2 blocking a turn — were each measured against one
+    build. Two workflows on two builds is two different sets of claims wearing
+    one repository's name.
+    """
+    marked = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        pins = ANY_HARNESS_PIN.findall(text)
+        if not pins:
+            continue
+        assert len(pins) == 1, (path.name, pins)
+        assert PINNED_HARNESS.findall(text) == pins, (
+            f"{path.name} pins CLAUDE_CODE_VERSION with no renovate marker "
+            "directly above it, so renovate cannot move it and it will drift",
+            pins,
+        )
+        marked[path.name] = pins[0]
+
+    # Not a vacuous pass: the rig runs in more than one workflow, and a version
+    # of this test that found one pin would agree with itself forever.
+    assert len(marked) >= 2, marked
+    assert len(set(marked.values())) == 1, marked
+
+
+def _job_names(workflow: str) -> set[str]:
+    """Every context a workflow reports, as branch protection sees them.
+
+    The `name:` a job declares wins, and a job without one reports its key.
+    Deliberately text rather than yaml: nothing in this repository's test
+    dependencies parses yaml, and the shape being read is two levels deep and
+    regular.
+    """
+    body = workflow.split("\njobs:\n", 1)[1]
+    names = set()
+    for block in re.split(r"^  (?=\w[\w-]*:$)", body, flags=re.MULTILINE)[1:]:
+        key = block.split(":", 1)[0]
+        declared = re.search(r"^    name:\s*(.+)$", block, re.MULTILINE)
+        names.add(declared.group(1).strip() if declared else key)
+    return names
+
+
+def test_the_remote_install_workflow_touches_no_required_context() -> None:
+    """A scheduled workflow must not report a name branch protection waits for.
+
+    Sharing one would make merges gate on a nightly clone from github — the
+    check would go red on github's bad afternoon and block every PR, and a
+    stale success would satisfy a context nobody had re-run. `automerge.yml`
+    is where the required list actually lives, so it is read rather than
+    restated here.
+    """
+    automerge = (WORKFLOWS / "automerge.yml").read_text(encoding="utf-8")
+    listed = re.search(r"const requiredChecks = \[(.*?)\];", automerge, re.S)
+    assert listed, "automerge.yml no longer declares requiredChecks"
+    required = set(re.findall(r'"([^"]+)"', listed.group(1)))
+    assert "python" in required, required  # the list was found, not an empty match
+
+    for name in ("remote-install.yml", "live.yml"):
+        jobs = _job_names((WORKFLOWS / name).read_text(encoding="utf-8"))
+        assert jobs, name
+        assert not (jobs & required), (name, sorted(jobs & required))
+
+
+def test_the_remote_install_workflow_runs_the_tier_on_a_schedule_and_no_secret(
+) -> None:
+    """The four properties that make this workflow the gate it claims to be.
+
+    Each one fails silently if it regresses: a commented-out schedule reports
+    nothing, a missing opt-in skips every scenario, a missing required
+    declaration turns a broken install step into a green run, and a secret in
+    scope quietly retires the no-credential claim the whole tier is about.
+    """
+    from rig import REMOTE_ENV, REQUIRED_ENV
+
+    text = (WORKFLOWS / "remote-install.yml").read_text(encoding="utf-8")
+    live = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    # A schedule that is present but commented out is exactly what `live.yml`
+    # ships, and reading the file with comments left in cannot tell them apart.
+    assert re.search(r"^  schedule:\n    - cron:", live, re.MULTILINE), live
+    assert "workflow_dispatch:" in live
+    # The manifest is what it guards, and the path filter is what makes a
+    # change to it report the same day rather than the next.
+    assert '- ".claude-plugin/**"' in live, live
+
+    assert f'{REMOTE_ENV}: "1"' in live, REMOTE_ENV
+    assert f'{REQUIRED_ENV}: "1"' in live, REQUIRED_ENV
+    assert "tests/rig/test_remote_install.py" in live
+
+    # The claim under test is that a machine with NO credential can install
+    # this plugin. A `secrets.` reference is how that claim stops being true
+    # without anything failing.
+    assert "secrets." not in live, "the no-credential tier reached for a secret"
+
+
 def test_every_payload_file_is_tracked() -> None:
     """A github install is a clone. An untracked wrapper works perfectly on the
     machine it was written on and is missing for every adopter — and the
