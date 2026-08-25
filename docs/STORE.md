@@ -27,11 +27,11 @@ frontmatter to be retrievable.
   first file, and so should you. If you already have a flat store, move all of
   it in one step.
 
-  The checker catches the stranded state today — it reports
-  `STRAY-ROOT: ./<file>` for a memory above `search/` — and `--debug-config`
-  will name them too from the next release.
-  From the next release, `--debug-config` prints the corpus root, its file
-  count, and a line naming any files stranded outside it:
+  Both diagnostics catch the stranded state: `--debug-config` names the files,
+  and on a pip or nix install the checker reports `STRAY-ROOT: ./<file>` for a
+  memory above `search/`.
+  `--debug-config` prints the corpus root, its file count, and a line naming
+  any files stranded outside it:
 
   ```
   store notes: /home/you/notes [project; always; searched]
@@ -215,7 +215,7 @@ Two things about it are worth knowing before you reach for it:
   run it out of band:
 
   ```
-  uvx --from git+https://github.com/ak2k/memkit@v0.1.0 memory-integrity --config <your config>
+  uvx --from git+https://github.com/ak2k/memkit@v0.2.0 memory-integrity --config <your config>
   ```
 
 If you are not maintaining a curated hot tier, skipping all of it is a

@@ -145,8 +145,8 @@ after an install** — that is also why step 2 checks `plugin list` rather than
 trusting the install's success line.
 
 `--debug-config` prints the config it resolved and, per store, the directory
-retrieval will read *(from the next release: also its file count, and a warning
-naming any memories stranded outside it)*. `--search` applies fewer gates than
+retrieval will read, its file count, and a warning naming any memories
+stranded outside it. `--search` applies fewer gates than
 the hook — see [Why nothing appeared](#why-nothing-appeared) — so it answering
 while a session stays quiet is information, not a contradiction.
 
@@ -215,15 +215,15 @@ is on your own `PATH`.
 | **The plugin is disabled** | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (1)` | re-enable it |
 | **No config reached the hook** | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Quick start](#quick-start) step 2 |
 | **The config path is wrong** | `--debug-config` says the path does not exist | fix the path and re-run the install command |
-| **The prompt was under three words** | `gate:short` *(`gate:shape` on the current release)*; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
+| **The prompt was under three words** | `gate:short`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
 | **The prompt began with `/`** | no record at all — Claude Code resolves slash commands before the hook runs, so an empty `tail -1` is the tell | deliberate: a slash command is an instruction to Claude Code, not a question about your work |
-| **The prompt was over 4000 characters** | `gate:long` *(`gate:shape` on the current release)* | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste |
+| **The prompt was over 4000 characters** | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste |
 | **The prompt was all common words** | `gate:stopwords` | "is it the" leaves no term to search on |
 | **The same prompt already fired this session** | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session |
 | **The prompt began with an editor or tool envelope** | `gate:envelope`; the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
 | **The hook ran out of time** | `killed` | it is registered with a 15-second timeout and gives up rather than delaying your prompt. A first run on a large store builds the index; the next one is fast |
-| **The corpus is not where you think** | `--debug-config` prints the corpus root *(from the next release: its file count, and a line naming files stranded outside it)*. On an older release: a pip or nix install has the checker, which reports `STRAY-ROOT: ./<file>` for a memory left above `search/`; a plugin install does not ship it, so `ls` your store root for markdown sitting above `search/` | move them, or point `dir` at the right directory |
-| **Nothing matched well enough** | `--search` exits 1 *(from the next release: and prints `no match in N files under <root>`)* | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
+| **The corpus is not where you think** | `--debug-config` prints the corpus root, its file count, and a line naming any files stranded outside it | move them, or point `dir` at the right directory |
+| **Nothing matched well enough** | `--search` exits 1 and prints `no match in N files under <root>` | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
 | **The session budget is spent** | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
 
 The prompt-shape gates — the three-word floor, the slash prefix, the paste
@@ -233,14 +233,13 @@ none of them. So do the once-per-session rule and the session budget, which are
 about the session rather than the words. `memkit doctor`, which would run this
 list for you, is not in this build.
 
-**The outcome vocabulary.** Each record's `outcome` names what happened. These
-are all of them on `main`; a release before the prompt-shape split writes
-`gate:shape` where the table below names four:
+**The outcome vocabulary.** Each record's `outcome` names what happened, and
+these are all of them:
 
 | outcome | meaning |
 |---|---|
 | `injected` | pointers were written into the prompt |
-| `gate:envelope` · `gate:empty` · `gate:slash` · `gate:short` · `gate:long` · `gate:stopwords` | the prompt's shape, per the table above. The middle four are *(from the next release)* — releases before the split record all of them as **`gate:shape`**, which is what a log shows today |
+| `gate:envelope` · `gate:empty` · `gate:slash` · `gate:short` · `gate:long` · `gate:stopwords` | the prompt's shape, per the table above. In releases before 0.2.0 the middle four were one value, **`gate:shape`** — a log written by 0.1.0 shows that instead |
 | `gate:nodirs` | nothing to search: no config, or no store on disk and in scope here |
 | `nomatch` | the stores were searched and nothing came back |
 | `deduped` | every match had already been offered this session |
@@ -608,7 +607,7 @@ install a prompt hook: [docs/ADMISSION.md](docs/ADMISSION.md) says what is in
 it and where the trust boundary sits.
 
 The `uvx` fallback used for checker work on a machine with no Python 3.12
-resolves `git+https://github.com/ak2k/memkit@v0.1.0` — the release tag, not
+resolves `git+https://github.com/ak2k/memkit@v0.2.0` — the release tag, not
 `main`. Nothing on the every-prompt path uses it; it is reached only by a
 subcommand that regenerates a ledger.
 
@@ -619,18 +618,15 @@ a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.
 
 **What the installed copy is.** A release commit cannot name itself, so the pin
-names an earlier commit, and what you install is the tree as it stood then —
-including that tree's documentation. Its README still says memkit is not yet
-installable from this marketplace (it is; this is the corrected copy), it
-presents the tiered store layout as required when it is not, and its links to
-`docs/STORE.md` and `docs/ADMISSION.md` dangle because neither file existed at
-the pin.
+names the commit before it, and what you install is the tree as it stood then —
+including that tree's documentation. Immediately after a release that is a
+difference of one commit; the gap grows as `main` moves, and any behaviour
+described here that a release has not carried yet is marked
+*(from the next release)*.
 
-Every difference between that copy and this page is a change made after the pin.
-The ones that alter behaviour are the *(from the next release)* markers on this
-page, so it does not enumerate them again in prose that would go stale on the
-next merge. What is worth checking is the thing that does not move: that the
-tree on your machine is exactly the commit the entry names.
+This page does not enumerate the rest file by file. Prose about a moving pin
+goes stale on the next merge — it has, twice — and the thing worth checking does
+not move: that the tree on your machine is exactly the commit the entry names.
 [docs/ADMISSION.md](docs/ADMISSION.md) gives the two commands.
 
 **Installing from a clone**, which is what you want while developing against
