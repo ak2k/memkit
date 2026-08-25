@@ -371,7 +371,7 @@ memkit_resolve_interpreter() {
 # it resolved whatever `main` held, so an adopter on an older release routed
 # checker work through a newer checker with nothing saying so.
 #
-# The tag is a forward reference at the moment it is written — `v0.1.0` is
+# The tag is a forward reference at the moment it is written — `v0.2.0` is
 # created on this release's merge commit, right after it merges — and that is
 # safe in a way an unpinned rev is not, because the name is one we control and
 # a tag that does not exist yet fails loudly rather than resolving to something
@@ -379,11 +379,11 @@ memkit_resolve_interpreter() {
 # reaches this, so the state is a subcommand that cannot run, not a hook that
 # misbehaves.
 #
-# The residual skew is now bounded rather than open-ended. The marketplace pin
-# names the commit before the release and this names the release, so a checker
-# provisioned here can be one commit ahead of the hook that asked for it — a
-# commit that moves pins and prose and no code the checker runs.
-MEMKIT_UVX_SPEC="git+https://github.com/ak2k/memkit@v0.1.0"
+# The residual skew is bounded rather than open-ended. The marketplace pin names
+# the commit before the release and this names the release, so a checker
+# provisioned here is one commit ahead of the hook that asked for it — the
+# release commit, which moves pins and prose and no code the checker runs.
+MEMKIT_UVX_SPEC="git+https://github.com/ak2k/memkit@v0.2.0"
 
 # The checker's floor, which is NOT the hook's. Kept as two numbers rather than
 # a string so the test that scrapes `sys.version_info < (3, 12)` out of

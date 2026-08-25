@@ -10,12 +10,12 @@
     {
       "name": "memkit",
       "description": "Injects pointers to your own memory files into every prompt: lexical retrieval over a tiered markdown store, plus a checker and an eval for it.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "productivity",
       "source": {
         "source": "url",
         "url": "https://github.com/ak2k/memkit.git",
-        "sha": "32e02ad2aa136694420bb591b8069665a9aa735b"
+        "sha": "39bae3b57bd43cf23be4069a639d86d810837954"
       }
     }
   ]

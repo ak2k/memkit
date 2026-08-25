@@ -8,29 +8,29 @@ number here is read out of the tree at the pinned sha rather than remembered.
 
 `/plugin install memkit@memkit` clones **the whole tracked tree** at the sha
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
-subset chosen for the hook. At the sha this release pins that is **57 files,
-about 1.2 MiB**:
+subset chosen for the hook. At the sha this release pins that is **62 files,
+about 1.3 MiB**:
 
 | what | files | why it is there |
 |---|---|---|
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/` | 13 | the payload proper — the wrappers, the hook module, the manifests |
-| `tests/` | 26 | not needed at run time; see below |
-| `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 14 | likewise |
-| `README.md`, `LICENSE`, `NOTICE`, `docs/ROLLOUT.md` | 4 | the docs that were in the tree at that pin |
+| `tests/` | 27 | not needed at run time; see below |
+| `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 16 | likewise |
+| `README.md`, `LICENSE`, `NOTICE`, `docs/ROLLOUT.md`, `docs/STORE.md`, `docs/ADMISSION.md` | 6 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the 57. Varies with your git version |
 
-Measured on a real install: the 57 tracked files above, plus a `.git` of
-**roughly 44 more files and about 0.7 MiB** — roughly, because the sample hooks
-and pack indexes git writes vary by git version, and a second machine measured
-48. The tracked-tree numbers are exact; the clone's are not, and the argument
-rests on the exact ones. It is
+Measured on a real install: the tracked files above, plus a `.git` of **roughly
+44 more files and about 0.7 MiB** — roughly, because the sample hooks and pack
+indexes git writes vary by git version, and a second machine measured 48. The
+tracked-tree numbers are exact; the clone's are not, and the argument rests on
+the exact ones. It is
 there because the plugin system installs by cloning, and it is what makes the
 verification below possible.
 
-**This file is not in the copy you install**, and neither is `docs/STORE.md`.
-Both were written after the commit the current release pins, so the installed
-tree carries `docs/ROLLOUT.md` alone and the README's links to them dangle
-there. They land with the next release pin. Read them here, in the repository.
+This file and `docs/STORE.md` are in the copy you install, from 0.2.0 onward —
+they were written after the commit 0.1.0 pinned, so on that release the
+installed tree carried `docs/ROLLOUT.md` alone and the README's links to them
+dangled.
 
 **The payload minimum is pinned; the maximum is not.** `tests/test_plugin_surface.py`
 holds a list of the files the wrappers need and fails if one is missing, so the
