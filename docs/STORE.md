@@ -13,10 +13,36 @@ frontmatter to be retrievable.
 
 - **Which directory is searched.** `<store>/search` when that directory
   exists, otherwise the store directory itself. So a flat folder of notes
-  works, and moving to the tiered layout later changes nothing else.
+  works.
+
+  **Migrate in one step.** The moment `search/` exists it becomes the corpus
+  root, and every file still above it stops being retrieved — the files are
+  untouched on disk, `--search` still answers for whatever moved, and nothing
+  else changes. Create the directory and move all of it together.
+  `--debug-config` prints the corpus root, its file count, and a line naming
+  any files stranded outside it:
+
+  ```
+  store notes: /home/you/notes [project; always; searched]
+    corpus:  /home/you/notes/search — 1 file
+    ! 2 markdown files under /home/you/notes are outside the corpus root and
+      will not be retrieved — move them into search/
+  ```
 - **What is skipped.** `archive/` and `hot/` are pruned while walking —
-  `hot/` because those memories are already in the session's context, so
-  pointing at them again costs tokens and adds nothing. `MEMORY.md`,
+  `hot/` because those memories are meant to be in the session's context
+  already, so pointing at them again costs tokens and adds nothing.
+
+  **Nothing in a plugin install puts them there.** memkit registers one
+  `UserPromptSubmit` hook and loads no files; auto-loading `hot/` is something
+  you wire up, with one line in your `CLAUDE.md`:
+
+  ```markdown
+  @~/notes/MEMORY.md
+  ```
+
+  Until you do, a file under `hot/` is reachable by neither route — not
+  retrieved, not loaded. **If you are not wiring that up, keep everything in
+  `search/`.** `MEMORY.md`,
   `SEARCH.md` and `INDEX.md` never surface as pointers anywhere.
 - **What is indexed.** The whole file, split into chunks at markdown headings,
   so one section of a long memory competes on its own length rather than the
@@ -66,8 +92,12 @@ If there is no `description:`, the first `# heading` is used instead. If there
 is neither, the pointer renders as the path and the matched terms alone — still
 retrievable, just mute about itself.
 
-Descriptions are capped at **160 characters**; longer ones render as the first
-157 followed by `...`. Write to the cap rather than through it.
+**Write descriptions under 155 characters.** Three numbers sit behind that one:
+the checker rejects a description over **155**, the hook renders at most **157**
+before adding `...`, and its hard ceiling is 160. The ladder is deliberate —
+the checker's cap is below the hook's cut so an authored description is never
+truncated — and 155 is the only one you need. The long form belongs in the
+body.
 
 **`type:` has one behaviour, `type: feedback`.** Those memories must clear a
 stricter relevance bar before they surface, because a standing instruction that
@@ -87,6 +117,13 @@ Two caps bound the cost: at most **3 pointers per prompt**, and at most **30
 per session**, after which a new pointer has to displace the weakest one
 already spent. When the cap cuts something, the block says so and prints the
 search command to see the rest.
+
+**The hook applies gates `--search` does not**, which is why the two can
+honestly disagree about the same words: a prompt under three words, a prompt
+identical to one already served this session, and a prompt that opens with an
+editor or tool envelope all return nothing from the hook and answer normally
+from the CLI. The full list, in the order a prompt meets them, is
+[Why nothing appeared](../README.md#why-nothing-appeared).
 
 ## Git is the management layer
 
@@ -154,7 +191,7 @@ why, a trap in this codebase — write it to `~/notes/search/<slug>.md`:
 
 ---
 name: <slug>
-description: <one sentence, under 160 characters, that would make me open this file>
+description: <one sentence, under 155 characters, that would make me open this file>
 type: reference
 ---
 

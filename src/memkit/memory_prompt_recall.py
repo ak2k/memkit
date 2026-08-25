@@ -1280,7 +1280,7 @@ def _corpus_files(root: str) -> int:
     this runs on a diagnostic whose contract is that it opens no index.
     """
     total = 0
-    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+    for _dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         total += sum(
             1

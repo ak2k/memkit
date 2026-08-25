@@ -16,7 +16,18 @@ about 1.2 MiB**:
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/` | 13 | the payload proper — the wrappers, the hook module, the manifests |
 | `tests/` | 26 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 14 | likewise |
-| `docs/`, `README.md`, `LICENSE`, `NOTICE` | 4 | this file among them |
+| `README.md`, `LICENSE`, `NOTICE`, `docs/ROLLOUT.md` | 4 | the docs that were in the tree at that pin |
+| `.git/` | — | the clone's own history: **44 more files and about 0.7 MiB**, on top of the 57 |
+
+Measured on a real install: **101 files, 2.1 MiB** land in the plugin cache, of
+which 57 / 1.2 MiB are the tracked tree above and the rest is `.git`. It is
+there because the plugin system installs by cloning, and it is what makes the
+verification below possible.
+
+**This file is not in the copy you install**, and neither is `docs/STORE.md`.
+Both were written after the commit the current release pins, so the installed
+tree carries `docs/ROLLOUT.md` alone and the README's links to them dangle
+there. They land with the next release pin. Read them here, in the repository.
 
 **The payload minimum is pinned; the maximum is not.** `tests/test_plugin_surface.py`
 holds a list of the files the wrappers need and fails if one is missing, so the
@@ -66,12 +77,32 @@ those come from the config, and the config comes from you:
   executable file. Relative paths and the process-relative namespaces
   (`/proc/self/...`, `/dev/fd/...`) are refused by name.
 
-So the payload is code you can read that acts on decisions you made elsewhere.
+**Two residuals, because the claim above has a ceiling and the source names
+it.**
+
+- `$CLAUDE_PLUGIN_DATA` is Claude Code's directory and it is **writable by the
+  payload** — memkit's own hook writes `trust.json` there, beside the
+  `memkit.json` that rung 2 reads. So a release could write that file on one
+  prompt and be honoured by every later, clean release. What makes it
+  tolerable rather than theoretical: nothing in this build writes it, and
+  detecting a config the user did not author is deferred to `memkit init`.
+- Both routes are environment variables, so both **trust Claude Code's
+  environment contract**. Anything that can put `CLAUDE_PLUGIN_DATA` into the
+  launching environment — a wrapper script, a nested invocation, another
+  plugin's tooling — reaches the same rung. The honest form of the claim is
+  independence from *your shell's* `$MEMKIT_CONFIG`, which is what the wrappers
+  enforce by unsetting it; it is not independence from anything that can write
+  Claude Code's own environment.
+
+So the payload is code you can read that acts on decisions you made elsewhere,
+within those two limits.
 The thing worth auditing before installing is not this tree's size; it is
 `bin/memkit-hook` and `bin/lib/common.sh`, which are about 550 lines of POSIX shell
 between them — mostly comment — and run no command that is not a shell builtin.
 
 ## Reproducing these numbers
+
+In the repository, against the sha the marketplace entry names:
 
 ```
 sha=$(python3 -c 'import json;print(json.load(open(".claude-plugin/marketplace.json"))["plugins"][0]["source"]["sha"])')
@@ -79,3 +110,16 @@ git ls-tree -r --name-only "$sha" | wc -l
 git ls-tree -r -l "$sha" | awk '{s+=$4} END {printf "%.0f KiB\n", s/1024}'
 git ls-tree -r "$sha" | awk '$1=="100755"{print $4}'
 ```
+
+On the machine, against what was actually installed. This is the stronger
+check — it asks the clone which commit it is, rather than counting files:
+
+```
+cd "$(ls -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/cache/memkit/memkit/*/ | tail -1)"
+git rev-parse HEAD          # must equal the sha in .claude-plugin/marketplace.json
+git status --porcelain      # must be empty: nothing edited the payload after the clone
+```
+
+The repository commands do not work inside the installed copy: it is a shallow
+clone at the pinned commit, so `git ls-tree <sha>` there answers `fatal: not a
+tree object`.

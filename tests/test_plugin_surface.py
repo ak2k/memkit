@@ -23,6 +23,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -2583,11 +2584,20 @@ def test_the_scrape_can_see_a_command_this_channel_does_not_ship(tmp_path) -> No
 STORE_DOC = REPO / "docs" / "STORE.md"
 
 
-def _first_markdown_block(text: str) -> str:
-    """The first ```markdown fence's contents."""
-    match = re.search(r"```markdown\n(.*?)```", text, re.S)
-    assert match, "no ```markdown block"
-    return match.group(1)
+def _worked_memory_block(text: str) -> str:
+    """The ```markdown fence holding the worked memory FILE.
+
+    Identified by its frontmatter rather than by position: the document has
+    other markdown fences — the `CLAUDE.md` import line, the agent block — and
+    "the first one" silently became one of those the moment another was added
+    above it, which is a test that goes on passing about the wrong text.
+    """
+    blocks = [
+        b for b in re.findall(r"```markdown\n(.*?)```", text, re.S)
+        if b.lstrip().startswith("---")
+    ]
+    assert len(blocks) == 1, f"{len(blocks)} markdown blocks carry frontmatter"
+    return blocks[0]
 
 
 def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
@@ -2602,7 +2612,7 @@ def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
     So the file is taken out of the doc, dropped into a scratch store, and the
     real hook is asked the question the doc says to ask it.
     """
-    memory = _first_markdown_block(STORE_DOC.read_text(encoding="utf-8"))
+    memory = _worked_memory_block(STORE_DOC.read_text(encoding="utf-8"))
     assert memory.lstrip().startswith("---"), memory[:80]
 
     store = tmp_path / "notes"
@@ -2700,6 +2710,92 @@ def test_the_store_docs_name_only_commands_this_channel_ships(root) -> None:
     for match in re.finditer(r"memory-integrity", doc):
         line = doc[doc.rfind("\n", 0, match.start()) + 1 : match.end()]
         assert "uvx --from" in line, line
+
+
+def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
+    """The four lines the Quick start tells a cold adopter to save.
+
+    It is the first thing they type that can be wrong, and it is printed twice
+    — once in Quick start and once leading `## Config`. So it is parsed out of
+    the README, written to disk, pointed at a real store, and searched.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    blocks = [
+        b for b in re.findall(r"```json\n(.*?)```", readme, re.S)
+        if '"schema"' in b and len(b.splitlines()) <= 5
+    ]
+    assert len(blocks) == 2, f"{len(blocks)} minimal configs in the README"
+    assert blocks[0] == blocks[1], "the two copies have drifted apart"
+    spec = json.loads(blocks[0])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        notes = Path(tmp) / "notes"
+        notes.mkdir()
+        (notes / "pgbouncer.md").write_text(
+            "---\ndescription: PgBouncer in transaction mode breaks "
+            "session-scoped features.\n---\n\n# PgBouncer\n\nbody\n"
+        )
+        # Only the root's path is swapped — every other field is the README's.
+        spec["roots"]["notes"]["path"] = str(notes)
+        config = Path(tmp) / "memkit.json"
+        config.write_text(json.dumps(spec))
+        out = subprocess.run(
+            ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+             "--config", str(config), "--search", "pgbouncer transaction pooling"],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": os.environ["PATH"], "HOME": tmp},
+        )
+        assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr)
+        assert "pgbouncer.md" in out.stdout, out.stdout
+        # And no `/./` in the path the adopter is handed, which is what the
+        # minimal config's `"dir": "."` used to produce.
+        assert "/./" not in out.stdout, out.stdout
+
+
+def test_the_description_limit_the_docs_teach_is_the_one_the_checker_enforces() -> None:
+    """Three numbers stand behind this and only one is the author's.
+
+    `docs/STORE.md` tells a person — and the paste-able block tells their agent
+    — what length to write to. If that drifts above the checker's cap, every
+    memory either fails the check or is written to a length that will be
+    rejected, and the doc is the last place anyone would look for the cause.
+    """
+    from memkit import memory_integrity as checker
+
+    doc = STORE_DOC.read_text(encoding="utf-8")
+    assert f"under {checker.MAX_DESC_CHARS} characters" in doc, checker.MAX_DESC_CHARS
+    assert f"over **{checker.MAX_DESC_CHARS}**" in doc
+    assert f"at most **{hook.DESC_KEEP_CHARS}**" in doc
+    # The agent is told the author's number, not the hook's ceiling.
+    assert f"under {checker.MAX_DESC_CHARS} characters, that would make me open" in doc
+    assert "under 160 characters" not in doc, "the old number survives somewhere"
+
+
+def test_the_silent_gates_section_names_every_gate_the_hook_applies() -> None:
+    """`## Why nothing appeared` is the answer to the most common adopter
+    question, and it is only worth having if it is complete.
+
+    The three-word floor is pinned to the constant rather than to prose: it is
+    the gate an adopter meets first, because two distinctive words is the
+    natural smoke test.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("## Why nothing appeared")
+    section = readme[start : readme.index("\n## ", start + 10)]
+    assert f"under {_number_word(hook.MIN_PROMPT_WORDS)} words" in section, (
+        hook.MIN_PROMPT_WORDS, section[:400]
+    )
+    for gate in ("already fired this session", "envelope", "disabled",
+                 "config: none", "corpus", "session budget"):
+        assert gate in section, gate
+    # The cross-check command is the one this channel ships, and the section
+    # says plainly that the CLI is not subject to the prompt gates.
+    assert "memkit-recall --config <your config> --search" in section
+    assert "applies fewer\ngates than the hook" in section
+
+
+def _number_word(n: int) -> str:
+    return {2: "two", 3: "three", 4: "four"}.get(n, str(n))
 
 
 # --- what the inert message says a config can arrive by ----------------------
