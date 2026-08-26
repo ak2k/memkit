@@ -1773,6 +1773,10 @@ _LEX_COUNTS: dict[str, int] = {
     # is the one staleness a reader of that file cannot detect from its
     # contents.
     "lex_note_unwritten": 0,
+    # Files a sync ran out of budget before reading. A truncated cold build
+    # and a small corpus otherwise write the same record — a low file count and
+    # no error — and the two want opposite responses.
+    "lex_deadline": 0,
 }
 
 # Where each hit came from INSIDE its file: path -> the heading of the
@@ -1851,7 +1855,9 @@ def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set
     return disk, spared, unwalked
 
 
-def _fts_sync(con: sqlite3.Connection, root: str) -> tuple[int, int, int]:
+def _fts_sync(
+    con: sqlite3.Connection, root: str, deadline: float | None = None
+) -> tuple[int, int, int]:
     """Bring the index in line with the corpus. The walk is authoritative.
 
     Returns `(files, spared, unwalked)` for `_fts_note_build`: how many files
@@ -1893,6 +1899,22 @@ def _fts_sync(con: sqlite3.Connection, root: str) -> tuple[int, int, int]:
     holds NOTHING and skipped something raises, because an empty index is
     indistinguishable from a corpus with nothing to say once the rows are
     gone, and "no hits" is an answer the caller trusts.
+
+    `deadline` TRUNCATES THE STAGING WALK, and it is the only thing that
+    bounds this function at all. The callers' budgets were admission checks
+    between corpus dirs, never a bound on work inside one, and a cold build is
+    the one unbounded stage in the hook: measured, 2800 files of prose take
+    11.3 s to index from nothing, which is past both the task path's 7 s budget
+    and its 10 s harness kill. Past the kill the failure does not self-heal —
+    each attempt discards the WAL it had written and starts again, so every
+    spawn pays the full timeout and receives nothing, indefinitely.
+
+    Truncating converts that into convergence. A path this run did not get to
+    is moved into `spared`, which is exactly the classification an unreadable
+    file gets and carries the same guarantee: `spared` empties `sweep`, so a
+    truncated pass cannot delete rows on the strength of a walk it did not
+    finish. Each run commits the slice it managed to read, and the next run
+    starts from there.
     """
     disk, spared, unwalked = _fts_scan(root)
     _LEX_COUNTS["lex_unwalked"] += len(unwalked)
@@ -1912,8 +1934,20 @@ def _fts_sync(con: sqlite3.Connection, root: str) -> tuple[int, int, int]:
     # satisfy re-enters BEGIN IMMEDIATE on every prompt, forever, against
     # every session at once.
     staged: dict[str, list[str]] = {}
+    truncated = 0
     for path, ident in list(disk.items()):
         if snapshot.get(path) == ident:
+            continue
+        if deadline is not None and time.monotonic() >= deadline:
+            # Out of time, so this path is one this run cannot account for —
+            # the same thing an unreadable file is, and classified the same
+            # way. Not `break`-and-leave-it-in-`disk`: a path left there is
+            # compared against the index under the lock, found different, and
+            # re-read INSIDE the transaction, which is the work this is
+            # declining to do.
+            spared.add(path)
+            del disk[path]
+            truncated += 1
             continue
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
@@ -1921,6 +1955,9 @@ def _fts_sync(con: sqlite3.Connection, root: str) -> tuple[int, int, int]:
         except OSError:
             spared.add(path)
             del disk[path]  # unreadable is not indexable; its old rows stand
+    # Visible in the soak log, because a truncated sync and a small corpus
+    # otherwise produce the same record: a low file count and no error.
+    _LEX_COUNTS["lex_deadline"] += truncated
     # What to sweep is decided HERE, from the walk's own snapshot, and carries
     # each candidate's identity with it. The re-read under the lock is a better
     # picture of the index but a worse one of the corpus: it names rows written
@@ -2132,7 +2169,7 @@ def _fts_busy(exc: BaseException) -> bool:
     return "locked" in msg or "busy" in msg
 
 
-def _fts_dir(query: str, d: str) -> list[str]:
+def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
     """The lexical stage over ONE dir; return file paths best-first.
 
     Sync then query, every invocation: a memory written a minute ago is
@@ -2178,7 +2215,7 @@ def _fts_dir(query: str, d: str) -> list[str]:
         try:
             outcome, files = base, None
             try:
-                files, spared, unwalked = _fts_sync(con, d)
+                files, spared, unwalked = _fts_sync(con, d, deadline)
                 # A corpus nobody can read walks to zero files without raising,
                 # and `ok` over zero files is the claim that the corpus is
                 # empty — the exact confusion this sidecar exists to break. The
@@ -3070,10 +3107,13 @@ def recall(
         # for want of budget is neither, and is counted separately: an error
         # means the corpus could not answer, a skip means it was never asked.
         #
-        # The deadline still has something to bound now that no subprocess is
-        # spawned: a cold or invalidated index makes the FIRST dir's sync
-        # re-chunk the whole corpus, and the second dir would then start its
-        # own with the budget already gone.
+        # The deadline is checked here AND passed down, and the second is what
+        # makes it a bound rather than an admission check. This loop can only
+        # decline to START a dir; a cold sync inside one is unbounded, so the
+        # first dir could spend the whole budget and more before the second was
+        # ever asked — measured at 11.3 s on 2800 files, past a 10 s harness
+        # kill. `_fts_sync` truncates its own walk against the same instant and
+        # converges across runs.
         ranked = []
         skipped = 0
         for d in dirs:
@@ -3081,7 +3121,7 @@ def recall(
                 skipped += 1
                 continue
             with contextlib.suppress(Exception):
-                ranked.append(search(query, d))
+                ranked.append(search(query, d, deadline))
         rec[f"errs_{name}"] = len(dirs) - len(ranked) - skipped
         if skipped:
             rec[f"skipped_{name}"] = skipped
@@ -3491,7 +3531,17 @@ TASK_PROMPT_KEY = "prompt"
 # every subagent spawn, and the measurements do not need the extra five:
 # retrieval over a 278-file corpus took 30-86 ms per brief warm, 300 ms cold
 # with the index built from nothing, and interpreter start plus import is
-# 20-70 ms. Seven seconds is about twenty times the worst of those.
+# 20-70 ms. Seven seconds is about twenty times the worst of those ON A
+# ~300-FILE CORPUS, and that scope is the point rather than a caveat: the stage
+# being bounded grows superlinearly, so the ratio is not a property of the
+# design. Measured on 2800 files of prose the cold build alone is 11.3 s.
+#
+# What makes the pair a bound at all is that the budget is threaded INTO that
+# build (see `_fts_sync`), which truncates its walk against it and converges
+# across runs. Without that it was an admission check between corpus dirs: the
+# first dir could spend the whole budget and more before the second was ever
+# asked, and past the harness kill nothing converged — each attempt discarded
+# the WAL it had written and every spawn paid the full timeout for nothing.
 TASK_HARNESS_TIMEOUT = 10
 TASK_BUDGET_SECONDS = 7
 
@@ -3960,6 +4010,21 @@ def _task_main(payload: dict, t0: float) -> None:
             stripped, stats=rec, deadline=t0 + TASK_BUDGET_SECONDS, query=query
         )
         if not hits:
+            # "The index could not answer" and "the corpus had nothing to say"
+            # are different facts and they reach here identically — `recall`
+            # suppresses a per-dir failure and returns the other dirs' hits,
+            # which for one failing dir out of one is an empty list.
+            #
+            # The window is not hypothetical on this path. Parallel spawns are
+            # the normal case, they share one sqlite index, and a cold build
+            # holds the write lock for far longer than `busy_timeout`; every
+            # contender that loses the race meets an index with no committed
+            # rows, which is unanswerable rather than merely stale. Measured:
+            # ten concurrent spawns against a cold 2780-file index, one served
+            # and nine reporting no hits with `errs_lex: 1`. Recording those
+            # nine as `task:nomatch` says the corpus was searched.
+            if rec.get("errs_lex"):
+                return done("task:index-unavailable", errs=rec["errs_lex"])
             return done("task:nomatch")
         candidates = [p for p in hits if p not in shown]
         if not candidates:

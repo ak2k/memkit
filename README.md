@@ -311,6 +311,7 @@ every rate you compute a rate over an unknown mixture.
 | `task:envelope` · `task:empty` · `task:slash` · `task:short` · `task:stopwords` | the brief's shape. The same five as the prompt path minus its 4000-character paste ceiling, which a brief is expected to exceed |
 | `task:nodirs` | nothing to search, as `gate:nodirs` |
 | `task:nomatch` · `task:deduped` · `task:floored` | as the unprefixed three, over a brief. `deduped` here is per tool call, not per session — a subagent is not charged for what the parent's prompts were shown |
+| `task:index-unavailable` | the stores were asked and at least one could not answer — an index mid-rebuild, or a corpus that could not be read. Distinct from `task:nomatch`, which means the search ran and found nothing: parallel spawns share one index, and a contender that loses the race to a cold build meets one holding no rows yet |
 | `task:oversize` | the brief plus its pointers would exceed the 16 KiB write bound. The brief is echoed back inside the emission, so nothing can be shed to make room and the pointers are dropped whole |
 | `task:unsafe` | the emission did not match the one permitted output shape, so nothing was written. This one is a defect report: the shape is built in one place and the check is over that place's output |
 | `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside |

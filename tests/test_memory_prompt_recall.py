@@ -551,9 +551,9 @@ def test_fts_cold_index_over_an_unreadable_corpus_errors_without_rebuilding(
     calls: list[str] = []
     real = hook._fts_sync
 
-    def counted(con, root):
+    def counted(con, root, deadline=None):
         calls.append(root)
-        return real(con, root)
+        return real(con, root, deadline)
 
     monkeypatch.setattr(hook, "_fts_sync", counted)
     try:
@@ -1112,11 +1112,11 @@ def test_fts_rebuilds_once_on_a_non_busy_sqlite_error(
     real = hook._fts_sync
     calls: list[str] = []
 
-    def once(con, root):
+    def once(con, root, deadline=None):
         calls.append(root)
         if len(calls) == 1:
             raise sqlite3.OperationalError("no such column: text")
-        return real(con, root)
+        return real(con, root, deadline)
 
     monkeypatch.setattr(hook, "_fts_sync", once)
     # Schema drift from an older hook version is damage, not contention: the
@@ -1233,7 +1233,7 @@ def test_recall_isolates_a_failing_lex_dir(monkeypatch) -> None:
     # while the soak log lies.
     monkeypatch.setattr(hook, "_search_dirs", lambda: ["/project", "/personal"])
 
-    def fts(query: str, d: str) -> list[str]:
+    def fts(query: str, d: str, deadline: float | None = None) -> list[str]:
         if d == "/project":
             raise sqlite3.DatabaseError("index would not rebuild")
         return [f"{d}/search/lex.md"]
@@ -1286,7 +1286,7 @@ def test_recall_records_a_sync_skipped_by_contention(corpus: Path, monkeypatch) 
 
     busy = _busy_error(Path(hook._fts_db(str(corpus))))
 
-    def contended(con, root):
+    def contended(con, root, deadline=None):
         raise busy
 
     monkeypatch.setattr(hook, "_fts_sync", contended)
@@ -4522,7 +4522,7 @@ def _stub_dirs(monkeypatch, dirs: list[str]) -> list[str]:
     """Stub retrieval over `dirs`; return the list of dirs actually searched."""
     searched: list[str] = []
 
-    def fake_fts(query, d):
+    def fake_fts(query, d, deadline=None):
         searched.append(d)
         return [f"{d}/a.md"]
 
@@ -7697,3 +7697,179 @@ def test_the_prompt_paths_caps_stay_where_they_were() -> None:
     assert (hook.QUERY_MAX_WORDS, hook.QUERY_MAX_TERMS) == (80, 40)
     brief = _brief("served/backlash-rig.md")
     assert len(_terms(hook.build_query(brief))) < 40
+
+
+# --- the deadline, inside the one unbounded stage ----------------------------
+
+
+def _many_memos(root: Path, count: int) -> list[str]:
+    return [
+        _memo(
+            root,
+            f"m{i:04d}.md",
+            f"# Memo {i}\n\nsprocket backlash shim stack gearbox rebuild {i}.\n",
+        )
+        for i in range(count)
+    ]
+
+
+def _tick(monkeypatch, step: float = 1.0):
+    """A monotonic clock that advances a fixed amount per reading.
+
+    `_fts_sync` reads the clock once per candidate file, so a deadline of
+    `start + k*step` admits exactly k files. Driving this with a real clock
+    makes the count a property of the machine's speed, which is how a
+    convergence test becomes a flake.
+    """
+    state = {"now": 1000.0}
+
+    def now() -> float:
+        state["now"] += step
+        return state["now"]
+
+    monkeypatch.setattr(hook.time, "monotonic", now)
+    return state
+
+
+def test_a_sync_out_of_budget_indexes_a_slice_rather_than_all_or_nothing(
+    corpus: Path, monkeypatch
+) -> None:
+    """The budgets were admission checks BETWEEN corpus dirs and never a bound
+    on work inside one. A cold build is the hook's one unbounded stage —
+    measured at 11.3 s over 2800 files of prose, past both the task path's 7 s
+    budget and its 10 s harness kill — and past the kill it does not
+    self-heal: every attempt discards the WAL it wrote and starts again, so
+    every spawn pays the full timeout and receives nothing, indefinitely.
+
+    Truncating converts that into convergence, and the classification is the
+    one an unreadable file already gets: a path this run could not account for
+    is SPARED, which empties `sweep`, so a truncated pass cannot delete rows on
+    the strength of a walk it did not finish.
+    """
+    _many_memos(corpus, 40)
+    for key in hook._LEX_COUNTS:
+        hook._LEX_COUNTS[key] = 0
+    _tick(monkeypatch)
+
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        # Budget for ten of the forty.
+        files, spared, unwalked = hook._fts_sync(con, str(corpus), 1010.5)
+        assert files == 10, files
+        assert spared == 30, spared
+        assert unwalked == 0
+        assert hook._LEX_COUNTS["lex_deadline"] == 30
+        # The slice it managed IS committed, and nothing was swept on the
+        # strength of a walk that did not finish.
+        assert con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0] == 10
+    finally:
+        con.close()
+
+
+def test_a_sync_that_read_nothing_refuses_rather_than_answering_empty(
+    corpus: Path, monkeypatch
+) -> None:
+    """A truncation that got to no file at all leaves an index holding
+    nothing, and an empty index answers `no hits` — which the caller believes.
+    That is the same state an entirely unreadable corpus reaches, and it takes
+    the same answer: raise, so the stage reports an error rather than an
+    absence."""
+    _many_memos(corpus, 5)
+    _tick(monkeypatch)
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        with pytest.raises(OSError, match="index empty"):
+            hook._fts_sync(con, str(corpus), 0.0)
+    finally:
+        con.close()
+
+
+def test_a_truncated_sync_converges_across_runs(corpus: Path, monkeypatch) -> None:
+    """Each run commits the slice it managed to read and the next starts from
+    there. Without that, a corpus too large for the budget is re-attempted from
+    nothing on every spawn and never finishes."""
+    _many_memos(corpus, 40)
+    seen = []
+    for _ in range(6):
+        _tick(monkeypatch)
+        con = hook._fts_connect(hook._fts_db(str(corpus)))
+        try:
+            hook._fts_sync(con, str(corpus), 1008.5)  # eight files a run
+            seen.append(
+                con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0]
+            )
+        finally:
+            con.close()
+    assert seen == [8, 16, 24, 32, 40, 40], seen
+
+
+def test_the_deadline_reaches_the_sync_rather_than_stopping_at_the_dir_loop(
+) -> None:
+    """The threading itself, pinned where it can be read: `recall` passes its
+    deadline down to `_fts_dir` and `_fts_dir` on to `_fts_sync`. Checked
+    against the real signatures rather than by driving a clock, because what
+    went wrong was an argument that was never passed."""
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    fns = {
+        n.name: n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+    }
+    for name in ("_fts_dir", "_fts_sync"):
+        args = [a.arg for a in fns[name].args.args]
+        assert "deadline" in args, (name, args)
+    # And the call inside `_fts_dir` forwards it rather than defaulting.
+    call = next(
+        n for n in ast.walk(fns["_fts_dir"])
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_fts_sync"
+    )
+    assert [a.id for a in call.args if isinstance(a, ast.Name)] == ["con", "d", "deadline"]
+
+
+def test_an_index_that_could_not_answer_is_not_reported_as_no_match(
+    tmp_path, monkeypatch
+) -> None:
+    """Parallel spawns are the normal case for this path, they share one sqlite
+    index, and a cold build holds the write lock far longer than
+    `busy_timeout`. Every contender that loses that race meets an index with no
+    committed rows — unanswerable rather than stale — and reached the same
+    empty-hits branch as a corpus with nothing to say.
+
+    Measured before this split: ten concurrent spawns against a cold 2780-file
+    index, one served and nine recording `task:nomatch` with `errs_lex: 1`.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(
+        hook, "_fts_dir", _raising(sqlite3.DatabaseError("index would not rebuild"))
+    )
+    hook._task_main(
+        {
+            "session_id": "tsk8",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_use_id": "toolu_err",
+            "tool_input": {"prompt": _brief("served/backlash-rig.md"), "description": "d"},
+        },
+        time.monotonic(),
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert record["outcome"] == "task:index-unavailable", record
+    assert record["errs"] == 1, record
+
+    # And a corpus that really answers with nothing still says so.
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None: [])
+    hook._task_main(
+        {
+            "session_id": "tsk8",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_use_id": "toolu_quiet",
+            "tool_input": {"prompt": _brief("served/backlash-rig.md"), "description": "d"},
+        },
+        time.monotonic(),
+    )
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert record["outcome"] == "task:nomatch", record
