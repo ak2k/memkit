@@ -22,7 +22,7 @@ import argparse
 import sys
 from collections.abc import Callable
 
-from memkit import cli_doctor
+from memkit import cli_doctor, cli_init
 from memkit.memory_prompt_recall import (
     EXIT_CANNOT_START,
     EXIT_INERT,
@@ -45,6 +45,13 @@ from memkit.memory_prompt_recall import (
 # forever.
 EXIT_USAGE = 2
 EXIT_NOT_IN_BUILD = 4
+# A subcommand that understood the request and will not do it — `init` refusing
+# a store inside the plugin payload, a stale digest, an unparseable settings
+# file. Its own number because 1 already carries two meanings a caller has to
+# tell apart (the wrapper could not start; doctor found problems), and neither
+# is "you asked for something this will not do". The move it calls for is to
+# relay the reason and stop, not to retry with different arguments.
+EXIT_REFUSED = 5
 # Emitted by the plugin's `bin/memkit` wrapper and never by this module: it is
 # what a caller gets when the dispatcher could not be STARTED — no interpreter
 # resolved, or the plugin payload is incomplete. Declared here anyway, because
@@ -75,15 +82,11 @@ EXIT_NO_RUNTIME = 1
 # reads as the tool being broken rather than as a name being wrong. The exit
 # codes are interpolated from the constants for the same reason they are
 # constants at all.
-_PENDING: dict[str, tuple[str, str]] = {
-    "init": (
-        "create a store and wire this machine up to it",
-        "meanwhile: write the config by hand — the schema and a worked example "
-        "are in the project README under Config. `{search_config}` says what "
-        'this install resolved once you have, and `{search} "<terms>"` whether '
-        "the stores answer",
-    ),
-}
+_PENDING: dict[str, tuple[str, str]] = {}
+# Empty in this build, and KEPT. M3 adds triage, and an exit code an agent may
+# already have branched on should not disappear between releases — a caller
+# that learned 4 means "declared and not shipped" needs that to keep meaning it
+# when the next name arrives.
 
 
 def _meanwhile(template: str) -> str:
@@ -111,6 +114,15 @@ def _meanwhile(template: str) -> str:
         # default there hands a plugin adopter a binary their channel does not
         # ship. It reads only `os.environ` and cannot itself raise.
         search = f"{_self_name()} --search"
+    if not search.strip():
+        # A whitespace-only `search_cli` is TRUTHY, so `Config` keeps it and
+        # the default is never applied — and this string is interpolated into
+        # the description every invocation of this binary builds, including
+        # `--help`. Left alone it renders a sentence telling an agent to run
+        # nothing at all, which is worse than naming the wrong binary: there is
+        # no command there to be found wanting. The shipped default is a
+        # command that at least exists.
+        search = f"{_self_name()} --search"
     # The debug form is the search command with its MODE FLAG swapped, not the
     # binary re-derived: on the plugin channel the command carries
     # `--config <path>`, which is the half that makes it runnable from the
@@ -134,16 +146,11 @@ def _meanwhile(template: str) -> str:
     return template.format(search=search, search_config=search_config)
 
 # Subcommand -> the function that runs it, given the namespace this parser
-# produced and whatever it could not consume.
-#
-# The second argument exists only while `_PENDING` is non-empty. A pending
-# subcommand declares no flags, so `memkit init --dry-run` has to survive
-# parsing to reach the message explaining why it does nothing — which forces
-# `parse_known_args` on the top level, which in turn means a real subcommand
-# has to refuse its own leftovers rather than letting argparse do it. When the
-# last pending name goes, both halves of that collapse into `parse_args`.
-_HANDLERS: dict[str, Callable[[argparse.Namespace, list[str]], int]] = {
+# produced. Every declared subcommand now owns its own flags, so argparse
+# refuses an unrecognised one itself and a handler never has to.
+_HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "doctor": cli_doctor.run,
+    "init": cli_init.run,
 }
 
 # Subcommand -> its one-line summary, its help epilog, and the function that
@@ -156,6 +163,7 @@ _SUBCOMMANDS: dict[
     str, tuple[str, str, Callable[[argparse.ArgumentParser], None]]
 ] = {
     "doctor": (cli_doctor.SUMMARY, cli_doctor.EPILOG, cli_doctor.add_arguments),
+    "init": (cli_init.SUMMARY, cli_init.EPILOG, cli_init.add_arguments),
 }
 
 
@@ -173,12 +181,20 @@ def _parser() -> argparse.ArgumentParser:
         # refusal an agent reaches by running the subcommand: `memkit --help`
         # is the cheaper probe and the one tried first, and it was answering
         # with two names and no way forward.
-        epilog="Not in this build yet:\n"
-        + "\n".join(f"  {n}: {_meanwhile(m)}" for n, (_, m) in _PENDING.items())
-        + f"\n\nExit codes: 0 ok / {EXIT_NO_RUNTIME} memkit could not start at "
+        # The heading only when there is something under it. An empty
+        # "Not in this build yet:" reads as a list that failed to render.
+        epilog=(
+            "Not in this build yet:\n"
+            + "\n".join(f"  {n}: {_meanwhile(m)}" for n, (_, m) in _PENDING.items())
+            + "\n\n"
+            if _PENDING
+            else ""
+        )
+        + f"Exit codes: 0 ok / {EXIT_NO_RUNTIME} memkit could not start at "
         f"all (stderr names what is missing) / {EXIT_USAGE} usage error or "
         f"unknown subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but "
-        "is not in this build."
+        f"is not in this build / {EXIT_REFUSED} a subcommand refused by name "
+        "and wrote nothing."
         "\nThe search CLI's table is its own and swaps these two: there "
         f"{EXIT_NO_MATCH} means nothing matched and {EXIT_CANNOT_START} "
         f"means it could not start. Its {EXIT_INERT} has no counterpart here "
@@ -224,6 +240,17 @@ def _parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _pending_code(name: str) -> int:
+    """The code a declared-and-unshipped subcommand returns.
+
+    A function rather than the constant at the call site, so a case can assert
+    the routing without a live pending name: this build has none, and a
+    mechanism with no claimant and no test is one that rots until the release
+    that needs it.
+    """
+    return EXIT_NOT_IN_BUILD
+
+
 def _pending(name: str) -> int:
     summary, template = _PENDING[name]
     print(
@@ -231,17 +258,19 @@ def _pending(name: str) -> int:
         f"{_meanwhile(template)}",
         file=sys.stderr,
     )
-    return EXIT_NOT_IN_BUILD
+    return _pending_code(name)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = _parser()
-    # parse_known_args, not parse_args: the flags these subcommands will take
-    # do not exist yet, and `memkit doctor --json` has to reach the message
-    # explaining that rather than dying on an unrecognised argument. An agent
-    # that meets argparse's usage text there learns that `--json` is wrong,
-    # which is a different and false thing to learn.
-    args, extra = ap.parse_known_args(argv)
+    # parse_args, because every declared subcommand now declares its own flags.
+    # While `doctor` and `init` were listed and unimplemented this had to be
+    # `parse_known_args`, so that `memkit doctor --json` reached the message
+    # explaining the absence rather than dying on an unrecognised argument —
+    # an agent that met argparse's usage text there learned that `--json` was
+    # wrong, which is a different and false thing to learn. With both landed,
+    # an unrecognised flag IS the caller's mistake and argparse says so.
+    args = ap.parse_args(argv)
     if args.subcommand is None:
         # Usage on stderr and a usage exit, because a bare `memkit` asked for
         # something and got nothing done. An unknown subcommand never reaches
@@ -250,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.print_help(sys.stderr)
         return EXIT_USAGE
     handler = _HANDLERS.get(args.subcommand)
-    return handler(args, extra) if handler else _pending(args.subcommand)
+    return handler(args) if handler else _pending(args.subcommand)
 
 
 def cli() -> None:

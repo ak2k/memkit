@@ -2516,18 +2516,7 @@ EXIT_PROBLEMS = 1
 EXIT_USAGE = 2
 
 
-def run(args: argparse.Namespace, extra: list[str] | None = None) -> int:
-    # The dispatcher parses with `parse_known_args` while a pending subcommand
-    # still has to survive flags it does not declare, so an argument this
-    # parser did not recognise arrives here rather than being refused. Refusing
-    # it is the point: `memkit doctor --jsn` silently running a full doctor and
-    # printing the human report is a caller that believes it got JSON.
-    if extra:
-        print(
-            "memkit doctor: unrecognised arguments: " + " ".join(extra),
-            file=sys.stderr,
-        )
-        return EXIT_USAGE
+def run(args: argparse.Namespace) -> int:
     wanted = getattr(args, "only", None)
     if wanted:
         unknown = [w for w in wanted if w not in CHECK_IDS]

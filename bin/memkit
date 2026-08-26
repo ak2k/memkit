@@ -63,7 +63,7 @@ fi
 # the import machinery: a raw PermissionError traceback where the sibling
 # wrappers print one `memkit:` sentence, on the surface an adopter reaches for
 # when something is already wrong.
-for _need in src/memkit/__init__.py src/memkit/memory_prompt_recall.py src/memkit/cli.py src/memkit/cli_doctor.py; do
+for _need in src/memkit/__init__.py src/memkit/memory_prompt_recall.py src/memkit/cli.py src/memkit/cli_doctor.py src/memkit/cli_init.py; do
     if [ ! -r "$MEMKIT_ROOT/$_need" ]; then
         echo "memkit: the plugin payload is incomplete — no $_need" >&2
         exit 1

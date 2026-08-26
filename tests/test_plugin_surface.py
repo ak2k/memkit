@@ -56,6 +56,7 @@ PAYLOAD = [
     # dispatcher, and a dispatcher whose import fails is a plugin that installs
     # and answers nothing.
     "src/memkit/cli_doctor.py",
+    "src/memkit/cli_init.py",
     "src/memkit/__init__.py",
     # The checker `bin/memkit` routes to when a local python meets the 3.12
     # floor: `MEMKIT_CHECKER_CMD` is `<python> -m memkit.memory_integrity`, run
@@ -2467,7 +2468,7 @@ def _surfaces(
             CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(tmp_path / "absent.json"),
         ),
         "dispatcher help": run(dispatcher, "--help"),
-        "dispatcher refusal": run(dispatcher, "init"),
+        "dispatcher init manifest": run(dispatcher, "init", "--dry-run"),
     }
 
 
@@ -2552,11 +2553,16 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         else:
             # PRE-INIT, and the command must still name `--config`. A bare
             # `memkit-recall --search` answers `inert`, exit 3, in the shell
-            # the dispatcher runs in — and the refusal beside it says exit 3
+            # the dispatcher runs in — and the exit table beside it says exit 3
             # means "no config", which is the one conclusion the `--config`
             # interpolation exists to prevent. There is no path to fill in
             # yet, so it carries the placeholder the README uses.
-            refusal = surfaces["dispatcher refusal"]
+            #
+            # The DISPATCHER HELP is where that lands now. It used to be a
+            # pending subcommand's refusal; with both subcommands landed, the
+            # description `--help` prints is the surface a pre-init adopter
+            # meets a command name on, and it is built by the same helper.
+            refusal = surfaces["dispatcher help"]
             assert "memkit-recall" in refusal, refusal
             if config is None:
                 # The pre-init state specifically. A config that RAISES cannot
@@ -2645,10 +2651,12 @@ def test_the_advertised_command_runs_from_the_agents_bash_tool(
     assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr, advertised[0])
     assert "flange_torque_" in out.stdout, out.stdout
 
-    # And EVERY backticked command the dispatcher's two surfaces hand out —
-    # not the one that was fixed. These are the first things an agent probing a
-    # fresh install touches, and each of them is a command it will paste.
-    for args in (("init",), ("--help",)):
+    # And EVERY backticked command the dispatcher hands out — not the one that
+    # was fixed. `--help` is the surface: it is the cheapest probe an agent
+    # makes of a fresh install, and every command it prints is one that will be
+    # pasted. The pending-subcommand refusals used to be a second such surface
+    # and are gone with the last pending name.
+    for args in (("--help",),):
         surface = _run(
             root / "bin" / "memkit", *args, env={**env, "PATH": os.environ["PATH"]}
         )
@@ -3369,18 +3377,21 @@ def test_a_whitespace_only_search_cli_does_not_take_down_the_dispatcher(
     real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")}
     for value in ("   ", "\t", " \n "):
         config = _config_file(tmp_path / "ws.json", search_cli=value)
-        for args in (("--help",), ("init",)):
+        for args in (("--help",), ("doctor", "--check", "platform")):
             out = _run(
                 root / "bin" / "memkit", *args,
                 env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config)},
             )
             assert "IndexError" not in out.stderr, (value, args, out.stderr)
-            assert "memkit-recall" in (out.stdout + out.stderr), (value, args)
-
-            # And OFF the plugin channel, which is where the value is actually
-            # honoured: on the plugin channel the advertised command is this
-            # channel's own, so the config's whitespace never reaches the
-            # split that raised.
+        # The command NAME is rendered by the description, which is what every
+        # invocation builds and what `--help` prints. A whitespace-only value
+        # is truthy, so the config keeps it and the default is never applied —
+        # and a description that interpolated it would tell an agent to run
+        # nothing at all, which is worse than naming the wrong binary.
+            # And OFF the plugin channel, which is where the value is
+            # actually honoured: on the plugin channel the advertised command
+            # is this channel's own, so the config's whitespace never reaches
+            # the split that raised.
             direct = subprocess.run(
                 ["python3", "-m", "memkit.cli", *args],
                 capture_output=True, text=True, timeout=120,
@@ -3391,7 +3402,23 @@ def test_a_whitespace_only_search_cli_does_not_take_down_the_dispatcher(
                 },
             )
             assert "IndexError" not in direct.stderr, (value, args, direct.stderr)
-            assert "memory-recall" in (direct.stdout + direct.stderr), (value, args)
+
+        # The command NAME is rendered by the description, which every
+        # invocation builds and which `--help` prints. A whitespace-only value
+        # is truthy, so the config keeps it and the default is never applied —
+        # and a description that interpolated it would tell an agent to run
+        # nothing at all, which is worse than naming the wrong binary.
+        helped = _run(
+            root / "bin" / "memkit", "--help",
+            env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config)},
+        )
+        assert "memkit-recall" in helped.stdout, (value, helped.stdout)
+        off_channel = subprocess.run(
+            ["python3", "-m", "memkit.cli", "--help"],
+            capture_output=True, text=True, timeout=120,
+            env={**real, "MEMKIT_CONFIG": str(config), "PYTHONPATH": str(REPO / "src")},
+        )
+        assert "memory-recall" in off_channel.stdout, (value, off_channel.stdout)
 
 
 def test_the_help_epilog_carries_every_exit_code_this_binary_can_produce(
