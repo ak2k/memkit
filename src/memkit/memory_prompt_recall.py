@@ -2403,6 +2403,27 @@ def _session_state_path(session_id: str) -> str:
     return os.path.join(_state_dir(), f"{safe}.json")
 
 
+# The prefix every per-task state file carries. Its whole job is to make the
+# sweep's predicate FILENAME plus mtime rather than a parse: 121 `t-*.json`
+# files written by an earlier experiment already sit in the author's cache,
+# and a collector that had to open one to recognise it would have to
+# understand a shape that predates this build.
+TASK_STATE_PREFIX = "t-"
+
+
+def _task_state_path(tool_use_id: str) -> str:
+    """Dedup state for ONE tool call, keyed on the harness's `tool_use_id`.
+
+    Not on the session, which is the parent's. A subagent spawned late in a
+    long session would find the pointers it wants already spent by prompts it
+    never saw and be served nothing, so the two ledgers are separate files
+    rather than one — and two spawns in a single turn are two ids, so they
+    neither share a budget nor race for the same name.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", tool_use_id)[:80]
+    return os.path.join(_state_dir(), f"{TASK_STATE_PREFIX}{safe}.json")
+
+
 # --- the plugin channel: trust gate, marker, registration fingerprint ---------
 #
 # Everything in this section is a no-op when PLUGIN_ENV is absent, and that is
