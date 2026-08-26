@@ -41,8 +41,14 @@ import time
 from collections.abc import Callable
 
 from memkit.memory_prompt_recall import (
+    BUILD_BUSY,
+    BUILD_OK,
+    BUILD_PARTIAL,
+    BUILD_REBUILT,
+    BUILD_UNREADABLE,
     CONFIG_ENV,
     CONFIG_ROUTES,
+    EXCLUDE_BASENAMES,
     GENERATED_CONFIG_NAME,
     INIT_JOURNAL_NAME,
     PLUGIN_CONFIG_ROUTES,
@@ -50,9 +56,14 @@ from memkit.memory_prompt_recall import (
     PLUGIN_ENV,
     SCHEMA,
     ConfigError,
+    _corpus_files,
     _display_path,
+    _fts_db,
+    _search_root,
     _state_dir_candidate,
+    _store_live_dir,
     load_config,
+    recall,
     sanitize,
 )
 
@@ -179,6 +190,10 @@ CHECK_IDS: tuple[str, ...] = (
     "config-parse",
     "config-authorship",
     "schema",
+    "store-roots",
+    "corpus-root",
+    "index-state",
+    "canary-retrieval",
 )
 
 # id -> the function that answers it, given the machine. A producer returns a
@@ -723,6 +738,369 @@ def _schema(machine: Machine) -> list[Check]:
             "Editing the number in the file does not change what the fields "
             "mean.",
             actor=USER,
+        )
+    ]
+
+
+# --- the stores, the corpus, and the index -----------------------------------
+
+
+# What may sit at a store root beside `search/` without being a stranded
+# memory. A `README.md` explaining the store to a human is a legitimate file to
+# keep there, and the ledgers are already excluded from retrieval everywhere.
+# Everything else at that level is a file its author expected to be retrieved.
+EXCLUDE_STRAY = frozenset({"README.md", "CONTRIBUTING.md", "LICENSE.md"})
+
+# The canary memory init seeds, and the query doctor asks for it. The query
+# lives HERE rather than with init because init verifies its own work through
+# it: one spelling, so a canary that init cannot find is a canary that is
+# really not there rather than two commands asking different questions.
+CANARY_NAME = "memkit-canary.md"
+
+
+def canary_query(nonce: str) -> str:
+    """The fixed query, which can only be answered by the file init wrote.
+
+    Three terms, not one. The prompt gate drops anything under two content
+    words, so a bare nonce retrieves nothing and the check would fail on every
+    healthy install — which is the false RED that matches this design's false
+    green.
+    """
+    return f"memkit canary {nonce}"
+
+
+def _stranded(root: str) -> list[str]:
+    """Markdown a tiered store no longer retrieves, because it sits above
+    `search/`.
+
+    The single most expensive silent state in the field log. Creating
+    `search/` in a flat store un-retrieves everything above it in one step —
+    which is what the agent-writes-memories recipe causes on the first memory
+    an agent writes — and every diagnostic stayed green while it happened.
+    Three of four reviewers hit it and two lost the memory the quick start had
+    just had them create.
+
+    Only the store's own top level: a directory beside `search/` is somebody's
+    own filing and not a tier this build knows about, and naming those would
+    make the check unusable on the store it exists to protect.
+    """
+    out = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".md"):
+            continue
+        if name in EXCLUDE_BASENAMES or name in EXCLUDE_STRAY:
+            continue
+        if os.path.isfile(os.path.join(root, name)):
+            out.append(name)
+    return out
+
+
+@_produces("store-roots")
+def _store_roots(machine: Machine) -> list[Check]:
+    """Every store, where it resolves, and how it is gated.
+
+    Without this the config could point anywhere and pass every other check —
+    `config-parse` says the file is well-formed and says nothing about what it
+    names, and the roots are resolved LAZILY, so a store naming a root the
+    config never defines raises only when something asks for it.
+    """
+    cfg = machine.config()
+    if cfg is None:
+        return [Check("store-roots", UNKNOWN, "no config to resolve roots from")]
+    if not cfg.stores:
+        return [
+            Check(
+                "store-roots",
+                FAIL,
+                f"{_display_path(cfg.path)} declares no stores, so this "
+                "install has nothing to search and never will",
+                "Add a store to the config, or run /memkit:init to write one.",
+                actor=USER,
+            )
+        ]
+    lines = []
+    broken = []
+    for store in cfg.stores:
+        try:
+            root, source = cfg.root_with_source(store.live_root)
+        except ConfigError as exc:
+            broken.append(str(exc))
+            continue
+        gate = store.cwd_gate or "ungated"
+        edit = "same" if store.edit_root == store.live_root else store.edit_root
+        lines.append(
+            f"{store.id} ({store.role}): {_display_path(os.path.join(root, store.dir))}"
+            f" [root {store.live_root} via {source}; edit_root {edit}; "
+            f"cwd_gate {gate}]"
+        )
+    if broken:
+        return [
+            Check(
+                "store-roots",
+                FAIL,
+                "; ".join(broken),
+                "A store names a root the config does not define. Retrieval "
+                "raises when something asks for it, which on the hook path is "
+                "a silent no-match.",
+                actor=USER,
+            )
+        ]
+    return [Check("store-roots", INFO, "; ".join(lines))]
+
+
+@_produces("corpus-root")
+def _corpus_root(machine: Machine) -> list[Check]:
+    """One row per store: what retrieval would actually read under it.
+
+    Per store rather than once, because the states are per store and they do
+    not share a remedy — a gated project store standing outside its own repo is
+    working correctly, and a store whose directory nobody created is not.
+    """
+    cfg = machine.config()
+    if cfg is None:
+        return [Check("corpus-root", UNKNOWN, "no config to resolve stores from")]
+    searched = cfg.searched_stores()
+    out = []
+    for store in cfg.stores:
+        if store not in searched:
+            out.append(
+                Check(
+                    "corpus-root",
+                    INFO,
+                    f"{store.id}: gated to {store.cwd_gate}, so this session "
+                    "does not read it. That is the gate working",
+                )
+            )
+            continue
+        live = cfg.store_dir(store, "live")
+        if not os.path.isdir(live):
+            out.append(
+                Check(
+                    "corpus-root",
+                    FAIL,
+                    f"{store.id}: {_display_path(live)} is not a directory, so "
+                    "the store is configured and not on disk",
+                    f"Create {_display_path(live)}/search/ and put memories in "
+                    "it, or run /memkit:init.",
+                    actor=USER,
+                )
+            )
+            continue
+        root = _search_root(live)
+        tiered = root != live
+        stranded = _stranded(live) if tiered else []
+        if stranded:
+            out.append(
+                Check(
+                    "corpus-root",
+                    FAIL,
+                    f"{store.id}: {', '.join(stranded)} sit at "
+                    f"{_display_path(live)} while the corpus root is "
+                    f"{_display_path(root)}. Retrieval reads none of them",
+                    "Move those files into search/, or point the store's `dir` "
+                    "at the directory that holds them. Nothing else reports "
+                    "this: every other surface stays green over a store that "
+                    "is mostly dark.",
+                    actor=USER,
+                )
+            )
+            continue
+        files = _corpus_files(root)
+        if not files:
+            out.append(
+                Check(
+                    "corpus-root",
+                    INFO,
+                    f"{store.id}: {_display_path(root)} holds no markdown "
+                    "retrieval would consider, so this store answers nothing",
+                )
+            )
+            continue
+        layout = "tiered (search/)" if tiered else "flat — no search/ yet"
+        out.append(
+            Check(
+                "corpus-root",
+                PASS,
+                f"{store.id}: {files} file(s) under {_display_path(root)}, "
+                f"{layout}",
+            )
+        )
+    return out or [Check("corpus-root", UNKNOWN, "no stores")]
+
+
+def _build_record(root: str) -> tuple:
+    """The `.build` sidecar for one corpus root: (record, error).
+
+    THE INDEX IS NEVER OPENED. Opening it syncs it, and a sync rebuilds
+    whatever the walk finds stale — a diagnostic that repairs the state it is
+    measuring cannot report on it, and "never indexed" and "indexed, and the
+    corpus turned out to be empty" would become the same answer again.
+    """
+    sidecar = _fts_db(root)[: -len(".db")] + ".build"
+    try:
+        with open(sidecar, encoding="utf-8") as f:
+            return json.load(f), sidecar, ""
+    except FileNotFoundError:
+        return None, sidecar, ""
+    except (OSError, ValueError) as exc:
+        return None, sidecar, str(exc)
+
+
+@_produces("index-state")
+def _index_state(machine: Machine) -> list[Check]:
+    """How each corpus root was LAST indexed, read out of the sidecar.
+
+    Honours the sidecar's own reader's rule, which is a contract rather than
+    advice: an outcome this build does not recognise is treated as NOT-OK, and
+    `files` is read as a corpus census only under `ok`. That rule is what lets
+    the outcome vocabulary grow without an older reader mistaking a new failure
+    state for a healthy one.
+    """
+    cfg = machine.config()
+    if cfg is None:
+        return [Check("index-state", UNKNOWN, "no config to resolve stores from")]
+    searched = cfg.searched_stores()
+    out = []
+    for store in cfg.stores:
+        live = _store_live_dir(cfg, store, searched)
+        if live is None:
+            continue
+        record, sidecar, error = _build_record(live)
+        if error:
+            out.append(
+                Check(
+                    "index-state",
+                    UNKNOWN,
+                    f"{store.id}: {_display_path(sidecar)} could not be read "
+                    f"({error}), so how this corpus was last indexed is not "
+                    "knowable from here",
+                )
+            )
+            continue
+        if record is None:
+            out.append(
+                Check(
+                    "index-state",
+                    UNKNOWN,
+                    f"{store.id}: no index record at {_display_path(sidecar)} "
+                    "— this corpus has never been indexed, which is what an "
+                    "install that has never served a prompt looks like",
+                )
+            )
+            continue
+        outcome = record.get("outcome") if isinstance(record, dict) else None
+        files = record.get("files") if isinstance(record, dict) else None
+        if outcome == BUILD_OK:
+            out.append(
+                Check(
+                    "index-state",
+                    PASS,
+                    f"{store.id}: last index ok over {files} file(s)",
+                )
+            )
+        elif outcome == BUILD_UNREADABLE:
+            out.append(
+                Check(
+                    "index-state",
+                    FAIL,
+                    f"{store.id}: the corpus could not be read at all on the "
+                    "last index, so the index holds nothing for it",
+                    "Check the permissions on the store directory. Retrieval "
+                    "answers nothing here and reports no error.",
+                    actor=USER,
+                )
+            )
+        elif outcome in (BUILD_BUSY, BUILD_REBUILT, BUILD_PARTIAL):
+            out.append(
+                Check(
+                    "index-state",
+                    INFO,
+                    f"{store.id}: last index {outcome}; the file count is a "
+                    "floor rather than a census under this outcome",
+                )
+            )
+        else:
+            # The reader's rule: unrecognised is NOT-OK, and `files` is not a
+            # census under it. A newer build wrote this record.
+            out.append(
+                Check(
+                    "index-state",
+                    UNKNOWN,
+                    f"{store.id}: index outcome {outcome!r}, which this build "
+                    "does not recognise. Not read as ok, and the file count "
+                    "is not read as a census",
+                )
+            )
+    return out or [Check("index-state", UNKNOWN, "no store offers a corpus here")]
+
+
+@_produces("canary-retrieval")
+def _canary_retrieval(machine: Machine) -> list[Check]:
+    """One row per store this session can search: does init's own memory come
+    back?
+
+    Per store, because a passing personal-store canary would otherwise stand in
+    for a project store that is gated, missing or unindexed — and the personal
+    store is the one that passes from anywhere.
+
+    The query is the nonce, so this can only be answered by the file init
+    wrote. A fixed phrase would match the adopter's own memories and pass while
+    proving nothing.
+    """
+    cfg = machine.config()
+    if cfg is None:
+        return [Check("canary-retrieval", UNKNOWN, "no config")]
+    if not cfg.canary_nonce:
+        return [
+            Check(
+                "canary-retrieval",
+                UNKNOWN,
+                "this config records no canary nonce, so there is no memory "
+                "whose retrieval proves the store rather than the corpus. "
+                "Configs written before init, and by hand, have none",
+            )
+        ]
+    searched = cfg.searched_stores()
+    out = []
+    for store in cfg.stores:
+        live = _store_live_dir(cfg, store, searched)
+        if live is None:
+            continue
+        hits = recall(canary_query(cfg.canary_nonce), dirs=[live])
+        found = [h for h in hits if os.path.basename(h) == CANARY_NAME]
+        if found:
+            out.append(
+                Check(
+                    "canary-retrieval",
+                    PASS,
+                    f"{store.id}: {_display_path(found[0])} came back for the "
+                    "fixed query",
+                )
+            )
+        else:
+            out.append(
+                Check(
+                    "canary-retrieval",
+                    FAIL,
+                    f"{store.id}: nothing came back for the fixed query over "
+                    f"{_display_path(live)}. The store is configured and does "
+                    "not answer",
+                    f"Check that {CANARY_NAME} is under this store's search/ "
+                    "directory and carries the config's canary_nonce in its "
+                    "description. Re-running /memkit:init reseeds it.",
+                    actor=USER,
+                )
+            )
+    return out or [
+        Check(
+            "canary-retrieval",
+            UNKNOWN,
+            "no store offers a corpus in this directory, so nothing was "
+            "queried",
         )
     ]
 

@@ -583,3 +583,321 @@ def test_the_config_is_parsed_once_however_many_checks_ask(profile, monkeypatch)
     machine = doctor.Machine()
     doctor.collect(machine)
     assert calls == [path], calls
+
+
+# --- the stores, the corpus, and the index -----------------------------------
+
+
+NONCE = "zq7v4k2mxr"
+
+
+def _store_config(profile, *, stores, nonce=None, gate=None) -> str:
+    """A config over real directories under the scratch profile."""
+    blob = {
+        "schema": 1,
+        "roots": {"home": {"kind": "path", "path": str(profile)}},
+        "stores": [
+            {
+                "id": name,
+                "role": "personal" if name == "personal" else "project",
+                "dir": f"stores/{name}",
+                "live_root": "home",
+                **({"cwd_gate": {"root": gate}} if gate and name != "personal" else {}),
+            }
+            for name in stores
+        ],
+    }
+    if gate:
+        blob["roots"]["elsewhere"] = {"kind": "path", "path": str(profile / "nowhere")}
+        for store in blob["stores"]:
+            if "cwd_gate" in store:
+                store["cwd_gate"] = {"root": "elsewhere"}
+    if nonce:
+        blob["canary_nonce"] = nonce
+    path = profile / "memkit.json"
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    return str(path)
+
+
+def _memory(path, name, body, description="a memory") -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / name).write_text(
+        f"---\nname: {name[:-3]}\ndescription: {description}\ntype: reference\n---\n\n"
+        f"{body}\n",
+        encoding="utf-8",
+    )
+
+
+def _machine(profile, monkeypatch, path) -> doctor.Machine:
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    hook._use_config(None)
+    hook._cwd_in_root.cache_clear()
+    return doctor.Machine()
+
+
+def test_markdown_above_a_search_root_is_a_fail_that_names_the_files(
+    profile, monkeypatch
+) -> None:
+    """The single most expensive silent state in the field log.
+
+    Creating `search/` in a flat store un-retrieves everything above it in one
+    step — which is what the agent-writes-memories recipe causes on the first
+    memory an agent writes — and every other diagnostic stayed green while it
+    happened. A green verdict over a store that is three-quarters dark is
+    precisely the false green this command exists to prevent.
+    """
+    path = _store_config(profile, stores=["personal"])
+    root = profile / "stores" / "personal"
+    _memory(root / "search", "kept.md", "widget calibration after a flash")
+    _memory(root, "stranded.md", "sprocket backlash after the rebuild")
+    _memory(root, "also-stranded.md", "flange torque sequence")
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "corpus-root")
+    assert row.status == doctor.FAIL
+    # The files, not the count: a remedy that said "2 files" is one nobody can
+    # act on without going and looking.
+    assert "stranded.md" in row.detail and "also-stranded.md" in row.detail
+    assert doctor.verdict(checks) != "OK"
+
+
+def test_a_readme_at_a_store_root_is_not_a_stranded_memory(profile, monkeypatch):
+    """A `README.md` explaining the store to a human is a legitimate file to
+    keep there, and a check that called it a defect would be unusable on the
+    store it exists to protect."""
+    path = _store_config(profile, stores=["personal"])
+    root = profile / "stores" / "personal"
+    _memory(root / "search", "kept.md", "widget calibration after a flash")
+    for name in ("README.md", "MEMORY.md", "SEARCH.md"):
+        (root / name).write_text("# not a memory\n", encoding="utf-8")
+    (row,) = _only(doctor.collect(_machine(profile, monkeypatch, path)), "corpus-root")
+    assert row.status == doctor.PASS, row.detail
+
+
+def test_a_flat_store_is_not_reported_as_stranded(profile, monkeypatch) -> None:
+    """Nothing is above the corpus root when the corpus root IS the store —
+    the trap is the transition, not the layout."""
+    path = _store_config(profile, stores=["personal"])
+    root = profile / "stores" / "personal"
+    _memory(root, "flat.md", "widget calibration after a flash")
+    (row,) = _only(doctor.collect(_machine(profile, monkeypatch, path)), "corpus-root")
+    assert row.status == doctor.PASS
+    assert "flat" in row.detail
+
+
+def test_a_gated_store_outside_its_root_is_working_rather_than_broken(
+    profile, monkeypatch
+) -> None:
+    """The gate keeping a project store's memories out of an unrelated
+    session is the gate doing its job. A FAIL there would send an agent to
+    remove the one control the config has."""
+    path = _store_config(profile, stores=["project", "personal"], gate="elsewhere")
+    _memory(profile / "stores" / "personal" / "search", "p.md", "ledger reconciliation")
+    _memory(profile / "stores" / "project" / "search", "q.md", "turbine balancing")
+    rows = _only(doctor.collect(_machine(profile, monkeypatch, path)), "corpus-root")
+    by_id = {r.detail.split(":")[0]: r for r in rows}
+    assert by_id["project"].status == doctor.INFO
+    assert "gate working" in by_id["project"].detail
+    assert by_id["personal"].status == doctor.PASS
+
+
+def test_a_store_configured_and_not_on_disk_is_a_fail(profile, monkeypatch):
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(doctor.collect(_machine(profile, monkeypatch, path)), "corpus-root")
+    assert row.status == doctor.FAIL
+    assert "not on disk" in row.detail or "not a directory" in row.detail
+
+
+def test_an_empty_corpus_is_information_and_not_a_failure(profile, monkeypatch):
+    path = _store_config(profile, stores=["personal"])
+    (profile / "stores" / "personal" / "search").mkdir(parents=True)
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "corpus-root")
+    assert row.status == doctor.INFO
+    assert doctor.verdict(checks) == "OK"
+
+
+def test_a_store_naming_a_root_the_config_never_defines_is_named(
+    profile, monkeypatch
+) -> None:
+    """Roots resolve LAZILY, so this raises only when something asks — which
+    on the hook path is a silent no-match."""
+    path = profile / "memkit.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "roots": {"home": {"kind": "path", "path": str(profile)}},
+                "stores": [
+                    {"id": "p", "role": "personal", "dir": "s", "live_root": "absent"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (row,) = _only(
+        doctor.collect(_machine(profile, monkeypatch, str(path))), "store-roots"
+    )
+    assert row.status == doctor.FAIL
+    assert "absent" in row.detail
+
+
+def test_a_config_with_no_stores_at_all_is_a_fail(profile, monkeypatch) -> None:
+    path = _store_config(profile, stores=[])
+    (row,) = _only(doctor.collect(_machine(profile, monkeypatch, path)), "store-roots")
+    assert row.status == doctor.FAIL
+    assert "no stores" in row.detail
+
+
+def test_store_roots_names_the_route_each_root_resolved_by(profile, monkeypatch):
+    """Without this the config could point anywhere and pass every other
+    check: `config-parse` says the file is well-formed and says nothing about
+    what it names."""
+    path = _store_config(profile, stores=["personal"])
+    _memory(profile / "stores" / "personal" / "search", "p.md", "ledger")
+    (row,) = _only(doctor.collect(_machine(profile, monkeypatch, path)), "store-roots")
+    assert row.status == doctor.INFO
+    assert "configured path" in row.detail
+    assert "cwd_gate ungated" in row.detail
+    assert "personal" in row.detail
+
+
+# --- index-state -------------------------------------------------------------
+
+
+def _sidecar(profile, root: str, blob) -> None:
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    path = hook._fts_db(root)[: -len(".db")] + ".build"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(blob, f)
+
+
+def _one_store(profile, monkeypatch):
+    path = _store_config(profile, stores=["personal"])
+    root = profile / "stores" / "personal"
+    _memory(root / "search", "p.md", "ledger reconciliation before close")
+    machine = _machine(profile, monkeypatch, path)
+    return machine, str(root / "search")
+
+
+def test_index_state_reads_the_sidecar_and_never_opens_the_index(
+    profile, monkeypatch
+) -> None:
+    """Opening the index syncs it, and a sync rebuilds whatever the walk finds
+    stale. A diagnostic that repairs the state it is measuring cannot report on
+    it — and "never indexed" and "indexed, corpus turned out empty" would
+    collapse back into one answer."""
+    machine, root = _one_store(profile, monkeypatch)
+    _sidecar(profile, root, {"v": 1, "ts": 1, "outcome": "ok", "files": 7})
+    (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+    assert row.status == doctor.PASS
+    assert "7 file" in row.detail
+    state = profile / "home" / ".cache" / "memory-recall"
+    assert not list(state.glob("*.db")), sorted(p.name for p in state.iterdir())
+
+
+def test_an_unrecognised_index_outcome_is_not_read_as_ok(profile, monkeypatch):
+    """The sidecar's own reader's rule, and it is a contract rather than
+    advice: it is what lets the outcome vocabulary grow without an older reader
+    mistaking a new failure state for a healthy one."""
+    machine, root = _one_store(profile, monkeypatch)
+    _sidecar(profile, root, {"v": 1, "ts": 1, "outcome": "quantum", "files": 999})
+    (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+    assert row.status == doctor.UNKNOWN
+    assert "quantum" in row.detail
+    # And `files` is not read as a census under it.
+    assert "999 file" not in row.detail
+
+
+def test_an_unreadable_corpus_is_a_fail_and_a_partial_one_is_not(
+    profile, monkeypatch
+) -> None:
+    machine, root = _one_store(profile, monkeypatch)
+    _sidecar(profile, root, {"v": 1, "ts": 1, "outcome": "unreadable", "files": None})
+    (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+    assert row.status == doctor.FAIL
+
+    for outcome in ("partial", "busy", "rebuilt"):
+        _sidecar(profile, root, {"v": 1, "ts": 1, "outcome": outcome, "files": 2})
+        (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+        assert row.status == doctor.INFO, outcome
+        assert "floor rather than a census" in row.detail
+
+
+def test_a_sidecar_that_cannot_be_read_is_unknown_and_never_a_fail(
+    profile, monkeypatch
+) -> None:
+    """A FAIL here would send an agent to delete a live index over one EACCES.
+    Absence and unreadability are both UNKNOWN, and they say different things.
+    """
+    machine, root = _one_store(profile, monkeypatch)
+    (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+    assert row.status == doctor.UNKNOWN
+    assert "never been indexed" in row.detail
+
+    _sidecar(profile, root, {"v": 1})
+    path = hook._fts_db(root)[: -len(".db")] + ".build"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{ torn")
+    (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+    assert row.status == doctor.UNKNOWN
+    assert "could not be read" in row.detail
+
+
+# --- canary-retrieval --------------------------------------------------------
+
+
+def _canary(store_root, nonce) -> None:
+    _memory(
+        store_root / "search",
+        doctor.CANARY_NAME,
+        f"memkit canary {nonce}",
+        description=f"memkit canary {nonce}",
+    )
+
+
+def test_the_canary_comes_back_for_the_fixed_query(profile, monkeypatch) -> None:
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    (row,) = _only(
+        doctor.collect(_machine(profile, monkeypatch, path)), "canary-retrieval"
+    )
+    assert row.status == doctor.PASS, row.detail
+    assert doctor.CANARY_NAME in row.detail
+
+
+def test_a_canary_in_one_store_does_not_answer_for_the_other(profile, monkeypatch):
+    """One check per configured store root, and this is why: the personal
+    store is the one that passes from anywhere, so a single canary row would
+    let it stand in for a project store that answers nothing."""
+    path = _store_config(profile, stores=["project", "personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _memory(profile / "stores" / "project" / "search", "other.md", "turbine balancing")
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    rows = _only(checks, "canary-retrieval")
+    assert len(rows) == 2, [r.detail for r in rows]
+    by_status = {r.status for r in rows}
+    assert by_status == {doctor.PASS, doctor.FAIL}
+    failed = [r for r in rows if r.status == doctor.FAIL][0]
+    assert failed.detail.startswith("project:")
+    assert doctor.verdict(checks) != "OK"
+
+
+def test_a_config_with_no_nonce_is_unknown_rather_than_failed(profile, monkeypatch):
+    """Configs written before init, and by hand, have no canary. That is a
+    state, not a breakage, and UNKNOWN never blocks green."""
+    path = _store_config(profile, stores=["personal"])
+    _memory(profile / "stores" / "personal" / "search", "p.md", "ledger")
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "canary-retrieval")
+    assert row.status == doctor.UNKNOWN
+    assert doctor.verdict(checks) == "OK"
+
+
+def test_the_canary_query_is_more_than_one_word(profile) -> None:
+    """The prompt gate drops anything under two content words, so a bare nonce
+    retrieves nothing and the check would fail on every healthy install — the
+    false RED that matches this design's false green."""
+    query = doctor.canary_query(NONCE)
+    assert hook.build_query(query) is not None
+    assert NONCE in query

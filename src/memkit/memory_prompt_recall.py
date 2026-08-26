@@ -342,6 +342,20 @@ class Config:
         # anything at all. Rejecting "" as well would be a quiet tightening
         # nobody asked for, on a field most configs never set.
         self.search_cli = search_cli or DEFAULT_SEARCH_CLI
+        # The token init writes into the canary memory's description and
+        # doctor searches for. A NONCE rather than a fixed phrase: a fixed
+        # doctor query over a general phrase could match the adopter's own
+        # memories and produce a passing canary check that proves nothing
+        # about the file init wrote. Absent on every config written before
+        # init existed, and on every hand-written one — which is a state, not
+        # an error, and doctor reports it as one.
+        nonce = raw.get("canary_nonce")
+        if "canary_nonce" in raw and not isinstance(nonce, str):
+            raise ConfigError(
+                f"{path}: 'canary_nonce' must be a string when present, not "
+                f"{type(nonce).__name__}"
+            )
+        self.canary_nonce = nonce or ""
         ev = _optional_mapping(raw, "eval")
         self.eval_root = ev.get("root")
         self.eval_snapshot = ev.get("snapshot")
