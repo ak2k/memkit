@@ -2437,6 +2437,10 @@ GENERATED_CONFIG_NAME = "memkit.json"
 INIT_JOURNAL_NAME = "init-journal.jsonl"
 SOAK_LOG_NAME = "log.jsonl"
 SWEEP_STAMP_NAME = "sweep.stamp"
+# Where the wrappers put a copy of every refusal they print. Named here because
+# the reader is doctor and the writer is POSIX sh, and nothing else connects a
+# filename in a shell script to a filename in a python module.
+ERRLOG_NAME = "hook-errors.log"
 
 
 def _session_state_path(session_id: str) -> str:

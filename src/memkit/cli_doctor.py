@@ -54,6 +54,7 @@ from memkit.memory_prompt_recall import (
     CONFIG_ENV,
     CONFIG_ROUTES,
     DOCTOR_ENV,
+    ERRLOG_NAME,
     EXCLUDE_BASENAMES,
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
@@ -222,6 +223,7 @@ CHECK_IDS: tuple[str, ...] = (
     "state-dir",
     "hooks-layout",
     "uninstall-story",
+    "hook-errors",
 )
 
 # id -> the function that answers it, given the machine. A producer returns a
@@ -2308,6 +2310,70 @@ def _uninstall_story(machine: Machine) -> list[Check]:
             "delete by hand; everything else in your stores is yours. Nothing "
             "removes them for you, because the store is deliberately outside "
             "every plugin-managed path.",
+            actor=USER,
+        )
+    ]
+
+
+# How much of the wrappers' error log to quote. Enough to show a repeat and
+# short enough that one broken install does not fill the report.
+ERRLOG_TAIL = 6
+
+
+@_produces("hook-errors")
+def _hook_errors(machine: Machine) -> list[Check]:
+    """Say where the hook's stderr went.
+
+    The refusals in `bin/lib/common.sh` are among the clearest text this
+    project contains and in the product they are unreachable: Claude Code
+    swallows hook stderr, and `claude --debug -p` showed zero hook lines in
+    three separate attempts across two walkthroughs. Without this check
+    doctor's best remedy for a whole class of failures is still "there is a
+    message you cannot see".
+
+    An empty log is a PASS and an absent one is a PASS for the same reason: the
+    wrappers only write here when they refuse something, so nothing to say is
+    the healthy state. The file is written only when the state directory
+    already exists, so its absence on a never-configured install is expected
+    rather than evidence.
+    """
+    path = os.path.join(machine.state_dir, ERRLOG_NAME)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = [line.rstrip("\n") for line in f if line.strip()]
+    except FileNotFoundError:
+        return [
+            Check(
+                "hook-errors",
+                PASS,
+                f"no {ERRLOG_NAME}: the wrappers have refused nothing here, or "
+                "the state directory did not exist when they tried",
+            )
+        ]
+    except OSError as exc:
+        return [
+            Check(
+                "hook-errors",
+                UNKNOWN,
+                f"{_display_path(path)} could not be read ({exc})",
+            )
+        ]
+    if not lines:
+        return [Check("hook-errors", PASS, f"{ERRLOG_NAME} is empty")]
+    when = ""
+    with contextlib.suppress(OSError):
+        when = " last written " + time.strftime(
+            "%Y-%m-%d %H:%M", time.localtime(os.stat(path).st_mtime)
+        )
+    tail = " | ".join(lines[-ERRLOG_TAIL:])
+    return [
+        Check(
+            "hook-errors",
+            INFO,
+            f"{len(lines)} line(s) in {ERRLOG_NAME}{when}. Last: {tail}",
+            "These are the messages the harness swallowed. Each one names what "
+            "the wrapper refused and why; the config-route and interpreter "
+            "checks in this report are the two that usually explain them.",
             actor=USER,
         )
     ]

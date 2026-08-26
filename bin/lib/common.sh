@@ -66,6 +66,103 @@
 # wrapper.
 MEMKIT_SELF=${MEMKIT_SELF:-memkit}
 
+# --- where the messages below actually go ------------------------------------
+#
+# THE SINGLE MOST REPEATED DEAD END ACROSS EVERY REVIEW OF THIS PROJECT: the
+# refusals in this file are among the clearest text it contains, and in the
+# product they are unreachable. Claude Code swallows hook stderr, and
+# `claude --debug -p` showed zero hook lines in three separate attempts across
+# two walkthroughs. So the same message goes to two places — stderr, which a
+# terminal caller and doctor's own probe both see, and a bounded file doctor
+# can tail.
+#
+# WRITTEN ONLY IF THE STATE DIRECTORY ALREADY EXISTS, and that rule is forced
+# twice over. `mkdir` is not a shell builtin, so this file could not create it
+# without breaking the dependency contract at the top; and an install nobody
+# has configured deliberately creates no state directory, so writing one here
+# would be a mutation on behalf of somebody who has not consented to anything.
+# What it costs is the never-configured case, which is the one state doctor's
+# `config-route` can already separate by reading the settings value directly.
+# What it buys is the was-working-and-broke case, where the directory is there
+# because the install used to serve.
+#
+# NO TIMESTAMP PER LINE, because there is no builtin clock: `date` is a
+# command, and the floor here is a bash 3.2 with no `EPOCHSECONDS` and no
+# `printf %(...)T`. The file's own mtime is when it was last written, and
+# doctor reports it.
+MEMKIT_ERRLOG_NAME=hook-errors.log
+# Lines. Bounded the way the trust marker is, so the thing that reports on a
+# cache never becomes the thing it reports on. Eviction reads and rewrites the
+# whole file, which is affordable only because nothing reaches here unless
+# something is already wrong.
+MEMKIT_ERRLOG_MAX=200
+
+# The shared derived-state directory, resolved the same way the hook resolves
+# it: `$XDG_CACHE_HOME` when it is set to an ABSOLUTE path, else `~/.cache`. A
+# relative value is ignored rather than honoured, because the directory an
+# every-prompt hook writes into is not the session's to choose.
+memkit_state_dir() {
+    case ${XDG_CACHE_HOME:-} in
+        /*) printf '%s\n' "${XDG_CACHE_HOME}/memory-recall" ;;
+        *) printf '%s\n' "$HOME/.cache/memory-recall" ;;
+    esac
+}
+
+memkit_errlog() {
+    _dir=$(memkit_state_dir)
+    [ -d "$_dir" ] || return 0
+    _errlog=$_dir/$MEMKIT_ERRLOG_NAME
+    if [ -r "$_errlog" ]; then
+        _lines=0
+        # `read` reports failure on a final line with no newline, which is a
+        # line like any other — hence the second test, the same one the
+        # interpreter scrape uses.
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _lines=$((_lines + 1))
+        done < "$_errlog"
+        if [ "$_lines" -ge "$MEMKIT_ERRLOG_MAX" ]; then
+            _skip=$((_lines - MEMKIT_ERRLOG_MAX / 2))
+            _seen=0
+            _kept=""
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                _seen=$((_seen + 1))
+                if [ "$_seen" -gt "$_skip" ]; then
+                    _kept=$_kept$_line'
+'
+                fi
+            done < "$_errlog"
+            printf '%s' "$_kept" > "$_errlog" 2>/dev/null || return 0
+        fi
+    fi
+    for _message do
+        printf '%s: %s\n' "$MEMKIT_SELF" "$_message" >> "$_errlog" 2>/dev/null \
+            || return 0
+    done
+}
+
+# Say something the adopter needs and cannot otherwise reach. Both channels,
+# every time: a message that went only to the file would be invisible to the
+# terminal caller, and one that went only to stderr is the state this exists
+# to end.
+memkit_stderr() {
+    # The wrapper's name on the FIRST line and not on the continuations, which
+    # is the shape every message here already had: the name is there so an
+    # agent looks the exit code up in the right table, and repeating it down a
+    # four-line refusal reads as four refusals. The file prefixes every line
+    # instead, because there the lines are interleaved across invocations and a
+    # continuation with no owner belongs to nothing.
+    _first=1
+    for _message do
+        if [ "$_first" = 1 ]; then
+            printf '%s: %s\n' "$MEMKIT_SELF" "$_message" >&2
+            _first=0
+        else
+            printf '%s\n' "$_message" >&2
+        fi
+    done
+    memkit_errlog "$@"
+}
+
 # `~/x` as a person types it. The option value is a string the adopter typed
 # into an install command, not a shell word the shell ever expanded, so a
 # config named `~/.cache/...` arrives with a literal tilde and every rung below
@@ -167,9 +264,9 @@ memkit_resolve_config() {
     if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITCONFIG:-}" ]; then
         _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")
         if _why=$(memkit_path_refusal "$_candidate"); then
-            printf '%s\n' \
-                "$MEMKIT_SELF: the memkitConfig option names \"$_candidate\", which $_why." \
-                "Ignoring it; this install will behave as if no config was given." >&2
+            memkit_stderr \
+                "the memkitConfig option names \"$_candidate\", which $_why." \
+                "Ignoring it; this install will behave as if no config was given."
             _candidate=""
         fi
         # A path that is merely WRONG passes every shape rule above, so
@@ -185,9 +282,9 @@ memkit_resolve_config() {
             else
                 _why="does not exist"
             fi
-            printf '%s\n' \
-                "$MEMKIT_SELF: the memkitConfig option names \"$_candidate\", which $_why." \
-                "Ignoring it; this install will behave as if no config was given." >&2
+            memkit_stderr \
+                "the memkitConfig option names \"$_candidate\", which $_why." \
+                "Ignoring it; this install will behave as if no config was given."
             _candidate=""
         fi
         [ -n "$_candidate" ] && [ -r "$_candidate" ] && {
@@ -248,9 +345,9 @@ memkit_resolve_config() {
 # these wrappers directly and captures it; in a live session it reaches the
 # harness's debug log.
 memkit_interpreter_refused() {
-    printf '%s\n' \
-        "$MEMKIT_SELF: the config records \"interpreter\": \"$1\", which $2." \
-        "Falling back to the python3 on PATH; retrieval is unaffected." >&2
+    memkit_stderr \
+        "the config records \"interpreter\": \"$1\", which $2." \
+        "Falling back to the python3 on PATH; retrieval is unaffected."
 }
 
 # ABSOLUTE, or it does not count. A slashless or relative value is two
@@ -442,8 +539,8 @@ memkit_resolve_checker() {
 # In a live session it goes to the harness's debug log, because the wrapper
 # exits 0 whatever happens — see the exit contract in `memkit-hook`.
 memkit_no_interpreter_message() {
-    printf '%s\n' \
-        "$MEMKIT_SELF: no python3 on PATH and none recorded in the config, so the" \
+    memkit_stderr \
+        "no python3 on PATH and none recorded in the config, so the" \
         "recall hook cannot run. Install python 3.9 or newer, or record an" \
         "absolute interpreter path as \"interpreter\" in the memkit config." \
         "Config in use: ${1:-<none resolved>}"

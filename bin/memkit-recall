@@ -88,7 +88,7 @@ fi
 
 PY=$(memkit_resolve_interpreter "$CONFIG") || PY=""
 if [ -z "$PY" ]; then
-    memkit_no_interpreter_message "$CONFIG" >&2
+    memkit_no_interpreter_message "$CONFIG"
     exit 4
 fi
 

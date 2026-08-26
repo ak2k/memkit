@@ -1622,3 +1622,132 @@ def test_the_checker_floor_matches_the_one_the_wrappers_hold() -> None:
     major, minor = doctor.CHECKER_FLOOR
     assert f"MEMKIT_CHECKER_FLOOR_MAJOR={major}" in common
     assert f"MEMKIT_CHECKER_FLOOR_MINOR={minor}" in common
+
+
+# --- hook-errors: where the swallowed stderr went ----------------------------
+
+
+def _run_wrapper(profile, wrapper, **env):
+    """Run one real wrapper with nothing on its PATH but the system tools it
+    is allowed to have, and a scratch HOME."""
+    return subprocess.run(
+        ["sh", str(REPO / "bin" / wrapper)],
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"PATH": os.environ["PATH"], "HOME": str(profile / "home"), **env},
+    )
+
+
+def test_a_wrapper_refusal_reaches_a_file_as_well_as_the_stderr_nobody_sees(
+    profile,
+) -> None:
+    """The single most repeated dead end across every review: the wrappers'
+    refusals are excellent and unreachable, because the harness swallows hook
+    stderr and `claude --debug -p` showed zero hook lines in three attempts
+    across two walkthroughs.
+
+    Both channels, every time: the terminal caller and doctor's own probe read
+    stderr, and doctor tails the file.
+    """
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    out = _run_wrapper(
+        profile, "memkit-hook", CLAUDE_PLUGIN_OPTION_MEMKITCONFIG="/nope/x.json"
+    )
+    assert out.returncode == 0, out.stderr
+    # stderr keeps exactly the shape it had: the wrapper's name on the first
+    # line and not on the continuations.
+    assert out.stderr.startswith("memkit-hook: the memkitConfig option names")
+    assert "\nIgnoring it;" in out.stderr
+
+    written = (state / hook.ERRLOG_NAME).read_text(encoding="utf-8").splitlines()
+    assert len(written) == 2
+    # Every line owned, in the file: the lines are interleaved across
+    # invocations there, so a continuation with no owner belongs to nothing.
+    assert all(line.startswith("memkit-hook: ") for line in written), written
+
+
+def test_an_unconfigured_install_still_creates_no_state_directory(profile):
+    """Forced twice over: `mkdir` is not a shell builtin, so the wrappers'
+    dependency contract forbids creating it — and an install nobody has
+    configured deliberately has none, so writing one here would be a mutation
+    on behalf of somebody who has consented to nothing.
+
+    What it costs is the never-configured case, which is the one state
+    `config-route` can already separate by reading the settings value.
+    """
+    out = _run_wrapper(
+        profile, "memkit-hook", CLAUDE_PLUGIN_OPTION_MEMKITCONFIG="/nope/x.json"
+    )
+    assert out.returncode == 0
+    assert "memkitConfig option names" in out.stderr
+    assert not (profile / "home" / ".cache" / "memory-recall").exists()
+
+
+def test_the_error_log_is_bounded_and_keeps_the_newest_half(profile) -> None:
+    """Bounded the way the trust marker is, so the thing that reports on a
+    cache never becomes the thing it reports on."""
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    log = state / hook.ERRLOG_NAME
+    log.write_text("".join(f"old-{i}\n" for i in range(400)), encoding="utf-8")
+    _run_wrapper(
+        profile, "memkit-hook", CLAUDE_PLUGIN_OPTION_MEMKITCONFIG="/nope/x.json"
+    )
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) < 400, len(lines)
+    # The NEWEST half survives, plus what this run wrote.
+    assert "old-399" in lines
+    assert "old-0" not in lines
+    assert lines[-1].startswith("memkit-hook: ")
+
+
+def test_the_shell_and_the_hook_resolve_the_same_state_directory(
+    profile, monkeypatch
+) -> None:
+    """One directory, resolved in POSIX sh and in python, with nothing between
+    them but this test. A shell that wrote its error log somewhere the hook
+    does not read is a log with no reader."""
+    home = os.path.expanduser("~")
+    for env, expected in (
+        ({}, os.path.join(home, ".cache", "memory-recall")),
+        ({"XDG_CACHE_HOME": "/tmp/xdg"}, "/tmp/xdg/memory-recall"),
+        # Relative is ignored rather than honoured, in both.
+        ({"XDG_CACHE_HOME": "relative"}, os.path.join(home, ".cache", "memory-recall")),
+    ):
+        out = subprocess.run(
+            ["sh", "-c", f'. "{REPO}/bin/lib/common.sh"; memkit_state_dir'],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": os.environ["PATH"], "HOME": home, **env},
+        )
+        assert out.stdout.strip() == expected, (env, out.stdout)
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        assert hook._state_dir_candidate() == expected, env
+
+
+def test_doctor_tails_the_log_the_wrappers_write(profile, monkeypatch) -> None:
+    """Without this the best remedy doctor has for a whole class of failures is
+    still "there is a message you cannot see"."""
+    path = _store_config(profile, stores=["personal"])
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-errors"](machine), "hook-errors")
+    assert row.status == doctor.PASS
+
+    (state / hook.ERRLOG_NAME).write_text(
+        "memkit-hook: no python3 on PATH and none recorded in the config\n"
+        "memkit-recall: the memkitConfig option names \"/x\", which does not exist.\n",
+        encoding="utf-8",
+    )
+    (row,) = _only(doctor._PRODUCERS["hook-errors"](machine), "hook-errors")
+    assert row.status == doctor.INFO
+    assert "no python3 on PATH" in row.detail
+    assert "2 line(s)" in row.detail
+    assert row.actor == doctor.USER
+    assert "swallowed" in row.remedy

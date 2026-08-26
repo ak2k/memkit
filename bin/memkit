@@ -80,7 +80,7 @@ fi
 
 PY=$(memkit_resolve_interpreter "$CONFIG") || PY=""
 if [ -z "$PY" ]; then
-    memkit_no_interpreter_message "$CONFIG" >&2
+    memkit_no_interpreter_message "$CONFIG"
     # 1, and the dispatcher's own table says what it means. Not 2 — that is
     # "you invoked this wrongly", and an agent reading it retries with
     # different arguments against a machine that cannot run memkit at all.
