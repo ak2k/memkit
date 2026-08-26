@@ -6597,3 +6597,245 @@ def test_a_hostile_description_is_sanitized_on_the_way_out_of_the_hook(
     assert len([ln for ln in body if ln.startswith("- ")]) == 1
     assert out.stdout.count(f"</{hook.FRAME_TAG}>") == 1
     assert "\x1b" not in out.stdout
+
+
+# --- the derived-state sweep -------------------------------------------------
+#
+# Every case here is about the same directory the hook writes its index, its
+# session ledgers and its soak log into, and the property that carries the file
+# is the one the plan calls the hazard: the generated config and the init
+# journal live there too, so the predicate is an ALLOWLIST and the default is
+# keep.
+
+
+@pytest.fixture
+def state(tmp_path, monkeypatch):
+    """A scratch state directory, with both resolvers pointed at it."""
+    d = tmp_path / "state"
+    d.mkdir()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(d))
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(d))
+    return d
+
+
+def _aged(path: Path, days: float) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text("x", encoding="utf-8")
+    old = time.time() - days * 86400
+    os.utime(path, (old, old))
+    return path
+
+
+def _index(state: Path, digest: str, *, root: str | None = None, days: float = 0):
+    """One index triple, optionally with its `.root` sidecar."""
+    made = []
+    for suffix in (".db", ".db-wal", ".db-shm", ".build"):
+        made.append(_aged(state / f"{digest}{suffix}", days))
+    if root is not None:
+        sidecar = state / f"{digest}.root"
+        sidecar.write_text(root + "\n", encoding="utf-8")
+        made.append(_aged(sidecar, days))
+    return made
+
+
+# The files the sweep may never collect, as LITERALS. Iterating `SWEEP_KEEP`
+# instead would make this case agree with any keep-list at all, including an
+# empty one: a name removed from the constant is a name the loop stops
+# checking. The equality below is what ties the two together.
+NEVER_COLLECTED = (
+    "log.jsonl",
+    "memkit.json",
+    "init-journal.jsonl",
+    "sweep.stamp",
+    "hook-errors.log",
+    "init.lock",
+)
+
+
+def test_the_sweep_never_collects_the_files_that_are_not_derived(state) -> None:
+    """The hazard the allowlist exists for, one file per name.
+
+    `log.jsonl` is deliberately unswept — the soak analyzers treat it as their
+    corpus — and the config and the journal are here because plugin data dies
+    with the plugin and a later `--undo` needs the journal.
+    """
+    assert set(NEVER_COLLECTED) == set(hook.SWEEP_KEEP), sorted(hook.SWEEP_KEEP)
+    kept = {name: _aged(state / name, days=400) for name in NEVER_COLLECTED}
+    hook._sweep()
+    for name, path in kept.items():
+        assert path.is_file(), name
+        # And by the RULE rather than by nothing happening to match it: a
+        # keep-list that saved these by accident is one the next pattern
+        # breaks.
+        assert hook._collectible(str(state), name, time.time()) == "", name
+
+
+def test_a_name_that_matches_no_pattern_survives(state) -> None:
+    """The default is KEEP. A sweep over a directory that also holds somebody's
+    config cannot afford a delete-list."""
+    for name in ("notes.txt", "memkit.json.bak", "README", "somebody-elses.db"):
+        _aged(state / name, days=400)
+    hook._sweep()
+    for name in ("notes.txt", "memkit.json.bak", "README", "somebody-elses.db"):
+        assert (state / name).is_file(), name
+
+
+def test_an_index_whose_root_is_gone_is_collected_with_all_its_sidecars(state):
+    """The `.build` sidecar outliving its index reads as a real record of a
+    corpus that is no longer there, which is exactly what the README tells
+    operators. So the set goes together or not at all."""
+    made = _index(state, "fts5-deadbeef0000", root=str(state / "no-such-corpus"))
+    assert hook._collectible(str(state), "fts5-deadbeef0000.db", time.time()) == (
+        "root-gone"
+    )
+    hook._sweep()
+    for path in made:
+        assert not path.exists(), path
+
+
+def test_one_examination_collects_the_whole_index_set(state, monkeypatch) -> None:
+    """Not a tidiness point — a budget one. The author's cache holds 4,693
+    index databases and their sidecars; collecting the set on the first member
+    examined is what lets the per-run cap converge on it, and collecting one
+    file per examination would need five passes per index.
+
+    The cap is the instrument: one stat, and the whole set has to be gone.
+    """
+    made = _index(state, "fts5-deadbeef0000", root=str(state / "no-such-corpus"))
+    assert len(made) == 5
+    monkeypatch.setattr(hook, "SWEEP_MAX_STATS", 1)
+    stats = hook._sweep()
+    assert stats["stat"] == 1
+    for path in made:
+        assert not path.exists(), path
+
+
+def test_an_index_whose_root_still_exists_is_left_alone(state, tmp_path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    made = _index(state, "fts5-livelive0000", root=str(corpus))
+    hook._sweep()
+    for path in made:
+        assert path.is_file(), path
+
+
+def test_an_unreadable_stat_is_not_deletion_evidence(state, monkeypatch) -> None:
+    """One EACCES on a mounted volume would otherwise delete a live index, and
+    the rebuild that follows re-chunks the whole corpus on somebody's next
+    prompt. Three answers, and the third is the one that matters."""
+    made = _index(state, "fts5-unreadable00", root="/somewhere/unreadable")
+    real = os.stat
+
+    def refuse(path, *a, **kw):
+        if str(path) == "/somewhere/unreadable":
+            raise PermissionError(13, "denied")
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", refuse)
+    assert hook._root_is_gone(str(state), "fts5-unreadable00") is None
+    hook._sweep()
+    monkeypatch.setattr(os, "stat", real)
+    for path in made:
+        assert path.is_file(), path
+
+
+def test_session_state_older_than_the_window_is_collected(state) -> None:
+    """484 of these on the author's cache, the oldest a month old, and nothing
+    had ever collected one."""
+    old = _aged(state / "sess-old.json", days=30)
+    recent = _aged(state / "sess-recent.json", days=1)
+    claim = _aged(state / "sess-old.dup-pair", days=30)
+    hook._sweep()
+    assert not old.exists()
+    assert not claim.exists(), "the claim is named after the state and outlives it"
+    assert recent.is_file()
+
+
+def test_task_state_is_swept_on_name_and_mtime_and_never_on_a_parse(state):
+    """The task states already on disk are in a shape this build does not
+    write — a bare JSON list, not the dict the session state uses — so a
+    predicate that read them would leave every one of them behind. And an
+    unparseable one is still swept."""
+    legacy = state / f"{hook.TASK_STATE_PREFIX}old-shape.json"
+    legacy.write_text("[1, 2, 3]", encoding="utf-8")
+    _aged(legacy, days=30)
+    torn = state / f"{hook.TASK_STATE_PREFIX}torn.json"
+    torn.write_text("{ not json at all", encoding="utf-8")
+    _aged(torn, days=30)
+    fresh = _aged(state / f"{hook.TASK_STATE_PREFIX}fresh.json", days=1)
+    hook._sweep()
+    assert not legacy.exists()
+    assert not torn.exists()
+    assert fresh.is_file()
+
+
+def test_the_task_state_path_is_the_one_both_units_have_to_agree_on(state):
+    """Two units need this spelling and they land separately: the delivery path
+    that creates these files, and the sweep that collects them."""
+    path = hook._task_state_path("toolu_01ABC/../etc")
+    assert os.path.dirname(path) == str(state)
+    assert os.path.basename(path).startswith(hook.TASK_STATE_PREFIX)
+    # A tool_use_id is somebody else's identifier and this is a filename.
+    assert ".." not in os.path.basename(path)
+    assert "/" not in os.path.basename(path)
+
+
+def test_the_sweep_respects_its_own_interval(state) -> None:
+    """The hook runs on every prompt. A sweep with no interval is a directory
+    walk on every prompt of every session."""
+    _aged(state / "sess-old.json", days=30)
+    first = hook._sweep()
+    assert first["skipped"] is False
+    second = hook._sweep()
+    assert second["skipped"] is True
+    assert (state / hook.SWEEP_STAMP_NAME).is_file()
+
+
+def test_the_stamp_goes_down_before_the_work(state, monkeypatch) -> None:
+    """A sweep that crashed partway and left no stamp would run again on the
+    very next prompt, which is the one failure an interval exists to prevent.
+    """
+    _aged(state / "sess-old.json", days=30)
+    seen = []
+    real = os.listdir
+    monkeypatch.setattr(
+        os,
+        "listdir",
+        lambda p: seen.append((state / hook.SWEEP_STAMP_NAME).is_file()) or real(p),
+    )
+    hook._sweep()
+    assert seen == [True], seen
+
+
+def test_the_sweep_is_bounded_per_invocation(state) -> None:
+    """A 16,000-file directory cannot be fully walked inside a budget shared
+    with a prompt. It converges over several runs instead."""
+    for i in range(hook.SWEEP_MAX_STATS + 50):
+        _aged(state / f"sess-{i:05d}.json", days=30)
+    stats = hook._sweep()
+    assert stats["stat"] <= hook.SWEEP_MAX_STATS
+    assert stats["unlink"] <= hook.SWEEP_MAX_UNLINKS
+    assert len(list(state.glob("*.json"))) > 0, "one run must not clear it all"
+
+
+def test_the_sweep_abandons_at_its_deadline_and_leaves_a_consistent_directory(
+    state,
+) -> None:
+    """Abandoning is not failing: what it leaves is a directory with fewer
+    files in it and every one of them intact."""
+    for i in range(50):
+        _index(state, f"fts5-{i:012x}", root=str(state / "gone"))
+    stats = hook._sweep(deadline=time.monotonic() - 1)
+    assert stats["stat"] == 0
+    assert len(list(state.glob("fts5-*"))) == 250
+
+
+def test_the_sweep_creates_no_state_directory(tmp_path, monkeypatch) -> None:
+    """An install nobody configured has none, and the sweep is not the thing
+    that creates one."""
+    absent = tmp_path / "never"
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(absent))
+    hook._sweep()
+    assert not absent.exists()

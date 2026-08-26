@@ -2452,6 +2452,236 @@ SWEEP_STAMP_NAME = "sweep.stamp"
 ERRLOG_NAME = "hook-errors.log"
 
 
+# --- the sweep, and the allowlist it is built on -----------------------------
+#
+# THE PREDICATE IS AN ALLOWLIST OF COLLECTIBLE NAME PATTERNS, and that is
+# forced rather than chosen: the generated config and the init journal live in
+# this directory, so a sweep written as a delete-list eats them. The default is
+# KEEP. A file whose name matches nothing here survives, whatever it is.
+#
+# Measured on the author's own cache before this existed: 16,319 files, 264
+# MiB, 4,693 index databases, session state going back a month, and nothing had
+# ever collected one of them.
+
+# The files in this directory that are not derived, named so the sweep can
+# never reach them. `log.jsonl` is the important one and it is DELIBERATELY
+# unswept: the soak analyzers treat it as their corpus, so doctor reports its
+# size rather than truncating it.
+SWEEP_KEEP = frozenset(
+    {SOAK_LOG_NAME, GENERATED_CONFIG_NAME, INIT_JOURNAL_NAME, SWEEP_STAMP_NAME,
+     ERRLOG_NAME, "init.lock"}
+)
+
+# At most hourly, stamped in the state directory itself rather than in plugin
+# data — the nix channel sweeps too and has no plugin data.
+SWEEP_INTERVAL = 3600
+# How long derived state is kept. Chosen against the measured cache and
+# deliberately generous: what these bound is a cache, and the cost of keeping a
+# session ledger a week too long is a few kilobytes, while the cost of
+# collecting one too early is a session that re-offers pointers it already
+# showed.
+SESSION_RETENTION = 14 * 86400
+TASK_RETENTION = 7 * 86400
+INDEX_RETENTION = 7 * 86400
+# Per invocation, because a 16,000-file directory cannot be fully walked inside
+# a budget shared with a prompt. The directory converges over several runs
+# instead of blowing one prompt's turn; at these numbers the author's own cache
+# takes about thirty runs, which is well under a day of ordinary use.
+SWEEP_MAX_STATS = 500
+SWEEP_MAX_UNLINKS = 100
+# Headroom before the harness's own timeout. The sweep runs after the pointers
+# have been written and flushed, so what this protects is not the delivery but
+# the process's ability to exit before it is killed.
+SWEEP_RESERVE = 2.0
+
+# The per-subagent-task state file. Declared HERE, beside the sweep that
+# collects it, because two units need the same spelling and they land
+# separately: the delivery path that creates these, and this. The prefix is not
+# arbitrary — 121 `t-*.json` files from an earlier experiment already sit in
+# the author's cache in a DIFFERENT shape (a bare JSON list, not the dict the
+# session state uses), which is why the predicate below is filename plus mtime
+# and never a parse.
+TASK_STATE_PREFIX = "t-"
+
+_FTS_PREFIX = "fts5-"
+# Index name generations this build no longer writes. The author's cache holds
+# `fts5-2-<digest>.db` files with LIVE `.root` sidecars naming roots that still
+# exist, so neither the ENOENT predicate nor the no-sidecar one ever reaches
+# them: a naming change strands files permanently unless something knows the
+# old names. This tuple is that something.
+_FTS_LEGACY_PREFIXES = ("fts5-2-",)
+# The five files one index is, as suffixes on its stem. Collected AS A SET,
+# because an orphaned `.build` outliving its index reads as a real record of a
+# corpus that is no longer there — which is exactly what the README already
+# tells operators.
+_FTS_SUFFIXES = (".db", ".db-wal", ".db-shm", ".root", ".build")
+
+
+def _task_state_path(tool_use_id: str) -> str:
+    """Where one subagent task's state lives.
+
+    Beside the session state and named after it, so whatever sweeps one sweeps
+    the other. The sanitisation is the session state's, for the same reason: a
+    tool_use_id is somebody else's identifier and this is a filename.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", tool_use_id)[:80]
+    return os.path.join(_state_dir(), f"{TASK_STATE_PREFIX}{safe}.json")
+
+
+def _fts_stem(name: str) -> str:
+    """The index stem a state-dir filename belongs to, or "".
+
+    Keyed on the NAME and nothing else. A sidecar whose `.db` is already gone
+    still names its stem, which is what lets the set be collected whole however
+    few of its five files are left.
+    """
+    if not name.startswith(_FTS_PREFIX):
+        return ""
+    for suffix in _FTS_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return ""
+
+
+def _root_is_gone(state_dir: str, stem: str) -> bool | None:
+    """Whether this index's corpus root is definitely gone.
+
+    THREE ANSWERS, and the third is the one that matters: True when the root's
+    stat says ENOENT, False when it is there, and None when the question could
+    not be answered — an unreadable sidecar, or a stat that failed for any
+    reason other than absence.
+
+    An unreadable stat is NOT deletion evidence. One EACCES on a mounted volume
+    would otherwise delete a live index, and the rebuild that follows is not
+    free: it re-chunks the whole corpus on somebody's next prompt.
+    """
+    sidecar = os.path.join(state_dir, stem + ".root")
+    try:
+        with open(sidecar, encoding="utf-8") as f:
+            root = f.read().strip()
+    except OSError:
+        return None
+    if not root:
+        return None
+    try:
+        os.stat(root)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return None
+    return False
+
+
+def _collectible(state_dir: str, name: str, now: float) -> str:
+    """Why this file may be collected, or "" for keep.
+
+    A string rather than a bool so the reason is available to the test that
+    asserts a file was collected for the RIGHT reason — a sweep that deleted
+    the correct files by the wrong predicate is one that stops working the
+    moment either changes.
+    """
+    if name in SWEEP_KEEP:
+        return ""
+    stem = _fts_stem(name)
+    if stem:
+        for prefix in _FTS_LEGACY_PREFIXES:
+            if name.startswith(prefix):
+                return "legacy-generation"
+        gone = _root_is_gone(state_dir, stem)
+        if gone is True:
+            return "root-gone"
+        return ""
+    if name.endswith(".json"):
+        age = _age(state_dir, name, now)
+        if age is None:
+            return ""
+        if name.startswith(TASK_STATE_PREFIX):
+            # NAME AND MTIME, never a parse. The task states already on disk
+            # are in a shape this build does not write, and a predicate that
+            # read them would leave every one of them behind.
+            return "task-state" if age > TASK_RETENTION else ""
+        return "session-state" if age > SESSION_RETENTION else ""
+    if ".dup-" in name:
+        # Swept with the session state it is named after, and separately as
+        # well: the claim outlives a run that had nothing to deliver, so it can
+        # be the last file of a session left standing.
+        age = _age(state_dir, name, now)
+        if age is not None and age > SESSION_RETENTION:
+            return "dup-claim"
+    return ""
+
+
+def _age(state_dir: str, name: str, now: float) -> float | None:
+    try:
+        return now - os.stat(os.path.join(state_dir, name)).st_mtime
+    except OSError:
+        return None
+
+
+def _sweep(deadline: float | None = None) -> dict:
+    """Collect derived state that nothing will read again. Best-effort.
+
+    Runs after the pointers are written and flushed, so nothing here can cost a
+    prompt its answer — and every unlink is suppressed, because a sweep that
+    raises on the every-prompt path is worse than a sweep that skips a file.
+
+    Returns what it did, for the tests and for nothing else: the hook does not
+    report on it, and doctor reads the directory rather than a claim about it.
+    """
+    stats = {"stat": 0, "unlink": 0, "skipped": False}
+    state_dir = _state_dir_candidate()
+    if not os.path.isdir(state_dir):
+        # An install nobody configured has no state directory, and the sweep is
+        # not the thing that creates one.
+        return stats
+    if not _sweep_due(state_dir):
+        stats["skipped"] = True
+        return stats
+    # The stamp goes down BEFORE the work, not after. A sweep that crashed
+    # partway through and left no stamp would run again on the very next
+    # prompt, which is the one failure mode an interval exists to prevent.
+    _stamp_sweep(state_dir)
+    now = time.time()
+    try:
+        names = sorted(os.listdir(state_dir))
+    except OSError:
+        return stats
+    for name in names:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        if stats["stat"] >= SWEEP_MAX_STATS or stats["unlink"] >= SWEEP_MAX_UNLINKS:
+            break
+        stats["stat"] += 1
+        why = _collectible(state_dir, name, now)
+        if not why:
+            continue
+        stem = _fts_stem(name)
+        targets = (
+            [stem + suffix for suffix in _FTS_SUFFIXES] if stem else [name]
+        )
+        for target in targets:
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(state_dir, target))
+                stats["unlink"] += 1
+    return stats
+
+
+def _sweep_due(state_dir: str) -> bool:
+    try:
+        last = os.stat(os.path.join(state_dir, SWEEP_STAMP_NAME)).st_mtime
+    except OSError:
+        return True
+    return (time.time() - last) >= SWEEP_INTERVAL
+
+
+def _stamp_sweep(state_dir: str) -> None:
+    with contextlib.suppress(OSError):
+        path = os.path.join(state_dir, SWEEP_STAMP_NAME)
+        with open(path, "a", encoding="utf-8"):
+            pass
+        os.utime(path, None)
+
+
 def _session_state_path(session_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[:80]
     return os.path.join(_state_dir(), f"{safe}.json")
@@ -4250,6 +4480,7 @@ def cli() -> None:
     from the hook. Arguments mean --search; no arguments means read a hook
     payload off stdin.
     """
+    started = time.monotonic()
     if len(sys.argv) > 1:
         try:
             sys.exit(search_cli(sys.argv[1:]))
@@ -4279,6 +4510,17 @@ def cli() -> None:
     except Exception:
         with contextlib.suppress(Exception):
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    # AFTER the flush, and that placement is the whole of its safety: the
+    # pointers are already on their way, so nothing the sweep does can cost a
+    # prompt its answer. It creates no state directory, so an install that has
+    # not been configured — the one that refuses before reading stdin at all —
+    # sweeps nothing and returns immediately.
+    #
+    # The deadline is computed here rather than read from a module global: the
+    # sweep should abandon against the clock its caller is running under, and a
+    # global would make that the clock of whichever caller set it last.
+    with contextlib.suppress(Exception):
+        _sweep(deadline=started + HARNESS_TIMEOUT - SWEEP_RESERVE)
     sys.exit(0)
 
 
