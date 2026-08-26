@@ -1663,3 +1663,100 @@ class FixtureEvalSensitivity(unittest.TestCase):
         self.assertIn("REGRESSION", done.stdout)
         self.assertIn("5/5 retrieved", self.run_eval().stdout)  # and it is the copy
         self.assertIn("search tier: 0/5 retrieved", done.stdout)
+
+
+class RowLost(unittest.TestCase):
+    """A ledger row a machine write took away.
+
+    Every other ledger finding describes drift that `--write` settles. This one
+    describes evidence that `--write` erases, which is why it survives it: a
+    tool may fix what it can describe, and may not make what it cannot describe
+    disappear.
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@t")
+        self._git("config", "user.name", "t")
+        self.store = mi._store(self.repo, STORE_DIR, blame_base="HEAD")
+        for sub in ("hot", "search"):
+            (self.store["dir"] / sub).mkdir(parents=True)
+        (self.store["dir"] / "MEMORY.md").write_text(MEMORY_HEAD)
+
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=self.repo, check=True, capture_output=True, timeout=60
+        )
+
+    def _memory(self, name: str, description: str = "a memory about widgets"):
+        path = self.store["search"] / name
+        path.write_text(
+            f"---\nname: {name[:-3]}\ndescription: {description}\n"
+            "type: reference\n---\n\nbody\n"
+        )
+        return path
+
+    def _ledger(self, *rows: str) -> None:
+        (self.store["dir"] / "SEARCH.md").write_text(
+            SEARCH_HEAD + "\n" + "\n".join(rows) + "\n"
+        )
+
+    def _commit(self) -> None:
+        self._git("add", "-A")
+        self._git("commit", "-qm", "base")
+
+    def test_a_row_that_vanished_while_its_file_stayed_is_reported(self) -> None:
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        # The rewrite a machine would do after the description stopped being
+        # readable: the file is still there and its row is not.
+        self._ledger()
+        errors, _ = mi.check(self.store, False, set())
+        assert any(e.startswith("ROW-LOST") for e in errors), errors
+        assert any("widget.md" in e for e in errors if e.startswith("ROW-LOST"))
+
+    def test_write_does_not_settle_it(self) -> None:
+        """The whole point. `--write` regenerating the row would erase the
+        evidence rather than the cause, and every other ledger finding is
+        suppressed under it precisely because the rewrite settles them."""
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        self._ledger()
+        errors, _ = mi.check(self.store, True, set())
+        assert any(e.startswith("ROW-LOST") for e in errors), errors
+
+    def test_a_row_whose_memory_was_deleted_is_not_lost(self) -> None:
+        """The carve-out, and it is what makes this a finding rather than
+        noise: an author removing a memory is the ledger working."""
+        path = self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        path.unlink()
+        self._ledger()
+        errors, _ = mi.check(self.store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
+    def test_a_row_that_is_still_there_is_not_lost(self) -> None:
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        errors, _ = mi.check(self.store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
+    def test_a_tree_with_no_such_base_says_nothing_rather_than_everything(self):
+        """A repo without the ref, without git, or a ledger that did not exist
+        then all produce "no rows at base" — and reading that as "every row was
+        lost" would fail every fresh checkout."""
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        store = mi._store(self.repo, STORE_DIR, blame_base="no-such-ref")
+        assert mi._rows_at(
+            store["search_ledger"], store["dir"], store["root"], "no-such-ref"
+        ) is None
+        errors, _ = mi.check(store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors

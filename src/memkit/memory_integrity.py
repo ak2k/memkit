@@ -775,6 +775,93 @@ def _rows(ledger: Path, store_dir: Path) -> dict[str, Path]:
     return out
 
 
+def _rows_at(
+    ledger: Path, store_dir: Path, repo: Path, base: str
+) -> dict | None:
+    """The rows a ledger carried at `base`, or None when that cannot be read.
+
+    None rather than an empty dict, and the difference is the whole safety of
+    the finding built on this: a repo with no such ref, no git at all, or a
+    ledger that did not exist then all produce "no rows", and treating that as
+    "every row was lost" would fail every fresh checkout.
+    """
+    try:
+        rel = ledger.resolve().relative_to(repo.resolve())
+    except ValueError:
+        return None
+    try:
+        out = subprocess.run(
+            ["git", "show", f"{base}:{rel}"],
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    found: dict = {}
+    for link in LINK_RE.findall(out.stdout):
+        if "://" in link:
+            continue
+        target = (ledger.parent / link).resolve()
+        if target.name in LEDGER_NAMES:
+            continue
+        try:
+            found[str(target.relative_to(store_dir.resolve()))] = ledger
+        except ValueError:
+            continue
+    return found
+
+
+def _row_lost(store: dict, rowed: dict, write: bool) -> list:
+    """Rows a MACHINE WRITE took away, named so the loss is not silent.
+
+    `SEARCH.md` is generated, and a generated ledger is a file a tool rewrites
+    wholesale. That is fine while every live memory produces a row; when one
+    stops — a description that became unreadable, a memory moved under a
+    directory that is not a tier — the rewrite drops its row and the memory
+    goes on existing, retrievable by the hook and invisible to every ledger
+    anybody reads.
+
+    THE CARVE-OUT, and it is what makes this a real finding rather than noise:
+    a row whose memory is no longer on disk is not lost, it was deleted, and
+    that is an author doing their job. Only a row that had a file at the base
+    and still has one now can have been taken by a machine.
+
+    `--write` DOES NOT RESOLVE IT. Every other ledger finding is drift a
+    rewrite settles, and this one is evidence a rewrite erases: regenerating
+    the ledger either puts the row back or leaves it out, and either way the
+    fact that a row went missing is gone. That is the agent-access posture
+    applied to the checker's own repair path — a tool may fix what it can
+    describe, and may not make what it cannot describe disappear.
+    """
+    del write  # deliberately unused; see the docstring
+    ledger = store["search_ledger"]
+    base = store["blame_base"]
+    at_base = _rows_at(ledger, store["dir"], store["root"], base)
+    if at_base is None:
+        return []
+    lost = []
+    for rel in sorted(at_base):
+        if rel in rowed:
+            continue
+        if not (store["dir"] / rel).is_file():
+            # Deleted, not lost. An author removing a memory is the ledger
+            # working.
+            continue
+        lost.append(
+            f"ROW-LOST: {store['dir'].name}/{rel} had a row at {base} and has "
+            "none now, and the file is still there. A generated ledger is "
+            "rewritten wholesale, so a memory that stops producing a row goes "
+            "on existing with nothing pointing at it. --write does not settle "
+            "this: regenerating the ledger erases the evidence rather than the "
+            "cause."
+        )
+    return lost
+
+
 def _live(store: dict) -> list[Path]:
     """Every live memory file, hot and search, sorted."""
     files: list[Path] = []
@@ -981,6 +1068,11 @@ def check(
     # can survive the run and so deserve to fail it.
     def _survives(owner: Path) -> bool:
         return not write or owner == store["hot_ledger"]
+
+    # BEFORE the generated ledgers are rewritten below, because after them the
+    # question cannot be asked: `--write` is about to make the ledger agree
+    # with the tree, and what this reports is a row that stopped agreeing.
+    errors.extend(_row_lost(store, rowed, write))
 
     on_disk = {str(p.relative_to(d)) for p in live}
     errors.extend(
