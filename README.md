@@ -234,8 +234,14 @@ about the session rather than the words. `memkit doctor`, which would run this
 list for you, is not in this build.
 
 **The outcome vocabulary.** Each record's `outcome` names what happened, and
-these are all of them — the first thirteen in `log.jsonl`, the last two in the
-`trust.json` an unconfigured install writes instead:
+these are all of them — everything but the last two rows in `log.jsonl`, and
+those two in the `trust.json` an unconfigured install writes instead.
+
+Two prefixes, because there are two hooks. An unprefixed outcome is the
+per-prompt hook; a `task:` outcome is the subagent path, which runs before the
+Agent tool and appends pointers to the brief. They are separate vocabularies on
+purpose: the two serve different populations, and one name over both would make
+every rate you compute a rate over an unknown mixture.
 
 | outcome | meaning |
 |---|---|
@@ -252,6 +258,15 @@ these are all of them — the first thirteen in `log.jsonl`, the last two in the
 | `output-lost` | pointers were built and the write did not land |
 | `error` | an unexpected failure; the record names the exception type |
 | `cli:*` | written by `--search`, not by a prompt. `"concludes": false` marks these |
+| `task:injected` | pointers were appended to a subagent's brief |
+| `task:envelope` · `task:empty` · `task:slash` · `task:short` · `task:stopwords` | the brief's shape. The same five as the prompt path minus its 4000-character paste ceiling, which a brief is expected to exceed |
+| `task:nodirs` | nothing to search, as `gate:nodirs` |
+| `task:nomatch` · `task:deduped` · `task:floored` | as the unprefixed three, over a brief. `deduped` here is per tool call, not per session — a subagent is not charged for what the parent's prompts were shown |
+| `task:oversize` | the brief plus its pointers would exceed the 16 KiB write bound. The brief is echoed back inside the emission, so nothing can be shed to make room and the pointers are dropped whole |
+| `task:unsafe` | the emission did not match the one permitted output shape, so nothing was written. This one is a defect report: the shape is built in one place and the check is over that place's output |
+| `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside |
+| `task:nobrief` | the tool call carried no `prompt` string to read |
+| `task:killed` · `task:output-lost` · `task:error` | as the unprefixed three |
 | `trust:unconfigured` | **`trust.json`, not the soak log** — the install has no config on any route it reads, so the hook refused before it would have created the shared state directory |
 | `trust:config-error` | the same file: a config was found and could not be used — unreadable, unparseable, or a schema this build does not speak |
 

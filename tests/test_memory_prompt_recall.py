@@ -34,6 +34,7 @@ from __future__ import annotations
 import ast
 import builtins
 import io
+import itertools
 import json
 import os
 import random
@@ -5171,15 +5172,25 @@ def _hook_outcomes() -> set[str]:
     and the gate passing is then a statement about nothing.
     """
     tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
-    main = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "main"
-    )
-    emitter = next(
-        n for n in ast.walk(main)
-        if isinstance(n, ast.FunctionDef) and n.name == "done"
-    )
-    inside_emitter = set(map(id, ast.walk(emitter)))
+    # BOTH hook entry points. `main` serves the prompt, `_task_main` serves a
+    # subagent brief, and each has its own `done`. Reading only `main` was
+    # exactly the blindness this function exists to prevent, one function
+    # further out: every `task:*` outcome would be a record the enumeration
+    # never sees and the README never has to document.
+    paths = [
+        next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == name
+        )
+        for name in ("main", "_task_main")
+    ]
+    inside_emitter: set[int] = set()
+    for fn in paths:
+        emitter = next(
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.FunctionDef) and n.name == "done"
+        )
+        inside_emitter |= set(map(id, ast.walk(emitter)))
 
     # WHOLE MODULE, not `main`'s body. Walking only `main` meant one hop hid a
     # record again: a module-level helper called from `main` could write an
@@ -5208,19 +5219,21 @@ def _hook_outcomes() -> set[str]:
     # path's own `cli:*` records, which are a separate vocabulary the
     # consumer's collector does not read and does not count.
     assert writers == {"done", "search_cli"}, sorted(writers)
-    gate = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "prompt_gate"
-    )
-    gates = {
-        n.value.value for n in ast.walk(gate)
-        if isinstance(n, ast.Return)
-        and isinstance(n.value, ast.Constant)
-        and isinstance(n.value.value, str)
-    }
+    gates = set()
+    for name in ("prompt_gate", "task_gate"):
+        gate = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == name
+        )
+        gates |= {
+            n.value.value for n in ast.walk(gate)
+            if isinstance(n, ast.Return)
+            and isinstance(n.value, ast.Constant)
+            and isinstance(n.value.value, str)
+        }
 
     outcomes = set(gates)
-    for node in ast.walk(main):
+    for node in itertools.chain.from_iterable(ast.walk(fn) for fn in paths):
         if id(node) in inside_emitter or not isinstance(node, ast.Call):
             continue
         if not isinstance(node.func, ast.Name):
@@ -5239,7 +5252,7 @@ def _hook_outcomes() -> set[str]:
             if isinstance(side, ast.Constant) and isinstance(side.value, str):
                 outcomes.add(side.value)
             elif isinstance(side, ast.Name) and side.id == "gate":
-                continue  # the prompt_gate returns already collected above
+                continue  # the gate functions' returns, already collected above
             else:
                 raise AssertionError(f"outcome is not a literal at line {node.lineno}")
     return outcomes
@@ -5274,7 +5287,11 @@ def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
     # here, because the log an adopter is reading was written by the release
     # they installed, not by main. It has to say so in the same breath, so the
     # allowance cannot be used to smuggle in a name nothing ever wrote.
-    listed = set(re.findall(r"`(gate:[a-z:]+|injected|deduped|floored|killed|error|output-lost)`", table))
+    listed = set(re.findall(
+        r"`(gate:[a-z:]+|task:[a-z:-]+|injected|deduped|floored|killed|error"
+        r"|output-lost)`",
+        table,
+    ))
     for name in sorted(listed - emitted):
         mentions = [ln for ln in table.splitlines() if f"`{name}`" in ln]
         assert any("releases before" in ln for ln in mentions), (name, mentions)
@@ -7030,3 +7047,233 @@ def test_a_task_pointer_line_reports_matches_without_the_briefs_length(
     assert "3 terms from this brief" in line
     assert "/340" not in line
     assert line.startswith("- ")
+
+
+# --- the task path: end to end, through the file the harness runs ------------
+
+
+def _spawn(
+    env: dict,
+    brief: str,
+    tool_use_id: str = "tu1",
+    tool: str = "Agent",
+    extra: dict | None = None,
+) -> subprocess.CompletedProcess:
+    """One PreToolUse invocation, driven the way the harness drives it.
+
+    The FILE, not the module, and a real payload on stdin: the branch under
+    test is a branch on a payload field, and an in-process call cannot observe
+    a hook that reads the wrong key and then falls through to the prompt path
+    — which returns 0 with no output, exactly like a correct refusal.
+    """
+    payload = {
+        "session_id": "tsk1",
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool,
+        "tool_use_id": tool_use_id,
+        "tool_input": {
+            "prompt": brief,
+            "description": "a short description",
+            "subagent_type": "general-purpose",
+            **(extra or {}),
+        },
+    }
+    return subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+
+def _seed_brief_corpus(tmp_path: Path) -> dict:
+    """A store holding the fixture memories a long brief should surface."""
+    env = _env(tmp_path)
+    dst = tmp_path / PROJECT_DIR / "search"
+    src = Path(__file__).resolve().parent / "fixtures" / "corpus" / "project" / "search"
+    for path in src.rglob("*.md"):
+        target = dst / path.relative_to(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(path, target)
+    return env
+
+
+def test_a_long_brief_is_served_through_the_real_hook_file(tmp_path) -> None:
+    """The headline: a 6 KB brief reaches a subagent with pointers attached,
+    written as the one output shape and with the brief itself untouched.
+
+    Exit 0 and stdout parsed as the harness parses it, because everything this
+    path can get wrong is in the bytes it writes.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    brief = _brief("served/backlash-rig.md")
+    out = _spawn(env, brief)
+    assert out.returncode == 0, out.stderr
+    payload = json.loads(out.stdout)
+    updated = payload["hookSpecificOutput"]["updatedInput"]
+    assert set(payload) == {"hookSpecificOutput"}
+    assert set(payload["hookSpecificOutput"]) == {"hookEventName", "updatedInput"}
+    assert set(updated) == {"prompt", "description", "subagent_type"}
+    assert updated["prompt"].startswith(brief)
+    assert updated["description"] == "a short description"
+    assert "sprocket_alignment.md" in updated["prompt"]
+    assert f"<{hook.FRAME_TAG}>" in updated["prompt"]
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:injected"
+    assert record["injected"] == ["sprocket_alignment.md"]
+    # The query the brief produced, recorded like the prompt path's — and the
+    # count is what says the whole brief was read rather than its first
+    # paragraph.
+    assert record["terms"] > 300, record["terms"]
+
+
+def test_the_same_brief_on_the_prompt_path_is_refused_for_its_length(
+    tmp_path,
+) -> None:
+    """The control. Without it, the case above could pass on a build where the
+    paste ceiling had simply been raised for everybody."""
+    env = _seed_brief_corpus(tmp_path)
+    out = _hook(env, _brief("served/backlash-rig.md"), session="tsk2")
+    assert out.returncode == 0 and out.stdout == ""
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "gate:long"
+
+
+def test_two_spawns_in_one_turn_dedup_under_their_own_tool_use_ids(
+    tmp_path,
+) -> None:
+    """Dedup is keyed on the tool call, so parallel spawns cannot starve each
+    other — and a repeat of the SAME call does not re-inject.
+
+    Both halves matter and they fail in opposite directions. Keyed on the
+    session, the second spawn of a turn is served nothing at all; keyed on
+    nothing, a retried tool call gets the same block twice, and the second copy
+    lands in a brief that already contains one.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    brief = _brief("served/backlash-rig.md")
+    first = _spawn(env, brief, tool_use_id="toolu_aaa")
+    parallel = _spawn(env, brief, tool_use_id="toolu_bbb")
+    assert json.loads(first.stdout)["hookSpecificOutput"]
+    assert json.loads(parallel.stdout)["hookSpecificOutput"], (
+        "a second spawn in the same turn must not be starved by the first"
+    )
+    state = tmp_path / ".cache" / "memory-recall"
+    names = sorted(p.name for p in state.glob(f"{hook.TASK_STATE_PREFIX}*.json"))
+    assert names == ["t-toolu_aaa.json", "t-toolu_bbb.json"], names
+    # The ledger records what each call was served, per call.
+    ledger = json.loads((state / "t-toolu_aaa.json").read_text())
+    assert [Path(p).name for p in ledger["shown"]] == ["sprocket_alignment.md"]
+    # And the same call again is not served twice.
+    again = _spawn(env, brief, tool_use_id="toolu_aaa")
+    assert again.stdout == ""
+    record = json.loads((state / "log.jsonl").read_text().splitlines()[-1])
+    assert record["outcome"] != "task:injected", record
+    # `task:floored` rather than `task:deduped` on this corpus, and the
+    # difference is real rather than a looser assertion: dedup removes the one
+    # memory that cleared the bar, and what is left of the candidate window is
+    # then rejected by the floor. The record names the gate that actually
+    # fired last, which is what makes these two outcomes worth telling apart.
+    assert record["outcome"] in ("task:deduped", "task:floored"), record
+
+
+def test_a_brief_at_the_emission_bound_is_refused_rather_than_shed(
+    tmp_path,
+) -> None:
+    """The payload echoes the brief back, so this is the one surface that can
+    reach the bound the SIGTERM mask rests on. Over it, nothing is written —
+    what would have to be shed to fit is the brief itself.
+
+    The refusal is recorded, because a silent one is indistinguishable from a
+    corpus with nothing to say, and this is the outcome an adopter with very
+    large briefs would need to see to understand why they never get pointers.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    brief = ""
+    for path in sorted(LONG_BRIEFS.rglob("*.md")):
+        brief += path.read_text(encoding="utf-8")
+        if len(brief.encode()) > hook.PIPE_BUFFER_BOUND:
+            break
+    assert len(brief.encode()) > hook.PIPE_BUFFER_BOUND
+    out = _spawn(env, brief, tool_use_id="toolu_big")
+    assert out.returncode == 0
+    assert out.stdout == ""
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:oversize"
+    assert record["bytes"] > hook.PIPE_BUFFER_BOUND
+
+
+def test_an_event_for_another_tool_says_so_instead_of_going_quiet(
+    tmp_path,
+) -> None:
+    """The matcher scopes this to one tool, so a payload naming another means
+    the registration and the harness disagree — which is what a tool RENAME
+    looks like from in here. It is the one failure that would otherwise be
+    perfectly silent: the hook goes on exiting 0 with nothing to say, and no
+    adopter sees a line anywhere."""
+    env = _seed_brief_corpus(tmp_path)
+    out = _spawn(env, _brief("served/backlash-rig.md"), tool="Subagent")
+    assert out.returncode == 0 and out.stdout == ""
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:notool"
+    assert record["tool"] == "Subagent"
+
+
+def test_a_brief_the_corpus_has_nothing_to_say_about_writes_nothing(
+    tmp_path,
+) -> None:
+    """The negative half, end to end. `updatedInput` replaces the tool's input,
+    so an emission on a brief with nothing to answer it is not a wasted line —
+    it is a rewrite of a spawn's instructions for no reason."""
+    env = _seed_brief_corpus(tmp_path)
+    out = _spawn(env, _brief("unserved/translation-pipeline.md"), tool_use_id="tu9")
+    assert out.returncode == 0
+    assert out.stdout == ""
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] in ("task:nomatch", "task:floored"), record
+
+
+def test_a_feedback_memory_reaches_a_subagent_through_the_real_hook_file(
+    tmp_path,
+) -> None:
+    """The silent zero, end to end and with a real corpus behind it.
+
+    `type: feedback` memories keep a stricter bar because behaviour memories
+    coincide more, and half of that bar is a SHARE of the query's terms. A
+    brief is hundreds of terms long, so on the prompt path's numbers the share
+    required is tens of matched terms and no memory of that type is ever
+    served to a subagent — an entire tier of the store reading exactly like a
+    corpus with nothing to say about the work.
+
+    Deliberately the one memory type with no case in the fixture corpus: the
+    rate slice cannot measure a type it has no instance of, so the bar it
+    cannot gate is pinned here instead.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    (tmp_path / PROJECT_DIR / "search" / "stand_signoff.md").write_text(
+        "---\nname: stand_signoff\n"
+        "description: Sign a rebuilt gearbox off against the recorded figure "
+        "and never against how it ran on the stand, because a judgement at "
+        "receiving is what lets a doubtful unit reach the shelf.\n"
+        "type: feedback\n---\n\n# Stand test sign-off\n\n"
+        "Sign against the recorded figure. A judgement call at receiving is "
+        "how a doubtful gearbox reaches the shelf, and the vendor argument "
+        "then has nothing to stand on.\n"
+    )
+    out = _spawn(env, _brief("served/gearbox-acceptance.md"), tool_use_id="tu_fb")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout, "a feedback memory must be reachable from a brief"
+    updated = json.loads(out.stdout)["hookSpecificOutput"]["updatedInput"]
+    assert "stand_signoff.md" in updated["prompt"]

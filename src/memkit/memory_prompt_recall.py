@@ -2944,6 +2944,7 @@ def recall(
     stats: dict | None = None,
     dirs: list[str] | None = None,
     deadline: float | None = None,
+    query: str | None = None,
 ) -> list[str]:
     """Full retrieval path (query build + lexical search), no session dedup,
     no soak log, no stdout. Returns hit paths best-first. main() wraps this;
@@ -2960,9 +2961,17 @@ def recall(
     `deadline` is a time.monotonic() instant the retrieval must not run past.
     None (the eval, --search, the tests) means no clock: those callers are not
     on a prompt's critical path and would rather have the answer.
+
+    `query` overrides the built query, for a caller whose text is not a prompt.
+    A parameter rather than a swapped module global, because the swap is
+    restored in a `finally` that a hard exit skips — and a process left with
+    the wrong builder installed would search every later prompt on a query
+    built for something else. Omitted, this is `build_query(prompt)` and every
+    existing caller is unchanged, which is what keeps the consumer's committed
+    eval snapshot a measurement of the same path.
     """
     rec = stats if stats is not None else {}
-    query = build_query(prompt.strip())
+    query = build_query(prompt.strip()) if query is None else query
     if not query:
         return []
     dirs = [d for d in dirs if os.path.isdir(d)] if dirs else _search_dirs()
@@ -3374,6 +3383,7 @@ def _sigterm_masked():
 # key would not degrade to no pointers, it would cancel the spawn. The
 # allowlist's key-set equality is what makes that unreachable, and it is a
 # correctness requirement rather than only a safety one.
+TASK_EVENT = "PreToolUse"
 TASK_TOOL = "Agent"
 TASK_PROMPT_KEY = "prompt"
 
@@ -3617,7 +3627,7 @@ def _task_emission_ok(payload: object, tool_input: dict, brief: str) -> bool:
     inner = payload["hookSpecificOutput"]
     if not isinstance(inner, dict) or set(inner) != {"hookEventName", "updatedInput"}:
         return False
-    if inner["hookEventName"] != "PreToolUse":
+    if inner["hookEventName"] != TASK_EVENT:
         return False
     updated = inner["updatedInput"]
     if not isinstance(updated, dict) or set(updated) != set(tool_input):
@@ -3662,7 +3672,7 @@ def _task_payload(tool_input: dict, block: str) -> str | None:
         text = json.dumps(
             {
                 "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
+                    "hookEventName": TASK_EVENT,
                     "updatedInput": _task_updated_input(tool_input, block),
                 }
             },
@@ -3672,6 +3682,162 @@ def _task_payload(tool_input: dict, block: str) -> str | None:
     except (TypeError, ValueError, RecursionError):
         return None
     return text if _task_emission_ok(parsed, tool_input, brief) else None
+
+
+def _task_main(payload: dict, t0: float) -> None:
+    """The PreToolUse path, whole. Reads a brief, appends pointers to it, and
+    records what happened — or records why it did not and writes nothing.
+
+    A function of its own rather than a branch inside `main()` because the two
+    paths share no state past the payload: different gate, different query
+    builder, different floor bars, different ledger, different budget, and an
+    output shape that has to be exactly right rather than merely bounded. What
+    they do share is the fail-open discipline, which is restated here rather
+    than reached for — a `return` on every refusal, no raise that escapes, and
+    a record for each.
+    """
+    rec: dict = {
+        "session": _log_session(payload.get("session_id", "")),
+        # The tool call this is about, truncated like the session id and for
+        # the same reason: it joins a record to a spawn and the rest of the id
+        # buys nothing this log's contract wants to hold.
+        "tool_use": _log_session(payload.get("tool_use_id", "")),
+    }
+    logged = False
+
+    def done(outcome: str, /, **kw) -> None:
+        """The task path's one emitter, shaped like `main`'s so the outcome at
+        every call site is a string LITERAL — that is what lets a consumer
+        enumerate the vocabulary statically, and a record written some other
+        way is a record its tripwire cannot see."""
+        nonlocal logged
+        rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
+        with _sigterm_masked():
+            _soak_log(rec)
+            logged = True
+
+    def _flush_on_kill(signum, frame) -> None:
+        if not logged:
+            with contextlib.suppress(Exception):
+                done("task:killed")
+        os._exit(0)
+
+    with contextlib.suppress(ValueError, OSError):
+        signal.signal(signal.SIGTERM, _flush_on_kill)
+
+    try:
+        # The matcher already scoped this to one tool, so a payload naming
+        # another means the registration and the harness disagree — which is
+        # what a tool RENAME looks like from in here, and the one failure that
+        # would otherwise be perfectly silent: the hook stops being called,
+        # or is called for something it has nothing to say about, and either
+        # way no adopter sees a line anywhere.
+        if payload.get("tool_name") != TASK_TOOL:
+            return done("task:notool", tool=str(payload.get("tool_name"))[:40])
+        tool_input = payload.get("tool_input")
+        if not isinstance(tool_input, dict):
+            return done("task:nobrief")
+        brief = tool_input.get(TASK_PROMPT_KEY)
+        if not isinstance(brief, str):
+            return done("task:nobrief")
+
+        stripped = brief.strip()
+        rec["brief_sha"] = hashlib.sha256(stripped.encode()).hexdigest()[:12]
+        rec["words"] = len(stripped.split())
+        gate = task_gate(stripped)
+        if gate in TASK_SHAPE_GATES:
+            return done(gate)
+        if not _search_dirs():
+            why = {"config": _CONFIG_ERROR} if _CONFIG_ERROR else {}
+            return done("task:nodirs", **why)
+        if gate:
+            return done(gate)
+
+        # Keyed on the tool call, never on the session. A subagent spawned late
+        # in a long session would find every pointer it wants already spent by
+        # prompts it never saw, so the parent's ledger is not read and not
+        # written; two spawns in one turn are two ids and neither can starve
+        # the other.
+        state_path = _task_state_path(str(payload.get("tool_use_id", "") or "notool"))
+        shown, _spent = _load_session(state_path)
+
+        query = build_task_query(stripped)
+        terms = list(dict.fromkeys((query or "").split()))
+        rec["terms"] = len(terms)
+        hits = recall(
+            stripped, stats=rec, deadline=t0 + TASK_BUDGET_SECONDS, query=query
+        )
+        if not hits:
+            return done("task:nomatch")
+        candidates = [p for p in hits if p not in shown]
+        if not candidates:
+            return done("task:deduped", hits=len(hits))
+
+        eligible = []
+        floored = []
+        for path in candidates:
+            matched, total, mtype = _relevance(terms, path)
+            if _passes_floor(
+                matched,
+                total,
+                mtype,
+                min_terms=TASK_MIN_MATCHED_TERMS,
+                min_ratio=TASK_ALL_COMMON_MIN_RATIO,
+                feedback_min_terms=TASK_FEEDBACK_MIN_TERMS,
+                feedback_min_ratio=TASK_FEEDBACK_MIN_RATIO,
+            ):
+                eligible.append((path, matched, total))
+            else:
+                floored.append(path)
+        if not eligible:
+            return done("task:floored", hits=len(hits), **_floored_stat(floored))
+
+        picks = eligible[:MAX_HITS]
+        block = _task_framed([_task_pointer_line(*e) for e in picks])
+        text = _task_payload(tool_input, block)
+        if text is None:
+            # The shape was wrong, which is a defect in this file rather than a
+            # fact about the brief. Named apart from the size refusal below so
+            # the log can say which — one of them is a bug report.
+            return done("task:unsafe", picks=len(picks))
+        if _nbytes(text) > PIPE_BUFFER_BOUND:
+            # The brief is echoed back inside the emission, so this is the one
+            # surface that can reach the bound the SIGTERM mask rests on. It
+            # refuses whole rather than shedding pointers: what would have to
+            # go to make room is the brief, and that may not be touched.
+            return done("task:oversize", bytes=_nbytes(text), picks=len(picks))
+
+        fresh = [p for p, _, _ in picks]
+        delivered = True
+        with _sigterm_masked():
+            try:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+            except (BrokenPipeError, OSError):
+                delivered = False
+            if delivered:
+                tmp_path = f"{state_path}.{os.getpid()}.tmp"
+                try:
+                    with open(tmp_path, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {"shown": sorted(shown | set(fresh)), "spent": {}}, f
+                        )
+                    os.replace(tmp_path, state_path)
+                except OSError:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp_path)
+            done(
+                "task:injected" if delivered else "task:output-lost",
+                injected=[os.path.basename(p) for p in fresh],
+                overlap=[len(m) for _, m, _ in picks],
+                scores=_scores(fresh),
+                **_floored_stat(floored),
+            )
+    except Exception as exc:
+        if not logged:
+            with contextlib.suppress(Exception):
+                done("task:error", err=type(exc).__name__)
+        raise
 
 
 def main() -> None:
@@ -3707,6 +3873,14 @@ def main() -> None:
         return
 
     payload = json.load(sys.stdin)
+
+    # The one branch. Everything the task path needs differs from here down —
+    # the gate, the query builder, the floor bars, the ledger, the budget and
+    # the output shape — so it forks at the payload rather than threading a
+    # mode through the prompt path.
+    if payload.get("hook_event_name") == TASK_EVENT:
+        return _task_main(payload, t0)
+
     prompt = payload.get("prompt", "") or ""
 
     stripped = prompt.strip()
