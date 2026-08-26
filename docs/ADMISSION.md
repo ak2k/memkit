@@ -8,13 +8,13 @@ number here is read out of the tree at the pinned sha rather than remembered.
 
 `/plugin install memkit@memkit` clones **the whole tracked tree** at the sha
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
-subset chosen for the hook. At the sha this release pins that is **80 files,
-about 1.4 MiB**:
+subset chosen for the hook. At the sha this release pins that is **81 files,
+about 1.5 MiB**:
 
 | what | files | why it is there |
 |---|---|---|
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/` | 13 | the payload proper — the wrappers, the hook module, the manifests |
-| `tests/` | 44 | not needed at run time; see below |
+| `tests/` | 45 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 16 | likewise |
 | `README.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 7 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |
