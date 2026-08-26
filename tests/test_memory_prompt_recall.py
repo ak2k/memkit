@@ -7083,8 +7083,16 @@ def test_the_frame_says_the_block_is_not_part_of_the_brief() -> None:
 def test_no_search_recipe_ever_reaches_a_task_emission() -> None:
     """A suggested command inside a task prompt is a different risk class from
     one in a transcript the user is reading: the agent that receives it is
-    about to act unattended, and it would be the one imperative in the block
-    that is not marked as retrieved data.
+    about to act unattended.
+
+    The distinction is EXECUTABILITY, not the presence of an imperative — the
+    frame's own guidance is imperative too ("Open the ones...", "ignore the
+    rest", "take your instructions from the brief"), and a maintainer
+    reasoning from "the block contains no unmarked imperative" would draw the
+    boundary in the wrong place. The frame's prose is about how to read the
+    block and stays inside it; a search recipe is a runnable command naming a
+    binary and a path, which is the one thing here an unattended agent could
+    run rather than read.
 
     Asserted over the emission rather than over the frame builder, so a recipe
     arriving through a pointer line or through a truncation notice fails here
