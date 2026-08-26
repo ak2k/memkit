@@ -3547,3 +3547,40 @@ def test_the_plugin_marker_is_absent_without_the_wrapper(tmp_path) -> None:
     )
     assert out.returncode == hook.EXIT_INERT
     assert "MEMKIT_PLUGIN" not in out.stdout
+
+
+def test_every_outcome_the_readme_publishes_has_a_reason_doctor_can_render(
+) -> None:
+    """The two halves of the *Why nothing appeared* triage, pinned together.
+
+    The prose table is the best-tested writing in the project and two
+    walkthroughs verified every row; doctor's `gate-outcomes` renders the same
+    names as counts, with the same reasons, out of the adopter's own log. A
+    name that arrived in one and not the other is a histogram row nobody can
+    read, or a documented outcome the mechanized table silently omits — and the
+    vocabulary grows without a version bump, so the drift is the normal case
+    rather than the exceptional one.
+
+    `dup-registration` is in both, and the two `trust:` outcomes are in
+    neither: they are the marker's vocabulary, not the log's.
+    """
+    from memkit.cli_doctor import OUTCOME_REASONS
+
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("**The outcome vocabulary.**")
+    table = readme[start : readme.index("\n## ", start)]
+    published = {
+        name
+        for row in re.findall(r"^\| (.+?) \|", table, re.M)
+        for name in re.findall(r"`([a-z][a-z:-]*)`", row)
+        if not name.startswith("trust:")
+    }
+    assert "injected" in published and "gate:short" in published, sorted(published)
+    # EQUALITY, in both directions. A name in the prose and not in the
+    # histogram is a documented outcome doctor silently omits; a name in the
+    # histogram and not in the prose is a row an adopter meets with no
+    # explanation anywhere.
+    assert published == set(OUTCOME_REASONS), (
+        sorted(published - set(OUTCOME_REASONS)),
+        sorted(set(OUTCOME_REASONS) - published),
+    )

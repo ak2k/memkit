@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -901,3 +903,258 @@ def test_the_canary_query_is_more_than_one_word(profile) -> None:
     query = doctor.canary_query(NONCE)
     assert hook.build_query(query) is not None
     assert NONCE in query
+
+
+# --- hook-path, and the two log readers --------------------------------------
+
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+
+
+def _installed(profile, monkeypatch, *, config: str, root=None) -> None:
+    """Stand the real plugin wrapper up as this machine's registration.
+
+    The REPO tree rather than a stub: what `hook-path` claims is that the
+    installed path serves pointers, and a stub would prove that a subprocess
+    can print.
+    """
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(root or REPO) + "/")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MEMKITCONFIG", config)
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+
+
+def test_the_hook_path_runs_the_installed_wrapper_and_a_pointer_comes_out(
+    profile, monkeypatch
+) -> None:
+    """Doctor may never report green without exercising this once.
+
+    A fixed-query retrieval proves the store. It proves nothing about the
+    wrapper that finds the config, the interpreter it resolves, or the
+    registration that reaches either — and that span is where both
+    walkthroughs' installs were broken with every other light green.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _installed(profile, monkeypatch, config=path)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
+                   "hook-path")
+    assert row.status == doctor.PASS, row.detail
+    assert doctor.CANARY_NAME in row.detail
+
+
+def test_a_broken_installed_hook_fails_while_the_store_still_answers(
+    profile, monkeypatch
+) -> None:
+    """The exact shape of the failure this check exists for: the corpus is
+    fine, the config is fine, and the path between them is not."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    # A payload whose hook module is missing: the wrapper refuses by name and
+    # exits 0, which on the hook path is indistinguishable from silence.
+    broken = profile / "broken-payload"
+    (broken / "bin" / "lib").mkdir(parents=True)
+    shutil.copy(REPO / "bin" / "memkit-hook", broken / "bin" / "memkit-hook")
+    shutil.copy(REPO / "bin" / "lib" / "common.sh", broken / "bin" / "lib")
+    (broken / "bin" / "memkit-hook").chmod(0o755)
+    _installed(profile, monkeypatch, config=path, root=broken)
+
+    machine = _machine(profile, monkeypatch, path)
+    (broken_row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert broken_row.status == doctor.FAIL
+    assert "payload is incomplete" in broken_row.detail
+    # And the store is fine, which is the pair that localises the break.
+    (canary,) = _only(doctor._PRODUCERS["canary-retrieval"](machine), "canary-retrieval")
+    assert canary.status == doctor.PASS
+
+
+def test_nothing_registered_is_unknown_and_names_that(profile, monkeypatch) -> None:
+    """r1c P1-5: the plain-python channel never registers the hook. That is a
+    real state and it is not a broken store."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
+                   "hook-path")
+    assert row.status == doctor.UNKNOWN
+    assert "nothing registers" in row.detail
+
+
+def test_a_registration_that_is_a_shell_fragment_is_reported_not_run(
+    profile, monkeypatch
+) -> None:
+    """The harness hands the command to a shell. A diagnostic that evaluated a
+    shell fragment out of a settings file would be executing whatever that file
+    says, on a machine whose configuration is already in doubt."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _settings(
+        profile,
+        hooks={
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command",
+                            "command": "MEMKIT_CONFIG=x /opt/memkit/bin/memkit-hook"}]}
+            ]
+        },
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how = doctor._installed_hook(machine)
+    assert command == []
+    assert "not an executable file" in how
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status == doctor.UNKNOWN
+
+
+def test_the_probe_marks_its_own_soak_record_and_leaves_no_session_behind(
+    profile, monkeypatch
+) -> None:
+    """The one write doctor makes, disclosed twice over: the record carries
+    `doctor: true` so the analyzers can exclude it, and the session ledger the
+    run wrote is removed — the hook offers each memory once per session, so a
+    ledger left behind would make the NEXT doctor run report no pointer."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _installed(profile, monkeypatch, config=path)
+    doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path))
+
+    state = profile / "home" / ".cache" / "memory-recall"
+    records = [
+        json.loads(line)
+        for line in (state / hook.SOAK_LOG_NAME).read_text().splitlines()
+    ]
+    assert records and records[-1].get("doctor") is True, records[-1]
+    assert records[-1]["outcome"] == "injected", records[-1]
+    assert not list(state.glob("memkit-doctor-*")), sorted(
+        p.name for p in state.iterdir()
+    )
+    # And the same run is excluded from the population the histogram counts.
+    assert doctor._prompt_records(records) == []
+
+
+def test_a_second_doctor_run_still_sees_the_pointer(profile, monkeypatch) -> None:
+    """A fixed session id would make this the false FAIL that matches the false
+    green: the hook offers each memory once per session."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _installed(profile, monkeypatch, config=path)
+    machine = _machine(profile, monkeypatch, path)
+    for _ in range(2):
+        (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+        assert row.status == doctor.PASS, row.detail
+
+
+def _soak(profile, *records) -> None:
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    with open(state / hook.SOAK_LOG_NAME, "a", encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record) + "\n")
+
+
+def test_hook_ever_fired_separates_never_ran_from_never_injected_here(
+    profile, monkeypatch
+) -> None:
+    """Three answers, because they want different next moves: no log is an
+    install nobody configured, records from elsewhere are a hook that works and
+    a project it has never served, and an injection here is the thing
+    working."""
+    path = _store_config(profile, stores=["personal"])
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert row.status == doctor.UNKNOWN
+    assert "never run" in row.detail
+
+    _soak(profile, {"ts": 1787000000, "outcome": "injected", "cwd": "elsewhere00"})
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert row.status == doctor.INFO
+    assert "never in this directory" in row.detail
+
+    here = hook._cwd_digest()
+    _soak(profile, {"ts": 1787000001, "outcome": "nomatch", "cwd": here})
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert row.status == doctor.INFO
+    assert "none injected" in row.detail
+
+    _soak(profile, {"ts": 1787000002, "outcome": "injected", "cwd": here})
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert row.status == doctor.PASS
+    assert "last injected in this directory" in row.detail
+
+
+def test_gate_outcomes_renders_the_triage_table_with_its_own_reasons(
+    profile, monkeypatch
+) -> None:
+    """The mechanized *Why nothing appeared*: three-state answers everywhere.
+    "Nothing passed the floor" is not "there was nothing to search" is not
+    "retrieval raised", and a bare count of silences says none of that."""
+    path = _store_config(profile, stores=["personal"])
+    here = hook._cwd_digest()
+    _soak(
+        profile,
+        {"ts": 1, "outcome": "gate:short", "cwd": here, "ms": 4},
+        {"ts": 2, "outcome": "gate:short", "cwd": here, "ms": 6},
+        {"ts": 3, "outcome": "floored", "cwd": here, "ms": 20},
+        {"ts": 4, "outcome": "injected", "cwd": here, "ms": 30},
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["gate-outcomes"](_machine(profile, monkeypatch, path)),
+        "gate-outcomes",
+    )
+    assert row.status == doctor.INFO
+    assert "gate:short 2" in row.detail
+    assert doctor.OUTCOME_REASONS["gate:short"] in row.detail
+    assert doctor.OUTCOME_REASONS["floored"] in row.detail
+    # The latency figure the field survey asked for, on the adopter's own
+    # corpus rather than the author's.
+    assert "median" in row.detail
+
+
+def test_an_outcome_this_build_does_not_know_is_reported_not_dropped(
+    profile, monkeypatch
+) -> None:
+    """The vocabulary grows without a version bump, and a reader that silently
+    discarded a name it did not recognise would compute a rate over a
+    denominator nobody checked."""
+    path = _store_config(profile, stores=["personal"])
+    _soak(profile, {"ts": 1, "outcome": "gate:teleported", "cwd": hook._cwd_digest()})
+    (row,) = _only(
+        doctor._PRODUCERS["gate-outcomes"](_machine(profile, monkeypatch, path)),
+        "gate-outcomes",
+    )
+    assert "gate:teleported 1" in row.detail
+    assert "does not know" in row.detail
+
+
+def test_the_histogram_excludes_the_records_that_are_not_prompt_outcomes(
+    profile, monkeypatch
+) -> None:
+    """`concludes: false` is the log's own published discriminator, and
+    doctor's own probe carries `doctor: true`. Counting either would make a
+    report about how often prompts inject a report about how often doctor
+    ran."""
+    path = _store_config(profile, stores=["personal"])
+    here = hook._cwd_digest()
+    _soak(
+        profile,
+        {"ts": 1, "outcome": "injected", "cwd": here},
+        {"ts": 2, "outcome": "dup-registration", "cwd": here, "concludes": False},
+        {"ts": 3, "outcome": "injected", "cwd": here, "doctor": True},
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["gate-outcomes"](_machine(profile, monkeypatch, path)),
+        "gate-outcomes",
+    )
+    assert "last 1 prompts" in row.detail
+    assert "dup-registration" not in row.detail
+
+
+def test_a_torn_final_log_line_is_skipped_rather_than_taken_as_an_empty_log(
+    profile, monkeypatch
+) -> None:
+    path = _store_config(profile, stores=["personal"])
+    _soak(profile, {"ts": 1, "outcome": "injected", "cwd": hook._cwd_digest()})
+    state = profile / "home" / ".cache" / "memory-recall"
+    with open(state / hook.SOAK_LOG_NAME, "a", encoding="utf-8") as f:
+        f.write('{"ts": 2, "outcome": "inj')
+    (row,) = _only(
+        doctor._PRODUCERS["gate-outcomes"](_machine(profile, monkeypatch, path)),
+        "gate-outcomes",
+    )
+    assert "last 1 prompts" in row.detail

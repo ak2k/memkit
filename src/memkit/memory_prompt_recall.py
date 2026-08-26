@@ -2462,6 +2462,11 @@ def _session_state_path(session_id: str) -> str:
 # gate. Setting the marker without that property is a trust bypass, which is
 # what a reviewer read into this section once already.
 PLUGIN_ENV = "MEMKIT_PLUGIN"
+# Set by `memkit doctor` around the one run it makes of the installed hook, and
+# by nothing else. It only ever ADDS a field to the soak record; nothing about
+# what the hook does may branch on it, or doctor would be exercising a path no
+# prompt takes.
+DOCTOR_ENV = "MEMKIT_DOCTOR"
 # Plugin-scoped storage, which `claude plugin uninstall` removes unless
 # `--keep-data`. That is exactly the right lifetime for a record of refusals
 # and precisely the wrong one for anything a later `--undo` would need, which
@@ -3372,6 +3377,20 @@ def main() -> None:
         "prompt_sha": hashlib.sha256(stripped.encode()).hexdigest()[:12],
         "words": len(stripped.split()),
         "session": _log_session(payload.get("session_id", "")),
+        # Which directory this prompt was typed in, as a hash. "Has the hook
+        # ever injected anything HERE" is the question an adopter asks first
+        # and the log could not answer: a machine-wide record of injections
+        # says nothing about the project whose store is the one in doubt.
+        # A digest rather than the path, for the reason the marker uses one —
+        # a diagnostic is not worth a list of the directories somebody works
+        # in — and admissible under the log's own rule, which admits hashes.
+        "cwd": _cwd_digest(),
+        # Set by `memkit doctor` and by nothing else. Doctor executes the
+        # installed hook once, because a fixed-query retrieval proves the store
+        # and not the path that serves pointers, and the record that run
+        # appends is not a prompt anybody typed. Analyzers exclude it the same
+        # way they exclude the CLI's records.
+        **({"doctor": True} if os.environ.get(DOCTOR_ENV) else {}),
     }
 
     logged = False

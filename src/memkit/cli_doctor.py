@@ -34,8 +34,11 @@ settings write.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import secrets
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -48,18 +51,23 @@ from memkit.memory_prompt_recall import (
     BUILD_UNREADABLE,
     CONFIG_ENV,
     CONFIG_ROUTES,
+    DOCTOR_ENV,
     EXCLUDE_BASENAMES,
+    FRAME_TAG,
     GENERATED_CONFIG_NAME,
     INIT_JOURNAL_NAME,
     PLUGIN_CONFIG_ROUTES,
     PLUGIN_DATA_ENV,
     PLUGIN_ENV,
     SCHEMA,
+    SOAK_LOG_NAME,
     ConfigError,
     _corpus_files,
+    _cwd_digest,
     _display_path,
     _fts_db,
     _search_root,
+    _session_state_path,
     _state_dir_candidate,
     _store_live_dir,
     load_config,
@@ -194,6 +202,9 @@ CHECK_IDS: tuple[str, ...] = (
     "corpus-root",
     "index-state",
     "canary-retrieval",
+    "hook-path",
+    "hook-ever-fired",
+    "gate-outcomes",
 )
 
 # id -> the function that answers it, given the machine. A producer returns a
@@ -1101,6 +1112,390 @@ def _canary_retrieval(machine: Machine) -> list[Check]:
             UNKNOWN,
             "no store offers a corpus in this directory, so nothing was "
             "queried",
+        )
+    ]
+
+
+# --- the path that actually serves pointers ----------------------------------
+
+
+# How long doctor waits for the installed hook. The registration's own timeout
+# is 15 seconds and a first run on a cold index spends most of it building, so
+# a bound at the registration's number would report a healthy install as a
+# hang. Longer, and the elapsed time is reported either way — a latency figure
+# on the adopter's own corpus is one of the things the field survey asked for
+# and the author's number cannot supply.
+HOOK_PROBE_TIMEOUT = 25
+
+# The wrapper a plugin install puts the registration on. Read from
+# `CLAUDE_PLUGIN_ROOT` rather than from `hooks.json`, because that variable is
+# what the harness itself expands the registration against — and because the
+# root arrives with a TRAILING SLASH (measured on 2.1.238 and still true on
+# 2.1.241), which `os.path.join` absorbs and naive string arithmetic does not.
+HOOK_WRAPPER = "bin/memkit-hook"
+
+
+def _installed_hook(machine: Machine) -> tuple:
+    """The command the harness would run on a prompt, and how it was found.
+
+    THE POINT OF THE CHECK IS THAT IT IS THE INSTALLED ONE. Running the module
+    in this process would prove that retrieval works and nothing about the
+    wrapper, the interpreter it resolves, or the registration that reaches it —
+    which is the whole span between a store that answers and a session that
+    stays quiet.
+
+    A registered command that is not a bare executable path is reported rather
+    than run: the harness hands it to a shell, and a diagnostic that evaluated
+    a shell fragment out of a settings file would be executing whatever that
+    file says on a machine whose configuration is already in doubt.
+    """
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if root:
+        path = os.path.join(root, HOOK_WRAPPER)
+        if os.path.isfile(path):
+            return [path], f"the plugin's own wrapper at {_display_path(path)}"
+        return [], f"{_display_path(path)} is not there"
+    for scope in machine.settings:
+        events = scope.data.get("hooks")
+        if not isinstance(events, dict):
+            continue
+        for entry in events.get("UserPromptSubmit") or []:
+            for spec in (entry or {}).get("hooks") or []:
+                command = (spec or {}).get("command")
+                if not isinstance(command, str) or "memkit" not in command:
+                    continue
+                if os.path.isfile(command) and os.access(command, os.X_OK):
+                    return [command], f"the {scope.scope}-settings registration"
+                return (
+                    [],
+                    f"the {scope.scope}-settings registration runs "
+                    f'"{command}", which is not an executable file this can '
+                    "run on its own",
+                )
+    return [], "nothing registers a UserPromptSubmit hook for memkit"
+
+
+def _probe_hook(command: list, prompt: str) -> tuple:
+    """One real run of the installed hook. Returns (stdout, stderr, code, ms).
+
+    Against the REAL state directory and the REAL config, which is the whole
+    value of it: a scratch cache would keep doctor's footprint at zero and
+    would also force a cold index build on every run and report green over an
+    index the adopter never uses. What that costs is one soak record and
+    possibly one sweep, and the `state-dir` check says so.
+
+    The session id is fresh per run and the state it leaves is removed after,
+    because the hook offers each memory once per session: a fixed id would make
+    the SECOND doctor run report no pointer, which is a false FAIL on a healthy
+    install.
+    """
+    session = "memkit-doctor-" + secrets.token_hex(6)
+    payload = json.dumps(
+        {
+            "session_id": session,
+            "prompt": prompt,
+            "cwd": os.getcwd(),
+            "hook_event_name": "UserPromptSubmit",
+        }
+    )
+    started = time.monotonic()
+    try:
+        out = subprocess.run(
+            command,
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=HOOK_PROBE_TIMEOUT,
+            env=dict(os.environ, **{DOCTOR_ENV: "1"}),
+        )
+    except subprocess.TimeoutExpired:
+        return "", "", None, int((time.monotonic() - started) * 1000)
+    except OSError as exc:
+        return "", str(exc), None, int((time.monotonic() - started) * 1000)
+    finally:
+        _forget_probe_session(session)
+    return out.stdout, out.stderr, out.returncode, int(
+        (time.monotonic() - started) * 1000
+    )
+
+
+def _forget_probe_session(session: str) -> None:
+    """Remove the session ledger the probe's own run wrote.
+
+    Best-effort, and not a substitute for the sweep: what this prevents is one
+    file per doctor invocation accumulating in a directory whose growth is
+    itself one of the things doctor reports on.
+    """
+    state = _session_state_path(session)
+    with contextlib.suppress(OSError):
+        os.unlink(state)
+    stem = state[: -len(".json")] if state.endswith(".json") else state
+    parent = os.path.dirname(stem) or "."
+    base = os.path.basename(stem) + ".dup-"
+    with contextlib.suppress(OSError):
+        for name in os.listdir(parent):
+            if name.startswith(base):
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.join(parent, name))
+
+
+@_produces("hook-path")
+def _hook_path(machine: Machine) -> list[Check]:
+    """Run the installed hook once, and say whether a pointer came out.
+
+    DOCTOR MAY NEVER REPORT GREEN WITHOUT THIS. A fixed-query retrieval proves
+    the store; it proves nothing about the wrapper that finds the config, the
+    interpreter that runs the module, or the registration that reaches either —
+    and that span is exactly where both walkthroughs' installs were broken
+    while every other light was green.
+    """
+    command, how = _installed_hook(machine)
+    if not command:
+        return [
+            Check(
+                "hook-path",
+                UNKNOWN,
+                f"no hook was run: {how}",
+                "Nothing serves pointers on this machine until a hook is "
+                "registered. On the plugin channel that is `claude plugin "
+                "install`; on nix it is the home-manager module.",
+                actor=USER,
+            )
+        ]
+    cfg = machine.config()
+    nonce = cfg.canary_nonce if cfg is not None else ""
+    if not nonce:
+        stdout, stderr, code, ms = _probe_hook(command, "memkit doctor probe prompt")
+        if code is None:
+            return [
+                Check(
+                    "hook-path",
+                    FAIL,
+                    f"{how} did not finish inside {HOOK_PROBE_TIMEOUT}s "
+                    f"({stderr[:120]})",
+                    "On every prompt this is a turn delayed to the "
+                    "registration's timeout and then abandoned.",
+                )
+            ]
+        return [
+            Check(
+                "hook-path",
+                INFO,
+                f"{how} ran in {ms}ms and exited {code}. Without a canary "
+                "nonce there is no query whose answer would prove delivery, "
+                "so this says the path runs and not that it serves",
+            )
+        ]
+
+    stdout, stderr, code, ms = _probe_hook(command, canary_query(nonce))
+    if code is None:
+        return [
+            Check(
+                "hook-path",
+                FAIL,
+                f"{how} did not finish inside {HOOK_PROBE_TIMEOUT}s. {stderr[:120]}",
+                "The registration gives up at its own timeout and your prompt "
+                "goes through without pointers. A first run on a large store "
+                "builds the index; if this repeats, the store is too large or "
+                "the index cannot be written.",
+                actor=USER,
+            )
+        ]
+    if CANARY_NAME in stdout and FRAME_TAG in stdout:
+        return [
+            Check(
+                "hook-path",
+                PASS,
+                f"{how} emitted a framed pointer to {CANARY_NAME} in {ms}ms",
+            )
+        ]
+    return [
+        Check(
+            "hook-path",
+            FAIL,
+            f"{how} exited {code} in {ms}ms and emitted no pointer to "
+            f"{CANARY_NAME}. stderr: {stderr[:200] or '(empty)'}",
+            "The store answers and the installed path does not, so the break "
+            "is between them: the wrapper's config resolution, the "
+            "interpreter it picked, or the registration itself. The "
+            "config-route and interpreter checks in this report say which.",
+        )
+    ]
+
+
+# Every outcome the hook can write, and the one line that says what it means.
+# Mechanizes the README's own triage table so an adopter reading a histogram
+# does not have to go and look each name up — and a test pins the two together,
+# because the vocabulary grows without a version bump and a name that arrived
+# here without arriving there is a record nobody can read.
+OUTCOME_REASONS = {
+    "injected": "pointers were written into the prompt",
+    "gate:envelope": "the prompt began with an editor or tool envelope",
+    "gate:empty": "the prompt was empty after stripping",
+    "gate:slash": "the prompt began with `/` — a slash command, not a question",
+    "gate:short": "the prompt was under three words",
+    "gate:long": "the prompt was over 4000 characters — a paste, not a question",
+    "gate:stopwords": "the prompt was all common words",
+    "gate:nodirs": "nothing to search: no config, or no store on disk and in "
+    "scope here",
+    "nomatch": "the stores were searched and nothing came back",
+    "deduped": "every match had already been offered this session",
+    "floored": "matches existed and none cleared the relevance bar",
+    "gate:budget:weak": "the session's pointer budget is spent and nothing "
+    "beat the weakest",
+    "gate:budget": "the session budget is spent, on a ledger this build cannot "
+    "reason about",
+    "error": "retrieval raised; the turn was unaffected",
+    "killed": "the hook ran out of time and gave up rather than delaying the "
+    "prompt",
+    "output-lost": "pointers were built and the write did not land",
+    "dup-registration": "two installs on one machine registered the same hook",
+}
+
+# How much of the log a histogram is built over. The file grows one line per
+# invocation and is deliberately unswept, so a check that read all of it would
+# be the slowest thing in the report on the machine that has been running it
+# longest.
+GATE_WINDOW = 400
+
+
+def _soak_tail(state_dir: str, limit: int) -> list:
+    """The last `limit` parseable records. A torn final line is a crash mid-
+    append, not a corrupt log, and is skipped."""
+    path = os.path.join(state_dir, SOAK_LOG_NAME)
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()[-limit:]
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        with contextlib.suppress(ValueError):
+            record = json.loads(line)
+            if isinstance(record, dict):
+                out.append(record)
+    return out
+
+
+def _prompt_records(records: list) -> list:
+    """The per-prompt population, per the log's own published rule.
+
+    `concludes: false` marks a record that is about the machine rather than
+    about a prompt, and doctor's own probe carries `doctor: true`. Both are
+    excluded here, or a report about how often prompts inject would be counting
+    the runs doctor itself made.
+    """
+    return [
+        r
+        for r in records
+        if r.get("concludes") is not False and not r.get("doctor")
+    ]
+
+
+def _when(record: dict) -> str:
+    """A record's timestamp as a person reads it. `ts` is seconds since the
+    epoch and a report that printed the integer would be one more thing to go
+    and convert."""
+    stamp = record.get("ts")
+    if not isinstance(stamp, int):
+        return "an unrecorded time"
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+
+
+@_produces("hook-ever-fired")
+def _hook_ever_fired(machine: Machine) -> list[Check]:
+    """Has this hook ever run, and has it ever injected HERE?
+
+    The adopter's first question, and until now the only witness was a file
+    documented for downstream analyzers — walk friction 4, where the adopter
+    found their first successful injection by guessing at `log.jsonl`.
+
+    Three answers rather than two, because they want different next moves: no
+    log at all is an install that has never been configured, a log with no
+    injection here is a store the gate or the corpus is keeping out of this
+    project, and an injection here is the thing working.
+    """
+    records = _prompt_records(_soak_tail(machine.state_dir, GATE_WINDOW))
+    if not records:
+        return [
+            Check(
+                "hook-ever-fired",
+                UNKNOWN,
+                f"no {SOAK_LOG_NAME} in {_display_path(machine.state_dir)}: "
+                "this hook has never run. An install that was never configured "
+                "writes none, deliberately",
+            )
+        ]
+    here = _cwd_digest()
+    mine = [r for r in records if r.get("cwd") == here]
+    injected_here = [r for r in mine if r.get("outcome") == "injected"]
+    last = records[-1]
+    when = _when(last)
+    if injected_here:
+        latest = _when(injected_here[-1])
+        return [
+            Check(
+                "hook-ever-fired",
+                PASS,
+                f"last injected in this directory at {latest}; {len(mine)} of "
+                f"the last {len(records)} records are from here",
+            )
+        ]
+    if mine:
+        return [
+            Check(
+                "hook-ever-fired",
+                INFO,
+                f"{len(mine)} of the last {len(records)} records are from this "
+                f"directory and none injected; the last was "
+                f"{mine[-1].get('outcome')!r}. See gate-outcomes",
+            )
+        ]
+    return [
+        Check(
+            "hook-ever-fired",
+            INFO,
+            f"the hook has run ({len(records)} records, last {last.get('outcome')!r} "
+            f"at {when}) and never in this directory",
+        )
+    ]
+
+
+@_produces("gate-outcomes")
+def _gate_outcomes(machine: Machine) -> list[Check]:
+    """The mechanized *Why nothing appeared* table: what actually happened, in
+    counts, each rendered with the table's own reason.
+
+    Always INFO. Every one of these is a state the hook is designed to reach,
+    and a histogram is evidence rather than a verdict — "nothing passed the
+    floor", "there was nothing to search" and "retrieval raised" are three
+    different answers and none of them is broken by itself.
+    """
+    records = _prompt_records(_soak_tail(machine.state_dir, GATE_WINDOW))
+    if not records:
+        return [
+            Check("gate-outcomes", INFO, "no records yet, so nothing to count")
+        ]
+    counts: dict = {}
+    for record in records:
+        outcome = record.get("outcome")
+        if isinstance(outcome, str):
+            counts[outcome] = counts.get(outcome, 0) + 1
+    parts = []
+    for outcome, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        # An outcome this build does not know is REPORTED rather than dropped:
+        # the vocabulary grows without a version bump, and a reader that
+        # silently discarded a name it did not recognise would compute a rate
+        # over a denominator nobody checked.
+        reason = OUTCOME_REASONS.get(outcome, "an outcome this build does not know")
+        parts.append(f"{outcome} {count} ({reason})")
+    took = sorted(r["ms"] for r in records if isinstance(r.get("ms"), int))
+    median = f"; median {took[len(took) // 2]}ms" if took else ""
+    return [
+        Check(
+            "gate-outcomes",
+            INFO,
+            f"last {len(records)} prompts: " + ", ".join(parts) + median,
         )
     ]
 

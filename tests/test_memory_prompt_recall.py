@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import hashlib
 import io
 import json
 import os
@@ -3056,6 +3057,50 @@ def test_soak_log_written_for_gated_prompt(tmp_path) -> None:
     assert "ms" in rec and "prompt_sha" in rec
     # never the prompt text itself
     assert "hi" not in log.read_text().replace('"hi"', "")
+
+
+def test_every_record_says_which_directory_the_prompt_was_typed_in(tmp_path):
+    """"Has the hook ever injected anything HERE" is the adopter's first
+    question, and a machine-wide record of injections cannot answer it: the
+    store whose behaviour is in doubt belongs to one project.
+
+    A digest rather than the path, for the same reason the trust marker uses
+    one — a diagnostic is not worth a list of the directories somebody works in
+    — and admissible under the log's own published rule, which admits hashes.
+    """
+    env = _env(tmp_path)
+    where = tmp_path / "somewhere"
+    where.mkdir()
+    subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "cwdrec", "prompt": "hi"}),
+        capture_output=True, text=True, timeout=30, env=env, cwd=str(where),
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    rec = json.loads(log.read_text().splitlines()[-1])
+    expected = hashlib.sha256(str(where.resolve()).encode()).hexdigest()[:12]
+    assert rec["cwd"] == expected, rec
+    # A hash, not the path: the directory name must not be reconstructable
+    # from the log.
+    assert "somewhere" not in log.read_text()
+
+
+def test_only_doctors_own_run_is_marked_as_doctors(tmp_path) -> None:
+    """The field exists so the soak analyzers can exclude the one run doctor
+    makes of the installed hook. Nothing about what the hook DOES may branch on
+    it, or doctor would be exercising a path no prompt takes."""
+    env = _env(tmp_path)
+    for extra, expected in (({}, None), ({hook.DOCTOR_ENV: "1"}, True)):
+        subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps({"session_id": "docrec", "prompt": "hi"}),
+            capture_output=True, text=True, timeout=30, env={**env, **extra},
+        )
+        log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+        rec = json.loads(log.read_text().splitlines()[-1])
+        assert rec.get("doctor") is expected, (extra, rec)
+        # And the outcome is the same either way.
+        assert rec["outcome"] == "gate:short"
 
 
 ENVELOPE_MARKERS = [
