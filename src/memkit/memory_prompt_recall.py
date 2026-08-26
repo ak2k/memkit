@@ -164,6 +164,73 @@ PLUGIN_SEARCH_CLI_UNCONFIGURED = (
 SEARCH_CLI_MAX_CHARS = 400
 
 
+# --- the one path-admission rule, and the one home expansion -----------------
+#
+# ONE PREDICATE, because the failure it prevents is two of them. `bin/memkit`
+# vets every config path and every recorded interpreter with
+# `memkit_path_refusal` in POSIX sh before the hook ever starts; init decides
+# where to WRITE a config. When those two rules disagree, init writes a config
+# the wrapper then refuses to read, and the adopter gets a store, a clean
+# integrity check, exit 0 and silence on every prompt — the exact state the
+# round before this one thought it had closed.
+#
+# The shell cannot import Python and the hook path may not fork a shell, so
+# the rule exists twice by necessity. What makes it ONE rule is that
+# `tests/test_plugin_surface.py` runs the real shell function and this
+# function over the same generated corpus and requires the same answer for
+# every path in it, refusal wording included — a differential test over the
+# PAIR rather than two implementations that were read side by side once.
+
+
+def path_refusal(path: str) -> str:
+    """Why this path may not be acted on, or "" when it may.
+
+    Mirrors `memkit_path_refusal` in `bin/lib/common.sh`, case for case and
+    sentence for sentence. No realpath, deliberately: resolving costs a fork on
+    every prompt, and requiring the value to be CANONICAL is the same
+    guarantee for free, because a canonical absolute path has exactly one
+    spelling and cannot reach a process-relative tree under another.
+    """
+    if not path:
+        return "is empty"
+    if (
+        "//" in path
+        or "/./" in path
+        or "/../" in path
+        or path.endswith("/.")
+        or path.endswith("/..")
+    ):
+        return (
+            "is not a canonical path, so what it names depends on who "
+            "resolves it"
+        )
+    if path.startswith("/proc/") or path.startswith("/dev/fd/"):
+        return (
+            "the kernel resolves through this process, so it names whatever "
+            "directory the session stands in"
+        )
+    if path.startswith("/"):
+        return ""
+    return "is not an absolute path"
+
+
+def expand_home(value: str) -> str:
+    """`~/x` as a person types it, expanded the way the wrappers expand it.
+
+    NOT `os.path.expanduser`, and the difference is the whole reason this
+    exists: `expanduser` also expands `~someone/x`, which the shell leaves
+    alone — so the two rules would admit different paths, and the one that
+    admits more is the one that writes the config. It reads `$HOME` for the
+    same reason the shell does, rather than the password database.
+    """
+    home = os.environ.get("HOME", "")
+    if value == "~":
+        return home
+    if value.startswith("~/"):
+        return home + "/" + value[2:]
+    return value
+
+
 def _config_routes() -> str:
     """The routes this caller's channel really does consult, as a phrase."""
     routes = PLUGIN_CONFIG_ROUTES if _plugin_install() else CONFIG_ROUTES

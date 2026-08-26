@@ -1978,6 +1978,242 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
     assert "inside this directory" in how, how
 
 
+def test_every_process_this_command_starts_goes_through_one_gate() -> None:
+    """The rule is a chokepoint, not a habit.
+
+    The previous round closed the registration route and left the PATH route
+    open beside it, because the rule lived at the call sites. Here it lives in
+    `_execute` and `_trusted_which`, and this asserts that nothing else in the
+    module starts a process or resolves a program name — so a check added
+    later cannot quietly acquire its own way out.
+    """
+    import ast
+
+    source = (REPO / "src" / "memkit" / "cli_doctor.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    allowed = {"subprocess.run": "_execute", "shutil.which": "_trusted_which"}
+    banned = (
+        "subprocess.Popen",
+        "subprocess.call",
+        "subprocess.check_output",
+        "os.system",
+        "os.popen",
+        "os.execv",
+        "os.execvp",
+        "os.spawnv",
+    )
+    owners = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                owners[id(child)] = node.name
+    offences = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = ast.unparse(node.func)
+        owner = owners.get(id(node), "<module>")
+        if name in banned or (name in allowed and owner != allowed[name]):
+            offences.append((name, owner))
+    assert not offences, offences
+
+
+def test_the_execution_gate_refuses_what_it_is_there_to_refuse(
+    profile, monkeypatch
+) -> None:
+    """Absolute, a real executable file, and not inside the session's own
+    directory — each on its own, because each was reachable without the
+    others."""
+    inside = profile / "project" / "prog"
+    inside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    inside.chmod(0o755)
+    outside = profile / "elsewhere" / "prog"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    outside.chmod(0o755)
+    assert doctor._may_execute(str(outside))
+    assert not doctor._may_execute(str(inside))
+    assert not doctor._may_execute("prog")
+    assert not doctor._may_execute(str(profile / "elsewhere"))
+    assert not doctor._may_execute("")
+    for argv in ([], ["prog"], [str(inside)]):
+        with pytest.raises(doctor._Untrusted):
+            doctor._execute(argv)
+    # A symlink out of the session directory is the case a prefix test misses.
+    disguise = profile / "elsewhere" / "disguise"
+    disguise.symlink_to(inside)
+    assert not doctor._may_execute(str(disguise))
+
+
+def test_a_repository_scoped_memkitconfig_is_reported_and_never_followed(
+    profile, monkeypatch
+) -> None:
+    """A checkout can ship `.claude/settings.json`. It may not choose which
+    config this diagnostic reads, and it may not be handed to an agent as a
+    step to take.
+
+    `pluginConfigs` in a project scope is the repository's file, and a memkit
+    config names the interpreter the wrapper execs. Reported, quoted, so the
+    adopter learns the repository tried; never returned as THE option, and
+    never with an `actor: agent` remedy naming a `--config` follow-up, which
+    is the whole of the route between a clone and an execution.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    theirs = profile / "project" / "theirs.json"
+    _config_file(theirs)
+    (profile / "project" / ".claude").mkdir(parents=True, exist_ok=True)
+    (profile / "project" / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "pluginConfigs": {
+                    doctor.PLUGIN_KEY: {"options": {doctor.OPTION_KEY: str(theirs)}}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    machine = _machine(profile, monkeypatch, path)
+    option, scope = machine.settings_option()
+    assert (option, scope) == ("", None), (option, scope)
+    rows = doctor._PRODUCERS["config-route"](machine)
+    quoted = [r for r in rows if str(theirs) in r.detail]
+    assert quoted, [r.detail for r in rows]
+    for row in rows:
+        assert not (
+            row.actor == doctor.AGENT and "--config" in (row.remedy or "")
+        ), (row.actor, row.remedy)
+    assert all(row.actor == doctor.USER for row in quoted), [r.actor for r in quoted]
+
+
+def test_doctor_never_probes_through_a_config_this_install_does_not_read(
+    profile, monkeypatch
+) -> None:
+    """The other half of the same rule: `--config` may not turn doctor into a
+    launcher.
+
+    The wrapper execs the `interpreter` its config records, so a probe run
+    under a config nobody here vouched for is that config choosing a program
+    to run as the user — and the doctor skill pre-approves the argv that does
+    it. The signal is not silently dropped: the check says it did not run and
+    what would make it able to.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    marker = profile / "PWNED-interpreter.txt"
+    hostile = profile / "project" / "evil-interpreter"
+    hostile.write_text(f"#!/bin/sh\necho pwned > {marker}\n", encoding="utf-8")
+    hostile.chmod(0o755)
+    theirs = profile / "project" / "theirs.json"
+    theirs.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "interpreter": str(hostile),
+                "roots": {"home": {"kind": "path", "path": str(profile)}},
+                "stores": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _installed(profile, monkeypatch, config=path)
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    hook._use_config(None)
+    machine = doctor.Machine(str(theirs))
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert not marker.exists(), "doctor executed an interpreter a --config named"
+    assert row.status == doctor.UNKNOWN, (row.status, row.detail)
+    assert row.remedy, row.detail
+    assert not machine.hook_probed
+
+
+def test_the_probe_still_runs_for_a_config_this_install_does_read(
+    profile, monkeypatch
+) -> None:
+    """The narrowing may not cost the check its subject: `--config` naming the
+    config this install already resolves is the ordinary way a person
+    diagnoses their own machine, and it still exercises the wrapper."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _installed(profile, monkeypatch, config=path)
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    hook._use_config(None)
+    (row,) = _only(
+        doctor._PRODUCERS["hook-path"](doctor.Machine(path)), "hook-path"
+    )
+    assert row.status == doctor.PASS, row.detail
+
+
+def test_no_probe_resolves_its_program_through_the_session_path(
+    profile, monkeypatch
+) -> None:
+    """`shutil.which` is a repository-steerable lookup.
+
+    A checkout that puts `node_modules/.bin` (or a direnv-exported venv) in
+    front of the system tools chooses the `claude`, the `git` and the `python3`
+    this command runs, and the doctor skill pre-approves the argv that runs
+    them.
+
+    The shim here is a SYMLINK out of the session directory, which is the case
+    the executable's own path cannot answer: what it resolves to is nowhere
+    near the checkout, so only dropping the PATH entry stands between the
+    repository and the run.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    marker = profile / "PWNED-claude.txt"
+    hostile = profile / "elsewhere" / "prog"
+    hostile.parent.mkdir(parents=True, exist_ok=True)
+    hostile.write_text(
+        f"#!/bin/sh\necho pwned > {marker}\necho '2.1.241 (Claude Code)'\n",
+        encoding="utf-8",
+    )
+    hostile.chmod(0o755)
+    shim = profile / "project" / "node_modules" / ".bin"
+    shim.mkdir(parents=True)
+    for name in ("claude", "git", "python3", "python3.12", "uvx"):
+        (shim / name).symlink_to(hostile)
+    monkeypatch.setenv("PATH", f"{shim}:{os.environ['PATH']}")
+    machine = _machine(profile, monkeypatch, path)
+    for check_id in ("harness-stamp", "build", "interpreter"):
+        doctor._PRODUCERS[check_id](machine)
+    assert not marker.exists(), marker.read_text()
+    assert doctor._trusted_which("claude") != str(shim / "claude")
+
+
+def test_the_trusted_path_drops_every_entry_a_checkout_can_write(
+    profile, monkeypatch
+) -> None:
+    """The entry list is the rule; `_may_execute` is the second line.
+
+    An EMPTY entry is the current directory, spelled the way every shell reads
+    it; a relative one resolves against the directory this process stands in
+    wherever it points; and the payload is a clone of a pinned commit, which
+    may ship memkit's wrappers and not the harness binary memkit asks
+    questions of.
+    """
+    (profile / "elsewhere").mkdir(exist_ok=True)
+    payload = profile / "payload"
+    (payload / "bin").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload) + "/")
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join(
+            [
+                "",
+                "node_modules/.bin",
+                # Relative and pointing AWAY from the session directory, which
+                # is the case the cwd rule below cannot see: it still resolves
+                # against whatever directory this process stands in.
+                "../elsewhere",
+                str(profile / "project"),
+                str(profile / "project" / "sub"),
+                str(payload / "bin"),
+                "/usr/bin",
+            ]
+        ),
+    )
+    assert doctor._trusted_path_entries() == ["/usr/bin"]
+
+
 def test_the_uninstall_story_says_when_the_config_goes_with_the_plugin(
     profile, monkeypatch
 ) -> None:

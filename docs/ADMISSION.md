@@ -104,6 +104,18 @@ README's *Derived state* has the table.
   the path that serves prompts. That run appends one soak record marked
   `"doctor": true` and may trigger the hourly sweep, and the report's own
   `state-dir` line says so.
+
+  **What it may run is not something a repository gets to choose.** Every
+  program doctor starts has to be an absolute path to an executable file that
+  does not resolve inside the directory the session stands in, and no program
+  is ever found by a PATH lookup the session's own `PATH` could steer — so a
+  checked-in `node_modules/.bin`, a direnv-exported venv or an empty `PATH`
+  entry cannot supply the `claude`, the `git` or the `python3` it asks
+  questions of. A `memkitConfig` recorded by `.claude/settings.json` in the
+  session's directory is reported and never followed, and `--config` naming a
+  config no route on this install reads makes the hook probe report `UNKNOWN`
+  rather than run: a config names the interpreter the wrapper execs, so
+  honouring that flag blindly would be a way to choose a program.
 - `memkit init` writes, and only what its manifest said and only after you
   approve the digest: the state directory (0700), the config at the path you
   named, the store skeleton, one canary memory, and a journal record per

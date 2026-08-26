@@ -90,6 +90,7 @@ from memkit.memory_prompt_recall import (
     _state_dir_candidate,
     _store_live_dir,
     _version,
+    expand_home,
     load_config,
     recall,
     sanitize,
@@ -329,6 +330,21 @@ class Settings:
         return os.path.isfile(self.path)
 
 
+def _option_in(scope: Settings) -> str:
+    """The literal `memkitConfig` one settings scope records, or ""."""
+    configs = scope.data.get("pluginConfigs")
+    if not isinstance(configs, dict):
+        return ""
+    entry = configs.get(PLUGIN_KEY)
+    if not isinstance(entry, dict):
+        return ""
+    options = entry.get("options")
+    if not isinstance(options, dict):
+        return ""
+    value = options.get(OPTION_KEY)
+    return value if isinstance(value, str) and value else ""
+
+
 def settings_scopes() -> list[Settings]:
     """Every scope, most authoritative first."""
     user = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
@@ -401,7 +417,11 @@ class Machine:
         # rather than the environment: the environment variable reaches hook
         # processes and not this one, so a second copy of the answer here
         # would be an input nothing reads and a comment nobody could trust.
-        self.resolved_config = config_path or os.environ.get(CONFIG_ENV) or ""
+        # What the install ITSELF resolved, kept apart from the answer
+        # `--config` overrode it with: the difference is what decides whether
+        # this run may execute anything under that config. See `may_probe`.
+        self.ambient_config = os.environ.get(CONFIG_ENV) or ""
+        self.resolved_config = config_path or self.ambient_config
         self.plugin_data = os.environ.get(PLUGIN_DATA_ENV, "")
         self._parsed = False
         self._config = None
@@ -443,21 +463,70 @@ class Machine:
         line is unreachable because the harness swallows hook stderr. The
         person who typed the path is the one person who can be certain a config
         was meant to exist, and this is where what they typed is written down.
+
+        ADOPTER-OWNED SCOPES ONLY. A memkit config names the interpreter the
+        wrapper execs and the directories the every-prompt hook reads, and
+        `project`/`local` settings sit in whatever directory the session
+        stands in — on a cloned repository, its author's files. A route out of
+        one of those is REPORTED by `repository_option` and acted on by
+        nothing: not this diagnostic's own probe, and not init, which would
+        otherwise write the config where a checkout said to.
         """
         for scope in self.settings:
-            configs = scope.data.get("pluginConfigs")
-            if not isinstance(configs, dict):
-                continue
-            entry = configs.get(PLUGIN_KEY)
-            if not isinstance(entry, dict):
-                continue
-            options = entry.get("options")
-            if not isinstance(options, dict):
-                continue
-            value = options.get(OPTION_KEY)
-            if isinstance(value, str) and value:
+            value = _option_in(scope)
+            if value and scope.adopter_owned:
                 return value, scope
         return "", None
+
+    def repository_option(self) -> tuple:
+        """The `memkitConfig` a scope in the session's directory records.
+
+        Its own reader because it is its own kind of fact: not a route this
+        install serves, but a thing a checkout asked for. Quoted in the report
+        so an adopter learns it was asked, with an `actor: user` remedy —
+        reading a file before trusting it is not work an agent does on its own
+        behalf.
+        """
+        for scope in self.settings:
+            if scope.adopter_owned:
+                continue
+            value = _option_in(scope)
+            if value:
+                return value, scope
+        return "", None
+
+    def may_probe(self) -> tuple:
+        """(True, "") when the config in play is one this install itself
+        reads.
+
+        `--config` says "diagnose THIS config", and the only way to honour it
+        through a real wrapper run is to hand the wrapper the option variable
+        the harness would have set — after which the wrapper execs the
+        `interpreter` that config records. So the flag is a way to choose a
+        program to run, and the doctor skill pre-approves the argv that passes
+        it.
+
+        The rule is that doctor may only cause an execution this install
+        already performs: the ambient route (what every prompt does), a config
+        init's journal claims to have written, or one an adopter-owned
+        settings scope names. Anything else is reported and not run.
+        """
+        if not self.explicit_config:
+            return True, ""
+        target = os.path.realpath(self.explicit_config)
+        if self.ambient_config and os.path.realpath(self.ambient_config) == target:
+            return True, ""
+        option, _scope = self.settings_option()
+        if option and os.path.realpath(expand_home(option)) == target:
+            return True, ""
+        for claimed in authored_configs(self.state_dir):
+            if os.path.realpath(claimed) == target:
+                return True, ""
+        return False, (
+            f"no route on this install names it: not ${CONFIG_ENV}, not the "
+            f"{OPTION_KEY} option in a settings scope you own, and no init "
+            "journal entry claims to have written it"
+        )
 
     def config(self):
         """The parsed config, or None, with the reason parked beside it.
@@ -570,6 +639,48 @@ def _rungs(machine: Machine) -> tuple:
 
 @_produces("config-route")
 def _config_route(machine: Machine) -> list[Check]:
+    """Which route answered, plus anything a checkout asked for and did not
+    get.
+
+    Two rows rather than one where a repository named a config: the second is
+    not a route this install serves, and merging it into the first would put a
+    path nobody vouched for where a reader looks for the answer.
+    """
+    return _resolved_route(machine) + _repository_route(machine)
+
+
+def _repository_route(machine: Machine) -> list[Check]:
+    """A `memkitConfig` recorded by a settings scope in the session's own
+    directory.
+
+    REPORTED, NEVER FOLLOWED. `.claude/settings.json` is the checkout's file,
+    and a memkit config names the interpreter the wrapper execs — so a remedy
+    telling an agent to re-run with `--config <that path>` is the whole of the
+    route between cloning a repository and running its code as the user. The
+    row exists because the adopter should still learn the repository asked;
+    the `actor` is theirs because reading a file before trusting it is not
+    work an agent does on its own behalf.
+    """
+    option, scope = machine.repository_option()
+    if not option:
+        return []
+    return [
+        Check(
+            "config-route",
+            INFO,
+            f'{scope.scope} settings in this directory record {OPTION_KEY}: '
+            f'"{option}". Not followed here, and not written to by init: that '
+            "file belongs to whatever checkout the session stands in",
+            "Read that file, and the config it names, before trusting either. "
+            "A memkit config names the directories the every-prompt hook reads "
+            "and the interpreter it execs. If it is yours, set the same value "
+            "in your own user settings and it will be used.",
+            actor=USER,
+        )
+    ]
+
+
+def _resolved_route(machine: Machine) -> list[Check]:
     """Which route answered, and — the half nothing else in the product can
     do — what the option SAYS versus what resolved.
 
@@ -1374,6 +1485,98 @@ def _under_cwd(path: str) -> bool:
     return target == cwd or target.startswith(cwd + os.sep)
 
 
+class _Untrusted(Exception):
+    """A program whose identity this command may not take from where it found
+    it."""
+
+
+def _may_execute(path: str) -> bool:
+    """THE ONE RULE for every program this module starts.
+
+    Program identity comes from an adopter-owned settings scope, from the
+    plugin's own payload, or from a pinned absolute path — never from
+    something a repository can write and never from a PATH lookup. `memkit
+    doctor` is model-invocable and its skill pre-approves the exact argv, so
+    running it inside somebody else's checkout must not be that checkout
+    choosing a program to run as the user, with the session's whole
+    environment inherited by the child.
+
+    Kept as one predicate rather than a rule repeated at each call site
+    because the failure mode is a site that forgot it: the previous round
+    closed the registration route and left the PATH route open beside it.
+    """
+    if not path or not os.path.isabs(path):
+        return False
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return False
+    return not _under_cwd(path)
+
+
+def _trusted_path_entries() -> list:
+    """The PATH entries a repository cannot steer.
+
+    An EMPTY entry is the current directory, spelled the way every shell reads
+    it, and a relative one is the same thing under another name — so a
+    `PATH=:/usr/bin` inherited from the session hands the lookup to whatever
+    the checkout ships. Entries under the session directory go for the same
+    reason a `node_modules/.bin` or a direnv-exported venv is the checkout's
+    choice, and entries inside the payload go because a plugin's own tree is a
+    clone of a pinned commit: it may supply memkit's wrappers, not the
+    harness binary memkit asks questions of.
+    """
+    cwd = os.path.realpath(os.getcwd())
+    payload = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    payload_real = os.path.realpath(payload) if payload else ""
+    entries = []
+    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        try:
+            real = os.path.realpath(entry)
+        except OSError:
+            continue
+        if real == cwd or real.startswith(cwd + os.sep):
+            continue
+        if payload_real and (
+            real == payload_real or real.startswith(payload_real + os.sep)
+        ):
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _trusted_which(name: str) -> str:
+    """`name` resolved against `_trusted_path_entries`, or "".
+
+    Never `shutil.which` directly: that reads the session's PATH, which is an
+    input a repository steers through direnv, a checked-in venv or a
+    `node_modules/.bin` — and the result is a program this command then runs.
+    """
+    entries = _trusted_path_entries()
+    if not entries:
+        return ""
+    found = shutil.which(name, path=os.pathsep.join(entries))
+    if not found or not _may_execute(found):
+        return ""
+    return found
+
+
+def _execute(argv: list, **kw):
+    """The one place this module starts a process.
+
+    Raises `_Untrusted` rather than running anything whose program fails
+    `_may_execute`, so a call site that forgot the rule cannot silently
+    execute — the check that called it reports UNKNOWN with a remedy instead,
+    which is the answer a diagnostic owes when honouring the rule costs it its
+    signal.
+    """
+    if not argv or not _may_execute(argv[0]):
+        raise _Untrusted(argv[0] if argv else "")
+    kw.setdefault("capture_output", True)
+    kw.setdefault("text", True)
+    return subprocess.run(argv, **kw)  # noqa: S603
+
+
 def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
     """One real run of the installed hook. Returns (stdout, stderr, code, ms).
 
@@ -1412,11 +1615,9 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
         # Without it, the run tests the delivery too.
         env["CLAUDE_PLUGIN_OPTION_" + OPTION_KEY.upper()] = machine.explicit_config
     try:
-        out = subprocess.run(
+        out = _execute(
             command,
             input=payload,
-            capture_output=True,
-            text=True,
             timeout=HOOK_PROBE_TIMEOUT,
             env=env,
         )
@@ -1509,6 +1710,28 @@ def _hook_path(machine: Machine) -> list[Check]:
         return [
             Check("hook-path", UNKNOWN, f"no hook was run: {how}",
                   remedy, actor=USER)
+        ]
+    may, why = machine.may_probe()
+    if not may:
+        # The wrapper execs the `interpreter` its config records, so probing
+        # under a config this install does not itself read is that config
+        # choosing a program to run as the user — and this command's skill
+        # pre-approves the argv that would do it. The signal is not dropped
+        # silently: the row says what did not happen and what would let it.
+        return [
+            Check(
+                "hook-path",
+                UNKNOWN,
+                f'no hook was run: --config named "'
+                f'{_display_path(machine.explicit_config or "")}" and {why}. '
+                "A config names the interpreter the wrapper execs, so this "
+                "does not run one nothing here vouches for",
+                f"Diagnose the config this install reads by running with no "
+                f"--config. To diagnose that file, point ${CONFIG_ENV} at it "
+                "in your own shell and re-run, or set it as the "
+                f"{OPTION_KEY} option in settings you own.",
+                actor=USER,
+            )
         ]
     cfg = machine.config()
     nonce = cfg.canary_nonce if cfg is not None else ""
@@ -2082,22 +2305,22 @@ def _harness_stamp(machine: Machine) -> list[Check]:
     criterion that counted it would make all-green unreachable for almost
     everybody, which is how a report stops being read.
     """
-    binary = shutil.which("claude")
+    binary = _trusted_which("claude") or None
     if binary is None:
         return [
             Check(
                 "harness-stamp",
                 UNKNOWN,
-                f"no `claude` on PATH to ask, so the running harness version is "
-                f"not knowable from here. memkit's claims were measured "
-                f"against {MEASURED_HARNESS}",
+                f"no `claude` this may run, so the running harness version "
+                f"is not knowable from here. memkit's claims were measured "
+                f"against {MEASURED_HARNESS}. A `claude` found only through "
+                "the session's own PATH is not asked: that lookup is one a "
+                "checkout steers",
             )
         ]
     try:
-        out = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        out = _execute([binary, "--version"], timeout=30)
+    except (OSError, subprocess.SubprocessError, _Untrusted) as exc:
         return [
             Check(
                 "harness-stamp",
@@ -2238,14 +2461,10 @@ def build_facts() -> tuple:
         hook_version = _version()
     payload = None
     root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
-    if root and os.path.isdir(os.path.join(root, ".git")):
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            out = subprocess.run(
-                ["git", "-C", root, "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
+    git = _trusted_which("git")
+    if git and root and os.path.isdir(os.path.join(root, ".git")):
+        with contextlib.suppress(OSError, subprocess.SubprocessError, _Untrusted):
+            out = _execute([git, "-C", root, "rev-parse", "HEAD"], timeout=15)
             if out.returncode == 0:
                 payload = out.stdout.strip()[:12]
     return package, hook_version, payload
@@ -2329,22 +2548,23 @@ def _probe_checker_route() -> tuple:
     if sys.version_info[:2] >= CHECKER_FLOOR:
         return "python", [sys.executable, "-m", "memkit.memory_integrity"]
     for name in ("python3.14", "python3.13", "python3.12", "python3"):
-        found = shutil.which(name)
+        found = _trusted_which(name)
         if not found:
             continue
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            out = subprocess.run(
+        with contextlib.suppress(
+            OSError, subprocess.SubprocessError, ValueError, _Untrusted
+        ):
+            out = _execute(
                 [found, "-c", "import sys; print(sys.version_info[:2])"],
-                capture_output=True,
-                text=True,
                 timeout=15,
             )
             if out.returncode == 0 and "(3, 1" in out.stdout:
                 pair = out.stdout.strip().strip("()").split(",")
                 if (int(pair[0]), int(pair[1])) >= CHECKER_FLOOR:
                     return "python", [found, "-m", "memkit.memory_integrity"]
-    if shutil.which("uvx"):
-        return "uvx", ["uvx", "memory-integrity"]
+    uvx = _trusted_which("uvx")
+    if uvx:
+        return "uvx", [uvx, "memory-integrity"]
     return "none", []
 
 
