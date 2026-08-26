@@ -9,10 +9,11 @@ argument shape: an `allowed-tools` entry that had to cover setup, diagnosis and
 arbitrary-directory search in one command is an entry that pre-approves reading
 any directory.
 
-The dispatch is a dict. A later unit adds one line to `_HANDLERS` and a module
-beside this one; nothing else about the routing moves. Until then a name in
-`_PENDING` with no handler is what a caller meets, by design — see `_pending`
-for why the names are listed at all before they do anything.
+The dispatch is a dict. A subcommand is one line in `_HANDLERS`, one line in
+`_SUBCOMMANDS` and a module beside this one; nothing else about the routing
+moves. A name in `_PENDING` with no handler is what a caller meets for a
+subcommand that is declared and has not shipped — see `_pending` for why the
+names are listed at all before they do anything.
 """
 
 from __future__ import annotations
@@ -21,7 +22,9 @@ import argparse
 import sys
 from collections.abc import Callable
 
+from memkit import cli_doctor
 from memkit.memory_prompt_recall import (
+    EXIT_CANNOT_START,
     EXIT_INERT,
     EXIT_NO_MATCH,
     _search_cli,
@@ -73,20 +76,12 @@ EXIT_NO_RUNTIME = 1
 # codes are interpolated from the constants for the same reason they are
 # constants at all.
 _PENDING: dict[str, tuple[str, str]] = {
-    "doctor": (
-        "report whether retrieval is actually working on this machine",
-        "meanwhile: `{search_config}` for what resolved, and "
-        '`{search} "<terms>"` for whether the stores answer. '
-        f"Exit {EXIT_INERT} there means there was nothing to search — no "
-        "config, or no store on disk and in scope for this directory — and "
-        f"stderr names which; exit {EXIT_NO_MATCH} means the stores were "
-        "searched and nothing matched. Those codes are that command's, not "
-        "this one's: the two tables swap 1 and 4",
-    ),
     "init": (
         "create a store and wire this machine up to it",
         "meanwhile: write the config by hand — the schema and a worked example "
-        "are in the project README under Config",
+        "are in the project README under Config. `{search_config}` says what "
+        'this install resolved once you have, and `{search} "<terms>"` whether '
+        "the stores answer",
     ),
 }
 
@@ -138,9 +133,30 @@ def _meanwhile(template: str) -> str:
         search_config = f"{head[0] if head else _self_name()} --debug-config"
     return template.format(search=search, search_config=search_config)
 
-# Subcommand -> the function that runs it, given the arguments this parser did
-# not consume. Empty today.
-_HANDLERS: dict[str, Callable[[list[str]], int]] = {}
+# Subcommand -> the function that runs it, given the namespace this parser
+# produced and whatever it could not consume.
+#
+# The second argument exists only while `_PENDING` is non-empty. A pending
+# subcommand declares no flags, so `memkit init --dry-run` has to survive
+# parsing to reach the message explaining why it does nothing — which forces
+# `parse_known_args` on the top level, which in turn means a real subcommand
+# has to refuse its own leftovers rather than letting argparse do it. When the
+# last pending name goes, both halves of that collapse into `parse_args`.
+_HANDLERS: dict[str, Callable[[argparse.Namespace, list[str]], int]] = {
+    "doctor": cli_doctor.run,
+}
+
+# Subcommand -> its one-line summary, its help epilog, and the function that
+# declares its flags. Split from `_HANDLERS` because the parser is built on
+# every invocation including `--help`, and a subcommand whose flags were
+# declared by the handler itself would have a `--help` that could not list
+# them — which is the shape `_PENDING` already produces on purpose and must
+# not survive into a subcommand that works.
+_SUBCOMMANDS: dict[
+    str, tuple[str, str, Callable[[argparse.ArgumentParser], None]]
+] = {
+    "doctor": (cli_doctor.SUMMARY, cli_doctor.EPILOG, cli_doctor.add_arguments),
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -164,11 +180,23 @@ def _parser() -> argparse.ArgumentParser:
         f"unknown subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but "
         "is not in this build."
         "\nThe search CLI's table is its own and swaps these two: there "
-        f"{EXIT_NO_RUNTIME} means nothing matched and {EXIT_NOT_IN_BUILD} "
-        "means it could not start.",
+        f"{EXIT_NO_MATCH} means nothing matched and {EXIT_CANNOT_START} "
+        f"means it could not start. Its {EXIT_INERT} has no counterpart here "
+        "at all: there was nothing to search — no config, or no store on disk "
+        "and in scope for this directory.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = ap.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")
+    for name, (summary, epilog, declare) in _SUBCOMMANDS.items():
+        declare(
+            sub.add_parser(
+                name,
+                help=summary,
+                description=f"{summary}.",
+                epilog=epilog,
+                formatter_class=argparse.RawDescriptionHelpFormatter,
+            )
+        )
     for name, (summary, template) in _PENDING.items():
         meanwhile = _meanwhile(template)
         # `memkit doctor --help` is the other probe an agent tries, and
@@ -211,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.print_help(sys.stderr)
         return EXIT_USAGE
     handler = _HANDLERS.get(args.subcommand)
-    return handler(extra) if handler else _pending(args.subcommand)
+    return handler(args, extra) if handler else _pending(args.subcommand)
 
 
 def cli() -> None:

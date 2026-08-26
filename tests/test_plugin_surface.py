@@ -51,6 +51,11 @@ PAYLOAD = [
     "src/memkit/memory_prompt_recall.py",
     "src/memkit/common-words.txt",
     "src/memkit/cli.py",
+    # Imported by the dispatcher at module scope, so it is on the 3.9 floor and
+    # in the payload for the same reason `cli.py` is: `bin/memkit` runs the
+    # dispatcher, and a dispatcher whose import fails is a plugin that installs
+    # and answers nothing.
+    "src/memkit/cli_doctor.py",
     "src/memkit/__init__.py",
     # The checker `bin/memkit` routes to when a local python meets the 3.12
     # floor: `MEMKIT_CHECKER_CMD` is `<python> -m memkit.memory_integrity`, run
@@ -241,6 +246,21 @@ def test_the_source_is_one_an_adopter_without_ssh_keys_can_clone() -> None:
 # unbolded to describe what the INSTALLED copy still says — so emphasising that
 # sentence would fail this case with a message about the marketplace pin.
 NOT_YET_INSTALLABLE = "**Not yet installable from this marketplace.**"
+# The other half of the same convention, for the state a repo that HAS shipped
+# is normally in: the pin serves a working plugin and `main` has grown payload
+# since. The README's own Status section defines this marker and uses it.
+FROM_THE_NEXT_RELEASE = "*(from the next release)*"
+# What has to be at the pinned sha for the marketplace to serve an install at
+# all. A payload file `main` added afterwards makes the pin INCOMPLETE, which
+# is a different claim from the pin carrying no plugin.
+INSTALLABLE_CORE = (
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "hooks/hooks.json",
+    "bin/memkit-hook",
+    "bin/lib/common.sh",
+    "src/memkit/memory_prompt_recall.py",
+)
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
@@ -272,6 +292,13 @@ def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
 
     Green today by naming the state we are actually in, and the release commit
     that moves the pin is the one whose own test forces the paragraph out.
+
+    THREE states, not two, because a repo that has shipped once is normally in
+    the third and the two-state version reads it as the first. A pin carrying
+    no plugin at all is "not yet installable"; a pin carrying a working plugin
+    plus a `main` that has grown payload since is the ordinary between-releases
+    state, and the README marks that one *(from the next release)* rather than
+    telling an adopter the marketplace cannot serve them.
     """
     _needs_checkout()
     sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
@@ -280,15 +307,25 @@ def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
         for path in PAYLOAD
     }
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    if all(at_sha.values()):
+    missing = sorted(path for path, ok in at_sha.items() if not ok)
+    if not missing:
         assert NOT_YET_INSTALLABLE not in readme, (
             "the pin now carries the whole payload — the README still says it "
             "does not"
         )
+    elif all(at_sha[path] for path in INSTALLABLE_CORE):
+        assert NOT_YET_INSTALLABLE not in readme, (
+            f"the pin serves a working plugin; {missing} is main moving ahead "
+            "of it, which is not the same claim"
+        )
+        assert FROM_THE_NEXT_RELEASE in readme, (
+            f"main carries payload the pin does not ({missing}) and the README "
+            "no longer marks the divergence"
+        )
     else:
         assert NOT_YET_INSTALLABLE in readme, (
             "the pin carries no plugin payload and the README no longer says "
-            f"so: {sorted(p for p, ok in at_sha.items() if not ok)}"
+            f"so: {missing}"
         )
 
 
@@ -2430,7 +2467,7 @@ def _surfaces(
             CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(tmp_path / "absent.json"),
         ),
         "dispatcher help": run(dispatcher, "--help"),
-        "dispatcher refusal": run(dispatcher, "doctor"),
+        "dispatcher refusal": run(dispatcher, "init"),
     }
 
 
@@ -2611,7 +2648,7 @@ def test_the_advertised_command_runs_from_the_agents_bash_tool(
     # And EVERY backticked command the dispatcher's two surfaces hand out —
     # not the one that was fixed. These are the first things an agent probing a
     # fresh install touches, and each of them is a command it will paste.
-    for args in (("doctor",), ("--help",)):
+    for args in (("init",), ("--help",)):
         surface = _run(
             root / "bin" / "memkit", *args, env={**env, "PATH": os.environ["PATH"]}
         )
@@ -3332,7 +3369,7 @@ def test_a_whitespace_only_search_cli_does_not_take_down_the_dispatcher(
     real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")}
     for value in ("   ", "\t", " \n "):
         config = _config_file(tmp_path / "ws.json", search_cli=value)
-        for args in (("--help",), ("doctor",)):
+        for args in (("--help",), ("init",)):
             out = _run(
                 root / "bin" / "memkit", *args,
                 env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config)},

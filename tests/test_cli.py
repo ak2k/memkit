@@ -6,8 +6,8 @@ argparse's own refusals are only real from outside the process — in-process
 of what this file is about: a skill invokes `memkit <subcommand>` and branches
 on what comes back.
 
-The dispatcher does nothing yet on purpose. What it has to get right in the
-meantime is the answer it gives about the things it cannot do, because the
+`doctor` routes; `init` does not yet. What the dispatcher has to get right for
+the second is the answer it gives about the thing it cannot do, because the
 reader is an agent deciding whether to find another way.
 """
 
@@ -73,7 +73,7 @@ def test_a_missing_subcommand_is_not_the_same_answer_as_a_wrong_one() -> None:
     """
     usage = _run()
     unknown = _run("frobnicate")
-    pending = _run("doctor")
+    pending = _run("init")
 
     assert usage.returncode == unknown.returncode == cli.EXIT_USAGE
     assert pending.returncode == cli.EXIT_NOT_IN_BUILD
@@ -87,9 +87,12 @@ def test_help_names_the_subcommands_that_do_not_exist_yet() -> None:
     only one of them is true."""
     out = _run("--help")
     assert out.returncode == 0
+    # Collapsed, because argparse wraps the help column and a marker split
+    # across two lines is one a reader still sees and a `in` test does not.
+    collapsed = " ".join(out.stdout.split())
     for name in cli._PENDING:
-        assert name in out.stdout
-    assert "NOT IN THIS BUILD YET" in out.stdout
+        assert name in collapsed
+    assert "NOT IN THIS BUILD YET" in collapsed
 
 
 def test_both_help_surfaces_carry_the_fallback_not_just_the_name() -> None:
@@ -126,6 +129,10 @@ def test_the_refusal_names_the_search_binary_this_install_actually_has(
     The command comes from the same `search_cli` the hook's truncation notice
     advertises, so the refusal and the pointer block name one binary by
     construction. The literal is the no-config fallback and nothing else.
+
+    Both surfaces that render a command, because they are filled by the same
+    helper and only one of them is reached by running something: the top-level
+    description, which `--help` prints, and a pending subcommand's refusal.
     """
     config = tmp_path / "memkit.json"
     config.write_text(
@@ -139,17 +146,21 @@ def test_the_refusal_names_the_search_binary_this_install_actually_has(
         )
     )
     env = dict(os.environ, MEMKIT_CONFIG=str(config))
-    out = _run("doctor", env=env)
+    out = _run("init", env=env)
     assert out.returncode == cli.EXIT_NOT_IN_BUILD
     assert "memkit-recall --search" in out.stderr
     assert "memkit-recall --debug-config" in out.stderr
     assert "memory-recall" not in out.stderr
 
+    helped = _run("--help", env=env)
+    assert "memkit-recall --search" in helped.stdout
+    assert "memory-recall" not in helped.stdout
+
     # With nothing configured there is nothing better to say, so the shipped
     # default stands.
     bare = dict(os.environ)
     bare.pop("MEMKIT_CONFIG", None)
-    assert "memory-recall --search" in _run("doctor", env=bare).stderr
+    assert "memory-recall --search" in _run("init", env=bare).stderr
 
 
 def test_a_config_that_cannot_be_read_never_takes_the_refusal_down(
@@ -189,20 +200,32 @@ def test_a_config_that_cannot_be_read_never_takes_the_refusal_down(
         # command that exists either way.
         assert "memory-recall --search" in top.stdout, raw
 
-        refusal = _run("doctor", env=env)
+        refusal = _run("init", env=env)
         assert refusal.returncode == cli.EXIT_NOT_IN_BUILD, (raw, refusal.stderr)
         assert "memory-recall --search" in refusal.stderr, raw
 
 
-def test_the_refusal_quotes_the_exit_codes_from_their_source() -> None:
+def test_the_help_quotes_the_search_clis_exit_codes_from_their_source() -> None:
     """The prose named 3 and 1 as literals while importing the constants that
     define them, so a renumbering would have left the advice confidently
-    wrong — and this is advice an agent follows without a second source."""
-    from memkit.memory_prompt_recall import EXIT_INERT, EXIT_NO_MATCH
+    wrong — and this is advice an agent follows without a second source.
 
-    refusal = _run("doctor").stderr
-    assert f"Exit {EXIT_INERT} there" in refusal
-    assert f"exit {EXIT_NO_MATCH} means" in refusal
+    The two tables collide on both 1 and 4, so the sentence about the OTHER
+    binary's table has to be built from that binary's own constants: the
+    dispatcher's `EXIT_NO_RUNTIME` renders the same digit as the hook's
+    `EXIT_NO_MATCH` and means the opposite thing, which is the collision the
+    sentence exists to warn about and the one a shared constant would hide.
+    """
+    from memkit.memory_prompt_recall import (
+        EXIT_CANNOT_START,
+        EXIT_INERT,
+        EXIT_NO_MATCH,
+    )
+
+    epilog = " ".join(_run("--help").stdout.split())
+    assert f"there {EXIT_NO_MATCH} means nothing matched" in epilog, epilog
+    assert f"{EXIT_CANNOT_START} means it could not start" in epilog, epilog
+    assert f"Its {EXIT_INERT} has no counterpart" in epilog, epilog
 
 
 def test_an_unknown_subcommand_is_refused_against_the_list_of_real_ones() -> None:
@@ -231,16 +254,16 @@ def test_a_subcommand_that_has_not_landed_refuses_with_somewhere_to_go() -> None
 
 
 def test_flags_a_pending_subcommand_will_take_do_not_preempt_its_refusal() -> None:
-    """`memkit doctor --json` is the invocation a skill will make, and on this
-    build it has to reach the message explaining that doctor is not here.
+    """`memkit init --dry-run` is the invocation a skill will make, and on this
+    build it has to reach the message explaining that init is not here.
 
     parse_known_args is what makes that true. Under parse_args the run dies on
     an unrecognised argument, and an agent that meets argparse's usage text
-    there learns that `--json` is the problem — which is both false and the
+    there learns that `--dry-run` is the problem — which is both false and the
     kind of false that gets worked around rather than reported.
     """
-    plain = _run("doctor")
-    flagged = _run("doctor", "--json")
+    plain = _run("init")
+    flagged = _run("init", "--dry-run")
     assert flagged.returncode == plain.returncode
     assert flagged.stderr == plain.stderr
     assert "unrecognized arguments" not in flagged.stderr
@@ -260,9 +283,17 @@ def test_a_handler_takes_over_from_the_pending_message(monkeypatch) -> None:
     is covered before there is anything to route — otherwise the first real
     subcommand lands on a dispatch nothing has ever exercised.
     """
-    seen: list[list[str]] = []
-    monkeypatch.setitem(cli._HANDLERS, "doctor", lambda extra: seen.append(extra) or 0)
+    seen: list[tuple] = []
+    monkeypatch.setitem(
+        cli._HANDLERS, "doctor", lambda args, extra: seen.append((args, extra)) or 0
+    )
     assert cli.main(["doctor", "--json"]) == 0
-    # The arguments this parser did not consume reach the handler untouched,
-    # which is what lets a subcommand own its own flags.
-    assert seen == [["--json"]]
+    # The flags the SUBPARSER declared arrive parsed — which is what lets
+    # `memkit doctor --help` list them — and anything it did not declare
+    # arrives untouched, so the handler can refuse it by name.
+    (args, extra), = seen
+    assert args.as_json is True
+    assert extra == []
+
+    assert cli.main(["doctor", "--nope"]) == 0
+    assert seen[-1][1] == ["--nope"]
