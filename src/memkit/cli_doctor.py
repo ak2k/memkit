@@ -71,7 +71,6 @@ from memkit.memory_prompt_recall import (
     EXCLUDE_BASENAMES,
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
-    INIT_JOURNAL_NAME,
     MARKER_NAME,
     PLUGIN_CONFIG_ROUTES,
     PLUGIN_DATA_ENV,
@@ -90,7 +89,9 @@ from memkit.memory_prompt_recall import (
     _state_dir_candidate,
     _store_live_dir,
     _version,
+    claim_holds,
     expand_home,
+    journal_config_claims,
     load_config,
     path_refusal,
     recall,
@@ -365,32 +366,23 @@ def settings_scopes() -> list[Settings]:
 
 
 def authored_configs(state_dir: str) -> set:
-    """The absolute config paths init's journal claims to have written.
+    """The config paths init's journal claims, whose claims still cover what is
+    at them.
 
     The journal is append-only JSONL and a partial line is a crash, not a
     corruption: a record that does not parse is skipped rather than taken as
     evidence that nothing was authored. Reading it the other way would turn one
     interrupted init into a `config-authorship` FAIL against memkit's own file.
+
+    A claim is CHECKED against the file rather than taken on the path, because
+    the config's claim is written before its file: a crash in that window
+    leaves a claim on a path that has nothing at it, and something else can
+    then create a config there. `claim_holds` is where that rule lives, shared
+    with the hook so the two readers of one journal cannot come to read it
+    differently.
     """
-    out = set()
-    path = os.path.join(state_dir, INIT_JOURNAL_NAME)
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(record, dict) and record.get("authored_config"):
-                    claimed = record.get("path")
-                    if isinstance(claimed, str):
-                        out.add(claimed)
-    except OSError:
-        return out
-    return out
+    claims = journal_config_claims(state_dir)
+    return {path for path, records in claims.items() if claim_holds(path, records)}
 
 
 class Machine:

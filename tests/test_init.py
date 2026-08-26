@@ -784,9 +784,22 @@ def test_every_refusal_in_the_inventory_is_reachable() -> None:
         pathlib.Path(__file__).read_text(encoding="utf-8"),
     ))
     # `enabled-plugins` is reached through its own function rather than
-    # through `build_plan`, and `stale-digest` needs the confirm turn.
+    # through `build_plan`.
     covered |= {"enabled-plugins"}
-    assert raised - covered <= {"stale-digest"}, sorted(raised - covered)
+    # Refusals raised at APPLY time, which `_refuses` cannot reach because it
+    # calls `build_plan` directly — the exact blind spot that let a refusal
+    # ship without a path to `_refuse()`. Each is named with the case that
+    # does reach it, so the allowance cannot quietly become a hole.
+    mine = pathlib.Path(__file__).read_text(encoding="utf-8")
+    apply_time = {
+        "stale-digest": "test_a_stale_digest_refuses_and_writes_nothing",
+        "changed-underfoot": (
+            "test_a_file_that_arrived_after_the_plan_is_not_written_over"
+        ),
+    }
+    for name, case in apply_time.items():
+        assert f"def {case}(" in mine, (name, case)
+    assert raised - covered <= set(apply_time), sorted(raised - covered)
     assert len(raised) >= 12, sorted(raised)
 
 
@@ -886,6 +899,33 @@ def test_the_journal_names_every_file_the_run_made_and_nothing_it_did_not(profil
     assert claims[0]["path"].endswith("memkit.json")
 
 
+def test_a_file_that_arrived_after_the_plan_is_not_written_over(
+    profile, monkeypatch
+) -> None:
+    """The digest binds the plan to the tree at PLAN time.
+
+    Between the confirm's digest check and the write, another process can
+    create a path the manifest described as absent — and the manifest said
+    "create", so the adopter consented to a file appearing where there was
+    none, not to one of theirs being replaced. An exclusive create is what
+    closes the window rather than narrowing it.
+    """
+    plan = _plan(profile, store=str(profile / "notes"))
+    machine = doctor.Machine()
+    target = next(
+        a.path for a in plan.pending if a.path.endswith("MEMORY.md")
+    )
+    assert not os.path.exists(target)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    theirs = "# their own notes, written between the two turns\n"
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(theirs)
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    with open(target, encoding="utf-8") as f:
+        assert f.read() == theirs, "confirm wrote over a file it planned to create"
+
+
 def test_a_crash_between_two_mutations_leaves_a_journal_that_describes_it(
     profile, monkeypatch
 ) -> None:
@@ -896,11 +936,11 @@ def test_a_crash_between_two_mutations_leaves_a_journal_that_describes_it(
     real = init._write_atomically
     calls = []
 
-    def explode(path, content, mode=0o600):
+    def explode(path, content, mode=0o600, expect=None):
         calls.append(path)
         if len(calls) == 2:
             raise OSError("no space left on device")
-        return real(path, content, mode)
+        return real(path, content, mode, expect)
 
     monkeypatch.setattr(init, "_write_atomically", explode)
     config = init._resolve_config(machine, None)
@@ -920,11 +960,11 @@ def test_a_partial_run_converges_when_it_is_run_again(profile, monkeypatch) -> N
     real = init._write_atomically
     calls = []
 
-    def explode(path, content, mode=0o600):
+    def explode(path, content, mode=0o600, expect=None):
         calls.append(path)
         if len(calls) == 2:
             raise OSError("no space left on device")
-        return real(path, content, mode)
+        return real(path, content, mode, expect)
 
     monkeypatch.setattr(init, "_write_atomically", explode)
     assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_INCOMPLETE
@@ -1396,11 +1436,11 @@ def test_a_crash_before_the_journal_record_does_not_brick_init(profile, monkeypa
     real = init.Journal.record
     calls = []
 
-    def die(self, action, after, locked=None):
+    def die(self, action, after, locked=None, expects=None):
         calls.append(action.op)
         if action.op == init.MERGE_CONFIG and after != "pending":
             raise OSError("no space left on device")
-        return real(self, action, after, locked)
+        return real(self, action, after, locked, expects)
 
     monkeypatch.setattr(init.Journal, "record", die)
     assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE

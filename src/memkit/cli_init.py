@@ -64,6 +64,7 @@ from memkit.memory_prompt_recall import (
     _plugin_install,
     expand_home,
     path_refusal,
+    state_token,
 )
 
 SUMMARY = "create a store and wire this machine up to it"
@@ -109,25 +110,12 @@ def _sha(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def _state_of(path: str) -> str:
-    """What is at `path` now, as one comparable token.
-
-    This is the half of the digest that makes it bind to the TREE rather than
-    to the request: `absent`, `dir`, or the content hash of a file. A target
-    that changed between the dry-run and the confirm changes this, and the
-    confirm refuses without writing anything.
-    """
-    if os.path.isdir(path):
-        return "dir"
-    try:
-        with open(path, encoding="utf-8") as f:
-            return "file:" + _sha(f.read())
-    except FileNotFoundError:
-        return "absent"
-    except OSError as exc:
-        return f"unreadable:{type(exc).__name__}"
-    except ValueError:
-        return "file:unreadable-encoding"
+# What is at a path now, as one comparable token: `absent`, `dir`, or the
+# content hash of a file. This is the half of the digest that makes it bind to
+# the TREE rather than to the request, and it is the hook's function rather
+# than a second copy here — the journal records these tokens and the hook is
+# one of the two things that reads them back.
+_state_of = state_token
 
 
 class Action:
@@ -1337,7 +1325,13 @@ class Journal:
         self.manifest = manifest
         self.run = _sha(f"{manifest}{time.time()}{os.getpid()}")[:12]
 
-    def record(self, action: Action, after: str, locked: bool | None = None) -> None:
+    def record(
+        self,
+        action: Action,
+        after: str,
+        locked: bool | None = None,
+        expects: str | None = None,
+    ) -> None:
         record = {
             "v": 1,
             "run": self.run,
@@ -1349,6 +1343,8 @@ class Journal:
             "after": after,
             "authored_config": action.authored_config,
         }
+        if expects is not None:
+            record["expects"] = expects
         if locked is False:
             # Only on the unserialised write. Its absence means the ordinary
             # case, so an existing reader does not have to learn a key to keep
@@ -1430,13 +1426,23 @@ class _Lock:
         self._fd = None
 
 
-def _write_atomically(path: str, content: str, mode: int = 0o600) -> str:
+def _write_atomically(
+    path: str, content: str, mode: int = 0o600, expect: str | None = None
+) -> str:
     """Write beside and rename over, returning the state token that landed.
 
     The same care the session ledger takes, for the same reason: `open(path,
     "w")` destroys the old file before writing the new one, so anything that
     stops the write in between leaves a valid prefix of an invalid file — and
     for a config, a valid prefix is a config that names half a store.
+
+    `expect` is what the plan the human approved said was at this path. The
+    digest binds the plan to the tree at PLAN time, and between the confirm's
+    digest check and this write another process can create a path the manifest
+    described as absent — so the manifest's "create" would replace a file its
+    reader never saw. Where the plan said absent the create is EXCLUSIVE, which
+    closes that window rather than narrowing it; otherwise the state is
+    re-derived here, immediately before the write.
     """
     # THROUGH THE LINK, not over it. An adopter whose `~/.claude/settings.json`
     # is a symlink into a dotfiles or nix repo is the common case, and the
@@ -1445,6 +1451,15 @@ def _write_atomically(path: str, content: str, mode: int = 0o600) -> str:
     # file, the repo copy orphaned and unchanged, and the next `home-manager
     # switch` reaching nothing.
     path = os.path.realpath(path)
+    if expect is not None and state_token(path) != expect:
+        raise Refusal(
+            "changed-underfoot",
+            f"{_display_path(path)} is not what the manifest you approved "
+            f"described ({expect}). Something wrote to it between the dry-run "
+            "and now, and applying a plan built against the file that was "
+            "there would replace a file nobody read. Re-run `init --dry-run` "
+            "for a manifest of what is left.",
+        )
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     # An EXISTING file keeps its own permissions. The `mode` argument is for a
     # file being created; a settings file somebody deliberately chmod'd 600 —
@@ -1461,7 +1476,30 @@ def _write_atomically(path: str, content: str, mode: int = 0o600) -> str:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        if expect == "absent":
+            # LINK rather than replace: `os.link` fails when the name is taken,
+            # so the filesystem decides whether the path was free at the moment
+            # of the write. The check above narrows the window; this closes it.
+            try:
+                os.link(tmp, path)
+            except FileExistsError as exc:
+                raise Refusal(
+                    "changed-underfoot",
+                    f"{_display_path(path)} was created while this ran. The "
+                    "manifest you approved described it as absent, and "
+                    "replacing a file nobody read is not what "
+                    "creating one means. Re-run `init --dry-run` for a "
+                    "manifest of what is left.",
+                ) from exc
+            except OSError:
+                # A filesystem with no hard links (some network and FUSE
+                # mounts). The check above still stands; what is lost is the
+                # atomicity of it, not the rule.
+                os.replace(tmp, path)
+            else:
+                os.unlink(tmp)
+        else:
+            os.replace(tmp, path)
     except OSError:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
@@ -1577,7 +1615,13 @@ def _perform(
             # describe a write that did not happen, which `authored_configs`
             # already tolerates: it keys on the flag and the path, and a claim
             # on a file that is not there answers nothing.
-            journal.record(action, "pending", locked=lock.held)
+            # WHAT IT EXPECTS TO LAND, on the claim itself. A claim on a
+            # path is not a claim on whatever turns up at that path: if the
+            # crash lands in this window and something else then creates a
+            # config there, the readers have to be able to tell that file from
+            # this one, and the digest is the only thing that can.
+            expects = "file:" + _sha(merged)
+            journal.record(action, "pending", locked=lock.held, expects=expects)
             after = _write_atomically(action.path, merged)
             journal.record(action, after, locked=lock.held)
     elif action.op == VERIFY:
@@ -1612,6 +1656,14 @@ def _perform(
             after = _write_atomically(action.path, content, mode=0o644)
             journal.record(action, after, locked=lock.held)
     else:
-        after = _write_atomically(action.path, action.content, mode=0o644)
+        # ONLY the frozen-content actions carry `expect`. The config merge, the
+        # settings write and the CLAUDE.md append deliberately re-derive their
+        # content under the lock against whatever the file holds now — that is
+        # what makes two concurrent inits with distinct appends both survive —
+        # so for those, a file that moved is the case being handled rather than
+        # a reason to stop.
+        after = _write_atomically(
+            action.path, action.content, mode=0o644, expect=action.before
+        )
         journal.record(action, after)
     return EXIT_OK

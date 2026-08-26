@@ -2811,34 +2811,100 @@ def _collectible(state_dir: str, name: str, now: float) -> str:
     return ""
 
 
+def state_token(path: str) -> str:
+    """What is at `path` now, as one comparable token.
+
+    `absent`, `dir`, or the content hash of a file. Init's digest binds to
+    these, its journal records them, and both readers of that journal compare
+    against them — one function rather than one per reader, because two
+    spellings of "what is there" is how a claim comes to mean different things
+    to the thing that writes it and the thing that checks it.
+    """
+    if os.path.isdir(path):
+        return "dir"
+    try:
+        with open(path, encoding="utf-8") as f:
+            return "file:" + hashlib.sha256(f.read().encode("utf-8")).hexdigest()
+    except FileNotFoundError:
+        return "absent"
+    except OSError as exc:
+        return f"unreadable:{type(exc).__name__}"
+    except ValueError:
+        return "file:unreadable-encoding"
+
+
+def journal_config_claims(state_dir: str) -> dict:
+    """{config path: [claim, …]} out of init's journal.
+
+    A claim is `(after, before, expects)`, exactly as the record carries them.
+    A torn line is skipped rather than read as "nothing is claimed": one
+    interrupted init must not turn into a config the checker calls foreign or
+    the sweep collects.
+    """
+    found: dict = {}
+    with contextlib.suppress(OSError):
+        path = os.path.join(state_dir, INIT_JOURNAL_NAME)
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                with contextlib.suppress(ValueError):
+                    record = json.loads(line)
+                    if (
+                        isinstance(record, dict)
+                        and record.get("authored_config")
+                        and isinstance(record.get("path"), str)
+                    ):
+                        found.setdefault(record["path"], []).append(
+                            (
+                                record.get("after"),
+                                record.get("before") or "absent",
+                                record.get("expects"),
+                            )
+                        )
+    return found
+
+
+def claim_holds(path: str, claims: list) -> bool:
+    """Whether the journal's claims on `path` cover the file that is there now.
+
+    The config's claim is written BEFORE the file, so a crash in the window
+    leaves a record describing a write that did not happen — which is
+    deliberate, because the alternative is every later init refusing
+    `foreign-config` about a file memkit had just written. What it may not do
+    is authorize whatever turns up at that path afterwards: a claim on nothing
+    is a claim on nothing, not a claim on the next thing to arrive.
+
+    So a COMMITTED record authorizes the path outright — memkit did write it,
+    and an adopter editing their own config afterwards is not a planted one —
+    while a pending one authorizes only the two states its own window can
+    explain: the file memkit was about to write, or what was there before it.
+    """
+    now = state_token(path)
+    for after, before, expects in claims:
+        if after != "pending":
+            return True
+        if now == before or (expects is not None and now == expects):
+            return True
+    return False
+
+
 def _claimed_configs(state_dir: str) -> frozenset:
     """The absolute config paths init's journal says it wrote.
 
     Read once per sweep — the whole point of the cap is that a sweep does not
     walk this directory freely, and a journal read per file would undo it.
-    A torn line is skipped rather than read as "nothing is claimed", for the
-    reason the doctor-side reader gives: one interrupted init must not turn
-    into a deleted config.
+
+    EVERY claim counts here, verified or not, and that is the opposite
+    conservatism from the authorship readers on purpose: this list decides
+    what is never unlinked, so the safe direction is to keep a file that might
+    be somebody's config. The authorship readers decide whether to overwrite
+    or to report, where the safe direction is to claim less.
     """
     global _CLAIMED_CONFIGS
     if _CLAIMED_CONFIGS is None:
-        found = set()
-        with contextlib.suppress(OSError):
-            path = os.path.join(state_dir, INIT_JOURNAL_NAME)
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    with contextlib.suppress(ValueError):
-                        record = json.loads(line)
-                        if (
-                            isinstance(record, dict)
-                            and record.get("authored_config")
-                            and isinstance(record.get("path"), str)
-                        ):
-                            found.add(record["path"])
-        _CLAIMED_CONFIGS = frozenset(found)
+        _CLAIMED_CONFIGS = frozenset(journal_config_claims(state_dir))
     return _CLAIMED_CONFIGS
 
 

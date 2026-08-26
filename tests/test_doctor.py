@@ -14,6 +14,7 @@ sends an agent to fix the wrong thing.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -582,6 +583,56 @@ def test_a_rung_two_config_the_journal_claims_is_fine(profile, monkeypatch):
     monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
     (row,) = _only(doctor.collect(doctor.Machine()), "config-authorship")
     assert row.status == doctor.PASS
+
+
+def _journal(state, **record) -> None:
+    state.mkdir(parents=True, exist_ok=True)
+    blob = {"v": 1, "run": "r", "op": "merge-config", "authored_config": True}
+    blob.update(record)
+    with open(state / hook.INIT_JOURNAL_NAME, "a", encoding="utf-8") as f:
+        f.write(json.dumps(blob) + "\n")
+
+
+def test_a_write_ahead_claim_does_not_authorize_somebody_elses_file(
+    profile, monkeypatch
+) -> None:
+    """The claim is written before the file, and a crash in between leaves it
+    describing a write that did not happen.
+
+    That is deliberate — between the file landing and its record being fsynced,
+    every later init refused `foreign-config` about a file memkit had just
+    written. What it must not do is authorize whatever turns up at that path
+    afterwards: a claim on nothing is a claim on nothing, not a claim on the
+    next thing to arrive.
+    """
+    data = profile / "plugin-data"
+    data.mkdir()
+    planted = data / "memkit.json"
+    state = profile / "home" / ".cache" / "memory-recall"
+    ours = json.dumps({"schema": 1, "roots": {}, "stores": []})
+    expects = "file:" + hashlib.sha256(ours.encode()).hexdigest()
+    _journal(state, path=str(planted), before=None, after="pending", expects=expects)
+
+    # Nothing there: the crash happened before the write, and the claim stands
+    # so a re-run converges rather than refusing about its own file.
+    assert doctor.authored_configs(str(state)) == {str(planted)}
+    # What memkit was about to write, there: the crash happened after it.
+    planted.write_text(ours, encoding="utf-8")
+    assert doctor.authored_configs(str(state)) == {str(planted)}
+    # Somebody else's file, at the same path. Not memkit's, and the check that
+    # exists to say so has to say so.
+    planted.write_text(json.dumps({"schema": 1, "stores": ["theirs"]}), encoding="utf-8")
+    assert doctor.authored_configs(str(state)) == set()
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-authorship")
+    assert row.status == doctor.FAIL, row.detail
+
+    # And a COMMITTED record authorizes it whatever it says now: memkit did
+    # write that file, and an adopter editing their own config afterwards is
+    # not a planted one.
+    _journal(state, path=str(planted), before=None, after=expects)
+    assert doctor.authored_configs(str(state)) == {str(planted)}
 
 
 def test_a_torn_journal_line_is_skipped_rather_than_read_as_no_claim(
