@@ -2088,11 +2088,11 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
 def test_every_process_this_command_starts_goes_through_one_gate() -> None:
     """The rule is a chokepoint, not a habit.
 
-    The previous round closed the registration route and left the PATH route
-    open beside it, because the rule lived at the call sites. Here it lives in
-    `_execute` and `_trusted_which`, and this asserts that nothing else in the
-    module starts a process or resolves a program name — so a check added
-    later cannot quietly acquire its own way out.
+    A rule held at each call site is a rule the next call site will not have,
+    and that is how one execution route gets closed while its sibling stays
+    open. Here it lives in `_execute` and `_trusted_which`, and this asserts
+    that nothing else in the module starts a process or resolves a program
+    name — so a check added later cannot quietly acquire its own way out.
     """
     import ast
 

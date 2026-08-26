@@ -1566,9 +1566,9 @@ def _may_execute(path: str) -> bool:
     choosing a program to run as the user, with the session's whole
     environment inherited by the child.
 
-    Kept as one predicate rather than a rule repeated at each call site
-    because the failure mode is a site that forgot it: the previous round
-    closed the registration route and left the PATH route open beside it.
+    Kept as one predicate rather than a rule repeated at each call site,
+    because the failure mode is a call site that does not apply it — a rule
+    held in five places is a rule the sixth will not have.
     """
     if not path or not os.path.isabs(path):
         return False

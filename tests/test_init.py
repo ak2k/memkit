@@ -510,8 +510,8 @@ def test_a_relative_store_or_config_is_refused(profile) -> None:
 def test_init_writes_only_where_the_hook_would_read(profile, monkeypatch) -> None:
     """The writer and the readers admit exactly the same paths.
 
-    The previous round closed the no-option door on the plugin channel and
-    left the malformed-option door open: `memkitConfig` with a doubled slash —
+    The no-option door on the plugin channel is closed and the
+    malformed-option door beside it was not: `memkitConfig` with a doubled slash —
     which shell variable concatenation at install time produces on its own —
     got a store, a green integrity check and exit 0, while
     `memkit_resolve_config` refused that shape and served every prompt

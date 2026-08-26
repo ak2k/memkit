@@ -4238,8 +4238,8 @@ def test_the_shell_and_the_python_admit_exactly_the_same_paths() -> None:
     `bin/lib/common.sh` decides what the hook will READ and what it will EXEC;
     `memkit init` decides what to WRITE. When those disagree, init writes a
     config the wrapper then refuses, and the adopter gets a store, a clean
-    integrity check, exit 0 and silence on every prompt — which is exactly the
-    state the previous round's fix left reachable through the option rung.
+    integrity check, exit 0 and silence on every prompt — reachable through the
+    option rung, which init trusted and the shell vetted.
 
     The rule exists twice because the shell cannot import Python and the hook
     path may not fork a shell. What makes it one rule is this: the same corpus

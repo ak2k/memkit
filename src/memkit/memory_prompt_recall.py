@@ -171,8 +171,7 @@ SEARCH_CLI_MAX_CHARS = 400
 # `memkit_path_refusal` in POSIX sh before the hook ever starts; init decides
 # where to WRITE a config. When those two rules disagree, init writes a config
 # the wrapper then refuses to read, and the adopter gets a store, a clean
-# integrity check, exit 0 and silence on every prompt — the exact state the
-# round before this one thought it had closed.
+# integrity check, exit 0 and silence on every prompt.
 #
 # The shell cannot import Python and the hook path may not fork a shell, so
 # the rule exists twice by necessity. What makes it ONE rule is that

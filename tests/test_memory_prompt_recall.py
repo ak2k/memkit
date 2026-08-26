@@ -7277,8 +7277,7 @@ def test_a_task_state_name_is_not_the_same_thing_as_an_id(tmp_path, monkeypatch)
     An adopter's own `t-notes.json` in the documented state directory got
     unlinked by the every-prompt hook fourteen days later, with nothing
     recording that it happened — the same defect the session-state predicate
-    was narrowed for in the round before this one, in the one place that
-    narrowing did not reach. The id shape leaks an id of a future generation
+    is narrowed against, in the one place that narrowing did not reach. The id shape leaks an id of a future generation
     rather than collecting it, which is the safe direction for a rule whose
     other outcome is an unlink.
     """
