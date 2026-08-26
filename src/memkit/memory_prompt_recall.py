@@ -1704,6 +1704,13 @@ def _fts_note_root(db: str, root: str) -> str:
 #        floor under this outcome, never a census.
 # PARTIAL the walk could not read part of the corpus, so `files` undercounts
 #        and a low number is not evidence the corpus is small.
+# TRUNCATED the corpus is readable and the sync ran out of BUDGET, so `files`
+#        undercounts for a reason that has nothing to do with the store. Its
+#        own outcome because the first thing an operator is told about a
+#        silent hook decides where they look, and `partial` sent them at file
+#        permissions when the answer was a store that outgrew a 7-second
+#        budget. Below PARTIAL: something unreadable is the more alarming of
+#        the two, and a run that is both says so.
 # OK     a complete sync over a fully readable corpus.
 #
 # THE READER'S RULE, and it is a contract rather than advice: an outcome this
@@ -1719,6 +1726,7 @@ BUILD_BUSY = "busy"
 BUILD_UNREADABLE = "unreadable"
 BUILD_REBUILT = "rebuilt"
 BUILD_PARTIAL = "partial"
+BUILD_TRUNCATED = "truncated"
 # Bumped when the record's SHAPE changes — a key added, removed or retyped.
 # Nothing reads these yet, which is precisely when a version key is free to add
 # and impossible to retrofit.
@@ -1937,12 +1945,40 @@ def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set
     return disk, spared, unwalked
 
 
+class _QueryTimeout(Exception):
+    """The budget expired inside the QUERY half of a dir's retrieval.
+
+    Raised rather than returned, and never swallowed here, because the caller
+    that suppresses it (`recall`'s per-dir isolation) is the one place that can
+    tell "this corpus could not answer" apart from "this corpus had nothing to
+    say" — and on the task path those are `task:index-unavailable` and
+    `task:nomatch`, two different things to tell an operator.
+
+    The alternative, stopping the per-term walk where it stands, is the one
+    thing this must not do: `_record_matched` produces the evidence
+    `_passes_floor` counts, so a walk that stopped early hands the floor a
+    deflated `n_matched` for a hit that really did match, and the run records
+    an absence it invented.
+    """
+
+
+class _IndexTruncated(OSError):
+    """An empty index whose cause is the budget rather than the filesystem.
+
+    An OSError subclass so every existing handler keeps treating it the way it
+    treated the unreadable case — the recovery is identical, and only the
+    RECORD differs. `_fts_dir` catches this one first and writes `truncated`,
+    which is the difference between telling an operator to check file
+    permissions and telling them their store outgrew the budget.
+    """
+
+
 def _fts_sync(
     con: sqlite3.Connection, root: str, deadline: float | None = None
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     """Bring the index in line with the corpus. The walk is authoritative.
 
-    Returns `(files, spared, unwalked)` for `_fts_note_build`: how many files
+    Returns `(files, spared, unwalked, truncated)` for `_fts_note_build`: how many files
     this walk actually read into the index, and how much of the corpus it could
     not account for. All three, not just the first, because `files` alone
     cannot be trusted without them — a corpus nobody can read walks to zero
@@ -1982,14 +2018,33 @@ def _fts_sync(
     indistinguishable from a corpus with nothing to say once the rows are
     gone, and "no hits" is an answer the caller trusts.
 
-    `deadline` TRUNCATES THE STAGING WALK, and it is the only thing that
-    bounds this function at all. The callers' budgets were admission checks
-    between corpus dirs, never a bound on work inside one, and a cold build is
-    the one unbounded stage in the hook: measured, 2800 files of prose take
-    11.3 s to index from nothing, which is past both the task path's 7 s budget
-    and its 10 s harness kill. Past the kill the failure does not self-heal —
-    each attempt discards the WAL it had written and starts again, so every
-    spawn pays the full timeout and receives nothing, indefinitely.
+    `deadline` TRUNCATES BOTH LOOPS, and it is the only thing that bounds this
+    function at all. The callers' budgets were admission checks between corpus
+    dirs, never a bound on work inside one, and a cold build is the one
+    unbounded stage in the hook: measured, 2800 files of prose take 11.3 s to
+    index from nothing, which is past both the task path's 7 s budget and its
+    10 s harness kill. Past the kill the failure does not self-heal — each
+    attempt discards the WAL it had written and starts again, so every spawn
+    pays the full timeout and receives nothing, indefinitely.
+
+    BOTH LOOPS, because the first version of this bound checked the clock only
+    in the staging walk that READS the files, which is ~1% of a cold build:
+    reads cost ~43 us/file and the tokenize-and-insert transaction ~5 ms, so a
+    7-second budget truncated nothing until a corpus reached ~163,000 files
+    while the transaction blew that budget at ~1500. Measured on the reference
+    corpus, the whole sync ran 17.8 s under a 7 s deadline with nothing
+    truncated at all. The INSERT loop is interruptible at file granularity —
+    the executemany is one file's chunks — so the transaction commits the
+    slice it reached and the rest is spared.
+
+    The transaction always inserts at least one file, whatever the clock says.
+    Staging truncates against the same instant, so on a corpus large enough to
+    exhaust the budget on READS the transaction would otherwise open, find
+    itself already past the deadline, and commit nothing — the same
+    never-converges loop this bound exists to end, reached from the other
+    side. One file a run is a poor rate and it is a rate; it takes a corpus
+    around 160,000 files to reach it at the task path's budget, and the answer
+    there is a larger budget rather than a smaller slice.
 
     Truncating converts that into convergence. A path this run did not get to
     is moved into `spared`, which is exactly the classification an unreadable
@@ -2037,9 +2092,6 @@ def _fts_sync(
         except OSError:
             spared.add(path)
             del disk[path]  # unreadable is not indexable; its old rows stand
-    # Visible in the soak log, because a truncated sync and a small corpus
-    # otherwise produce the same record: a low file count and no error.
-    _LEX_COUNTS["lex_deadline"] += truncated
     # What to sweep is decided HERE, from the walk's own snapshot, and carries
     # each candidate's identity with it. The re-read under the lock is a better
     # picture of the index but a worse one of the corpus: it names rows written
@@ -2050,9 +2102,26 @@ def _fts_sync(
         con.execute("BEGIN IMMEDIATE")
         try:
             stored = _fts_identity(con)
-            for path, ident in disk.items():
+            # A list rather than the live view: the rest of the queue has to be
+            # nameable from inside the loop to be spared, and the backstop
+            # below already mutates `spared` while this iterates.
+            planned = list(disk.items())
+            inserted = 0
+            for n, (path, ident) in enumerate(planned):
                 if stored.get(path) == ident:
                     continue
+                if inserted and deadline is not None and time.monotonic() >= deadline:
+                    # Out of time with work committed. Everything still owed is
+                    # spared — the same classification the staging walk and an
+                    # unreadable file get, and it carries the same guarantee:
+                    # `sweep` was computed before this transaction from paths
+                    # the walk never saw, so stopping early leaves rows
+                    # standing rather than deleting any on the strength of work
+                    # that did not happen.
+                    rest = [p for p, i in planned[n:] if stored.get(p) != i]
+                    spared.update(rest)
+                    truncated += len(rest)
+                    break
                 if path in staged:
                     sections = staged[path]
                 else:
@@ -2074,6 +2143,7 @@ def _fts_sync(
                     "INSERT INTO chunks VALUES (?, ?, ?, ?, ?)",
                     [(path, *ident, section) for section in sections],
                 )
+                inserted += 1
             for path, ident in sweep.items():
                 if stored.get(path) != ident:
                     # Its row changed, or is gone, since the walk. Either way
@@ -2090,21 +2160,41 @@ def _fts_sync(
             # too, but not before that read.
             con.rollback()
             raise
-    # Counted here, where `spared` is final: the staging loop and the
-    # in-transaction backstop both add to it after _fts_scan returned.
+    # Counted here, where both are final: the staging loop, the deadline break
+    # and the in-transaction backstop all add to `spared` after _fts_scan
+    # returned, and two of the three also truncate. Visible in the soak log
+    # because a truncated sync and a small corpus otherwise produce the same
+    # record — a low file count and no error.
     _LEX_COUNTS["lex_spared"] += len(spared)
+    _LEX_COUNTS["lex_deadline"] += truncated
     if (spared or unwalked) and not _fts_answerable(con):
+        if truncated == len(spared) and not unwalked:
+            # Nothing here is unreadable; there was no time. Said in the words
+            # of the actual cause, because this message is what an operator
+            # reads first and "unreadable" sends them at the filesystem.
+            raise _IndexTruncated(f"index empty and {root} not indexed in budget")
         raise OSError(f"index empty and part of {root} unreadable")
     # `disk` still holds any path the in-transaction backstop failed to reopen
     # — it cannot be deleted there, since that loop iterates the live dict —
     # so the subtraction happens here instead. Every other spared path was
     # either never in `disk` or already removed by the staging loop, so one
     # difference covers all of them.
-    return len(disk.keys() - spared), len(spared), len(unwalked)
+    return len(disk.keys() - spared), len(spared), len(unwalked), truncated
 
 
-def _fts_search(con: sqlite3.Connection, query: str) -> list[str]:
+def _fts_search(
+    con: sqlite3.Connection, query: str, deadline: float | None = None
+) -> list[str]:
     """Query one index; return file paths best-first.
+
+    `deadline` bounds this half of the stage the way it bounds the sync, and
+    for the same reason: the task path admits up to TASK_QUERY_MAX_TERMS,
+    fifty times the prompt path's cap, and both the OR'd MATCH below and the
+    per-term walk after it are linear in that. Measured warm on a 2800-file
+    index, a 12 KB brief spent 6.2 s here — past the 7 s budget and the 10 s
+    harness kill, on the stage that was supposed to be the cheap one. Checked
+    BEFORE the MATCH rather than after, since that single query is 53% of the
+    cost and finishing it would be paying the bill this exists to refuse.
 
     Terms are OR-ed quoted phrases. build_query has already reduced the
     prompt to word-char terms, and quoting each one is what keeps a term
@@ -2133,6 +2223,8 @@ def _fts_search(con: sqlite3.Connection, query: str) -> list[str]:
     match = " OR ".join(f'"{t}"' for t in terms)
     if not match:
         return []
+    if deadline is not None and time.monotonic() >= deadline:
+        raise _QueryTimeout(f"{len(terms)} terms, no budget left to ask")
     rows = con.execute(
         "SELECT path, min(rank) AS r, text, rowid FROM chunks WHERE chunks MATCH ?"
         " GROUP BY path ORDER BY r LIMIT ?",
@@ -2159,12 +2251,15 @@ def _fts_search(con: sqlite3.Connection, query: str) -> list[str]:
         ranked[path] = rowid
         hits.append(path)
     if ranked:
-        _record_matched(con, terms, ranked)
+        _record_matched(con, terms, ranked, deadline)
     return hits
 
 
 def _record_matched(
-    con: sqlite3.Connection, terms: list[str], ranked: dict[str, int]
+    con: sqlite3.Connection,
+    terms: list[str],
+    ranked: dict[str, int],
+    deadline: float | None = None,
 ) -> None:
     """Ask the index which of `terms` it matched in each ranked FILE.
 
@@ -2212,6 +2307,13 @@ def _record_matched(
     for p in paths:
         _LEX_MATCHED[p] = []
     for t in terms:
+        # One corpus-wide MATCH per term, so the loop IS the cost: 2.6 s of a
+        # 6.2 s brief on a 2800-file index. Raising rather than breaking is the
+        # point — see `_QueryTimeout`; the counts this builds are what the
+        # floor judges, and half of them is not a smaller answer, it is a
+        # wrong one.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _QueryTimeout(f"{len(terms)} terms, {t!r} unreached")
         for (p,) in con.execute(
             f"SELECT DISTINCT path FROM chunks WHERE chunks MATCH ? AND path IN ({ph})",  # noqa: S608
             (f'"{t}"', *paths),
@@ -2297,19 +2399,33 @@ def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
         try:
             outcome, files = base, None
             try:
-                files, spared, unwalked = _fts_sync(con, d, deadline)
+                files, spared, unwalked, truncated = _fts_sync(con, d, deadline)
                 # A corpus nobody can read walks to zero files without raising,
                 # and `ok` over zero files is the claim that the corpus is
                 # empty — the exact confusion this sidecar exists to break. The
                 # walk's own account of what it could not reach is the only
                 # thing that separates them.
                 if (spared or unwalked) and outcome == BUILD_OK:
-                    outcome = BUILD_PARTIAL
+                    # TRUNCATED only when the budget is the WHOLE story: a run
+                    # that also failed to read something is `partial`, which is
+                    # the more alarming of the two and the one worth surfacing.
+                    outcome = (
+                        BUILD_TRUNCATED
+                        if truncated == spared and not unwalked
+                        else BUILD_PARTIAL
+                    )
             except sqlite3.OperationalError as exc:
                 if not _fts_busy(exc) or not _fts_answerable(con):
                     raise
                 _LEX_COUNTS["lex_busy_skip"] += 1
                 outcome = BUILD_BUSY
+            except _IndexTruncated:
+                # Readable, and out of time before a single row was committed.
+                # Recorded as itself so the reader is not sent at file
+                # permissions; raised on, because an index that can answer
+                # nothing is not one this stage may answer `no hits` from.
+                _fts_note_build(db, BUILD_TRUNCATED, None)
+                raise
             except OSError:
                 # The sync established that the corpus could not be read at
                 # all. Every exit from here has to leave a record or the last
@@ -2323,7 +2439,7 @@ def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
             # got there.
             _fts_note_build(db, outcome, files)
             noted = True
-            return _fts_search(con, query)
+            return _fts_search(con, query, deadline)
         finally:
             con.close()
 
@@ -3682,7 +3798,9 @@ TASK_BUDGET_SECONDS = 7
 # edge, and a brief slightly longer than the fixtures falls off it.
 #
 # The latency this leaves is bounded by the deadline rather than by the cap —
-# see TASK_BUDGET_SECONDS, which is threaded into the sync that spends it.
+# see TASK_BUDGET_SECONDS, which is threaded into the sync AND into the query
+# stage the caps are about. It was true of the sync alone when it was written,
+# which made it false of exactly the stage these two numbers govern.
 TASK_QUERY_MAX_WORDS = 4000
 TASK_QUERY_MAX_TERMS = 2000
 
@@ -4131,6 +4249,23 @@ def _task_main(payload: dict, t0: float) -> None:
         # told its brief was the problem.
         if gate == "task:stopwords":
             return done("task:stopwords")
+        # THE CERTAIN HALF OF THE SIZE REFUSAL, before the bill rather than
+        # after it. The emission echoes the brief back verbatim, so the brief's
+        # own length is a floor under the emission's: past the bound it can
+        # never produce one that fits, whatever retrieval finds. Everything
+        # between here and the check below — the query build, the sync, the
+        # search, the per-term walk, the per-candidate reads — was being spent
+        # on a refusal already decided, with a spawn blocked for the whole of
+        # it. Same outcome name for the same fact; `picks: 0` is what tells a
+        # reader which of the two sites refused.
+        #
+        # The RAW brief, not `stripped`: what is echoed back is the value the
+        # tool call carried. `_nbytes` rather than `.encode()`, so a lone
+        # surrogate does not raise here — that one still belongs to
+        # `task:unencodable`, at the emission, where the fact is about bytes
+        # that cannot be written.
+        if _nbytes(brief) > PIPE_BUFFER_BOUND:
+            return done("task:oversize", bytes=_nbytes(brief), picks=0)
 
         # Keyed on the tool call, never on the session. A subagent spawned late
         # in a long session would find every pointer it wants already spent by

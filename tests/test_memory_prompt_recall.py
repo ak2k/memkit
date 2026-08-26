@@ -1717,6 +1717,76 @@ def test_a_corpus_that_cannot_be_read_at_all_says_so_rather_than_going_stale(
     assert record["ts"] >= healthy["ts"]
 
 
+def test_a_corpus_that_ran_out_of_budget_is_not_recorded_as_unreadable(
+    corpus: Path, monkeypatch
+) -> None:
+    """The first thing an operator is told decides where they look.
+
+    A store that is perfectly readable and merely larger than the budget was
+    recorded as `partial` — documented as "part of the corpus was unreadable"
+    — or, when the truncation reached no file at all, as `unreadable`, over a
+    message that said `part of <root> unreadable` in as many words. That sends
+    somebody at file permissions when the answer is a store that outgrew a
+    seven-second budget, and `lex_deadline` in `log.jsonl` was the only place
+    the difference existed at all.
+
+    Adding an outcome is backward compatible by the contract already written
+    down: `v` is bumped only for a SHAPE change, and an unrecognised outcome
+    must be read as not-OK.
+    """
+    _many_memos(corpus, 40)
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    for memo in corpus.iterdir():
+        assert os.access(memo, os.R_OK), memo
+
+    _tick(monkeypatch)
+    # The sync spent the budget, so the query stage after it refuses rather
+    # than asking a question it cannot finish — the record is written between
+    # the two, which is where a reader's account of the index comes from.
+    with pytest.raises(hook._QueryTimeout):
+        hook._fts_dir("sprocket backlash", str(corpus), 1045.5)
+    record = json.loads(build.read_text())
+    assert record["outcome"] == hook.BUILD_TRUNCATED, record
+    assert 0 < record["files"] < 40, record
+
+    # And the empty case: readable corpus, no time at all, so the index can
+    # answer nothing. Still a refusal — an empty index answers "no hits" and is
+    # believed — but recorded and worded as what it is.
+    for suffix in ("", "-wal", "-shm"):
+        Path(hook._fts_db(str(corpus)) + suffix).unlink(missing_ok=True)
+    _tick(monkeypatch)
+    with pytest.raises(OSError, match="not indexed in budget") as raised:
+        hook._fts_dir("sprocket backlash", str(corpus), 0.0)
+    assert isinstance(raised.value, hook._IndexTruncated)
+    record = json.loads(build.read_text())
+    assert record["outcome"] == hook.BUILD_TRUNCATED, record
+    assert record["files"] is None, record
+
+
+def test_a_run_that_is_both_short_of_budget_and_short_of_a_file_says_partial(
+    corpus: Path, monkeypatch
+) -> None:
+    """`truncated` is for the case where the budget is the WHOLE story.
+
+    Something the walk could not READ is the more alarming of the two and the
+    one worth surfacing, so a run that is both keeps `partial` — otherwise a
+    permissions fault hides behind a busy store for as long as the store stays
+    busy.
+    """
+    _many_memos(corpus, 40)
+    unreadable = Path(_memo(corpus, "locked.md", "# locked\n\nsprocket shim"))
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    unreadable.chmod(0o000)
+    try:
+        _tick(monkeypatch)
+        with pytest.raises(hook._QueryTimeout):
+            hook._fts_dir("sprocket backlash", str(corpus), 1045.5)
+    finally:
+        unreadable.chmod(0o644)
+    record = json.loads(build.read_text())
+    assert record["outcome"] == hook.BUILD_PARTIAL, record
+
+
 def test_a_sidecar_write_that_fails_is_counted_where_a_reader_can_see_it(
     corpus: Path, monkeypatch
 ) -> None:
@@ -7354,6 +7424,54 @@ def test_a_brief_at_the_emission_bound_is_refused_rather_than_shed(
     assert record["bytes"] > hook.PIPE_BUFFER_BOUND
 
 
+def test_a_brief_already_past_the_bound_never_reaches_retrieval(
+    tmp_path, monkeypatch
+) -> None:
+    """The refusal above is CERTAIN at entry, and it was made after the bill.
+
+    `task_gate` has no length ceiling on purpose — a brief that long is a
+    brief — so a brief of any size reached `recall`: the query build, the index
+    sync, the corpus-wide search, the per-term walk, the per-candidate file
+    reads and the block assembly, all of it, and then the size test at the end.
+    But the emission echoes the brief back verbatim, so its length is a floor
+    under the emission's: a brief whose own bytes exceed the bound can never
+    produce one that fits, which is what the bound's own comment says.
+
+    This is a synchronous PreToolUse hook, so every millisecond of that is a
+    spawn held up for nothing. Measured on this branch against a 2800-file
+    store, warm: 315-327 ms per refusal, and cold the same brief paid the full
+    index build.
+    """
+    called: list[str] = []
+    monkeypatch.setattr(
+        hook,
+        "recall",
+        lambda *a, **kw: called.append("recall") or [],
+    )
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(tmp_path)])
+    monkeypatch.setattr(hook, "_soak_log", lambda rec: records.append(dict(rec)))
+    records: list[dict] = []
+    brief = ("shim stack backlash gearbox sprocket alignment torque " * 40 + "\n") * 12
+    assert len(brief.encode()) > hook.PIPE_BUFFER_BOUND, len(brief.encode())
+
+    hook._task_main(
+        {
+            "hook_event_name": hook.TASK_EVENT,
+            "tool_name": hook.TASK_TOOL,
+            "tool_input": {hook.TASK_PROMPT_KEY: brief},
+            "tool_use_id": "toolu_early",
+            "session_id": "s-early",
+        },
+        time.monotonic(),
+    )
+    assert called == [], "retrieval ran for a refusal that was certain at entry"
+    assert records[-1]["outcome"] == "task:oversize", records[-1]
+    # One outcome name for one fact, and `picks: 0` is how a reader tells the
+    # two call sites apart: nothing was retrieved, so nothing was picked.
+    assert records[-1]["picks"] == 0, records[-1]
+    assert records[-1]["bytes"] > hook.PIPE_BUFFER_BOUND, records[-1]
+
+
 def test_an_event_for_another_tool_says_so_instead_of_going_quiet(
     tmp_path,
 ) -> None:
@@ -7928,10 +8046,12 @@ def _many_memos(root: Path, count: int) -> list[str]:
 def _tick(monkeypatch, step: float = 1.0):
     """A monotonic clock that advances a fixed amount per reading.
 
-    `_fts_sync` reads the clock once per candidate file, so a deadline of
-    `start + k*step` admits exactly k files. Driving this with a real clock
-    makes the count a property of the machine's speed, which is how a
-    convergence test becomes a flake.
+    `_fts_sync` reads the clock once per candidate file in the staging walk
+    and once per file it is about to INSERT, so a deadline of `start + k*step`
+    admits k readings split between the two loops. Driving this with a real
+    clock makes the counts a property of the machine's speed, which is how a
+    convergence test becomes a flake — and driving the BOUND with it makes the
+    case vacuous, which is why the wall-clock case above exists as well.
     """
     state = {"now": 1000.0}
 
@@ -7941,6 +8061,91 @@ def _tick(monkeypatch, step: float = 1.0):
 
     monkeypatch.setattr(hook.time, "monotonic", now)
     return state
+
+
+def _bulky_memos(root: Path, count: int, sections: int = 12, words: int = 250) -> None:
+    """A corpus whose INDEXING cost is the thing worth bounding.
+
+    `_many_memos` writes one-line memories, which stage and insert in
+    microseconds — fine for arithmetic against a synthetic clock, useless for
+    a claim about wall time. These are ~30 KB each, which is what makes a
+    few hundred of them cost seconds to tokenize rather than milliseconds.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    vocab = [
+        "gearbox", "shim", "backlash", "sprocket", "alignment", "torque",
+        "flange", "fastener", "conveyor", "bearing", "spindle", "coupling",
+        "gasket", "bracket", "pulley",
+    ]
+    for i in range(count):
+        body = "\n\n".join(
+            f"## Section {s}\n\n"
+            + " ".join(
+                f"{vocab[(i + s + k) % len(vocab)]}{(i * k) % 997}" for k in range(words)
+            )
+            for s in range(sections)
+        )
+        (root / f"m{i:05d}.md").write_text(
+            f"---\nname: m{i}\ndescription: memory {i}\ntype: reference\n---\n\n"
+            f"# M{i}\n\n{body}\n"
+        )
+
+
+def test_the_budget_bounds_the_sync_in_the_clock_it_is_written_in(
+    corpus: Path, tmp_path
+) -> None:
+    """The one case the synthetic clock cannot make: a REAL deadline over a
+    real cold build, asserted on wall time.
+
+    A clock that advances per reading only advances where the code reads it,
+    and `_fts_sync` read it in the staging walk alone — which is ~1% of a cold
+    build. So the arithmetic cases below passed for the same reason the defect
+    survived: the transaction that does the work could not move the clock, and
+    deleting the bound entirely left every one of them green. Measured on the
+    review's reference corpus, a 7-second budget truncated nothing and the
+    sync ran 17.8 seconds.
+
+    Self-calibrating rather than pinned to a number of seconds: the same
+    corpus shape is built twice, once with no deadline to measure what this
+    machine costs, and the assertion is that a quarter-budget run comes in
+    under half of it. A machine-speed constant here would be a flake on one
+    machine and vacuous on another.
+    """
+    baseline = tmp_path / "baseline" / "search"
+    _bulky_memos(baseline, 400)
+    con = hook._fts_connect(hook._fts_db(str(baseline)))
+    try:
+        start = time.monotonic()
+        hook._fts_sync(con, str(baseline))
+        unbounded = time.monotonic() - start
+    finally:
+        con.close()
+    # Anti-vacuity: if a cold build of this corpus is already fast, the case
+    # below cannot tell a bound from the absence of one. Loud rather than
+    # silent — the answer is a bigger corpus, not a passing test.
+    assert unbounded > 0.3, f"corpus too small to bound anything: {unbounded:.3f}s"
+
+    _bulky_memos(corpus, 400)
+    for key in hook._LEX_COUNTS:
+        hook._LEX_COUNTS[key] = 0
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        start = time.monotonic()
+        files, spared, unwalked, truncated = hook._fts_sync(
+            con, str(corpus), start + unbounded / 4
+        )
+        elapsed = time.monotonic() - start
+        rows = con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0]
+    finally:
+        con.close()
+    assert elapsed < unbounded / 2, (elapsed, unbounded)
+    assert truncated > 0 and hook._LEX_COUNTS["lex_deadline"] == truncated
+    # A slice, not nothing and not everything — and the slice is COMMITTED, or
+    # the next run starts from where this one did and nothing ever converges.
+    assert 0 < files < 400, files
+    assert files + spared == 400, (files, spared)
+    assert unwalked == 0
+    assert rows == files, (rows, files)
 
 
 def test_a_sync_out_of_budget_indexes_a_slice_rather_than_all_or_nothing(
@@ -7957,6 +8162,10 @@ def test_a_sync_out_of_budget_indexes_a_slice_rather_than_all_or_nothing(
     one an unreadable file already gets: a path this run could not account for
     is SPARED, which empties `sweep`, so a truncated pass cannot delete rows on
     the strength of a walk it did not finish.
+
+    The budget here is generous enough for the staging walk to finish, so what
+    it measures is the INSERT loop stopping — which is the loop that holds ~99%
+    of a cold build's cost and had no clock reading in it at all.
     """
     _many_memos(corpus, 40)
     for key in hook._LEX_COUNTS:
@@ -7965,15 +8174,44 @@ def test_a_sync_out_of_budget_indexes_a_slice_rather_than_all_or_nothing(
 
     con = hook._fts_connect(hook._fts_db(str(corpus)))
     try:
-        # Budget for ten of the forty.
-        files, spared, unwalked = hook._fts_sync(con, str(corpus), 1010.5)
-        assert files == 10, files
-        assert spared == 30, spared
+        # Forty readings to stage, then five and a half to insert: the first
+        # insert takes no reading (the loop has to make progress before it may
+        # stop), so six files land.
+        files, spared, unwalked, truncated = hook._fts_sync(con, str(corpus), 1045.5)
+        assert files == 6, files
+        assert spared == 34, spared
         assert unwalked == 0
-        assert hook._LEX_COUNTS["lex_deadline"] == 30
+        assert truncated == 34
+        assert hook._LEX_COUNTS["lex_deadline"] == 34
         # The slice it managed IS committed, and nothing was swept on the
         # strength of a walk that did not finish.
-        assert con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0] == 10
+        assert con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0] == 6
+    finally:
+        con.close()
+
+
+def test_a_sync_whose_budget_went_on_reading_still_commits_one_file(
+    corpus: Path, monkeypatch
+) -> None:
+    """The other side of the same never-converges loop.
+
+    Staging truncates against the same instant the transaction does, so a
+    corpus large enough to spend the whole budget on READS leaves the
+    transaction already past its deadline — and a transaction that then
+    commits nothing puts the next run in exactly the state this one was in.
+    The insert loop therefore always writes one file before it is allowed to
+    stop. One a run is a poor rate and it is a rate; it takes ~163,000 files
+    to reach it at the task path's budget.
+    """
+    _many_memos(corpus, 40)
+    for key in hook._LEX_COUNTS:
+        hook._LEX_COUNTS[key] = 0
+    _tick(monkeypatch)
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        files, spared, unwalked, truncated = hook._fts_sync(con, str(corpus), 1010.5)
+        assert (files, spared, unwalked, truncated) == (1, 39, 0, 39)
+        assert con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0] == 1
     finally:
         con.close()
 
@@ -8006,37 +8244,115 @@ def test_a_truncated_sync_converges_across_runs(corpus: Path, monkeypatch) -> No
         _tick(monkeypatch)
         con = hook._fts_connect(hook._fts_db(str(corpus)))
         try:
-            hook._fts_sync(con, str(corpus), 1008.5)  # eight files a run
+            hook._fts_sync(con, str(corpus), 1045.5)
             seen.append(
                 con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0]
             )
         finally:
             con.close()
-    assert seen == [8, 16, 24, 32, 40, 40], seen
+    # Accelerating, because each run stages fewer stale files than the last and
+    # hands the rest of the budget to the loop that inserts them.
+    assert seen == [6, 18, 40, 40, 40, 40], seen
 
 
-def test_the_deadline_reaches_the_sync_rather_than_stopping_at_the_dir_loop(
+def test_a_query_past_the_budget_errors_rather_than_counting_fewer_terms(
+    corpus: Path, monkeypatch
 ) -> None:
-    """The threading itself, pinned where it can be read: `recall` passes its
-    deadline down to `_fts_dir` and `_fts_dir` on to `_fts_sync`. Checked
-    against the real signatures rather than by driving a clock, because what
-    went wrong was an argument that was never passed."""
+    """The half of the budget that stopped at the sync.
+
+    A WARM index — the case the budget is supposed to make cheap — can still
+    spend more than the whole task budget inside the query, because
+    `_record_matched` issues one corpus-wide MATCH per query term and the task
+    path admits fifty times the prompt path's terms. Measured on a 2800-file
+    index: a 12 KB brief spent 6.2 s in `recall`, 2.6 s of it in that loop,
+    and the rest in a single 1393-term OR'd MATCH. Both are legitimate,
+    emittable briefs.
+
+    ABORTS rather than truncates, and that is the whole point: `n_matched` is
+    counted from what this loop found, and the floor judges it. A loop that
+    stopped early would hand the floor a deflated count for a real hit and
+    record the result under an outcome that says the corpus had nothing to
+    say. An error is a thing the caller can see.
+    """
+    _many_memos(corpus, 5)
+    query = "sprocket backlash shim stack gearbox rebuild"
+    assert hook._fts_dir(query, str(corpus)), "the index has to answer warm"
+
+    # Warm, so the sync reads no clock at all: the first reading in the run is
+    # the query's own.
+    _tick(monkeypatch)
+    with pytest.raises(hook._QueryTimeout):
+        hook._fts_dir(query, str(corpus), 1000.5)
+
+    # And the per-term walk, which is the expensive half: past the search's
+    # own check, expiring inside the loop.
+    _tick(monkeypatch)
+    with pytest.raises(hook._QueryTimeout):
+        hook._fts_dir(query, str(corpus), 1003.5)
+
+
+def test_a_dir_whose_query_ran_out_of_budget_is_an_error_not_an_absence(
+    corpus: Path, monkeypatch
+) -> None:
+    """What the caller sees: `errs_lex`, which the task path turns into
+    `task:index-unavailable`. Not zero hits, which is the answer a caller
+    believes and the subagent path records as a corpus with nothing to say."""
+    _many_memos(corpus, 5)
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    query = "sprocket backlash shim stack gearbox rebuild"
+    assert hook.recall(query), "the index has to answer warm"
+
+    _tick(monkeypatch)
+    rec: dict = {}
+    # 1001 admits the dir; the query's own reading at 1002 is past it.
+    hits = hook.recall(query, stats=rec, deadline=1001.5)
+    assert hits == []
+    assert rec["errs_lex"] == 1, rec
+    assert rec.get("skipped_lex") is None, rec
+
+
+def test_the_deadline_reaches_every_stage_it_is_supposed_to_bound() -> None:
+    """The threading itself, pinned where it can be read.
+
+    Checked against the real signatures rather than by driving a clock,
+    because what went wrong was an argument that was never passed — twice.
+    First `recall` held the deadline at the dir loop, where it could only
+    decline to START a dir; then the sync took it and the QUERY half did not,
+    which left the one-MATCH-per-term walk unbounded under a term cap this
+    branch raised fifty-fold.
+    """
     tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
     fns = {
         n.name: n for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef)
     }
-    for name in ("_fts_dir", "_fts_sync"):
+    for name in ("_fts_dir", "_fts_sync", "_fts_search", "_record_matched"):
         args = [a.arg for a in fns[name].args.args]
         assert "deadline" in args, (name, args)
-    # And the call inside `_fts_dir` forwards it rather than defaulting.
-    call = next(
-        n for n in ast.walk(fns["_fts_dir"])
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "_fts_sync"
-    )
-    assert [a.id for a in call.args if isinstance(a, ast.Name)] == ["con", "d", "deadline"]
+
+    def forwarded(caller: str, callee: str) -> list[str]:
+        call = next(
+            n for n in ast.walk(fns[caller])
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == callee
+        )
+        return [a.id for a in call.args if isinstance(a, ast.Name)]
+
+    # Positionally forwarded rather than defaulted, at every link.
+    assert forwarded("_fts_dir", "_fts_sync") == ["con", "d", "deadline"]
+    assert forwarded("_fts_dir", "_fts_search") == ["con", "query", "deadline"]
+    assert forwarded("_fts_search", "_record_matched") == [
+        "con", "terms", "ranked", "deadline",
+    ]
+    # And both halves actually READ it: a parameter accepted and ignored is
+    # the same defect wearing the signature this test was written to check.
+    for name in ("_fts_sync", "_fts_search", "_record_matched"):
+        reads = [
+            n for n in ast.walk(fns[name])
+            if isinstance(n, ast.Name) and n.id == "deadline"
+        ]
+        assert len(reads) >= 2, (name, len(reads))
 
 
 def test_an_index_that_could_not_answer_is_not_reported_as_no_match(

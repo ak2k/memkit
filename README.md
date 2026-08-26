@@ -518,18 +518,27 @@ only `ok` licenses reading `files` as the size of the corpus. Under every other
 outcome the count is a floor or absent (`null` when the run never got far
 enough to count). Those two together are what let the vocabulary grow without
 older readers mistaking a new failure state for a healthy one. Today it is
-`ok`, `partial` (part of the corpus was unreadable), `busy` (another session
-held the write lock, so nothing was counted), `unreadable` (the corpus could
-not be read at all) and `rebuilt` (the index was damaged and built again).
+`ok`, `partial` (part of the corpus was unreadable), `truncated` (the corpus is
+readable and indexing it ran out of the run's budget, so the next run carries
+on from here), `busy` (another session held the write lock, so nothing was
+counted), `unreadable` (the corpus could not be read at all) and `rebuilt` (the
+index was damaged and built again).
 
-One more file per session: `<session-uuid>.json`, holding the once-per-session
-dedup ledger. It is disposable — deleting it lets that session offer a memory
-again — and one is written per session, so a long-lived cache directory
-accumulates them.
+Two more kinds of file, both disposable dedup ledgers:
+
+- `<session-uuid>.json`, the once-per-session ledger — deleting it lets that
+  session offer a memory again. One per session, so a long-lived cache
+  directory accumulates them.
+- `t-<tool-use-id>.json`, the per-tool-call ledger the subagent path writes.
+  One per served `Agent` spawn, so this directory grows with SPAWNS rather
+  than with sessions — an order of magnitude faster on an agent-orchestrated
+  workload.
 
 A sweep that collects these files must take the index, its `.root` and its
 `.build` together: an orphaned `.build` outliving its index reads as a real
-record of a corpus that is no longer there.
+record of a corpus that is no longer there. The two ledgers have no such
+pairing and are safe to collect on filename and mtime alone, which is what the
+`t-` prefix is for.
 
 #### `log.jsonl` — the soak log, and what a reader may assume of it
 

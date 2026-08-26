@@ -3602,6 +3602,31 @@ def test_the_docs_count_the_hooks_the_registration_actually_declares() -> None:
                 start = at + 1
 
 
+def test_the_docs_name_every_build_outcome_and_every_state_file() -> None:
+    """Two inventories a reader builds a sweeper and a dashboard against.
+
+    The `.build` vocabulary is a documented contract — "these are all of them",
+    with a stated rule for the unrecognised ones — and a new outcome that never
+    reaches the list leaves the reader classifying it by the rule instead of by
+    name. The derived-state list is the one an external sweeper is written
+    from: it enumerated one non-index file while this tree writes two, so a
+    sweeper built from it globbed the session ledgers and left every per-spawn
+    one behind.
+    """
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    outcomes = {
+        value
+        for name, value in vars(hook).items()
+        if name.startswith("BUILD_") and isinstance(value, str)
+    }
+    assert len(outcomes) >= 6, outcomes
+    for outcome in outcomes:
+        assert f"`{outcome}`" in text, outcome
+    # The per-spawn ledger, by the prefix a sweeper would glob for.
+    assert f"`{hook.TASK_STATE_PREFIX}<tool-use-id>.json`" in text
+    assert "`<session-uuid>.json`" in text
+
+
 def test_the_docs_state_the_frame_sizes_the_frames_actually_are() -> None:
     """Both frames' fixed overhead is a documented number a reader subtracts
     from the 16 KiB refusal bound to work out which of their briefs still get
