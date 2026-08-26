@@ -24,11 +24,24 @@ not on the pinned build, and a criterion that counted it would be unreachable
 for almost everybody — which makes the whole report unreadable, because the
 one thing a reader takes from it is whether anything is wrong.
 
-READ-ONLY, with one disclosed exception: `hook-path` executes the installed
-wrapper, because a fixed-query retrieval proves the store and not the path that
-serves pointers. What that run touches is its own derived state, and the
-`state-dir` check says so. Read-only means no store write, no config write, no
-settings write.
+READ-ONLY MEANS: no store write, no config write, no settings write. Nothing
+doctor does can change what an adopter would lose.
+
+It is not "touches nothing", and the difference is disclosed rather than
+finessed. Three things it does write, all of them derived state that rebuilds
+itself:
+
+- `hook-path` executes the installed wrapper, because a fixed-query retrieval
+  proves the store and not the path that serves pointers. That run appends one
+  soak record and may trigger the hourly sweep.
+- `canary-retrieval` searches each store, which syncs — and on a damaged index
+  rebuilds — the FTS cache for that corpus. Deliberately the warm one the
+  adopter uses: a scratch cache would report green over an index nobody reads.
+- both of the above resolve the state directory, which creates it when it is
+  absent.
+
+The `state-dir` check says so in the report, and `docs/ADMISSION.md` says it
+where somebody decides whether to install.
 """
 
 from __future__ import annotations
@@ -2016,9 +2029,14 @@ def _subagent_delivery(machine: Machine) -> list[Check]:
             Check(
                 "subagent-delivery",
                 UNKNOWN,
-                "no PreToolUse-on-Agent entry in this payload's hooks.json, so "
-                "the subagent path is not in this build. Subagents get no "
-                "pointers and nothing is wrong",
+                (
+                    "no PreToolUse-on-Agent entry in this payload's hooks.json"
+                    if root
+                    else "there is no plugin payload here to register a "
+                    "PreToolUse hook from"
+                )
+                + ", so the subagent path is not in this build. Subagents get "
+                "no pointers and nothing is wrong",
             )
         ]
     task = [
@@ -2401,7 +2419,13 @@ def _interpreter(machine: Machine) -> list[Check]:
                 terminal=True,
             )
         ]
-    where = " ".join(command) if command else "?"
+    # `_display_path` on the binary, like every other path this report prints:
+    # the detail is pasted into issues, and an absolute interpreter path under
+    # `/Users/<name>` or `/home/<name>` carries the username while every
+    # neighbouring line has been shortened.
+    where = (
+        " ".join([_display_path(command[0]), *command[1:]]) if command else "?"
+    )
     if route == "uvx":
         return [
             Check(
@@ -2507,8 +2531,8 @@ def _state_dir_check(machine: Machine) -> list[Check]:
             "%Y-%m-%d %H:%M", time.localtime(stamp)
         )
     footprint = (
-        ". This doctor run appended one soak record here and may have run the "
-        "sweep"
+        ". This doctor run appended one soak record here, synced each store's "
+        "index, and may have run the sweep"
         if machine.hook_probed
         else ""
     )
@@ -2785,8 +2809,11 @@ def collect(machine: Machine, wanted: list[str] | None = None) -> list[Check]:
                     check_id,
                     UNKNOWN,
                     f"the check itself failed: {type(exc).__name__}: {exc}",
-                    "This is a defect in memkit, not in your setup. The other "
+                    "This is a defect in memkit, not in your setup, and "
+                    "nothing you or an agent can do here changes it. The other "
                     "checks in this report still stand.",
+                    actor=USER,
+                    terminal=True,
                 )
             )
     return out

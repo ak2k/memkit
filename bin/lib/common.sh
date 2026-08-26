@@ -112,6 +112,14 @@ memkit_errlog() {
     _dir=$(memkit_state_dir)
     [ -d "$_dir" ] || return 0
     _errlog=$_dir/$MEMKIT_ERRLOG_NAME
+    # A file that exists and cannot be READ skips rotation, so repeated
+    # refusals grow it without bound — the file that reports on a cache
+    # becoming the thing it reports on. Nothing here can read it to keep the
+    # newest half, so the bound is kept the only way left: start again. What is
+    # lost is a log this process could not have shown anybody anyway.
+    if [ -e "$_errlog" ] && [ ! -r "$_errlog" ]; then
+        : > "$_errlog" 2>/dev/null || return 0
+    fi
     if [ -r "$_errlog" ]; then
         _lines=0
         # `read` reports failure on a final line with no newline, which is a

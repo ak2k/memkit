@@ -2630,10 +2630,12 @@ def _root_state(state_dir: str, stem: str) -> str:
 
     `no-sidecar` is separate from `unknown` and it is the state that made
     predicate B necessary. The sidecar is written best-effort with `OSError`
-    suppressed, and a database whose root is gone is never reopened — so an
-    index that failed to write one can never acquire one, and the ENOENT
-    predicate alone leaves it on disk forever. Thirty-six of these on the
-    author's cache.
+    suppressed, so a run that could not write one leaves an index the ENOENT
+    predicate can never reach. A later search over the SAME root does rewrite
+    it — `_fts_note_root` recreates a missing sidecar — so this is not
+    unrecoverable in principle; what makes it permanent in practice is that a
+    root nothing searches again is exactly the root whose index should go.
+    Thirty-six of these on the author's cache.
     """
     sidecar = os.path.join(state_dir, stem + ".root")
     try:
@@ -2643,7 +2645,12 @@ def _root_state(state_dir: str, stem: str) -> str:
         return ROOT_NO_SIDECAR
     except OSError:
         return ROOT_UNKNOWN
-    if not root:
+    if not root or not os.path.isabs(root):
+        # A relative root resolves against whatever directory this process
+        # stands in, so a stat of it answers about somewhere else — and the
+        # answer this function gives decides whether five files are unlinked.
+        # A config CAN produce one: `Config._resolve` returns a `kind: path`
+        # root as written.
         return ROOT_UNKNOWN
     try:
         os.stat(root)
@@ -2770,7 +2777,12 @@ def _sweep(deadline: float | None = None) -> dict:
     report on it, and doctor reads the directory rather than a claim about it.
     """
     stats = {"stat": 0, "unlink": 0, "skipped": False, "cursor": ""}
-    state_dir = _state_dir_candidate()
+    # The directory this process is actually WRITING to when the preferred one
+    # could not be made — otherwise the degraded path accumulates forever,
+    # since the sweep only ever looked at the candidate. `_TMP_STATE_DIR` is
+    # set only after the fallback has been taken, so reading it here neither
+    # creates anything nor changes the ordinary case.
+    state_dir = _TMP_STATE_DIR or _state_dir_candidate()
     if not os.path.isdir(state_dir):
         # An install nobody configured has no state directory, and the sweep is
         # not the thing that creates one.

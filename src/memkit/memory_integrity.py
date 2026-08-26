@@ -201,7 +201,7 @@ def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
                 link_roots=link_roots,
                 cited_roots=cfg.cited_roots,
                 cited_suffixes=cfg.extra_suffixes,
-                citations_declared=getattr(cfg, "citations_declared", True),
+                citations_declared=cfg.citations_declared,
                 blame_base=cfg.blame_base,
             )
         )

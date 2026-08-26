@@ -35,6 +35,10 @@ two accounts and no way to tell which one was measured.
 
 Every check carries `status`, `actor` and `terminal`.
 
+- `schema` is the envelope's own version, and the rule for it is the config
+  reader's: **a number higher than the one you know is not a report to read
+  half of.** Say so and stop. The check ids and the status set may both grow
+  without it moving; a bump means the shape changed.
 - `status` is one of `PASS`, `INFO`, `ASSUMPTIONS-UNVERIFIED`, `UNKNOWN`,
   `FAIL`. Nothing else is ever emitted; a value outside that set is a bug worth
   reporting, not a case to guess at.

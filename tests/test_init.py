@@ -17,9 +17,11 @@ import argparse
 import json
 import os
 import pathlib
+import signal
 import stat
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -1319,3 +1321,94 @@ def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
     body = target.read_text()
     assert "something they added meanwhile" in body, body
     assert body.rstrip().endswith(init._import_line(str(profile / "notes")))
+
+
+def test_a_refusal_raised_after_a_write_is_never_reported_as_refused(
+    profile, monkeypatch
+) -> None:
+    """Exit 5 promises "nothing was written", and the skill's table tells the
+    agent so.
+
+    `run()` wrapped the whole apply in `except Refusal`, so a refusal raised
+    below the first write returned 5 after files had landed — and this stopped
+    being hypothetical the moment the settings write started re-deriving under
+    the lock, since `_settings_with` refuses an unparseable file at apply time.
+    An agent reading 5 goes looking for a machine nothing touched.
+    """
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(profile, auto_dream_off=True, store=str(profile / "notes"))
+    # The harness writes something unparseable between plan and apply, which is
+    # the window the re-derivation exists for.
+    settings = profile / "claude-config" / "settings.json"
+
+    real = init._run_checker
+
+    def corrupt(machine_, config_):
+        settings.write_text("{ not json", encoding="utf-8")
+        return real(machine_, config_)
+
+    monkeypatch.setattr(init, "_run_checker", corrupt)
+    code = init.apply_plan(machine, plan, config)
+    assert code == init.EXIT_INCOMPLETE, code
+    assert os.path.isfile(config), "nothing landed, so this is not the case"
+
+
+def test_a_refusal_before_the_first_write_is_still_a_refusal(profile) -> None:
+    """The other side, or the change above would have turned every refusal into
+    an incomplete run."""
+    out = _run(
+        "--dry-run", "--store", "notes",
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert out.returncode == init.EXIT_REFUSED, out.stderr
+
+
+def test_a_store_whose_canary_belongs_to_another_config_is_refused(profile):
+    """The nonce is keyed on the CONFIG so one fixed query answers for every
+    store that config names. The cost is that two configs over one store
+    disagree about it — and rewriting the canary would silently take the first
+    config's `canary-retrieval` check away, which is the check that exists to
+    say whether that store answers at all."""
+    machine = doctor.Machine()
+    store = profile / "shared"
+    first = _plan(profile, store=str(store))
+    assert init.apply_plan(machine, first, init._resolve_config(machine, None)) == 0
+    refusal = _refuses(
+        profile, "canary-belongs-to-another-config",
+        store=str(store), config=str(profile / "second.json"),
+    )
+    assert "mkc" in refusal.message
+
+
+def test_the_lock_gives_up_rather_than_waiting_forever(profile, monkeypatch):
+    """A plain `LOCK_EX` has no timeout, so a live process holding the file
+    hung `init --confirm` with no output — indistinguishable to a waiting
+    caller from a slow checker run. Proceeding unlocked is what this lock
+    already does when `flock` is unavailable, so the bound adds no new failure
+    mode; it removes the one that never ends."""
+    machine = doctor.Machine()
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    monkeypatch.setattr(init, "LOCK_WAIT_SECONDS", 0.2)
+    held = init._Lock(str(machine.state_dir))
+    held.__enter__()
+
+    # A HARD BOUND of its own. The failure this catches is a hang, and a test
+    # that waited for one would hang with it — turning a red into a wedged
+    # suite, which is the shape of failure nobody can act on.
+    def _fire(signum, frame):
+        raise TimeoutError("the lock did not give up")
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, 5)
+    try:
+        started = time.monotonic()
+        with init._Lock(str(machine.state_dir)):
+            pass
+        waited = time.monotonic() - started
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+        held.__exit__()
+    assert waited < 5, waited
+    assert waited >= 0.2, waited

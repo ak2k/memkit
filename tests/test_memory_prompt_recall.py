@@ -7152,3 +7152,34 @@ def test_the_unlink_cap_is_the_binding_one_and_says_so(state) -> None:
     stats = hook._sweep()
     assert stats["unlink"] >= 1000, stats
     assert stats["stat"] < hook.SWEEP_MAX_STATS, stats
+
+
+def test_the_degraded_state_directory_is_swept_too(tmp_path, monkeypatch) -> None:
+    """When the preferred directory cannot be made, writers use a private temp
+    one and the sweep only ever looked at the candidate — so the degraded path
+    accumulated forever, on exactly the machines least able to afford it."""
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", str(fallback))
+    monkeypatch.setattr(
+        hook, "_state_dir_candidate", lambda: str(tmp_path / "never-made")
+    )
+    stale = fallback / f"{0xabc:08x}-1111-4222-8333-{0xabc:012x}.json"
+    stale.write_text("{}", encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(stale, (old, old))
+    stats = hook._sweep()
+    assert stats["unlink"] == 1, stats
+    assert not stale.exists()
+
+
+def test_a_relative_recorded_root_is_not_deletion_evidence(state) -> None:
+    """A relative root resolves against whatever directory this process stands
+    in, so a stat of it answers about somewhere else — and the answer decides
+    whether five files are unlinked. A config can produce one: the root
+    resolver returns a `kind: path` root as written."""
+    _index(state, "fts5-relativeroot", root="notes", days=30)
+    assert hook._root_state(str(state), "fts5-relativeroot") == hook.ROOT_UNKNOWN
+    assert hook._collectible(str(state), "fts5-relativeroot.db", time.time()) == ""
+    hook._sweep()
+    assert (state / "fts5-relativeroot.db").is_file()

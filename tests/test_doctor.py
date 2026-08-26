@@ -2233,3 +2233,27 @@ def test_the_payload_manifest_version_is_the_one_version_reports() -> None:
         (REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
     assert doctor._manifest_version(str(REPO)) == manifest["version"]
+
+
+def test_an_unreadable_error_log_is_restarted_rather_than_grown_forever(profile):
+    """A file that exists and cannot be read skipped rotation entirely, so
+    repeated refusals grew it without bound — the file that reports on a cache
+    becoming the thing it reports on. Nothing in a POSIX shell with no external
+    commands can read it to keep the newest half, so the bound is kept the only
+    way left."""
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    log = state / hook.ERRLOG_NAME
+    log.write_text("old\n" * 500, encoding="utf-8")
+    log.chmod(0o200)
+    try:
+        out = _run_wrapper(
+            profile, "memkit-hook", CLAUDE_PLUGIN_OPTION_MEMKITCONFIG="/nope/x.json"
+        )
+        assert out.returncode == 0, out.stderr
+        log.chmod(0o600)
+        lines = log.read_text(encoding="utf-8").splitlines()
+    finally:
+        log.chmod(0o600)
+    assert len(lines) < 500, len(lines)
+    assert lines[-1].startswith("memkit-hook: ")

@@ -35,6 +35,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -69,6 +70,12 @@ SUMMARY = "create a store and wire this machine up to it"
 # because the skill relays it verbatim into a model's context — needs to know
 # when its shape changed.
 MANIFEST_SCHEMA = 1
+
+# How long to wait for another init's advisory lock before giving up and
+# proceeding unlocked. Long enough to cover a concurrent config merge, which is
+# a read, a dict update and a rename; short enough that a caller waiting on
+# this command never wonders whether it is wedged.
+LOCK_WAIT_SECONDS = 10.0
 
 # What init creates when nothing says otherwise. `~/notes` because that is what
 # the README's own worked example has always used, and an adopter who followed
@@ -532,6 +539,27 @@ def _refuse_unwritable(what: str, path: str) -> None:
         )
 
 
+def _foreign_canary(store: str, nonce: str) -> str:
+    """The nonce an existing canary in this store carries, if it is not ours.
+
+    "" when there is no canary, or when it is already ours. The nonce is keyed
+    on the CONFIG so that one fixed query answers for every store that config
+    names; the cost is that two configs over one store disagree about it, and
+    rewriting the file would silently take the first config's `canary-retrieval`
+    check away.
+    """
+    path = os.path.join(store, "search", CANARY_NAME)
+    try:
+        with open(path, encoding="utf-8") as f:
+            body = f.read(4096)
+    except (OSError, ValueError):
+        return ""
+    found = re.search(r"\bmkc[0-9a-f]{10}\b", body)
+    if not found or found.group(0) == nonce:
+        return ""
+    return found.group(0)
+
+
 def _stray_markdown(store: str) -> list:
     """Markdown at a store's root that a `search/` would strand."""
     out = []
@@ -665,6 +693,19 @@ def check_refusals(
             "seed. A seeded memory whose ledger nobody checked is a store the "
             "checker calls broken, and half-completing is worse than not "
             "starting.",
+        )
+
+    seeded = _foreign_canary(store_path, _canary_nonce(config_path))
+    if seeded:
+        raise Refusal(
+            "canary-belongs-to-another-config",
+            f"{_display_path(store_path)} already holds a canary carrying "
+            f"nonce {seeded!r}, and this config's is "
+            f"{_canary_nonce(config_path)!r}. The nonce is keyed on the config "
+            "so that one config's fixed query answers for all of its stores; "
+            "two configs over one store means rewriting the canary would take "
+            "the other one's doctor check away. Point this init at the config "
+            "that already owns the store, or give it a store of its own.",
         )
 
     if os.path.isdir(store_path):
@@ -1202,10 +1243,10 @@ def run(args: argparse.Namespace) -> int:
     print(plan.render())
     print()
     print("applying:")
-    try:
-        return apply_plan(machine, plan, config_path)
-    except Refusal as refusal:
-        return _refuse(refusal)
+    # No `except Refusal` here: `apply_plan` owns every refusal raised past its
+    # first write and reports it as incomplete, because exit 5's promise is
+    # about the filesystem rather than about where the exception came from.
+    return apply_plan(machine, plan, config_path)
 
 
 def _refuse(refusal: Refusal) -> int:
@@ -1316,7 +1357,22 @@ class _Lock:
             import fcntl
 
             self._fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
-            fcntl.flock(self._fd, fcntl.LOCK_EX)
+            # NON-BLOCKING, retried against a bound. A plain `LOCK_EX` has no
+            # timeout, so a live process holding this file hung `init
+            # --confirm` forever with no output — indistinguishable to the
+            # caller from a slow checker run, on a command an agent invoked and
+            # is waiting on. Giving up and proceeding is what this lock already
+            # does when `flock` is unavailable, so the bounded wait adds no new
+            # failure mode; it only stops the one that never ends.
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
         except (ImportError, OSError):
             if self._fd is not None:
                 with contextlib.suppress(OSError):
@@ -1410,6 +1466,24 @@ def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
     for action in plan.pending:
         try:
             code = _perform(machine, journal, action, config_path)
+        except Refusal as refusal:
+            # A refusal raised BELOW the first write is not a refusal any more.
+            # Exit 5 promises "nothing was written" and the skill's table tells
+            # the agent so, and this became reachable the moment the settings
+            # write started re-deriving under the lock: `_settings_with`
+            # refuses an unparseable file at apply time, by which point the
+            # config and the store are on disk. The reason still goes to the
+            # caller; only the code changes, to the one whose move is to fix
+            # what the message names and run init again.
+            print(
+                f"memkit init: refused mid-apply ({refusal.name})\n"
+                f"{refusal.message}\nWhat was done before it is recorded in "
+                f"{_display_path(journal.path)}. Fix what the message names, "
+                "then re-run `init --dry-run` for a fresh digest and confirm "
+                "that.",
+                file=sys.stderr,
+            )
+            return EXIT_INCOMPLETE
         except OSError as exc:
             # Everything before this is journalled and is a no-op on the next
             # run. Naming the journal is what makes "re-run it" a safe

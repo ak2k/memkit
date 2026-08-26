@@ -341,7 +341,11 @@ one surface that reads the settings value directly, which is what lets it tell
   data, supplied in config; memkit ships none.
 - **`memkit`** — the dispatcher setup and diagnosis hang off, and the two
   subcommands the plugin exposes as skills *(from the next release)*:
-  - `memkit doctor [--json]` — read-only, one envelope, one line per check.
+  - `memkit doctor [--json]` — one envelope, one line per check. Read-only in
+    the sense that matters — no store write, no config write, no settings
+    write — and not in the sense of touching nothing: it runs the installed
+    hook once, syncs each store's index, and may trigger the hourly sweep. The
+    report's own `state-dir` line says so.
     Runs the *Why nothing appeared* list against your machine, including one
     real run of the installed hook, because a store that answers proves nothing
     about the path that serves prompts. Exit 0 when nothing FAILs, 1 otherwise.
