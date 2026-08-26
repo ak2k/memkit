@@ -2786,12 +2786,10 @@ def _sweep(deadline: float | None = None) -> dict:
     #
     # Each carries its own stamp and cursor, so the interval and the position
     # are per-directory and neither can starve the other.
-    passes = [
-        _sweep_dir(state_dir, stats, deadline)
-        for state_dir in dict.fromkeys(
-            [_state_dir_candidate(), *([_TMP_STATE_DIR] if _TMP_STATE_DIR else [])]
-        )
-    ]
+    state_dirs = [_state_dir_candidate()]
+    if _TMP_STATE_DIR and _TMP_STATE_DIR not in state_dirs:
+        state_dirs.append(_TMP_STATE_DIR)
+    passes = [_sweep_dir(state_dir, stats, deadline) for state_dir in state_dirs]
     # `skipped` means NOTHING WAS EXAMINED — one flag over what may be two
     # directories, so it has to be the conjunction. Setting it per directory
     # made a run that did real work in the first report itself skipped because
