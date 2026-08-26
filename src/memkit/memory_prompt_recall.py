@@ -4340,6 +4340,31 @@ def _task_framed(lines: list[str], truncated: int = 0) -> str:
     )
 
 
+def _task_block(
+    eligible: list[tuple[str, list[str], int]],
+) -> tuple[str, list[tuple[str, list[str], int]], int]:
+    """The pointer block a subagent would receive for these eligible hits:
+    (block, the hits that made the cap, how many did not).
+
+    One copy of the cap and its consequence, because the eval's long-brief
+    slice re-derived both: it took its own `[:TASK_MAX_HITS]` slice and called
+    `_task_framed` with `truncated` left at its default 0. So the gate scored a
+    block systematically smaller than the one production builds — the
+    truncation sentence missing, on exactly the briefs where it is added — and
+    the write-bound decision that slice exists to gate was taken against the
+    wrong bytes.
+
+    The same argument as `_task_emission`, one stage earlier: a gate that
+    rebuilds what it is gating cannot see a divergence between the two.
+    """
+    picks = eligible[:TASK_MAX_HITS]
+    truncated = len(eligible) - len(picks)
+    block = _task_framed(
+        [_pointer_line(*pick, over_brief=True) for pick in picks], truncated
+    )
+    return block, picks, truncated
+
+
 def _task_updated_input(tool_input: dict, block: str) -> dict:
     """The tool's input with the block appended to its brief, and nothing else
     touched.
@@ -4707,25 +4732,22 @@ def _task_main(payload: dict, t0: float) -> None:
         if not eligible:
             return done("task:floored", hits=len(hits), **_floored_stat(floored))
 
-        picks = eligible[:TASK_MAX_HITS]
-        # WHAT THE CAP CUT, on the record and in the block. Both halves are the
-        # prompt path's, which had them and this path did not: the log could
-        # not say whether the cap binds on briefs — so the pointer budget for
-        # this surface could never be argued from data — and the subagent was
-        # handed a list under a closing line that says "ignore the rest", with
-        # no further injection for the rest of its run and no route to the
-        # store. By IDENTITY rather than by position, for the reason the prompt
-        # path gives at length.
-        truncated = len(eligible) - len(picks)
+        block, picks, truncated = _task_block(eligible)
+        # WHAT THE CAP CUT, on the record. The block half is inside
+        # `_task_block`; this half is the log's, and both are the prompt
+        # path's, which had them where this path did not: the log could not say
+        # whether the cap binds on briefs — so the pointer budget for this
+        # surface could never be argued from data — and the subagent was handed
+        # a list under a closing line that says "ignore the rest", with no
+        # further injection for the rest of its run and no route to the store.
+        # By IDENTITY rather than by position, for the reason the prompt path
+        # gives at length.
         if truncated:
             rec["truncated"] = truncated
             picked = {p for p, _, _ in picks}
             cut = [e for e in eligible if e[0] not in picked][:FLOORED_LOG_MAX]
             rec["truncated_files"] = [os.path.basename(p) for p, _, _ in cut]
             rec["truncated_scores"] = _scores([p for p, _, _ in cut])
-        block = _task_framed(
-            [_pointer_line(*e, over_brief=True) for e in picks], truncated
-        )
         # The refusals are `_task_emission`'s to decide and this dispatch's to
         # NAME: every outcome stays a string literal at its own `done` call,
         # which is what lets the consumer's collector enumerate the vocabulary

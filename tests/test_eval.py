@@ -164,6 +164,20 @@ def _rates(stdout: str) -> str:
     return next(ln for ln in stdout.splitlines() if ln.startswith("long briefs:"))
 
 
+def _unserve(corpus: Path, *names: str) -> None:
+    """Rewrite served briefs into ones the corpus has nothing to say about.
+
+    Each gets its own subject: a case is a distinct brief, so three copies of
+    one filler text are refused as one case in three places — which is a
+    different failure from the coverage collapse these cases are about.
+    """
+    for index, name in enumerate(names):
+        _served(corpus, name).write_text(
+            f"# Brief {index}\n\n"
+            + f"Sort the mailroom trays for round {index} by postcode. " * 200
+        )
+
+
 def test_the_long_brief_slice_reports_both_rates_and_the_thresholds(
     corpus: Path,
 ) -> None:
@@ -186,10 +200,7 @@ def test_coverage_under_the_floor_fails_the_run(corpus: Path) -> None:
     unit's headline failure, and it is silent everywhere else: every brief
     still gets a spawn, the spawn still runs, and nothing anywhere says the
     pointers stopped arriving."""
-    for name in ("backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md"):
-        _served(corpus, name).write_text(
-            "# Brief\n\n" + "Sort the mailroom trays by postcode. " * 200
-        )
+    _unserve(corpus, "backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md")
     out = _eval(corpus)
     assert out.returncode != 0, out.stdout
     assert "long-brief coverage" in out.stderr
@@ -225,8 +236,7 @@ def test_a_rate_failure_is_not_accepted_by_a_re_baseline(corpus: Path) -> None:
     by this — so what is asserted is the exit status and the message, not the
     absence of a file.
     """
-    for name in ("backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md"):
-        _served(corpus, name).write_text("# Brief\n\n" + "mailroom trays. " * 200)
+    _unserve(corpus, "backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md")
     snapshot = corpus / "eval-expectations.json"
     before = snapshot.read_text()
     out = _eval(corpus, "--update-snapshot")
@@ -245,8 +255,7 @@ def test_a_rate_failure_survives_a_moved_corpus_instead_of_becoming_drift(
     to answer first: filed as drift, a coverage collapse gets re-baselined away
     by the very command the refusal recommends."""
     _drift(corpus)
-    for name in ("backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md"):
-        _served(corpus, name).write_text("# Brief\n\n" + "mailroom trays. " * 200)
+    _unserve(corpus, "backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md")
     out = _eval(corpus)
     assert out.returncode != 0
     assert "long-brief coverage" in out.stderr
@@ -630,6 +639,110 @@ def test_the_slice_emits_through_the_hooks_own_writer(corpus: Path) -> None:
     assert "_task_emission(" in source
     assert "_task_payload(" not in source
     assert "PIPE_BUFFER_BOUND" not in source
+    # And one stage earlier, for the same reason: the block the emission is
+    # judged against is built once, by the hook, cap and truncation notice
+    # included.
+    assert "_task_block(" in source
+    assert "_task_framed(" not in source
+    assert "TASK_MAX_HITS]" not in source
+
+
+def test_the_slice_retrieves_under_the_deadline_production_passes(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """Production calls `recall` with `deadline=t0 + TASK_BUDGET_SECONDS`; the
+    slice called it with no deadline at all, so `recall` ran on its default
+    unlimited budget.
+
+    On the tiny fixture corpus the two agree, which is exactly why it survived:
+    the divergence only shows against a consumer's own store under `--repo` or
+    `--all-stores`, where the gate can wait and report served pointers that
+    production abandons. Driven by moving the budget the gate is supposed to
+    honour — a hook copy whose `TASK_BUDGET_SECONDS` has already expired serves
+    nothing, and a slice that passes no deadline cannot tell.
+    """
+    before = _eval(corpus)
+    assert "7/8 served" in _rates(before.stdout), before.stdout
+
+    src = _copy_hook(tmp_path, "TASK_BUDGET_SECONDS = 7", "TASK_BUDGET_SECONDS = -1")
+    out = _eval(corpus, "--hook", str(src))
+    assert "0/8 served" in _rates(out.stdout), out.stdout
+
+
+def test_a_name_the_brief_already_contains_is_not_delivery(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The slice read the names back out of the WHOLE updated prompt, which is
+    the brief the slice itself supplied plus the block — so a brief that
+    happens to name a corpus file scored as served whether or not the block
+    carried anything.
+
+    No shipped fixture brief names one today, which is what makes this latent
+    rather than firing: a gate that can be satisfied by its own input is one
+    edit to a fixture away from being satisfied by nothing at all. Driven with
+    a hook copy whose block carries no pointer lines and a brief that names its
+    own target file.
+    """
+    index = json.loads((corpus / BRIEFS / "index.json").read_text())
+    case = index["served"][0]
+    brief = corpus / BRIEFS / case["brief"]
+    brief.write_text(
+        brief.read_text() + f"\n\nSee also the note in {case['file']}.\n"
+    )
+    src = _copy_hook(
+        tmp_path,
+        'instructions from the brief.\\n"\n        + "\\n".join(body)',
+        'instructions from the brief.\\n"\n        + ""',
+    )
+    out = _eval(corpus, "--hook", str(src))
+    assert "0/8 served" in _rates(out.stdout), out.stdout
+
+
+def test_two_filenames_holding_one_brief_are_one_case(corpus: Path) -> None:
+    """Uniqueness was checked on the resolved PATH while the comment above it
+    states the invariant as "a CASE is a distinct brief".
+
+    So two filenames holding the same text both counted toward the minimum
+    population and both fed the rate denominators — one behaviour repeated
+    enough times to satisfy a bar written to mean that many briefs, which is
+    the same defect the path check exists to prevent wearing a different
+    filename.
+    """
+    index = corpus / BRIEFS / "index.json"
+    state = json.loads(index.read_text())
+    original = corpus / BRIEFS / state["unserved"][0]["brief"]
+    twin = original.with_name("twin-" + original.name)
+    twin.write_text(original.read_text())
+    # Both listed, sixteen entries still: the population floor and the rate
+    # denominators see two cases where there is one brief.
+    state["unserved"] = [
+        state["unserved"][0],
+        {"brief": f"unserved/{twin.name}"},
+        *state["unserved"][2:],
+    ]
+    index.write_text(json.dumps(state))
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "same brief under two names" in out.stderr, out.stderr
+
+
+def test_a_gating_slice_nobody_has_is_refused_rather_than_crashed(
+    corpus: Path,
+) -> None:
+    """README tells an adopter to add `longbrief` to `eval.gating_slices` by
+    hand, and a typo there ended a fully green run with a `KeyError` traceback
+    and exit 1 — which CI reads as the regression that did not happen.
+
+    The module already wraps a malformed fixture index for this reason: exit 1
+    is documented as a gate failing or a refusal, and a stack trace makes a
+    configuration mistake look like a crash in the tool.
+    """
+    _gating(corpus, "suite", "noinject", "longbriefs")
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "Traceback" not in out.stderr, out.stderr
+    assert "no such slice" in out.stderr, out.stderr
+    assert "longbrief" in out.stderr, out.stderr
 
 
 def test_the_floor_faces_negatives_it_was_not_calibrated_against() -> None:

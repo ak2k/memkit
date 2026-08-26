@@ -9187,7 +9187,7 @@ def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None
             and n.func.id == "recall"
         ]
         assert len(calls) == 1, (caller, len(calls))
-        keywords = {k.arg: k.value for k in calls[0].keywords}
+        keywords = {k.arg or "**": k.value for k in calls[0].keywords}
         assert "deadline" in keywords, (caller, sorted(keywords))
         return {
             n.id for n in ast.walk(keywords["deadline"]) if isinstance(n, ast.Name)

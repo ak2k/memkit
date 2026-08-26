@@ -108,6 +108,7 @@ import inspect
 import json
 import pathlib
 import sys
+import time
 
 from memkit.memory_prompt_recall import CONFIG_ENV, ConfigError, load_config
 
@@ -405,6 +406,8 @@ def long_brief_set(root: pathlib.Path) -> dict:
     # Same for one brief in both halves: a case asserting two opposite outcomes
     # and scoring whichever half asks.
     seen: dict[str, str] = {}
+    texts: dict[str, tuple[str, str]] = {}
+    bodies: dict[str, str] = {}
     for half in ("served", "unserved"):
         entries = index.get(half, [])
         if not isinstance(entries, list):
@@ -434,6 +437,19 @@ def long_brief_set(root: pathlib.Path) -> dict:
                     else f"{where}: the {half} half names the same brief twice: {rel}"
                 )
             seen[key] = half
+            # And by CONTENT, which is what the invariant above actually says.
+            # Uniqueness by resolved path counts two filenames holding one
+            # brief as two cases — the same population inflation the path check
+            # exists to prevent, one copy command away.
+            bodies[key] = full.read_text(encoding="utf-8").strip()
+            digest = hashlib.sha256(bodies[key].encode()).hexdigest()[:12]
+            if digest in texts:
+                first_rel, first_half = texts[digest]
+                raise RuntimeError(
+                    f"{where}: `{rel}` and `{first_rel}` are the same brief "
+                    f"under two names ({half}/{first_half})"
+                )
+            texts[digest] = (rel, half)
         if len(entries) < LONG_BRIEF_MIN_CASES:
             raise RuntimeError(
                 f"{where}: the {half} half has "
@@ -443,7 +459,7 @@ def long_brief_set(root: pathlib.Path) -> dict:
                 "unserved ones, is a rate over an empty population"
             )
     def _read(case: dict) -> dict:
-        brief = (root / case["brief"]).read_text(encoding="utf-8").strip()
+        brief = bodies[str((root / case["brief"]).resolve())]
         # The snapshot key carries a digest of the brief, so an EDITED brief
         # reads as a new case and its old row as a stale one rather than
         # quietly inheriting a recorded outcome. The config's own cases get
@@ -480,8 +496,10 @@ TASK_SURFACE = (
     "_task_floor",
     "_task_framed",
     "_pointer_line",
+    "_task_block",
     "_task_emission",
     "TASK_MAX_HITS",
+    "TASK_BUDGET_SECONDS",
 )
 
 
@@ -526,19 +544,33 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     if hook.task_gate(brief) is not None:
         return []
     query = hook.build_task_query(brief)
-    hits = hook.recall(brief, dirs=dirs, query=query)
+    # THE BUDGET PRODUCTION RUNS UNDER. `recall`'s `deadline` defaults to None,
+    # which is unlimited — so against a consumer's own store under `--repo` or
+    # `--all-stores` the gate could wait for pointers production abandons and
+    # report them as served. The fixture corpus is far too small for the two to
+    # differ, which is why this only ever showed up by reading it.
+    hits = hook.recall(
+        brief,
+        dirs=dirs,
+        query=query,
+        deadline=time.monotonic() + hook.TASK_BUDGET_SECONDS,
+    )
     terms = list(dict.fromkeys((query or "").split()))
     # `_eligible` with the hook's own bars, not a comprehension with a copy of
     # them: this slice is the only automated gate over the task path's
     # relevance, so a second spelling of the floor here is a gate that can
     # silently score a retriever no subagent meets.
     eligible, _floored = hook._eligible(hits, terms, **hook._task_floor())
-    picks = eligible[: hook.TASK_MAX_HITS]
+    if not eligible:
+        return []
+    # THE HOOK'S OWN CAP AND ITS CONSEQUENCE, not a second copy. This slice
+    # took its own slice of the eligible list and built the frame with the
+    # truncation count defaulted to zero, so on any brief the cap binds on it
+    # scored a block SMALLER than the one production writes — missing the
+    # truncation sentence, against the write bound this slice exists to gate.
+    block, picks, _truncated = hook._task_block(eligible)
     if not picks:
         return []
-    block = hook._task_framed(
-        [hook._pointer_line(*pick, over_brief=True) for pick in picks]
-    )
     # The tool input a spawn actually carries: both keys the Agent tool
     # requires, so the allowlist is exercised on a realistic shape rather than
     # on a one-key stub that could never fail it.
@@ -556,10 +588,18 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     if text is None:
         return []
     delivered = json.loads(text)["hookSpecificOutput"]["updatedInput"]["prompt"]
+    # ONLY THE APPENDED PART, and only its pointer lines. `updatedInput.prompt`
+    # is the brief this slice supplied plus the block, so `name in delivered`
+    # could be satisfied by the brief's own text — a gate its own input can
+    # pass. No shipped fixture names a corpus file today, which made that
+    # latent rather than wrong, and one edit to a fixture away from a gate that
+    # answers yes to an empty block.
+    appended = delivered[len(brief) :] if delivered.startswith(brief) else delivered
+    lines = [ln for ln in appended.splitlines() if ln.startswith("- ")]
     return [
         name
         for name in (pathlib.Path(p).name for p, _, _ in picks)
-        if name in delivered
+        if any(name in line for line in lines)
     ]
 
 
@@ -835,6 +875,20 @@ def main() -> None:
         "suite": {}, "noinject": {}, "vocab": {}, LONG_BRIEF_SLICE: {}
     }
     tally = {"regression": 0, "drift": 0, "new": 0}
+    # A name nobody has is a refusal, not a KeyError. `gating_slices` is
+    # hand-typed — README tells an adopter to add `longbrief` to it — and the
+    # vacuity check below indexes `compared` with whatever the config carries,
+    # so a typo ended a fully green run with a traceback and exit 1, which CI
+    # reads as the regression that did not happen. Refused here rather than
+    # made lenient there: `compared.get(s, 0)` would stop the crash by counting
+    # a typo as a satisfied gate, which is the failure the vacuity check exists
+    # to prevent.
+    unknown = sorted(set(gating) - set(seen_cases))
+    if unknown:
+        sys.exit(
+            f"{cfg.path}: eval.gating_slices names {', '.join(unknown)} — "
+            f"no such slice; the slices are {', '.join(sorted(seen_cases))}"
+        )
     # Per SLICE, how many cases actually met a recorded expectation. Counted
     # because "0 failures" and "0 comparisons" print the same exit code, and
     # the second is a gate that stopped looking — see the vacuity check below.
