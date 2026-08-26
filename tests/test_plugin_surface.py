@@ -2363,7 +2363,10 @@ COMMANDISH = re.compile(r"(?<![\w./-])(memkit|mem[a-z0-9]+-[a-z0-9-]+)(?![\w./-]
 # `memkit-init` turns the case below red, and one line added to a list turns it
 # green with the bad advice still printed. There is nothing to add a line to
 # now, and the equality below says so out loud.
-NOT_A_COMMAND = {hook.FRAME_TAG}
+# The frame's delimiter, which is not a command. Matched by STEM because both
+# frames now suffix it with a per-run nonce, so the exception cannot be a
+# literal without silently ceasing to excuse the thing it is for.
+NOT_A_COMMAND = re.compile(rf"{re.escape(hook.FRAME_TAG)}(-[0-9a-f]+)?")
 
 
 def _corpus(tmp_path: Path, **extra) -> Path:
@@ -2471,8 +2474,10 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
     # here, and the case would then go on passing by no longer looking at the
     # one thing it is for. Anything else that needs excusing is a defect in the
     # scrape's SHAPE, which is a change somebody has to argue for.
-    assert {hook.FRAME_TAG} == NOT_A_COMMAND, NOT_A_COMMAND
-    assert NOT_A_COMMAND.isdisjoint(shipped | {hook.SEARCH_BINARY}), NOT_A_COMMAND
+    assert NOT_A_COMMAND.fullmatch(hook.FRAME_TAG), NOT_A_COMMAND.pattern
+    assert NOT_A_COMMAND.fullmatch(hook._PROMPT_FRAME_TAG), hook._PROMPT_FRAME_TAG
+    excused = {n for n in shipped | {hook.SEARCH_BINARY} if NOT_A_COMMAND.fullmatch(n)}
+    assert not excused, excused
 
     # Three config states, because they reach the name through three different
     # routes and a fix can cover one without the others: a config that omits
@@ -2505,10 +2510,12 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         surfaces = _surfaces(root, tmp_path / state.split()[0], config, broken)
         named: set[str] = set()
         for surface, text in surfaces.items():
-            found = set(COMMANDISH.findall(text))
-            assert found <= shipped | NOT_A_COMMAND, (
-                state, surface, sorted(found - shipped - NOT_A_COMMAND), text
-            )
+            found = {
+                name
+                for name in COMMANDISH.findall(text)
+                if not NOT_A_COMMAND.fullmatch(name)
+            }
+            assert found <= shipped, (state, surface, sorted(found - shipped), text)
             named |= found
         # Anti-vacuity at the STATE rather than at each surface: with no
         # config the hook is inert by construction and `--debug-config` reports
@@ -3593,6 +3600,30 @@ def test_the_docs_count_the_hooks_the_registration_actually_declares() -> None:
                 window = text[max(0, at - 60) : at + 60].lower()
                 assert "failure" in window, (path, wrong, window)
                 start = at + 1
+
+
+def test_the_docs_state_the_frame_sizes_the_frames_actually_are() -> None:
+    """Both frames' fixed overhead is a documented number a reader subtracts
+    from the 16 KiB refusal bound to work out which of their briefs still get
+    served — and neither figure was pinned by anything, so the two sites
+    describing the subagent block drifted 226 bytes apart inside one commit
+    range while both stayed plausible.
+
+    Fixed part only: `_framed([])` and `_task_framed([])` are the block with no
+    pointer lines, which is what "plus the pointer lines" in each sentence
+    means.
+    """
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    prompt_bytes = len(hook._framed([]).encode())
+    task_bytes = len(hook._task_framed([]).encode())
+    assert f"**{prompt_bytes} bytes fixed**" in text, prompt_bytes
+    assert f"**{task_bytes} bytes fixed**" in text, task_bytes
+    # The subagent figure is stated twice, in the section a reader is pointed
+    # at and in the disclosures, and it is the pair that drifted.
+    assert text.count(str(task_bytes)) >= 2, task_bytes
+    # Anti-vacuity: the two frames are not the same size, so a check that
+    # matched one figure against both would not pass.
+    assert prompt_bytes != task_bytes, (prompt_bytes, task_bytes)
 
 
 def test_the_admission_note_names_both_events_it_registers() -> None:

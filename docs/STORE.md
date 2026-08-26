@@ -175,8 +175,9 @@ stays shared.
 **Sharing a store with other people is a trust decision.** Every description in
 it is rendered into your prompts, so anyone who can push to that repository can
 put text in front of your agent. memkit's frame says the block is data and
-sanitizes every line — a description cannot close the frame or smuggle control
-characters — but it cannot make the content true, and a plausible wrong memory
+sanitizes every line, and its delimiter carries a random per-run suffix a
+description written earlier cannot spell — so a description cannot close the
+frame or smuggle control characters — but it cannot make the content true, and a plausible wrong memory
 is the thing it does not defend against. Review pulls into a shared store the
 way you would review code.
 
