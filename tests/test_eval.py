@@ -283,32 +283,161 @@ def test_an_edited_brief_reads_as_a_new_case_rather_than_inheriting_one(
     assert "rotor-swap-programme.md#" in stale[0]
 
 
-def test_the_slice_scores_the_task_path_and_not_the_prompt_path(
+def test_an_older_hook_with_no_task_path_skips_the_slice_rather_than_scoring_it(
     corpus: Path, tmp_path: Path
 ) -> None:
-    """A slice scored through `build_query` and the prompt path's floor bars
-    would measure a retriever no subagent ever meets — and would pass, because
-    the prompt path refuses these briefs outright and "refused" scores exactly
-    like "the corpus had nothing".
+    """An A/B against a build from before the task path existed. Scoring it as
+    "served nothing" would report the absence of a feature as a quality
+    regression, which is the one comparison an A/B must not make.
 
-    Driven as a --hook A/B against a copy with the task gate removed, which is
-    also the case the skip below is for: an old hook has no task path, and
-    reporting the absence of a feature as a quality regression is the one
-    comparison an A/B must not make.
+    Only for an explicitly named `--hook` copy: the same absence in the
+    SHIPPED hook is the feature having been deleted, and the case below is
+    that half.
     """
-    stripped = tmp_path / "memkit"
-    shutil.copytree(Path(__file__).resolve().parent.parent / "src" / "memkit", stripped)
-    # copytree preserves mode, and the source is read-only under `nix flake
-    # check` because it lives in the store. Same reason the `corpus` fixture
-    # above chmods, and the same failure: a PermissionError on the copy, on the
-    # one leg that stands outside a writable checkout.
-    for path in (stripped, *stripped.rglob("*")):
-        path.chmod(path.stat().st_mode | stat.S_IWUSR)
-    src = stripped / "memory_prompt_recall.py"
     # The WHOLE directory, because the hook resolves common-words.txt beside
-    # __file__ and `load_hook` refuses a lone .py for it.
-    src.write_text(src.read_text().replace("def task_gate(", "def _no_task_gate("))
+    # __file__ and `load_hook` refuses a lone .py for it. `copytree` preserves
+    # mode and the source is read-only under `nix flake check`, so the helper
+    # chmods — same reason the `corpus` fixture above does.
+    src = _strip_task_path(tmp_path)
     out = _eval(corpus, "--hook", str(src))
     assert out.returncode == 0, out.stdout + out.stderr
     assert "no task path — slice skipped" in out.stdout
     assert not re.search(r"long briefs: \d+/\d+ served", out.stdout), out.stdout
+
+
+def _strip_task_path(tmp_path: Path) -> Path:
+    """A writable copy of the package with `task_gate` renamed away."""
+    stripped = tmp_path / "memkit"
+    shutil.copytree(Path(__file__).resolve().parent.parent / "src" / "memkit", stripped)
+    for path in (stripped, *stripped.rglob("*")):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    src = stripped / "memory_prompt_recall.py"
+    src.write_text(src.read_text().replace("def task_gate(", "def _no_task_gate("))
+    return src
+
+
+def test_the_shipped_hook_losing_its_task_path_is_a_failure_not_a_skip(
+    corpus: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """The skip above exists for an older build named with `--hook`. Applied to
+    the hook this repo ships, the same branch turns a regression that deletes
+    or renames the task path into a green run with the only gate over it
+    silently not run.
+
+    Driven by pointing the eval's own `STOCK_HOOK` at a stripped copy, which is
+    what makes the copy the shipped hook as far as the run is concerned.
+    """
+    src = _strip_task_path(tmp_path)
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib, sys;"
+            "from memkit import eval_memory_recall as ev;"
+            f"ev.STOCK_HOOK = pathlib.Path({str(src)!r});"
+            "sys.argv = ['memory-eval', '--config', "
+            f"{str(corpus / 'memkit.json')!r}];"
+            "ev.main()",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert out.returncode != 0, out.stdout
+    assert "has no `task_gate`" in out.stderr, out.stderr
+    assert "rather than a --hook copy" in out.stderr, out.stderr
+
+
+def test_a_config_with_no_long_briefs_key_says_the_slice_did_not_run(
+    corpus: Path,
+) -> None:
+    """Every way of not having this gate was silent: a config predating the
+    key, a typo in it, or a newer config read by an older memkit that drops
+    what it does not know. A green run has to say which gates it ran."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    del state["eval"]["long_briefs"]
+    config.write_text(json.dumps(state))
+    out = _eval(corpus)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "eval.long_briefs is not configured — slice skipped" in out.stdout
+    assert not re.search(r"long briefs: \d+/\d+ served", out.stdout), out.stdout
+
+
+def _reindex(corpus: Path, **over) -> None:
+    index = corpus / BRIEFS / "index.json"
+    state = json.loads(index.read_text())
+    state.update(over)
+    index.write_text(json.dumps(state))
+
+
+def test_thresholds_loose_enough_to_be_unfailable_are_refused(corpus: Path) -> None:
+    """`min_served: 0.0` and `max_injected: 1.0` leave both comparisons unable
+    to fail, and the run still prints two rates and exits 0 — which reads
+    exactly like a gate that held. The file may be stricter than the code's
+    bounds and never looser, so loosening is a diff somebody reads."""
+    _reindex(corpus, min_served=0.0)
+    out = _eval(corpus)
+    assert out.returncode != 0
+    assert "cannot fail" in out.stderr, out.stderr
+
+    _reindex(corpus, min_served=0.75, max_injected=1.0)
+    out = _eval(corpus)
+    assert out.returncode != 0
+    assert "cannot fail" in out.stderr, out.stderr
+
+    # A finite-number check too: NaN compares false against everything, so a
+    # rate of NaN is a gate that never fires and never says so.
+    _reindex(corpus, max_injected=0.084, min_served=float("nan"))
+    out = _eval(corpus)
+    assert out.returncode != 0
+    assert "not a finite rate" in out.stderr, out.stderr
+
+
+def test_a_population_too_small_to_carry_a_rate_is_refused(corpus: Path) -> None:
+    """Deleting the negative briefs removes the population that measures
+    leakage; the arithmetic then reports zero leakage over nothing. Same for
+    coverage. A rate needs a population, and this says so rather than
+    dividing."""
+    index = corpus / BRIEFS / "index.json"
+    state = json.loads(index.read_text())
+    kept = state["unserved"][:2]
+    state["unserved"] = kept
+    index.write_text(json.dumps(state))
+    out = _eval(corpus)
+    assert out.returncode != 0
+    assert "rate can be taken over" in out.stderr, out.stderr
+
+    state["unserved"] = []
+    index.write_text(json.dumps(state))
+    out = _eval(corpus)
+    assert out.returncode != 0
+    assert "rate over an empty population" in out.stderr, out.stderr
+
+
+def test_the_slice_scores_what_reaches_the_subagent_not_what_ranked(
+    corpus: Path,
+) -> None:
+    """The slice stopped at the relevance floor, so a brief whose emission the
+    harness would refuse — a malformed `updatedInput`, or one over the write
+    bound — scored as served. Retrieval is not delivery on this path.
+
+    Driven by shrinking the write bound to a value every emission crosses: the
+    ranker is untouched and every served brief still ranks its target first, so
+    a slice that scored retrieval would report 7/8 unchanged.
+    """
+    before = _eval(corpus)
+    assert "7/8 served" in _rates(before.stdout), before.stdout
+
+    hook_dir = Path(__file__).resolve().parent.parent / "src" / "memkit"
+    src = hook_dir / "memory_prompt_recall.py"
+    original = src.read_text()
+    try:
+        src.write_text(original.replace("PIPE_BUFFER_BOUND = 16384",
+                                        "PIPE_BUFFER_BOUND = 64"))
+        out = _eval(corpus)
+    finally:
+        src.write_text(original)
+    assert "0/8 served" in _rates(out.stdout), out.stdout
+    assert out.returncode != 0, out.stdout
+    assert "long-brief coverage" in out.stderr

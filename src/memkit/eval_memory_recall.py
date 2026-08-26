@@ -339,6 +339,25 @@ def pointers(hook, prompt: str, hits: list[str]) -> tuple[list[str], list[str]]:
     return passed, passed[: hook.MAX_HITS]
 
 
+# The weakest this gate may be, whatever the brief set says, and the smallest
+# population a rate over it may be taken from.
+#
+# The thresholds live beside the briefs so a number travels with what it was
+# measured over — and that is exactly why they cannot be the only thing
+# deciding how strict the gate is. A fixture edit setting `min_served: 0.0` and
+# `max_injected: 1.0` leaves both comparisons unable to fail, and the run still
+# prints two rates and exits 0, which reads identically to a gate that held.
+# Same for the populations: delete the negative half and precision is a rate
+# over nothing, which the arithmetic reports as zero leakage.
+#
+# So the file may be STRICTER than these and never looser, and the bounds are
+# in code where loosening them is a diff somebody reads rather than a fixture
+# edit nobody does.
+LONG_BRIEF_MIN_SERVED_FLOOR = 0.6
+LONG_BRIEF_MAX_INJECTED_CEILING = 0.2
+LONG_BRIEF_MIN_CASES = 6
+
+
 def long_brief_set(root: pathlib.Path) -> dict:
     """The paired brief set at `root`: briefs read off disk, plus the two rates
     they gate on.
@@ -347,11 +366,41 @@ def long_brief_set(root: pathlib.Path) -> dict:
     the rates sit beside them rather than in the config for the same reason the
     corpus fingerprint sits in the snapshot: a number is only worth what it was
     measured over, so it travels with the thing it was measured over.
+
+    Refuses rather than warns on a set that cannot gate. Every check below has
+    the same shape as the vacuity check further down — a run that gated nothing
+    and a run that gated everything and found nothing wrong must not print the
+    same exit code.
     """
-    index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+    where = root / "index.json"
+    index = json.loads(where.read_text(encoding="utf-8"))
     for key in ("min_served", "max_injected"):
-        if not isinstance(index.get(key), (int, float)):
-            raise RuntimeError(f"{root / 'index.json'}: no {key} rate to gate on")
+        value = index.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise RuntimeError(f"{where}: no {key} rate to gate on")
+        if value != value or value in (float("inf"), float("-inf")):
+            raise RuntimeError(f"{where}: {key} is not a finite rate")
+    if index["min_served"] < LONG_BRIEF_MIN_SERVED_FLOOR:
+        raise RuntimeError(
+            f"{where}: min_served {index['min_served']} is below the "
+            f"{LONG_BRIEF_MIN_SERVED_FLOOR} floor this gate is allowed to be "
+            "set at — a coverage bar this low cannot fail"
+        )
+    if index["max_injected"] > LONG_BRIEF_MAX_INJECTED_CEILING:
+        raise RuntimeError(
+            f"{where}: max_injected {index['max_injected']} is above the "
+            f"{LONG_BRIEF_MAX_INJECTED_CEILING} ceiling this gate is allowed "
+            "to be set at — an injection bar this high cannot fail"
+        )
+    for half in ("served", "unserved"):
+        if len(index.get(half, [])) < LONG_BRIEF_MIN_CASES:
+            raise RuntimeError(
+                f"{where}: the {half} half has "
+                f"{len(index.get(half, []))} case(s), under the "
+                f"{LONG_BRIEF_MIN_CASES} a rate can be taken over. A coverage "
+                "floor with no served briefs, or an injection ceiling with no "
+                "unserved ones, is a rate over an empty population"
+            )
     def _read(case: dict) -> dict:
         brief = (root / case["brief"]).read_text(encoding="utf-8").strip()
         # The snapshot key carries a digest of the brief, so an EDITED brief
@@ -376,13 +425,22 @@ def long_brief_set(root: pathlib.Path) -> dict:
 
 
 def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
-    """What the TASK path would point a subagent at, best-first, capped.
+    """What a subagent WOULD ACTUALLY RECEIVE for this brief, best-first.
 
     Every stage is the task path's own — its gate, its query builder, its floor
     bars — because that is the whole subject: a slice scored through
     `build_query` and the prompt path's bars would measure a retriever no
     subagent ever meets, and would report the shape of the population this
     exists to prove is served.
+
+    And it runs to the EMISSION rather than stopping at retrieval, which is the
+    difference between "the ranker found it" and "the subagent got it". The
+    task path can retrieve perfectly and deliver nothing: an `updatedInput`
+    that fails the output-shape allowlist is refused whole, and so is a brief
+    whose emission crosses the write bound — and a slice that stopped at the
+    floor would score both as served. Reading the names back OUT of the
+    emitted bytes rather than off the picks is what makes that true rather
+    than merely intended.
 
     A gated brief returns nothing, which is the same answer as no hits and is
     correct here: the question this slice asks is what reaches the subagent.
@@ -397,7 +455,27 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     # relevance, so a second spelling of the floor here is a gate that can
     # silently score a retriever no subagent meets.
     eligible, _floored = hook._eligible(hits, terms, **hook._task_floor())
-    return [pathlib.Path(p).name for p, _, _ in eligible][: hook.MAX_HITS]
+    picks = eligible[: hook.MAX_HITS]
+    if not picks:
+        return []
+    block = hook._task_framed([hook._task_pointer_line(*pick) for pick in picks])
+    # The tool input a spawn actually carries: both keys the Agent tool
+    # requires, so the allowlist is exercised on a realistic shape rather than
+    # on a one-key stub that could never fail it.
+    tool_input = {
+        "prompt": brief,
+        "description": "score this brief",
+        "subagent_type": "general-purpose",
+    }
+    text = hook._task_payload(tool_input, block)
+    if text is None or hook._nbytes(text) > hook.PIPE_BUFFER_BOUND:
+        return []
+    delivered = json.loads(text)["hookSpecificOutput"]["updatedInput"]["prompt"]
+    return [
+        name
+        for name in (pathlib.Path(p).name for p, _, _ in picks)
+        if name in delivered
+    ]
 
 
 def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:
@@ -828,16 +906,32 @@ def main() -> None:
     # two RATES rather than on the snapshot — see below for why it needs both.
     served_hit = leaked = 0
     briefs = None
-    if cfg.eval_long_briefs:
+    if not cfg.eval_long_briefs:
+        # Said out loud, because every way of not having this gate is
+        # otherwise silent: a config predating the key, a typo in it, or a
+        # newer config read by an older memkit that drops the key it does not
+        # know. A green run has to say which gates it ran.
+        print("\nlong briefs: eval.long_briefs is not configured — slice skipped")
+    else:
         brief_root = repo / cfg.eval_long_briefs
         if not (brief_root / "index.json").is_file():
             sys.exit(
                 f"eval.long_briefs names {brief_root}, which has no index.json"
             )
         if getattr(hook, "task_gate", None) is None:
-            # A --hook copy from before the task path existed. Scoring it as
-            # "served nothing" would report the absence of a feature as a
-            # quality regression, which is the comparison an A/B is for.
+            # A hook with no task path. That is a legitimate A/B subject —
+            # scoring an older build as "served nothing" would report the
+            # absence of a feature as a quality regression — and it is NOT a
+            # legitimate state for the hook this repo ships: a regression that
+            # deletes or renames the task path would otherwise skip the only
+            # gate over it and exit 0.
+            if hook_file == STOCK_HOOK.resolve():
+                sys.exit(
+                    f"{hook_file} has no `task_gate`, so the long-brief slice "
+                    "cannot run — and this is the shipped hook rather than a "
+                    "--hook copy, so the feature the slice gates is missing "
+                    "rather than merely older"
+                )
             print("\nlong briefs: this hook has no task path — slice skipped")
         else:
             briefs = long_brief_set(brief_root)
@@ -898,10 +992,12 @@ def main() -> None:
     # nor one too loose for irrelevant ones.
     rate_fail: list[str] = []
     if briefs is not None:
-        n_served = len(briefs["served"]) or 1
-        n_unserved = len(briefs["unserved"]) or 1
-        served_rate = served_hit / n_served
-        leak_rate = leaked / n_unserved
+        # No `or 1` denominator guard: `long_brief_set` refuses a half that
+        # cannot carry a rate, so an empty population is a refusal rather than
+        # a division this has to survive. The guard was the bug — it turned
+        # "there are no negative briefs" into "nothing leaked".
+        served_rate = served_hit / len(briefs["served"])
+        leak_rate = leaked / len(briefs["unserved"])
         print(
             f"long briefs: {served_hit}/{len(briefs['served'])} served "
             f"({served_rate:.3f}, floor {briefs['min_served']:.3f}); "
