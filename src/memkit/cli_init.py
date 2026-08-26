@@ -1052,7 +1052,17 @@ def build_plan(
                 SETTINGS_WRITE,
                 target,
                 _settings_with_auto_dream_off(target),
-                note='sets "autoDreamEnabled": false and changes nothing else',
+                # "no other KEY", not "no other byte": the file is re-serialised
+                # from its own parse, so a settings.json indented some other way
+                # comes back at two spaces. That converges after one write and
+                # changes nothing a reader of the file means by it, but a
+                # manifest is a promise about a write and this is what the write
+                # does.
+                note=(
+                    'sets "autoDreamEnabled": false and changes no other key. '
+                    "The file is rewritten from its own parse, so its "
+                    "indentation becomes two spaces"
+                ),
                 payload={"autoDreamEnabled": False},
             )
         )

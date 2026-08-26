@@ -4087,6 +4087,12 @@ def test_the_search_cli_marks_its_records_as_not_prompt_outcomes(tmp_path) -> No
     for record in records:
         assert str(record.get("outcome", "")).startswith("cli"), record
         assert record.get("concludes") is False, record
+        # `cwd` is a PROMPT-path key. The README says a new top-level key may
+        # arrive and does not promise it on every shape, so what makes the
+        # shapes readable is that each one is consistent: a key present on some
+        # command-line records and not others is worse for a downstream reader
+        # than one that is never there.
+        assert "cwd" not in record, record
 
     from memkit.cli_doctor import _prompt_records
 
@@ -4290,3 +4296,21 @@ def test_the_shell_and_the_python_expand_home_the_same_way(monkeypatch) -> None:
     assert not disagreements, disagreements[:10]
     assert expand_home("~/x") == home + "/x"
     assert expand_home("~root/x") == "~root/x"
+
+
+def test_the_init_skill_says_where_dry_run_goes_in_the_argv() -> None:
+    """The turn-one grant is a literal prefix.
+
+    `Bash(... init --dry-run:*)` admits an invocation only where `--dry-run`
+    immediately follows `init`, so a model that wrote `init --store PATH
+    --dry-run` — which reads as equally correct — falls outside the grant and
+    raises a permission prompt on the turn this page promises is pre-approved.
+    It fails toward MORE prompting rather than less, which is the safe
+    direction; what it costs is a handshake the user has been told is two
+    turns turning into three.
+    """
+    skill = (REPO / "skills" / "init" / "SKILL.md").read_text(encoding="utf-8")
+    grant = re.search(r"^allowed-tools: (.+)$", skill, re.M)
+    assert grant, skill[:200]
+    assert grant.group(1).strip().endswith("init --dry-run:*)"), grant.group(1)
+    assert "`--dry-run` goes first" in skill

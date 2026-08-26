@@ -351,9 +351,17 @@ def settings_scopes() -> list[Settings]:
     """Every scope, most authoritative first."""
     user = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
     cwd = os.getcwd()
+    # THE TRUSTED SCOPE'S LOCATION IS AN ENVIRONMENT VARIABLE. Whatever can set
+    # `$CLAUDE_CONFIG_DIR` — direnv in a checkout, a wrapper script — decides
+    # where the `user` scope is read from, so pointed inside the session's own
+    # directory it is the project scope under another name. The `project` and
+    # `local` entries below are already untrusted by their paths; this is the
+    # same rule for the one whose path is somebody's to choose.
+    user_owned = not _under_cwd(os.path.join(user, SETTINGS_NAME))
     return [
         Settings("managed", os.path.join(_managed_dir(), MANAGED_SETTINGS_NAME)),
-        Settings("user", os.path.join(user, SETTINGS_NAME)),
+        Settings("user", os.path.join(user, SETTINGS_NAME),
+                 adopter_owned=user_owned),
         Settings(
             "project", os.path.join(cwd, ".claude", SETTINGS_NAME),
             adopter_owned=False,

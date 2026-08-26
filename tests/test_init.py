@@ -1657,3 +1657,89 @@ def _journal(machine) -> list:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+# --- residual coverage the round-2 review left standing ----------------------
+
+
+def test_a_write_keeps_the_mode_and_the_link_of_a_file_that_is_already_there(
+    profile,
+) -> None:
+    """Two properties of the general write path that only the refusal cases
+    covered.
+
+    A settings file somebody deliberately chmod'd 600 — they commonly carry an
+    API key — must not come back 644 from a command whose stated scope is one
+    key; and an adopter whose dotfile is a symlink into a nix or dotfiles repo
+    must get the write through the link, or the repo copy is orphaned and the
+    next `home-manager switch` reaches nothing.
+    """
+    target = profile / "settings.json"
+    target.write_text("{}\n", encoding="utf-8")
+    os.chmod(target, 0o600)
+    init._write_atomically(str(target), '{"a": 1}\n', mode=0o644)
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
+    assert target.read_text() == '{"a": 1}\n'
+
+    real = profile / "dotfiles" / "CLAUDE.md"
+    real.parent.mkdir(parents=True)
+    real.write_text("original\n", encoding="utf-8")
+    link = profile / "home" / "CLAUDE.md"
+    link.symlink_to(real)
+    init._write_atomically(str(link), "through the link\n", mode=0o644)
+    assert link.is_symlink(), "the link was replaced by a regular file"
+    assert real.read_text() == "through the link\n"
+
+    # And a file being CREATED gets the mode it was asked for.
+    fresh = profile / "fresh.json"
+    init._write_atomically(str(fresh), "{}\n", mode=0o644)
+    assert stat.S_IMODE(os.stat(fresh).st_mode) == 0o644
+
+
+def test_both_consented_writes_leave_a_file_a_person_can_still_read(
+    profile, monkeypatch
+) -> None:
+    """The two writes that land outside memkit's own paths, checked for the
+    property nothing else checks: the mode they leave behind."""
+    settings = profile / "claude-config" / "settings.json"
+    settings.write_text("{}\n", encoding="utf-8")
+    os.chmod(settings, 0o600)
+    claude_md = profile / "claude-config" / "CLAUDE.md"
+    claude_md.write_text("# theirs\n", encoding="utf-8")
+    os.chmod(claude_md, 0o640)
+    machine = doctor.Machine()
+    plan = _plan(
+        profile,
+        store=str(profile / "notes"),
+        wire_claude_md=True,
+        auto_dream_off=True,
+    )
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_OK
+    assert stat.S_IMODE(os.stat(settings).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(claude_md).st_mode) == 0o640
+    assert json.loads(settings.read_text())["autoDreamEnabled"] is False
+
+
+def test_the_import_line_is_added_once_however_the_file_is_spaced(profile) -> None:
+    """Convergence is about the LINE, not about the bytes around it.
+
+    A file whose last line has no newline, one with trailing blank lines, and
+    one where the import is already the last line all have to end with exactly
+    one copy of it — a second `@-import` of the same store is a duplicate the
+    harness loads twice.
+    """
+    line = init._import_line(str(profile / "notes"))
+    for existing, expected_tail in (
+        ("", line + "\n"),
+        ("# heading", "# heading\n" + line + "\n"),
+        ("# heading\n\n\n", "# heading\n" + line + "\n"),
+        ("# heading\n" + line + "\n", "# heading\n" + line + "\n"),
+        (line, line),
+        ("# heading\n" + line + "\nmore\n", "# heading\n" + line + "\nmore\n"),
+    ):
+        got = init._appended(existing, line)
+        assert got == expected_tail, (repr(existing), repr(got))
+        # And it is idempotent: a second pass changes nothing.
+        assert init._appended(got, line) == got, repr(got)
+        assert got.count(line) == 1, repr(got)

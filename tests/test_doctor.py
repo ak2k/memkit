@@ -2240,6 +2240,40 @@ def test_a_repository_scoped_memkitconfig_is_reported_and_never_followed(
     assert all(row.actor == doctor.USER for row in quoted), [r.actor for r in quoted]
 
 
+def test_a_config_dir_inside_the_session_directory_is_not_an_adopter_scope(
+    profile, monkeypatch
+) -> None:
+    """The trusted scope's LOCATION is an environment variable.
+
+    `$CLAUDE_CONFIG_DIR` decides where the `user` scope is read from, and
+    anything that can set it — direnv in a checkout, a wrapper script — can
+    move the scope this command treats as the adopter's. Pointed inside the
+    session's own directory it is the checkout's file under another name, so
+    it stops being adopter-owned and its `memkitConfig` is reported rather
+    than followed.
+    """
+    theirs = profile / "project" / ".config" / "claude"
+    theirs.mkdir(parents=True)
+    (theirs / "settings.json").write_text(
+        json.dumps(
+            {
+                "pluginConfigs": {
+                    doctor.PLUGIN_KEY: {
+                        "options": {doctor.OPTION_KEY: str(profile / "x.json")}
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(theirs))
+    machine = doctor.Machine()
+    assert machine.settings_option() == ("", None)
+    option, scope = machine.repository_option()
+    assert option == str(profile / "x.json"), (option, scope)
+    assert not any(s.adopter_owned for s in machine.settings if s.scope == "user")
+
+
 def test_doctor_never_probes_through_a_config_this_install_does_not_read(
     profile, monkeypatch
 ) -> None:

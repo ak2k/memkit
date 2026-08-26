@@ -21,7 +21,10 @@ Optional flags, each of which changes the plan and therefore the digest, so
 whichever you pass here you must pass again in turn two. The turn-one grant is
 a prefix match, so passing any of them keeps this read-only call inside the
 pre-approval — an exact grant would have dropped you into a permission prompt
-for using a flag this page told you to use, on the turn that writes nothing:
+for using a flag this page told you to use, on the turn that writes nothing.
+**`--dry-run` goes first, immediately after `init`**: the grant matches the
+command as a prefix, so a flag written before it falls outside and prompts.
+The flags themselves may be in any order after it:
 
 - `--store PATH` — where the memory store goes.
 - `--config PATH` — where the config goes.

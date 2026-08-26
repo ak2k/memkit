@@ -5130,8 +5130,27 @@ def test_a_relative_plugin_data_dir_writes_no_marker(tmp_path, monkeypatch) -> N
 def test_a_marker_that_cannot_be_written_costs_the_prompt_nothing(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(tmp_path / "does" / "not" / "exist"))
+    """"Must not raise" is nearly tautological on its own.
+
+    The whole append runs inside `contextlib.suppress(Exception)`, so a version
+    of it that silently did something else would pass an assertion-free case.
+    What is asserted is that the write was ATTEMPTED at the right path and that
+    the failure left nothing behind — the two halves a suppressor can hide.
+    """
+    missing = tmp_path / "does" / "not" / "exist"
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(missing))
+    opened: list = []
+    real_open = builtins.open
+
+    def watched(path, *a, **kw):
+        opened.append(str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", watched)
     hook._marker_append("trust:unconfigured")  # must not raise
+    monkeypatch.setattr(builtins, "open", real_open)
+    assert any(str(missing) in path for path in opened), opened
+    assert not missing.parent.exists(), "the failed write created a directory"
 
 
 def test_no_data_directory_means_no_path_is_built_at_all(monkeypatch) -> None:
