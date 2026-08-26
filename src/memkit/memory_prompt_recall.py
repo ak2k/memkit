@@ -4251,7 +4251,7 @@ def _task_framed(lines: list[str], truncated: int = 0) -> str:
         + "\nEnd of retrieved references"
         + (
             f" ({truncated} further match{'es' if truncated > 1 else ''} "
-            "were not shown)"
+            "not shown)"
             if truncated
             else ""
         )

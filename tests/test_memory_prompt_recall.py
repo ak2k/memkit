@@ -8369,6 +8369,29 @@ def test_a_forged_delimiter_is_defanged_and_the_sentence_beside_it_is_not(
         assert body.count(f"({hook.FRAME_TAG}") == len(FRAME_PROBE), (channel, body)
 
 
+
+def test_the_truncation_count_agrees_with_its_own_verb() -> None:
+    """`TASK_MAX_HITS` is 3, so the commonest truncation is by one, and by one
+    the sentence read "1 further match were not shown".
+
+    Costs nothing functionally — a model reads past a verb-agreement slip — but
+    this is the closing sentence of a block whose every other word was argued
+    over, and the same clause on the prompt path has read correctly the whole
+    time. One phrasing across both frames rather than two.
+    """
+    for count, expected in (
+        (1, "1 further match not shown"),
+        (2, "2 further matches not shown"),
+        (9, "9 further matches not shown"),
+    ):
+        tail = hook._task_framed(["- /x.md — a"], count).rsplit(
+            "End of retrieved references", 1
+        )[1]
+        assert expected in tail, (count, tail)
+        assert "match were" not in tail, (count, tail)
+
+
+
 def test_the_task_frame_closes_with_memkits_own_sentence() -> None:
     """Recency is the threat this frame names, and the guidance was all above
     the lines it guards: the literal last content in the subagent's brief was
