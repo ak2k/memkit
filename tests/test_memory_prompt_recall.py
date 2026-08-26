@@ -40,7 +40,9 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
@@ -6734,7 +6736,7 @@ def test_an_unreadable_stat_is_not_deletion_evidence(state, monkeypatch) -> None
         return real(path, *a, **kw)
 
     monkeypatch.setattr(os, "stat", refuse)
-    assert hook._root_is_gone(str(state), "fts5-unreadable00") is None
+    assert hook._root_state(str(state), "fts5-unreadable00") == hook.ROOT_UNKNOWN
     hook._sweep()
     monkeypatch.setattr(os, "stat", real)
     for path in made:
@@ -6839,3 +6841,117 @@ def test_the_sweep_creates_no_state_directory(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(absent))
     hook._sweep()
     assert not absent.exists()
+
+
+def test_a_sidecar_less_index_is_collected_once_it_is_old_enough(state) -> None:
+    """Predicate B, and it exists because predicate A can never reach these.
+
+    The `.root` sidecar is written best-effort with `OSError` suppressed, and a
+    database whose root is gone is never reopened — so an index that failed to
+    write one can never acquire one. Thirty-six of these on the author's cache,
+    permanently uncollectible without this.
+    """
+    old = _index(state, "fts5-nosidecar000", root=None, days=30)
+    young = _index(state, "fts5-nosidecar111", root=None, days=0)
+    assert hook._root_state(str(state), "fts5-nosidecar000") == hook.ROOT_NO_SIDECAR
+    hook._sweep()
+    for path in old:
+        assert not path.exists(), path
+    # AGE is what makes it safe: a sidecar is written on the same run that
+    # creates the database, so a young index without one is a run still in
+    # flight rather than an orphan.
+    for path in young:
+        assert path.is_file(), path
+
+
+def test_no_sidecar_and_an_unreadable_one_are_different_answers(state, monkeypatch):
+    """Collapsing them either deletes a live index on one EACCES or leaves the
+    sidecar-less ones on disk forever."""
+    _index(state, "fts5-unreadable11", root="/x", days=30)
+    real = open
+
+    def refuse(path, *a, **kw):
+        if str(path).endswith("fts5-unreadable11.root"):
+            raise PermissionError(13, "denied")
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", refuse)
+    assert hook._root_state(str(state), "fts5-unreadable11") == hook.ROOT_UNKNOWN
+    assert hook._collectible(str(state), "fts5-unreadable11.db", time.time()) == ""
+
+
+def test_a_superseded_naming_generation_is_collected_even_though_it_looks_live(
+    state, tmp_path
+) -> None:
+    """Predicate C. The author's cache holds `fts5-2-<digest>.db` files from a
+    scheme this build no longer writes, with LIVE `.root` sidecars naming roots
+    that still exist — so neither the ENOENT predicate nor the no-sidecar one
+    ever reaches them. A naming change strands files permanently unless
+    something knows the old names."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    legacy = _index(state, "fts5-2-abcdef0000", root=str(corpus), days=30)
+    current = _index(state, "fts5-abcdef000000", root=str(corpus), days=30)
+    assert hook._collectible(str(state), "fts5-2-abcdef0000.db", time.time()) == (
+        "legacy-generation"
+    )
+    hook._sweep()
+    for path in legacy:
+        assert not path.exists(), path
+    for path in current:
+        assert path.is_file(), path
+
+
+def test_the_sweep_carries_its_position_forward_between_runs(state) -> None:
+    """Capped at 500 stats, a run that always started at the beginning would
+    examine the same first names forever and never reach the rest — on a
+    directory sorted by digest that is a sweep converging on nothing."""
+    # YOUNG files, so nothing is collected: a run that deleted what it
+    # examined would advance past them whether or not it carried a cursor, and
+    # the case would pass without the cursor existing.
+    for i in range(20):
+        _aged(state / f"sess-{i:03d}.json", days=1)
+    import memkit.memory_prompt_recall as mod
+
+    original = mod.SWEEP_MAX_STATS
+    try:
+        mod.SWEEP_MAX_STATS = 5
+        first = hook._sweep()
+        assert first["cursor"] == "sess-004.json", first
+        # The interval would skip the second run, which is the interval doing
+        # its job; the cursor is what the run after it resumes from.
+        os.unlink(state / hook.SWEEP_STAMP_NAME)
+        mod._stamp_sweep(str(state), str(first["cursor"]))
+        stale = time.time() - hook.SWEEP_INTERVAL - 1
+        os.utime(state / hook.SWEEP_STAMP_NAME, (stale, stale))
+        second = hook._sweep()
+        assert second["skipped"] is False
+        assert second["cursor"] == "sess-009.json", second
+    finally:
+        mod.SWEEP_MAX_STATS = original
+
+
+def test_the_tmpdir_fallback_is_private_rather_than_the_shared_root(
+    tmp_path, monkeypatch
+) -> None:
+    """`gettempdir()` is world-writable and every filename this hook writes is
+    predictable, which is exactly the symlink pre-planting hazard the primary
+    location was chosen to avoid — so falling back to it turned the reason for
+    the primary location into a description of a threat model the fallback
+    walked into."""
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", None)
+    monkeypatch.setattr(
+        hook, "_state_dir_candidate", lambda: str(tmp_path / "cannot" / "exist")
+    )
+
+    def refuse(*a, **kw):
+        raise PermissionError(13, "read-only")
+
+    monkeypatch.setattr(os, "makedirs", refuse)
+    got = hook._state_dir()
+    assert got != tempfile.gettempdir()
+    assert os.path.dirname(got) == tempfile.gettempdir()
+    assert stat.S_IMODE(os.stat(got).st_mode) == 0o700
+    # Cached: a fresh directory per CALL would put the index in one place and
+    # the session ledger in another.
+    assert hook._state_dir() == got

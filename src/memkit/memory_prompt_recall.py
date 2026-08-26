@@ -2413,8 +2413,40 @@ def _state_dir() -> str:
     try:
         os.makedirs(d, mode=0o700, exist_ok=True)
     except OSError:
-        d = tempfile.gettempdir()
+        return _tmp_state_dir()
     return d
+
+
+_TMP_STATE_DIR: str | None = None
+
+
+def _tmp_state_dir() -> str:
+    """The degraded path, and it is a PRIVATE directory rather than the shared
+    tmpdir root.
+
+    `gettempdir()` is world-writable and every filename this hook writes into
+    it is predictable — `log.jsonl`, `fts5-<digest of a path anyone can
+    guess>.db` — which is exactly the symlink pre-planting hazard the primary
+    location was chosen to avoid. Falling back to it turned the docstring above
+    into a description of a threat model this function then walked into.
+
+    Per invocation, so nothing here survives to be pre-planted against next
+    time. What that costs is every session starting with a cold index; that is
+    the point of calling it degraded, and doctor's `state-dir` check says so.
+
+    Cached, because several callers ask and a fresh directory per CALL would
+    put the index in one place and the session ledger in another.
+    """
+    global _TMP_STATE_DIR
+    if _TMP_STATE_DIR is None:
+        try:
+            _TMP_STATE_DIR = tempfile.mkdtemp(prefix="memory-recall-")
+        except OSError:
+            # Nowhere at all to write. Every caller suppresses its own write,
+            # so naming a directory that does not exist degrades to what a
+            # read-only cache already does.
+            _TMP_STATE_DIR = os.path.join(tempfile.gettempdir(), "memory-recall-none")
+    return _TMP_STATE_DIR
 
 
 def _state_dir_candidate() -> str:
@@ -2543,33 +2575,47 @@ def _fts_stem(name: str) -> str:
     return ""
 
 
-def _root_is_gone(state_dir: str, stem: str) -> bool | None:
-    """Whether this index's corpus root is definitely gone.
+# What `_root_state` can answer. FOUR states, not two, and each of the last
+# three exists because collapsing it into another deletes something it should
+# not or keeps something forever.
+ROOT_GONE = "gone"
+ROOT_LIVE = "live"
+ROOT_NO_SIDECAR = "no-sidecar"
+ROOT_UNKNOWN = "unknown"
 
-    THREE ANSWERS, and the third is the one that matters: True when the root's
-    stat says ENOENT, False when it is there, and None when the question could
-    not be answered — an unreadable sidecar, or a stat that failed for any
-    reason other than absence.
 
-    An unreadable stat is NOT deletion evidence. One EACCES on a mounted volume
-    would otherwise delete a live index, and the rebuild that follows is not
-    free: it re-chunks the whole corpus on somebody's next prompt.
+def _root_state(state_dir: str, stem: str) -> str:
+    """What this index's `.root` sidecar says about its corpus.
+
+    `gone` is the only deletion evidence. `unknown` is an unreadable sidecar or
+    a stat that failed for any reason other than absence — one EACCES on a
+    mounted volume would otherwise delete a live index, and the rebuild that
+    follows re-chunks the whole corpus on somebody's next prompt.
+
+    `no-sidecar` is separate from `unknown` and it is the state that made
+    predicate B necessary. The sidecar is written best-effort with `OSError`
+    suppressed, and a database whose root is gone is never reopened — so an
+    index that failed to write one can never acquire one, and the ENOENT
+    predicate alone leaves it on disk forever. Thirty-six of these on the
+    author's cache.
     """
     sidecar = os.path.join(state_dir, stem + ".root")
     try:
         with open(sidecar, encoding="utf-8") as f:
             root = f.read().strip()
+    except FileNotFoundError:
+        return ROOT_NO_SIDECAR
     except OSError:
-        return None
+        return ROOT_UNKNOWN
     if not root:
-        return None
+        return ROOT_UNKNOWN
     try:
         os.stat(root)
     except FileNotFoundError:
-        return True
+        return ROOT_GONE
     except OSError:
-        return None
-    return False
+        return ROOT_UNKNOWN
+    return ROOT_LIVE
 
 
 def _collectible(state_dir: str, name: str, now: float) -> str:
@@ -2587,9 +2633,18 @@ def _collectible(state_dir: str, name: str, now: float) -> str:
         for prefix in _FTS_LEGACY_PREFIXES:
             if name.startswith(prefix):
                 return "legacy-generation"
-        gone = _root_is_gone(state_dir, stem)
-        if gone is True:
+        root = _root_state(state_dir, stem)
+        if root == ROOT_GONE:
             return "root-gone"
+        if root == ROOT_NO_SIDECAR:
+            # Predicate B, and the AGE is what makes it safe: a sidecar is
+            # written on the same run that creates the database, so a young
+            # index without one is a run still in flight rather than an
+            # orphan. Older than the retention window by a wide margin, it is
+            # an index nothing will ever be able to identify.
+            age = _age(state_dir, name, now)
+            if age is not None and age > INDEX_RETENTION:
+                return "no-sidecar"
         return ""
     if name.endswith(".json"):
         age = _age(state_dir, name, now)
@@ -2628,7 +2683,7 @@ def _sweep(deadline: float | None = None) -> dict:
     Returns what it did, for the tests and for nothing else: the hook does not
     report on it, and doctor reads the directory rather than a claim about it.
     """
-    stats = {"stat": 0, "unlink": 0, "skipped": False}
+    stats = {"stat": 0, "unlink": 0, "skipped": False, "cursor": ""}
     state_dir = _state_dir_candidate()
     if not os.path.isdir(state_dir):
         # An install nobody configured has no state directory, and the sweep is
@@ -2640,18 +2695,29 @@ def _sweep(deadline: float | None = None) -> dict:
     # The stamp goes down BEFORE the work, not after. A sweep that crashed
     # partway through and left no stamp would run again on the very next
     # prompt, which is the one failure mode an interval exists to prevent.
-    _stamp_sweep(state_dir)
+    cursor = _sweep_cursor(state_dir)
+    _stamp_sweep(state_dir, cursor)
     now = time.time()
     try:
         names = sorted(os.listdir(state_dir))
     except OSError:
         return stats
-    for name in names:
+    # CARRY THE POSITION FORWARD. Capped at 500 stats, a run that always
+    # started at the beginning would examine the same first 500 names forever
+    # and never reach the rest — on a directory sorted by digest, that is a
+    # sweep that converges on nothing. Resuming past the last name examined is
+    # what makes the cap a rate rather than a ceiling.
+    resumed = [n for n in names if n > cursor] if cursor else names
+    # And wraps: the tail is swept, then the next run starts again at the top,
+    # which is where anything created since will be.
+    order = resumed + [n for n in names if not resumed or n <= cursor]
+    for name in order:
         if deadline is not None and time.monotonic() >= deadline:
             break
         if stats["stat"] >= SWEEP_MAX_STATS or stats["unlink"] >= SWEEP_MAX_UNLINKS:
             break
         stats["stat"] += 1
+        stats["cursor"] = name
         why = _collectible(state_dir, name, now)
         if not why:
             continue
@@ -2663,6 +2729,8 @@ def _sweep(deadline: float | None = None) -> dict:
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(state_dir, target))
                 stats["unlink"] += 1
+    if stats["cursor"]:
+        _stamp_sweep(state_dir, str(stats["cursor"]))
     return stats
 
 
@@ -2674,12 +2742,28 @@ def _sweep_due(state_dir: str) -> bool:
     return (time.time() - last) >= SWEEP_INTERVAL
 
 
-def _stamp_sweep(state_dir: str) -> None:
+def _sweep_cursor(state_dir: str) -> str:
+    """The last name the previous run examined, or "".
+
+    Kept in the stamp rather than in a second file, because the two facts are
+    one fact — when the sweep last ran, and how far it got — and a directory
+    whose growth this bounds does not need another file in it.
+    """
+    with contextlib.suppress(OSError, ValueError):
+        with open(os.path.join(state_dir, SWEEP_STAMP_NAME), encoding="utf-8") as f:
+            blob = json.load(f)
+        if isinstance(blob, dict):
+            cursor = blob.get("cursor")
+            if isinstance(cursor, str):
+                return cursor
+    return ""
+
+
+def _stamp_sweep(state_dir: str, cursor: str = "") -> None:
     with contextlib.suppress(OSError):
         path = os.path.join(state_dir, SWEEP_STAMP_NAME)
-        with open(path, "a", encoding="utf-8"):
-            pass
-        os.utime(path, None)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"ts": int(time.time()), "cursor": cursor}, f)
 
 
 def _session_state_path(session_id: str) -> str:
