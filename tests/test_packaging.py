@@ -11,8 +11,10 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -342,3 +344,80 @@ def test_the_package_config_covers_new_files_without_being_edited() -> None:
     config = json.loads((REPO / "pyrightconfig.json").read_text())
     assert {"src", "tests", "tools"} <= set(config["include"])
     assert (REPO / "src" / "memkit" / "cli.py").is_file()
+
+
+FLOOR_REQUIRED_ENV = "MEMKIT_FLOOR_REQUIRED"
+
+
+def _floor_interpreter() -> str | None:
+    """A real 3.9, or None.
+
+    `uv python find` first, because `uv python install 3.9` provisions one in
+    well under a second and that is what makes this affordable as a gate; a
+    `python3.9` on PATH answers too, for a machine that has one already.
+    """
+    for probe in (["uv", "python", "find", "3.9"],):
+        try:
+            out = subprocess.run(probe, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    return shutil.which("python3.9")
+
+
+def test_the_hook_and_both_subcommands_run_on_a_real_39() -> None:
+    """The floor, EXECUTED — which is what a static pass cannot do.
+
+    pyright at 3.9 catches a PEP-604 annotation evaluated at runtime and a
+    3.10+ call whose type it can see. It does not catch a module attribute
+    that exists in the version it was told about and not in the one the harness
+    runs: `sqlite3.SQLITE_BUSY` landed in 3.11, and a reference to it reachable
+    on 3.9 is a hook that raises on a stock mac — reported by the harness as
+    nothing at all, which is also what a corpus with nothing to say looks like.
+
+    CI's own comment said no runner ships 3.9 any more. That was true and is
+    not: `uv python install 3.9` provisions one in about a tenth of a second,
+    so the floor can be run rather than argued about. Set
+    `MEMKIT_FLOOR_REQUIRED=1` — CI does — and a missing interpreter fails this
+    rather than skipping it, because a gate that quietly stops gating is the
+    shape of the failure it exists to catch.
+    """
+    interpreter = _floor_interpreter()
+    if interpreter is None:
+        if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
+            raise AssertionError(
+                f"{FLOOR_REQUIRED_ENV}=1 and no 3.9 interpreter was found — "
+                "`uv python install 3.9` provisions one"
+            )
+        pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
+    assert interpreter is not None
+    out = subprocess.run(
+        [interpreter, str(REPO / "tests" / "floor39.py")],
+        capture_output=True, text=True, timeout=600,
+        env={k: v for k, v in os.environ.items() if not k.startswith("MEMKIT_")},
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "floor39: ok on 3.9" in out.stdout, out.stdout
+
+
+def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(monkeypatch):
+    """A gate that quietly stops gating is the shape of the failure the gate
+    exists to catch, so the skip has to be switchable off and the switch has to
+    be tested — otherwise the one thing CI relies on is the one thing nobody
+    has watched work."""
+    monkeypatch.setattr(sys.modules[__name__], "_floor_interpreter", lambda: None)
+    monkeypatch.setenv(FLOOR_REQUIRED_ENV, "1")
+    # BaseException and then a type check, not `pytest.raises(AssertionError)`:
+    # a `Skipped` raised inside a `raises(AssertionError)` block propagates and
+    # marks this case skipped, which reads as green. The exact failure this
+    # test exists to catch would therefore have been invisible to it.
+    with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
+        test_the_hook_and_both_subcommands_run_on_a_real_39()
+    assert caught.typename == "AssertionError", caught.typename
+    assert "no 3.9 interpreter" in str(caught.value)
+
+    monkeypatch.delenv(FLOOR_REQUIRED_ENV)
+    with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
+        test_the_hook_and_both_subcommands_run_on_a_real_39()
+    assert caught.typename == "Skipped", caught.typename

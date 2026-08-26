@@ -173,6 +173,27 @@ jobs:
           PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
         run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig.json
 
+      # And the floor RUN, by a real 3.9. The static pass below sees a
+      # PEP-604 annotation evaluated at runtime and a 3.10+ call whose type it
+      # can resolve; it cannot see a module attribute that exists in the
+      # version it was told about and not in the one the harness runs —
+      # `sqlite3.SQLITE_BUSY` landed in 3.11, and a reference to it reachable
+      # on 3.9 is a hook that raises on a stock mac, which the harness reports
+      # as nothing at all.
+      #
+      # This step exists because the claim beneath it ("no CI runner ships 3.9
+      # any more") stopped being a reason: `uv python install 3.9` provisions
+      # one in about a tenth of a second. MEMKIT_FLOOR_REQUIRED=1 makes a
+      # missing interpreter fail the step rather than skip it, for the same
+      # reason the rig's tier does.
+      - name: The 3.9 floor, executed
+        env:
+          MEMKIT_FLOOR_REQUIRED: "1"
+        run: |
+          uv python install 3.9
+          .venv/bin/python -m pytest -q tests/test_packaging.py \
+            -k the_hook_and_both_subcommands_run_on_a_real_39
+
       # The hook's 3.9 floor, as a SECOND pyright pass with its own config —
       # executionEnvironments are rooted at a directory, and here the 3.9 hook
       # shares a directory with a checker that requires 3.12. Worth stating
