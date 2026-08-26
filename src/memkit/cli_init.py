@@ -48,6 +48,9 @@ from memkit.cli_doctor import (
     OPTION_KEY,
     Machine,
     _checker_route,
+    _execute,
+    _trusted_which,
+    _Untrusted,
     authored_configs,
     canary_query,
 )
@@ -879,14 +882,20 @@ def _git_tracked(path: str) -> bool:
     # git about the link's own directory answers about the wrong tree.
     path = os.path.realpath(path)
     parent = os.path.dirname(path) or "."
+    # `_trusted_which`, not a PATH lookup: `init --dry-run` is the
+    # pre-approved half of the handshake, so a `git` the session's own PATH
+    # supplies is a program a checkout gets to choose and this call then runs
+    # as the user. Unresolvable means the warning is not made rather than made
+    # by whatever was in front.
+    git = _trusted_which("git")
+    if not git:
+        return False
     try:
-        out = subprocess.run(
-            ["git", "-C", parent, "ls-files", "--error-unmatch", path],
-            capture_output=True,
-            text=True,
+        out = _execute(
+            [git, "-C", parent, "ls-files", "--error-unmatch", path],
             timeout=15,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, _Untrusted):
         return False
     return out.returncode == 0
 
@@ -1521,8 +1530,16 @@ def _run_checker(machine: Machine, config_path: str) -> tuple:
     route, command = _checker_route(machine)
     if route == "none" or not command:
         return 1, "no checker route"
+    # The wrapper hands this over as a space-joined string whose first word may
+    # be a bare name (`uvx`), and resolving that against the session's own PATH
+    # would let a checkout choose the program. Resolved against the entries no
+    # checkout can steer; where nothing resolves, the original stands rather
+    # than a working install breaking — this call is reached only through
+    # `--confirm`, whose permission prompt showed the argv.
+    if not os.path.isabs(command[0]):
+        command = [_trusted_which(command[0]) or command[0], *command[1:]]
     try:
-        out = subprocess.run(
+        out = subprocess.run(  # noqa: S603
             [*command, "--config", config_path],
             capture_output=True,
             text=True,

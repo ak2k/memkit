@@ -1743,3 +1743,73 @@ def test_the_import_line_is_added_once_however_the_file_is_spaced(profile) -> No
         # And it is idempotent: a second pass changes nothing.
         assert init._appended(got, line) == got, repr(got)
         assert got.count(line) == 1, repr(got)
+
+
+def test_the_dry_run_never_runs_a_program_the_checkout_supplied(
+    profile, monkeypatch
+) -> None:
+    """`init --dry-run` is the pre-approved half of the handshake.
+
+    It asks git whether a target is tracked, so a checkout that puts its own
+    `git` in front of the system one on PATH — a `node_modules/.bin`, a
+    direnv-exported venv — chooses a program the pre-approved call then runs as
+    the user. The shim here is a SYMLINK out of the session directory, because
+    the executable's own path cannot answer that question.
+    """
+    marker = profile / "PWNED-git.txt"
+    hostile = profile / "elsewhere" / "prog"
+    hostile.parent.mkdir(parents=True, exist_ok=True)
+    hostile.write_text(f"#!/bin/sh\necho pwned > {marker}\nexit 0\n", encoding="utf-8")
+    hostile.chmod(0o755)
+    shim = profile / "project" / "node_modules" / ".bin"
+    shim.mkdir(parents=True)
+    (shim / "git").symlink_to(hostile)
+    monkeypatch.setenv("PATH", f"{shim}:{os.environ['PATH']}")
+    target = profile / "claude-config" / "CLAUDE.md"
+    target.write_text("# theirs\n", encoding="utf-8")
+    assert init._git_tracked(str(target)) is False
+    assert not marker.exists(), marker.read_text()
+
+
+def test_the_checker_command_is_not_taken_from_the_session_path(
+    profile, monkeypatch
+) -> None:
+    """The wrapper hands the checker over as a space-joined string whose first
+    word may be a bare name.
+
+    Resolving that against the session's own PATH lets a checkout choose the
+    program the confirm turn runs. Where nothing trusted resolves the original
+    stands, because this call is reached only through `--confirm`, whose
+    permission prompt showed the argv — a working install must not break for a
+    hardening.
+    """
+    hostile = profile / "elsewhere" / "prog"
+    hostile.parent.mkdir(parents=True, exist_ok=True)
+    hostile.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    hostile.chmod(0o755)
+    shim = profile / "project" / "node_modules" / ".bin"
+    shim.mkdir(parents=True)
+    (shim / "uvx").symlink_to(hostile)
+    # One the checkout supplies, FIRST, and one outside it after — so the
+    # answer is a choice between two real candidates rather than a question
+    # about what this machine happens to have installed.
+    theirs = profile / "usr-bin"
+    theirs.mkdir()
+    trusted = theirs / "uvx"
+    trusted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    trusted.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}:{theirs}:{os.environ['PATH']}")
+    monkeypatch.setenv("MEMKIT_CHECKER_ROUTE", "uvx")
+    monkeypatch.setenv("MEMKIT_CHECKER_CMD", "uvx --from memkit memory-integrity")
+    ran: list = []
+    real = init.subprocess.run
+
+    def watched(argv, *a, **kw):
+        ran.append(list(argv))
+        return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
+
+    monkeypatch.setattr(init.subprocess, "run", watched)
+    init._run_checker(doctor.Machine(), str(profile / "memkit.json"))
+    monkeypatch.setattr(init.subprocess, "run", real)
+    assert ran, "the checker was never invoked, so this proves nothing"
+    assert ran[0][0] == str(trusted), ran[0]
