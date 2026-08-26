@@ -6552,3 +6552,212 @@ def test_a_hostile_description_is_sanitized_on_the_way_out_of_the_hook(
     assert len([ln for ln in body if ln.startswith("- ")]) == 1
     assert out.stdout.count(f"</{hook.FRAME_TAG}>") == 1
     assert "\x1b" not in out.stdout
+
+
+# --- the task path: the gate and the query builder ---------------------------
+#
+# Every case in this section is about the one thing that separates a brief from
+# a prompt — length — and the two constants that separate them are the only
+# thing standing between "a subagent gets pointers" and "a subagent gets
+# nothing, silently". Both failures are invisible at the emission point: a gate
+# that refuses looks exactly like a corpus with nothing to say.
+
+LONG_BRIEFS = Path(__file__).resolve().parent / "fixtures" / "long-briefs"
+
+
+def _brief(rel: str) -> str:
+    return (LONG_BRIEFS / rel).read_text(encoding="utf-8").strip()
+
+
+def _terms(query: str | None) -> list[str]:
+    return list(dict.fromkeys((query or "").split()))
+
+
+def test_the_task_gate_serves_the_brief_the_prompt_path_refuses_for_its_length(
+) -> None:
+    """The whole unit in one assertion pair.
+
+    The prompt path's paste ceiling exists because a 4000-character prompt is a
+    log somebody dropped in. A 4000-character BRIEF is a brief, and every case
+    in the fixture set is past that ceiling — so a task path that reused
+    `prompt_gate` would decline its entire population and record `gate:long`
+    while doing it.
+
+    Both halves are asserted. Asserting only that the task path accepts would
+    pass just as well if the ceiling had been raised for everybody, which is
+    the change this unit must not make.
+    """
+    for rel in ("served/backlash-rig.md", "unserved/grant-reporting.md"):
+        brief = _brief(rel)
+        assert len(brief) > hook.PROMPT_MAX_CHARS, rel
+        assert hook.prompt_gate(brief) == "gate:long", rel
+        assert hook.task_gate(brief) is None, rel
+
+
+def test_the_task_query_is_the_whole_brief_and_not_its_first_paragraph() -> None:
+    """The silent half of the same failure, and the reason this asserts a COUNT.
+
+    A brief that clears the gate and is then reduced to the shared builder's 40
+    terms searches on its opening paragraph — the framing, the greeting, the
+    name of the thing being handed over — and not on the four kilobytes that
+    say what the work is. That still returns hits, so a test asserting only
+    "pointers were emitted" passes with the query truncated and the wrong
+    memories found.
+
+    The number is measured, not aspirational: 6275 characters of brief yield
+    340 distinct terms here against 28 through the shared builder.
+    """
+    brief = _brief("served/backlash-rig.md")
+    shared = _terms(hook.build_query(brief))
+    task = _terms(hook.build_task_query(brief))
+    assert len(shared) < 40, len(shared)
+    assert len(task) > 300, len(task)
+    # And the tail of the brief is IN it — a count alone would be satisfied by
+    # a builder that read the same opening paragraph with a lower stopword bar.
+    assert "repeatability" in task and "vendor" in task
+
+
+def test_the_task_query_caps_cannot_bind_below_the_emission_bound() -> None:
+    """The caps are sized against `PIPE_BUFFER_BOUND`, not against any brief.
+
+    That bound is what caps the population: the task path echoes the whole
+    brief back, so a brief larger than it can never be emitted at all. A cap
+    below what a brief at that bound yields would silently truncate the
+    largest briefs this path can serve — the ones where truncation costs most.
+
+    Driven by DOUBLING the caps and demanding the identical query, which is the
+    only form of this assertion that cannot be satisfied by a cap that happens
+    to sit just under the fixture's size.
+    """
+    brief = ""
+    for path in sorted(LONG_BRIEFS.rglob("*.md")):
+        brief += path.read_text(encoding="utf-8")
+        if len(brief.encode()) > hook.PIPE_BUFFER_BOUND:
+            break
+    brief = brief.encode()[: hook.PIPE_BUFFER_BOUND].decode(errors="ignore")
+    at_caps = hook.build_task_query(brief)
+    try:
+        hook.TASK_QUERY_MAX_WORDS *= 2
+        hook.TASK_QUERY_MAX_TERMS *= 2
+        doubled = hook.build_task_query(brief)
+    finally:
+        hook.TASK_QUERY_MAX_WORDS //= 2
+        hook.TASK_QUERY_MAX_TERMS //= 2
+    assert at_caps == doubled, (
+        len(_terms(at_caps)), len(_terms(doubled))
+    )
+
+
+def test_the_task_shape_gates_are_the_prompt_shape_gates_minus_the_ceiling(
+) -> None:
+    """The dispatch set IS what `task_gate` returns, and the difference from
+    the prompt path is exactly one member.
+
+    Pinned as a correspondence rather than as a list, so that a gate added to
+    one path and not the other fails here instead of falling through the
+    dispatch and being recorded as something else. `task:stopwords` sits
+    outside the set on this path too, matching `gate:stopwords`.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "task_gate"
+    )
+    returned = {
+        n.value.value for n in ast.walk(fn)
+        if isinstance(n, ast.Return)
+        and isinstance(n.value, ast.Constant)
+        and isinstance(n.value.value, str)
+    }
+    assert returned == hook.TASK_SHAPE_GATES, (
+        sorted(hook.TASK_SHAPE_GATES), sorted(returned)
+    )
+    renamed = {g.replace("task:", "gate:") for g in returned}
+    assert renamed == {g for g in hook.PROMPT_SHAPE_GATES if g != "gate:long"} | {
+        "gate:stopwords"
+    }, sorted(renamed)
+    assert "task:long" not in returned
+
+
+def test_the_task_gate_still_refuses_the_shapes_that_are_not_briefs() -> None:
+    """Dropping the ceiling is the only thing this path drops. An envelope
+    relayed into a spawn is still the harness's own vocabulary rather than
+    anybody's subject, and a two-word description still has nothing to search
+    on."""
+    assert hook.task_gate("") == "task:empty"
+    assert hook.task_gate("/memkit:doctor") == "task:slash"
+    assert hook.task_gate("fix it") == "task:short"
+    assert hook.task_gate("the of and a to") == "task:stopwords"
+    assert hook.task_gate(
+        "<system-reminder>\nthe user opened a file\n</system-reminder>"
+    ) == "task:envelope"
+    # And the near miss stays served: a brief that MENTIONS an envelope tag and
+    # then keeps writing is a person's sentence, not scaffolding.
+    assert hook.task_gate(
+        "<system-reminder> keeps firing on every prompt, work out why and "
+        "write up what you find"
+    ) is None
+
+
+def test_the_relevance_floors_bars_are_arguments_and_default_at_call_time(
+) -> None:
+    """`_passes_floor` grew four keyword bars so a second population can bring
+    its own without moving the prompt path's, which is what the consumer's
+    committed eval snapshot was measured against.
+
+    The defaults resolve at CALL time rather than at definition, because the
+    eval harness A/Bs a constant by scoring a copy of the hook with that
+    constant changed — a default bound at `def` is a second copy of the number
+    that such a run cannot reach, and the A/B then reports no difference.
+    """
+    # All-common evidence, well under the prompt path's share bar.
+    matched, total = ["see", "fix", "use", "yes"], 200
+    assert not hook._passes_floor(matched, total, "reference")
+    assert hook._passes_floor(matched, total, "reference", min_terms=4, min_ratio=0.0)
+    # The default is read now, not when the function was defined.
+    before = hook.ALL_COMMON_MIN_RATIO
+    try:
+        hook.ALL_COMMON_MIN_RATIO = 0.0
+        hook.MIN_MATCHED_TERMS = 4
+        assert hook._passes_floor(matched, total, "reference")
+    finally:
+        hook.ALL_COMMON_MIN_RATIO = before
+        hook.MIN_MATCHED_TERMS = 3
+
+
+def test_a_feedback_memory_is_reachable_on_a_brief_and_is_not_on_prompt_bars(
+) -> None:
+    """The silent zero the task floor exists to prevent, stated as arithmetic.
+
+    `type: feedback` keeps a stricter bar because behaviour memories coincide
+    more, and half of that bar is a SHARE of the query's terms. Over a
+    300-term brief, 0.12 of the query is 36 matched terms — a bar no memory in
+    any corpus clears — so on the prompt path's numbers an entire memory type
+    is unreachable from a subagent brief and reads exactly like a corpus with
+    nothing to say.
+
+    Distinctive evidence, so nothing here rests on the all-common branch: the
+    feedback bar is checked BEFORE the distinctive short-circuit and is what
+    rejects.
+    """
+    matched, total = ["sprocket", "backlash"], 300
+    assert not hook._passes_floor(matched, total, "feedback")
+    assert hook._passes_floor(
+        matched,
+        total,
+        "feedback",
+        feedback_min_terms=hook.TASK_FEEDBACK_MIN_TERMS,
+        feedback_min_ratio=hook.TASK_FEEDBACK_MIN_RATIO,
+    )
+    # The same evidence on a non-feedback memory was never in doubt, which is
+    # what makes the pair above about the feedback bar and not about the floor.
+    assert hook._passes_floor(matched, total, "reference")
+    # The share bar is off for this path and the COUNT bar is not: two matched
+    # terms is what a feedback memory still has to show.
+    assert not hook._passes_floor(
+        ["sprocket"],
+        total,
+        "feedback",
+        feedback_min_terms=hook.TASK_FEEDBACK_MIN_TERMS,
+        feedback_min_ratio=hook.TASK_FEEDBACK_MIN_RATIO,
+    )

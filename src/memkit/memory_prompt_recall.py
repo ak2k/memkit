@@ -2319,7 +2319,16 @@ def _common_words() -> frozenset[str]:
 _COMMON: frozenset[str] | None = None
 
 
-def _passes_floor(matched: list[str], n_total: int, mtype: str) -> bool:
+def _passes_floor(
+    matched: list[str],
+    n_total: int,
+    mtype: str,
+    *,
+    min_terms: int | None = None,
+    min_ratio: float | None = None,
+    feedback_min_terms: int | None = None,
+    feedback_min_ratio: float | None = None,
+) -> bool:
     """Relevance floor over the matched query terms. See the MIN_MATCHED /
     COMMON_WORDS comment block for the rationale + calibration.
 
@@ -2328,6 +2337,15 @@ def _passes_floor(matched: list[str], n_total: int, mtype: str) -> bool:
     - All-common matches -> pass only on >= MIN_MATCHED_TERMS matches AND
       >= ALL_COMMON_MIN_RATIO share of the query's terms.
     - type: feedback additionally keeps the stricter original bars.
+
+    The four bars are ARGUMENTS so that a caller whose queries are a different
+    shape can bring its own without moving the module constants — the prompt
+    path's numbers are what every calibration in this file and the consumer's
+    eval snapshot were measured against, and a second population must not
+    re-tune them by sharing them. Omitted means the prompt path's value, read
+    at CALL time rather than bound as a default: a default evaluated at
+    definition is a second copy of the constant that an A/B moving the
+    constant cannot reach, which is how the eval harness scores a hook copy.
 
     Term evidence is now required, full stop. There was an exemption for zero
     matches, written for semantic hits that by construction matched no term;
@@ -2338,18 +2356,20 @@ def _passes_floor(matched: list[str], n_total: int, mtype: str) -> bool:
     contradiction between claim and evidence, and this is the last place that
     can say so.
     """
+    min_terms = MIN_MATCHED_TERMS if min_terms is None else min_terms
+    min_ratio = ALL_COMMON_MIN_RATIO if min_ratio is None else min_ratio
+    fb_terms = FEEDBACK_MIN_TERMS if feedback_min_terms is None else feedback_min_terms
+    fb_ratio = FEEDBACK_MIN_RATIO if feedback_min_ratio is None else feedback_min_ratio
     n_matched = len(matched)
     if n_matched == 0:
         return False
     ratio = n_matched / n_total if n_total else 0.0
-    if mtype == "feedback" and (
-        n_matched < FEEDBACK_MIN_TERMS or ratio < FEEDBACK_MIN_RATIO
-    ):
+    if mtype == "feedback" and (n_matched < fb_terms or ratio < fb_ratio):
         return False
     common = _common_words()
     if any(t.lower() not in common for t in matched):
         return True
-    return n_matched >= MIN_MATCHED_TERMS and ratio >= ALL_COMMON_MIN_RATIO
+    return n_matched >= min_terms and ratio >= min_ratio
 
 
 def _display_path(path: str) -> str:
@@ -3310,6 +3330,139 @@ def _sigterm_masked():
         # again), and an inner UNBLOCK would lift the outer block early.
         with contextlib.suppress(ValueError, OSError):
             signal.pthread_sigmask(signal.SIG_SETMASK, prev)
+
+
+# --- the task path: what a subagent brief is, and how it is read -------------
+#
+# A brief handed to the Agent tool is a different population from a prompt, and
+# every constant below exists because a number calibrated on the second is
+# wrong on the first. Two differences drive all of them. A brief is long — the
+# prompt path refuses anything past PROMPT_MAX_CHARS outright, and that is the
+# whole population here. And a brief is the SUBJECT rather than an aside: a
+# prompt mentions its subject in a clause, a brief spends four kilobytes on it.
+#
+# Nothing here reads a prompt-path constant, and nothing here is read by the
+# prompt path. That separation is the point: the prompt path's numbers are what
+# every calibration in this file and the consumer's committed eval snapshot were
+# measured against, so a second population sharing them would silently re-tune
+# them for a corpus nobody re-measured.
+
+# Words of the brief the query builder reads, and terms it keeps. Both are far
+# above the prompt path's 80 and 40, which exist to stop a pasted log becoming
+# the query and which make "search on the whole brief" unreachable — 4.6 KB of
+# brief reduces to 33 terms through the shared builder, i.e. the first paragraph
+# and nothing else.
+#
+# Sized against the EMISSION BOUND rather than against a brief anybody has
+# written, because that bound is what caps the population: the task path echoes
+# the whole brief back inside `updatedInput`, so a brief past PIPE_BUFFER_BOUND
+# can never be emitted at all and a cap above what a 16 KiB brief yields can
+# never be the binding constraint. Measured: a brief at exactly that bound is
+# 3062 words and yields 652 unique terms at these caps, and raising them to
+# 6000/3000 yields the same 652 — saturated, with nothing left to add.
+TASK_QUERY_MAX_WORDS = 4000
+TASK_QUERY_MAX_TERMS = 2000
+
+# The relevance floor's bars for this path, passed to _passes_floor rather than
+# read from it. Calibrated on 16 long briefs paired served-against-unserved (see
+# the eval slice), and the calibration found one thing worth stating plainly:
+#
+# SHARE OF THE QUERY IS NOT A DISCRIMINATOR AT BRIEF LENGTH. The prompt path's
+# all-common bar asks for a fifth of the query's terms, which encodes "three
+# incidental matches out of forty is coincidence, three out of eight is the
+# subject". Over a 300-term brief that same fifth is sixty matched common terms,
+# so the branch never fires — every share from 0.05 to 0.30 scored identically,
+# 7 of 8 served and 0 of 8 leaked — and where it would fire, it fires stricter
+# the LONGER the brief gets, which is backwards. So the share bar is off here
+# and the count carries the branch alone.
+#
+# The count is what the negative half of the slice buys: at 6 matched common
+# terms 7 of the 8 irrelevant briefs get a pointer, at 10 two still do, and 12
+# is the lowest value that admits none. 14 is two counts above that, free on the
+# measured corpus (every value from 12 to 25 serves the same 7 of 8).
+TASK_MIN_MATCHED_TERMS = 14
+TASK_ALL_COMMON_MIN_RATIO = 0.0
+# `type: feedback` keeps its count bar and loses its share bar for the reason
+# above, and here the share bar is not merely inert but silencing: 0.12 of a
+# 300-term brief is 36 matched terms, so on the prompt path's numbers no
+# feedback memory is ever served to a subagent — an entire memory type reading
+# as a corpus with nothing to say.
+TASK_FEEDBACK_MIN_TERMS = 2
+TASK_FEEDBACK_MIN_RATIO = 0.0
+
+# What `task_gate` can refuse for the BRIEF'S SHAPE. Named for the same reason
+# PROMPT_SHAPE_GATES is: a gate added to the function and missed at the dispatch
+# is a refusal nothing records.
+#
+# `gate:long` is deliberately absent and is the one difference from
+# PROMPT_SHAPE_GATES. The paste ceiling exists because a prompt that long is a
+# log somebody dropped in; a brief that long is a brief.
+TASK_SHAPE_GATES = frozenset(
+    {"task:envelope", "task:empty", "task:slash", "task:short", "task:stopwords"}
+)
+
+
+def build_task_query(stripped: str) -> str | None:
+    """Brief -> sanitized search query (None if nothing content-bearing).
+
+    `build_query`'s sanitization, verbatim and for the same reasons — both
+    stages read the query as SYNTAX before they read it as words — with the two
+    caps raised to the numbers above. A separate function rather than a
+    parameter on the shared one so that no prompt-path caller can reach these
+    caps by accident, and so the consumer's eval snapshot has nothing new in
+    the path it scores.
+    """
+    words = [
+        w
+        for w in stripped.split()[:TASK_QUERY_MAX_WORDS]
+        if w.lower().strip(".,!?;:'\"()") not in _STOPWORDS
+    ]
+    if len(words) < 2:
+        return None
+    terms = [
+        t
+        for w in words[:TASK_QUERY_MAX_TERMS]
+        if (t := re.sub(r"[^\w]", " ", w).strip())
+    ]
+    extra = []
+    for w in terms:
+        parts = re.split(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])", w, flags=re.I)
+        if len(parts) > 1:
+            extra.extend(p for p in parts if len(p) > 1 and not p.isdigit())
+    return " ".join(terms + extra) or None
+
+
+def task_gate(stripped: str) -> str | None:
+    """The outcome the task path declines this brief with, or None if it
+    reaches retrieval. Pure, like `prompt_gate`, and for the same reason: an
+    analyzer asking "would production have declined this brief?" needs one
+    answer rather than a re-derivation.
+
+    Every gate is `prompt_gate`'s except the paste ceiling, which is absent.
+    That absence IS the unit: `prompt_gate` answers `gate:long` to every brief
+    this path exists for.
+
+    The envelope gate stays. Its markers are a closed allowlist over harness
+    scaffolding, and scaffolding echoed into a spawn is scaffolding — the
+    reason the prompt path refuses it, that its vocabulary is the harness's
+    rather than anybody's subject, does not change because it arrived through a
+    tool call.
+
+    Own outcome names rather than the prompt path's, because the soak log's
+    analyzers count by outcome and one vocabulary over two populations cannot
+    say which population a rate was taken over.
+    """
+    if _is_envelope(stripped):
+        return "task:envelope"
+    if not stripped:
+        return "task:empty"
+    if stripped.startswith("/"):
+        return "task:slash"
+    if len(stripped.split()) < MIN_PROMPT_WORDS:
+        return "task:short"
+    if build_task_query(stripped) is None:
+        return "task:stopwords"
+    return None
 
 
 def main() -> None:
