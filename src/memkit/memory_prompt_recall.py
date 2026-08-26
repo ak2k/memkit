@@ -2522,10 +2522,22 @@ TASK_RETENTION = 7 * 86400
 INDEX_RETENTION = 7 * 86400
 # Per invocation, because a 16,000-file directory cannot be fully walked inside
 # a budget shared with a prompt. The directory converges over several runs
-# instead of blowing one prompt's turn; at these numbers the author's own cache
-# takes about thirty runs, which is well under a day of ordinary use.
-SWEEP_MAX_STATS = 500
-SWEEP_MAX_UNLINKS = 100
+# instead of blowing one prompt's turn.
+# Which of these BINDS is the thing to know, and the first version of this
+# comment had it wrong: an index family is five unlinks for one stat, and index
+# families dominate a real cache — so every measured run stopped at the unlink
+# cap having spent a fraction of its stats, and the arithmetic that promised
+# convergence in about thirty runs had divided by the other constant. At 500
+# and 100 the author's own 16,319-file cache took 150 runs: days, at one an
+# hour, on the machine the numbers were measured from.
+#
+# Measured on a synthetic copy of that cache at these values: convergence in 15
+# runs, worst run 111 ms and mean 76 ms against a 13-second deadline — 0.85% of
+# the budget. The deadline check still bounds the loop, so "cannot cost a
+# prompt its answer" is unchanged; what moved is whether the directory
+# converges at all.
+SWEEP_MAX_STATS = 3000
+SWEEP_MAX_UNLINKS = 1000
 # Headroom before the harness's own timeout. The sweep runs after the pointers
 # have been written and flushed, so what this protects is not the delivery but
 # the process's ability to exit before it is killed.
@@ -2766,6 +2778,15 @@ def _sweep(deadline: float | None = None) -> dict:
     if not _sweep_due(state_dir):
         stats["skipped"] = True
         return stats
+    if deadline is not None and time.monotonic() >= deadline:
+        # BEFORE the stamp. A run whose budget is already spent would otherwise
+        # reset the hour and collect nothing, so the directory stops converging
+        # on exactly the installs that need it — and the headroom is one second
+        # by construction, since retrieval may run to its own 12-second budget
+        # while this deadline is 13. "Stamp before the work" is for runs that
+        # can do work.
+        stats["skipped"] = True
+        return stats
     # The stamp goes down BEFORE the work, not after. A sweep that crashed
     # partway through and left no stamp would run again on the very next
     # prompt, which is the one failure mode an interval exists to prevent.
@@ -2907,8 +2928,15 @@ def _cwd_digest() -> str:
     directories somebody works in.
     """
     try:
-        return hashlib.sha256(os.getcwd().encode()).hexdigest()[:12]
-    except OSError:
+        # `os.fsencode`, not `.encode()`. POSIX permits every byte but NUL and
+        # `/` in a directory name, so `os.getcwd()` can carry the surrogates
+        # `os.fsdecode` produced for undecodable bytes — and a strict encode
+        # raises `UnicodeEncodeError` on those, which is not an `OSError` and
+        # so escaped this guard. The digest is built before the hook does
+        # anything, so that cost the prompt its pointers and its soak record
+        # both, on a machine whose only fault was a directory name.
+        return hashlib.sha256(os.fsencode(os.getcwd())).hexdigest()[:12]
+    except Exception:  # noqa: BLE001 - a digest may not be able to end a run
         return "?"
 
 

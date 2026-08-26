@@ -540,9 +540,11 @@ Do not put your config here anyway: `memkit init` refuses to write one into a
 directory it also sweeps, and "the sweep would probably keep it" is not a
 property to hang a config on.
 
-The sweep is bounded per run — 500 stats and 100 unlinks — and carries its
-position forward, so a very large directory converges over about thirty runs
-rather than spending one prompt's budget. It runs after the pointers have been
+The sweep is bounded per run — 3000 stats and 1000 unlinks, and the unlink cap
+is the one that binds, since an index and its four sidecars are five unlinks
+for one stat — and it carries its position forward, so a very large directory
+converges over about fifteen runs rather than spending one prompt's budget. A
+run that arrives with its budget already gone does not consume the hour. It runs after the pointers have been
 written and flushed, and it never creates the directory: an install nobody has
 configured has none, and this is not the thing that makes one.
 

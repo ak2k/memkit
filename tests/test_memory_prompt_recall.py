@@ -7099,3 +7099,56 @@ def test_the_doctor_probes_record_carries_the_published_discriminator(tmp_path):
     ordinary = json.loads(log.read_text().splitlines()[-1])
     assert "concludes" not in ordinary, ordinary
     assert "doctor" not in ordinary, ordinary
+
+
+def test_a_cwd_the_filesystem_holds_as_undecodable_bytes_does_not_abort(
+    tmp_path, monkeypatch
+) -> None:
+    """POSIX permits any byte but NUL and `/` in a directory name, so
+    `os.getcwd()` can carry surrogates — and a strict `.encode()` raises on
+    those. The digest is built before the hook does anything, so the failure
+    would cost the prompt its pointers AND its soak record, on a machine whose
+    only fault is a directory name."""
+    monkeypatch.setattr(os, "getcwd", lambda: "/tmp/\udcff-undecodable")
+    digest = hook._cwd_digest()
+    assert digest and digest != "?", digest
+    assert len(digest) == 12
+    # Stable, because the question it answers is "the same directory as last
+    # time" and a per-call answer would say no every time.
+    assert digest == hook._cwd_digest()
+
+
+def test_a_sweep_with_no_budget_does_not_consume_the_hour(state) -> None:
+    """The stamp went down before the first deadline test, so a run whose
+    budget was already spent reset the interval and then collected nothing —
+    the directory stops converging on exactly the installs that need it. The
+    headroom is one second by construction: retrieval may run to its own
+    12-second budget while the sweep's deadline is 13."""
+    _aged(state / _session_name(11), days=30)
+    stamp = state / hook.SWEEP_STAMP_NAME
+    assert not stamp.exists()
+    stats = hook._sweep(deadline=time.monotonic() - 1)
+    assert stats["skipped"] is True, stats
+    assert not stamp.exists(), "a zero-work run consumed the interval"
+    # And the next run, with a budget, does the work.
+    assert hook._sweep()["unlink"] == 1
+
+
+def test_the_unlink_cap_is_the_binding_one_and_says_so(state) -> None:
+    """The comment promised convergence in about thirty runs and the arithmetic
+    divided by the wrong constant: every run stops at the UNLINK cap having
+    spent a fraction of its stats, so the author's own 16,319-file cache took
+    150 runs rather than 30 — days, at one an hour, on the machine the numbers
+    were measured from."""
+    assert hook.SWEEP_MAX_UNLINKS >= 1000, hook.SWEEP_MAX_UNLINKS
+    assert hook.SWEEP_MAX_STATS >= hook.SWEEP_MAX_UNLINKS, (
+        hook.SWEEP_MAX_STATS, hook.SWEEP_MAX_UNLINKS,
+    )
+    # Which cap binds is the thing the comment got wrong, so it is asserted:
+    # an index family is five unlinks for one stat, so unlinks run out first
+    # on the population that dominates a real cache.
+    for i in range(300):
+        _index(state, f"fts5-{i:012x}", root=str(state / "gone"))
+    stats = hook._sweep()
+    assert stats["unlink"] >= 1000, stats
+    assert stats["stat"] < hook.SWEEP_MAX_STATS, stats
