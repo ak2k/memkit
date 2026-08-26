@@ -5049,6 +5049,14 @@ def _prompt_main(payload: dict, t0: float) -> None:
 
         hits = recall(stripped, stats=rec, deadline=t0 + BUDGET_SECONDS)
         if not hits:
+            if rec.get("errs_lex"):
+                # Asked and unanswered, which is not the same as asked and
+                # answered with nothing — and `nomatch` is defined as the
+                # second. Recording those as `nomatch` says the corpus had
+                # nothing to say, which deflates every injection rate computed
+                # downstream from `outcome`; the task path names the identical
+                # state `task:index-unavailable`.
+                return done("index-unavailable", errs=rec["errs_lex"])
             return done("nomatch")
 
         candidates = [p for p in hits if p not in shown]

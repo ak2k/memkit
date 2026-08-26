@@ -9070,6 +9070,50 @@ def test_the_deadline_reaches_every_stage_it_is_supposed_to_bound() -> None:
 
 
 
+
+def test_the_prompt_path_tells_an_unanswerable_index_from_an_empty_corpus(
+    tmp_path, monkeypatch
+) -> None:
+    """The every-prompt path gained the new failure mode and not the outcome
+    that names it.
+
+    `_fts_search` and `_record_matched` raise `_QueryTimeout` when the budget
+    expires, `recall`'s per-dir isolation suppresses that into `errs_lex`, and
+    zero hits with `errs_lex` set reached the same `nomatch` the soak log's own
+    vocabulary defines as "the stores were searched and nothing came back". The
+    task path treats exactly this conflation as a defect and added
+    `task:index-unavailable` for it; this path got the failure and kept the
+    wrong name, which deflates every injection rate a consumer computes from
+    `outcome` — a first cold-build prompt on a large store files itself as a
+    corpus with nothing to say.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_fts_dir", _raising(hook._QueryTimeout("no budget")))
+    hook._prompt_main(
+        {"session_id": "qt1", "prompt": "sprocket backlash gearbox rebuild"},
+        time.monotonic(),
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert record["outcome"] == "index-unavailable", record
+    assert record["errs"] == 1, record
+
+    # And a corpus that really answers with nothing still says so.
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None: [])
+    hook._prompt_main(
+        {"session_id": "qt2", "prompt": "sprocket backlash gearbox rebuild"},
+        time.monotonic(),
+    )
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert record["outcome"] == "nomatch", record
+
+    # The consumer contract is the published table, not this test.
+    readme = Path(hook.__file__).resolve().parents[2] / "README.md"
+    assert "| `index-unavailable` |" in readme.read_text(encoding="utf-8")
+
+
+
 def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None:
     """The link the rest of the mechanism hangs from, and the one nothing
     pinned.
@@ -9690,7 +9734,8 @@ def test_every_task_outcome_is_registered_under_the_task_prefix() -> None:
         if o not in hook.PROMPT_SHAPE_GATES
         and not o.startswith(("gate:", "cli:"))
         and o not in ("injected", "deduped", "floored", "killed", "error",
-                      "output-lost", "nomatch", "dup-registration")
+                      "output-lost", "nomatch", "index-unavailable",
+                      "dup-registration")
     }
     assert written == task, sorted(written ^ task)
     assert len(task) >= 17, sorted(task)
