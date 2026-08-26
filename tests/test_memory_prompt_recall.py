@@ -41,6 +41,7 @@ import random
 import re
 import shutil
 import sqlite3
+import stat
 import string
 import subprocess
 import time
@@ -7184,6 +7185,11 @@ def _seed_brief_corpus(tmp_path: Path) -> dict:
         target = dst / path.relative_to(src)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(path, target)
+        # `copy` preserves mode and the fixtures are read-only under `nix flake
+        # check`, where they live in the store. A case that overwrites one to
+        # seed hostile text then fails on the one leg that stands outside a
+        # writable checkout — and only there.
+        target.chmod(target.stat().st_mode | stat.S_IWUSR)
     return env
 
 
