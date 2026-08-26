@@ -3245,7 +3245,9 @@ def _scores(paths: list[str]) -> list[float]:
     return [round(_LEX_SCORES.get(p, 0.0), 3) for p in paths]
 
 
-def _pointer_line(path: str, matched: list[str], total: int) -> str:
+def _pointer_line(
+    path: str, matched: list[str], total: int, *, over_brief: bool = False
+) -> str:
     """One pointer: where the file is, what it says it is, and the evidence
     for surfacing it — the matched terms, plus the section that matched, which
     is where to start reading a 400-line memory.
@@ -3254,14 +3256,27 @@ def _pointer_line(path: str, matched: list[str], total: int) -> str:
     the term index and the floor rejects a hit that has none. The alternative
     tag this used to render — `[no direct term match — semantic-stage hit]` —
     went with the stage it named.
+
+    `over_brief` changes ONE thing, the denominator, and it is a flag rather
+    than a second function because everything else — the description, the
+    six-term cut, the section lookup, the path rendering — is the part that
+    must not drift between the two surfaces. `n/m` is honest at prompt length
+    and misleading at brief length: the denominator is then how long the brief
+    was rather than anything about the memory, so the same evidence reads
+    weaker the more the parent wrote.
     """
     desc = _description(path)
     shown = ", ".join(matched[:6]) + (", …" if len(matched) > 6 else "")
+    evidence = (
+        f"matches {len(matched)} terms from this brief"
+        if over_brief
+        else f"matches {len(matched)}/{total} prompt terms"
+    )
     section = _LEX_SECTIONS.get(path)
     return (
         f"- {_display_path(path)}"
         + (f" — {desc}" if desc else "")
-        + f" [matches {len(matched)}/{total} prompt terms: {shown}]"
+        + f" [{evidence}: {shown}]"
         + (f" [section: {section}]" if section else "")
     )
 
@@ -3732,32 +3747,6 @@ def task_gate(stripped: str) -> str | None:
     return None
 
 
-def _task_pointer_line(path: str, matched: list[str], total: int) -> str:
-    """One pointer, in the shape a BRIEF wants.
-
-    Same components as `_pointer_line` and one deliberate omission: the
-    denominator. `matches 16/340` is arithmetically true and reads as a weak
-    hit, because the denominator is the length of the brief rather than
-    anything about the memory — a longer brief would make the same evidence
-    look worse. What the number is evidence FOR is how many of the brief's own
-    words this file contains, so that is what it says.
-
-    `total` is still taken, and still ignored, so that the two pointer builders
-    keep one signature and a caller cannot hand them different arguments by
-    accident.
-    """
-    del total
-    desc = _description(path)
-    shown = ", ".join(matched[:6]) + (", \u2026" if len(matched) > 6 else "")
-    section = _LEX_SECTIONS.get(path)
-    return (
-        f"- {_display_path(path)}"
-        + (f" \u2014 {desc}" if desc else "")
-        + f" [matches {len(matched)} terms from this brief: {shown}]"
-        + (f" [section: {section}]" if section else "")
-    )
-
-
 # Bytes of randomness in the task frame's delimiter. Four is 4.3 billion
 # values, which is not a cryptographic bar and does not need to be: the
 # attacker here writes text into a memory store BEFORE the run that reads it,
@@ -4019,7 +4008,14 @@ def _task_main(payload: dict, t0: float) -> None:
             return done("task:nobrief")
 
         stripped = brief.strip()
-        rec["brief_sha"] = hashlib.sha256(stripped.encode()).hexdigest()[:12]
+        # `surrogatepass`, for the reason `_nbytes` uses it: a brief can hold a
+        # lone surrogate — `json.load` produces one from an escaped `\udXXX` —
+        # and a plain `.encode()` raises here, before the path has a name for
+        # what is wrong with it. The refusal belongs at the emission, where the
+        # fact is "these bytes cannot be written"; a digest is just a digest.
+        rec["brief_sha"] = hashlib.sha256(
+            stripped.encode("utf-8", "surrogatepass")
+        ).hexdigest()[:12]
         rec["words"] = len(stripped.split())
         # EVERY OUTCOME AS A LITERAL AT ITS OWN CALL SITE, which is what
         # `done`'s contract asks for and what a relayed `done(gate)` breaks
@@ -4101,14 +4097,29 @@ def _task_main(payload: dict, t0: float) -> None:
             return done("task:floored", hits=len(hits), **_floored_stat(floored))
 
         picks = eligible[:MAX_HITS]
-        block = _task_framed([_task_pointer_line(*e) for e in picks])
+        block = _task_framed([_pointer_line(*e, over_brief=True) for e in picks])
         text = _task_payload(tool_input, block)
         if text is None:
             # The shape was wrong, which is a defect in this file rather than a
             # fact about the brief. Named apart from the size refusal below so
             # the log can say which — one of them is a bug report.
             return done("task:unsafe", picks=len(picks))
-        size = _nbytes(text)
+        try:
+            size = len(text.encode("utf-8"))
+        except UnicodeEncodeError:
+            # A lone surrogate in the brief. `json.load` produces one from an
+            # escaped `\udXXX` and the brief is echoed back VERBATIM, so it
+            # reaches the write unaltered — where `sys.stdout.write` raises
+            # part-way through encoding, after the buffer may already hold a
+            # prefix of the emission. A partial JSON object on this event is
+            # worse than none, so the refusal happens before the write rather
+            # than around it.
+            #
+            # `_nbytes` cannot see this: it encodes with `surrogatepass`
+            # because a filename the filesystem holds as undecodable bytes is
+            # a real thing a pointer line must survive. Retrieved paths are
+            # sanitized on the way in; the brief is not, and must not be.
+            return done("task:unencodable")
         if size > PIPE_BUFFER_BOUND:
             # The brief is echoed back inside the emission, so this is the one
             # surface that can reach the bound the SIGTERM mask rests on. It

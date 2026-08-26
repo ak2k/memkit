@@ -458,7 +458,9 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     picks = eligible[: hook.MAX_HITS]
     if not picks:
         return []
-    block = hook._task_framed([hook._task_pointer_line(*pick) for pick in picks])
+    block = hook._task_framed(
+        [hook._pointer_line(*pick, over_brief=True) for pick in picks]
+    )
     # The tool input a spawn actually carries: both keys the Agent tool
     # requires, so the allowlist is exercised on a realistic shape rather than
     # on a one-key stub that could never fail it.

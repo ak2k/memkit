@@ -317,6 +317,7 @@ every rate you compute a rate over an unknown mixture.
 | `state: "unkeyed"` on a `task:injected` record | the tool call carried no id to key a ledger on, so this spawn was served without one. Not an outcome — a field, and the fail-open direction: a shared ledger would serve the first spawn on the machine and dedup every one after it |
 | `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside |
 | `task:nobrief` | the tool call carried no `prompt` string to read, or was for a tool this hook does not serve under an event name it does not recognise |
+| `task:unencodable` | the brief carried a lone surrogate, so the emission cannot be written as UTF-8 at all. Refused before the write rather than around it: a partial JSON object on this event is worse than none |
 | `task:killed` · `task:output-lost` · `task:error` | as the unprefixed three |
 | `trust:unconfigured` | **`trust.json`, not the soak log** — the install has no config on any route it reads, so the hook refused before it would have created the shared state directory |
 | `trust:config-error` | the same file: a config was found and could not be used — unreadable, unparseable, or a schema this build does not speak |
