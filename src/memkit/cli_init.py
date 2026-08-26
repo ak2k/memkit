@@ -1231,8 +1231,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run(args: argparse.Namespace) -> int:
     machine = Machine()
-    config_path = _resolve_config(machine, getattr(args, "config", None))
+    # EVERYTHING that can refuse is inside this, not the two call sites that
+    # were known to. A refusal raised one line above it printed a traceback
+    # and exited 1 — the code the published table reads as "memkit could not
+    # start at all" — so an agent that met a decision went off to reinstall a
+    # working install.
     try:
+        config_path = _resolve_config(machine, getattr(args, "config", None))
         plan = build_plan(
             machine,
             store=getattr(args, "store", None),

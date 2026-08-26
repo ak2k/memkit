@@ -354,6 +354,83 @@ def _run(*argv: str, env: dict | None = None) -> subprocess.CompletedProcess:
     )
 
 
+def test_a_refusal_raised_before_the_plan_is_still_exit_five(profile) -> None:
+    """A refusal is exit 5 wherever it was raised.
+
+    `no-config-route` was raised by the resolver, one line ABOVE the try that
+    turns refusals into exit 5, so a plugin install with no option and no
+    usable plugin-data directory printed a traceback and exited 1 — which the
+    published table reads as "memkit could not start at all". An agent given
+    that goes off to reinstall a working install, and the one thing the
+    refusal contract promises is that a refusal is a decision rather than a
+    crash.
+    """
+    env = dict(
+        os.environ,
+        HOME=str(profile / "home"),
+        XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+        MEMKIT_PLUGIN="1",
+    )
+    env.pop(hook.PLUGIN_DATA_ENV, None)
+    env.pop("CLAUDE_PLUGIN_OPTION_MEMKITCONFIG", None)
+    env[doctor.CONFIG_DIR_ENV] = str(profile / "claude-config")
+    before = _snapshot(profile)
+    out = _run("--dry-run", "--store", str(profile / "notes"), env=env)
+    assert out.returncode == init.EXIT_REFUSED, (out.returncode, out.stderr)
+    assert "refused (no-config-route)" in out.stderr, out.stderr
+    assert "Traceback" not in out.stderr, out.stderr
+    assert _snapshot(profile) == before, "a refusal wrote something"
+
+
+def test_nothing_that_can_refuse_runs_before_the_guard(profile, monkeypatch) -> None:
+    """The guard is structural, because the defect was.
+
+    `_refuses` and the inventory scrape both call `build_plan` directly, so a
+    refusal that never reaches `_refuse()` counted as covered by both — which
+    is precisely how one shipped. The rule this pins is not "these two call
+    sites are wrapped" but "nothing that can raise runs outside the wrapper".
+    """
+    import ast
+
+    source = (
+        pathlib.Path(init.__file__).read_text(encoding="utf-8")
+        if hasattr(init, "__file__")
+        else ""
+    )
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "run"
+    )
+    guarded = next(
+        (node for node in fn.body if isinstance(node, ast.Try)), None
+    )
+    assert guarded is not None, "run() has no refusal guard at all"
+    assert any(
+        isinstance(h.type, ast.Name) and h.type.id == "Refusal"
+        for h in guarded.handlers
+    ), ast.dump(guarded)
+    before = fn.body[: fn.body.index(guarded)]
+    calls = [
+        ast.unparse(node.func)
+        for statement in before
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call)
+    ]
+    assert calls == ["Machine"], calls
+
+    # And behaviourally, at both sites, so the shape above is not the only
+    # thing standing.
+    for target in ("_resolve_config", "build_plan"):
+        monkeypatch.setattr(
+            init,
+            target,
+            lambda *a, **k: (_ for _ in ()).throw(init.Refusal("synthetic", "no")),
+        )
+        assert init.run(_args()) == init.EXIT_REFUSED
+        monkeypatch.undo()
+
+
 def test_init_requires_a_mode_rather_than_defaulting_to_one(profile) -> None:
     """A mutating command with a default mode is one an agent runs by
     accident. Neither mode is the default; the caller says which."""
