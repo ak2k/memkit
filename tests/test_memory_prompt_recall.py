@@ -8226,6 +8226,44 @@ def test_the_task_frames_delimiter_carries_a_nonce_nothing_can_have_written(
     assert len(first) > len(hook.FRAME_TAG) + hook.FRAME_NONCE_BYTES
 
 
+def test_each_frame_names_the_delimiter_its_nonce_protects() -> None:
+    """The nonce is the only thing between store-authored text and the end of
+    the retrieved region, and the block never told its reader so.
+
+    The property the docs state — "a description cannot close a block whose tag
+    was picked after the description was written, in any spelling" — is a fact
+    about string equality, and the consumer is a model. The task frame said
+    "not anything between these tags" without saying WHICH tags or that they
+    carry a value chosen for this call; the prompt frame's preamble did not
+    mention the delimiter at all. So a reader meeting a defanged or an
+    unrecognised memkit tag mid-body had been given no rule that would keep it
+    reading the text after it as retrieved data.
+
+    Named without spelling a second closing delimiter, deliberately: the
+    obvious phrasing — quoting `</tag>` inside the prose — puts a literal
+    closer in the middle of the region, which is the very thing the frame
+    exists to keep out of it.
+    """
+    for label, block in (
+        ("prompt", hook._framed(["- /x.md — a description"])),
+        ("task", hook._task_framed(["- /x.md — a description"])),
+    ):
+        tag = _emitted_tag(block)
+        lines = block.rstrip().splitlines()
+        assert lines[0] == f"<{tag}>", (label, lines[0])
+        assert lines[-1] == f"</{tag}>", (label, lines[-1])
+        prose = "\n".join(lines[1:-1])
+        # The delimiter is named in the text the model reads, not only in the
+        # two lines it is made of.
+        assert tag in prose, (label, prose)
+        # And what naming it is FOR: another memkit tag below is file content.
+        assert "random" in prose, (label, prose)
+        assert "file content" in prose, (label, prose)
+        # Still exactly one closing delimiter in the whole block.
+        assert block.count(f"</{tag}>") == 1, (label, block)
+        assert block.count(f"</{hook.FRAME_TAG}") == 1, (label, block)
+
+
 def test_a_store_authored_description_cannot_end_the_task_data_region(
     tmp_path,
 ) -> None:

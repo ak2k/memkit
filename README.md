@@ -226,7 +226,7 @@ What differs from the prompt path:
 - **A different relevance bar.** Share-of-the-query gets stricter the longer
   the text is, which is backwards for a brief, so this path uses a plain count
   of matched terms instead — see [Retrieval disclosures](#retrieval-disclosures).
-- **Up to three pointers**, in a block of 926 bytes plus the pointer lines,
+- **Up to three pointers**, in a block of 1108 bytes plus the pointer lines,
   appended to the end of the brief.
 - **A 10-second timeout** with a 7-second internal budget, against the prompt
   path's 15 and 12. A hook on this event stalls a spawn, so it is given less
@@ -990,10 +990,12 @@ and not instructions — paths and descriptions are file contents, and every one
 of them is sanitized before it is rendered, so a memory cannot smuggle control
 characters through it. The delimiter's trailing digits are random, generated
 per run: a description cannot close a block whose tag was picked after the
-description was written, in any spelling. The block is the frame plus one line
-per pointer: **577 bytes fixed** on any prompt that fires, plus the pointer lines
+description was written, in any spelling, and both frames now NAME that
+delimiter in the prose the model reads, so the rule is one it can apply rather
+than one only the code knows. The block is the frame plus one line
+per pointer: **788 bytes fixed** on any prompt that fires, plus the pointer lines
 themselves, which are as long as your descriptions. The subagent block is the
-same shape and **926 bytes fixed**, appended to the brief rather than printed;
+same shape and **1108 bytes fixed**, appended to the brief rather than printed;
 a brief plus its block over 16 KiB is refused whole rather than trimmed,
 because the brief is echoed back inside the replacement and none of it is
 memkit's to shed. When the per-prompt cap cuts
