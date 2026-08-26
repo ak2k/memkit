@@ -7975,9 +7975,9 @@ def test_a_ledger_the_run_could_not_write_says_so_in_its_record(
 # --- the frame's delimiter, against text chosen to forge it ------------------
 
 # Spellings that render byte-for-byte as the closing tag to any reader and are
-# not the closing tag. Six of these survived `strip_unsafe` untouched until
-# `_FRAME_CONFUSABLE` existed; the last three are here to say the rule is a
-# class rather than the six that were found.
+# not the closing tag. Six of these survived `strip_unsafe` untouched until the
+# complement rule existed; the last three are here to say the rule is a class
+# rather than the six that were found.
 CONFUSABLE_CLOSERS = (
     "</memkit‑pointers>",  # U+2011 non-breaking hyphen
     "</memkit‐pointers>",  # U+2010 hyphen
