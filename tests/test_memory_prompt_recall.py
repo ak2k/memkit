@@ -8929,6 +8929,50 @@ def test_the_deadline_reaches_every_stage_it_is_supposed_to_bound() -> None:
         assert len(reads) >= 2, (name, len(reads))
 
 
+
+def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None:
+    """The link the rest of the mechanism hangs from, and the one nothing
+    pinned.
+
+    `_fts_sync`'s insert, `_fts_search`'s MATCH and `_record_matched`'s per-term
+    walk all check a `deadline` they were passed — and every one of those checks
+    is a no-op unless `_task_main` and `_prompt_main` actually build one.
+    Deleting `deadline=t0 + TASK_BUDGET_SECONDS` from the task path's `recall`
+    call left the whole suite green twice, across two rounds, while the
+    subagent path went back to running a cold build past the harness kill with
+    no record and no pointers.
+
+    The constant is named, not just the keyword: `deadline=t0 + 3` would pass a
+    presence check and silently retune a budget that is sized against
+    `HARNESS_TIMEOUT` two constants away.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+    def deadline_names(caller: str) -> set[str]:
+        calls = [
+            n
+            for n in ast.walk(fns[caller])
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "recall"
+        ]
+        assert len(calls) == 1, (caller, len(calls))
+        keywords = {k.arg: k.value for k in calls[0].keywords}
+        assert "deadline" in keywords, (caller, sorted(keywords))
+        return {
+            n.id for n in ast.walk(keywords["deadline"]) if isinstance(n, ast.Name)
+        }
+
+    assert deadline_names("_task_main") == {"t0", "TASK_BUDGET_SECONDS"}
+    assert deadline_names("_prompt_main") == {"t0", "BUDGET_SECONDS"}
+    # Both budgets end before the harness kills the process they run in, which
+    # is the only reason either number is the number it is.
+    assert hook.TASK_BUDGET_SECONDS < hook.HARNESS_TIMEOUT
+    assert hook.BUDGET_SECONDS < hook.HARNESS_TIMEOUT
+
+
+
 def test_an_index_that_could_not_answer_is_not_reported_as_no_match(
     tmp_path, monkeypatch
 ) -> None:
