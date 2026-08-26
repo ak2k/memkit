@@ -298,7 +298,15 @@ def test_the_slice_scores_the_task_path_and_not_the_prompt_path(
     """
     stripped = tmp_path / "memkit"
     shutil.copytree(Path(__file__).resolve().parent.parent / "src" / "memkit", stripped)
+    # copytree preserves mode, and the source is read-only under `nix flake
+    # check` because it lives in the store. Same reason the `corpus` fixture
+    # above chmods, and the same failure: a PermissionError on the copy, on the
+    # one leg that stands outside a writable checkout.
+    for path in (stripped, *stripped.rglob("*")):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
     src = stripped / "memory_prompt_recall.py"
+    # The WHOLE directory, because the hook resolves common-words.txt beside
+    # __file__ and `load_hook` refuses a lone .py for it.
     src.write_text(src.read_text().replace("def task_gate(", "def _no_task_gate("))
     out = _eval(corpus, "--hook", str(src))
     assert out.returncode == 0, out.stdout + out.stderr
