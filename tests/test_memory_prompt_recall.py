@@ -7369,6 +7369,51 @@ def test_a_saturated_first_directory_does_not_starve_the_second(
     assert not any(p.exists() for p in theirs), [p for p in theirs if p.exists()]
 
 
+def test_a_directory_that_will_not_be_walked_takes_no_share(
+    tmp_path, monkeypatch
+) -> None:
+    """The share goes to the directories that will actually be walked.
+
+    The fallback global is sticky for the life of a process that took it once,
+    and the directory it names may be gone or may have been swept within the
+    hour. Dividing the budget by how many directories are LISTED rather than by
+    how many will be walked halves the rate the real cache converges at, on
+    exactly the installs that met a transient unwritable home — which is the
+    case the two-directory sweep exists for.
+    """
+    monkeypatch.setattr(hook, "SWEEP_MAX_STATS", 100)
+    monkeypatch.setattr(hook, "SWEEP_MAX_UNLINKS", 40)
+    aged = time.time() - 30 * 86400
+
+    def one_run(fallback) -> dict:
+        """One sweep over a fresh directory of 60 collectible ledgers."""
+        state = tmp_path / f"state-{fallback or 'none'}".replace("/", "_")
+        state.mkdir()
+        monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(state))
+        monkeypatch.setattr(hook, "_TMP_STATE_DIR", fallback)
+        for index in range(60):
+            _aged_session(state, index, aged)
+        return hook._sweep()
+
+    # A fallback that was taken once in this process and whose directory is not
+    # there, against no fallback at all. The preferred cache is the same in
+    # both, so its budget has to be.
+    with_absent = one_run(str(tmp_path / "gone"))
+    alone = one_run(None)
+    assert with_absent["unlink"] == alone["unlink"], (with_absent, alone)
+    assert alone["unlink"] == hook.SWEEP_MAX_UNLINKS, alone
+
+    # And a fallback that IS there still gets its share, which is the property
+    # the division exists for.
+    real = tmp_path / "fallback"
+    real.mkdir()
+    for index in range(20):
+        _aged_session(real, 0xF00 + index, aged)
+    shared = one_run(str(real))
+    assert shared["unlink"] == hook.SWEEP_MAX_UNLINKS, shared
+    assert len(list(real.glob("*.json"))) < 20, "the fallback got no turn"
+
+
 def test_a_directory_that_got_no_turn_is_not_stamped_as_swept(
     tmp_path, monkeypatch
 ) -> None:

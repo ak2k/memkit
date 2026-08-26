@@ -2944,13 +2944,22 @@ def _sweep(deadline: float | None = None) -> dict:
     state_dirs = [_state_dir_candidate()]
     if _TMP_STATE_DIR and _TMP_STATE_DIR not in state_dirs:
         state_dirs.append(_TMP_STATE_DIR)
+    # Shared among the directories that will actually be WALKED, not among the
+    # ones listed. The fallback global is sticky for the life of a process that
+    # took it once, and the directory it names is often gone or swept within
+    # the hour — so counting it would halve the rate the real cache converges
+    # at, on exactly the installs that met a transient unwritable home. A
+    # directory that becomes due between this test and its own loses one run's
+    # turn and takes the next; the alternative is a budget nothing spends.
+    walking = [d for d in state_dirs if os.path.isdir(d) and _sweep_due(d)]
+    remaining = len(walking)
     passes = []
-    for index, state_dir in enumerate(state_dirs):
-        passes.append(
-            _sweep_dir(
-                state_dir, stats, deadline, _fair_share(stats, len(state_dirs) - index)
-            )
-        )
+    for state_dir in state_dirs:
+        share = (0, 0)
+        if state_dir in walking:
+            share = _fair_share(stats, remaining)
+            remaining -= 1
+        passes.append(_sweep_dir(state_dir, stats, deadline, share))
     # `skipped` means NOTHING WAS EXAMINED — one flag over what may be two
     # directories, so it has to be the conjunction. Setting it per directory
     # made a run that did real work in the first report itself skipped because
