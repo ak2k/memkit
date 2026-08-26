@@ -5172,8 +5172,8 @@ def _hook_outcomes() -> set[str]:
     and the gate passing is then a statement about nothing.
     """
     tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
-    # BOTH hook entry points. `main` serves the prompt, `_task_main` serves a
-    # subagent brief, and each has its own `done`. Reading only `main` was
+    # BOTH hook entry points. `_prompt_main` serves the prompt, `_task_main`
+    # serves a subagent brief, and each has its own `done`. Reading only one was
     # exactly the blindness this function exists to prevent, one function
     # further out: every `task:*` outcome would be a record the enumeration
     # never sees and the README never has to document.
@@ -5182,7 +5182,7 @@ def _hook_outcomes() -> set[str]:
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == name
         )
-        for name in ("main", "_task_main")
+        for name in ("_prompt_main", "_task_main")
     ]
     inside_emitter: set[int] = set()
     for fn in paths:
@@ -6688,9 +6688,15 @@ def test_the_task_shape_gates_are_the_prompt_shape_gates_minus_the_ceiling(
         and isinstance(n.value, ast.Constant)
         and isinstance(n.value.value, str)
     }
-    assert returned == hook.TASK_SHAPE_GATES, (
+    # `task:stopwords` is deliberately outside the dispatch set, exactly as
+    # `gate:stopwords` is: `task:nodirs` outranks it, because a machine with
+    # no searchable store could not have answered whatever the brief said and
+    # blaming the brief's vocabulary answers about the wrong thing.
+    assert returned - {"task:stopwords"} == hook.TASK_SHAPE_GATES, (
         sorted(hook.TASK_SHAPE_GATES), sorted(returned)
     )
+    assert "task:stopwords" in returned
+    assert "task:stopwords" not in hook.TASK_SHAPE_GATES
     renamed = {g.replace("task:", "gate:") for g in returned}
     assert renamed == {g for g in hook.PROMPT_SHAPE_GATES if g != "gate:long"} | {
         "gate:stopwords"
@@ -7873,3 +7879,202 @@ def test_an_index_that_could_not_answer_is_not_reported_as_no_match(
     )
     record = json.loads(log.read_text().splitlines()[-1])
     assert record["outcome"] == "task:nomatch", record
+
+
+def test_a_machine_with_nothing_to_search_says_so_on_both_paths(
+    tmp_path, monkeypatch
+) -> None:
+    """`nodirs` is a fact about the machine and outranks a fact about the text:
+    a store that is not there could not have answered whatever was asked, so
+    recording the brief's vocabulary as the reason answers about the wrong
+    thing. The prompt path has always ordered it that way; the task path had
+    the order reversed, and the second dispatch was unreachable.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook, "_search_dirs", list)
+    hook._task_main(
+        {
+            "session_id": "tsk7",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_use_id": "toolu_nodirs",
+            # All common words, so `task_gate` answers `task:stopwords` — the
+            # outcome that used to win.
+            "tool_input": {"prompt": "the of and a to in is it", "description": "d"},
+        },
+        time.monotonic(),
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert record["outcome"] == "task:nodirs", record
+
+    # And with stores present the brief's own vocabulary is the answer again,
+    # which is what keeps the second dispatch alive.
+    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    hook._task_main(
+        {
+            "session_id": "tsk7",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_use_id": "toolu_stop",
+            "tool_input": {"prompt": "the of and a to in is it", "description": "d"},
+        },
+        time.monotonic(),
+    )
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert record["outcome"] == "task:stopwords", record
+
+
+def test_every_task_outcome_is_visible_to_the_consumers_own_collector() -> None:
+    """The soak vocabulary is a cross-repo contract, and the consumer
+    enumerates it with a NARROWER reader than memkit's own: `prompt_gate`'s
+    literal returns, plus `done(...)` call sites whose first argument is a
+    string literal. An `ast.Name` there is skipped — safely for the prompt
+    path, which is why the rule exists, and blindly for any other gate
+    function, which it has never heard of.
+
+    Five `task:*` outcomes were invisible to it. They would have arrived in a
+    downstream log with the classification test still green, in neither the
+    declined nor the search-reaching population and inside the denominator of
+    every rate computed over it.
+
+    So the narrow reader is run HERE, against this hook, and has to see
+    everything the wide one does.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    narrow: set[str] = set()
+    gate = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "prompt_gate"
+    )
+    for node in ast.walk(gate):
+        if isinstance(node, ast.Return):
+            literal = getattr(node.value, "value", None)
+            if isinstance(literal, str):
+                narrow.add(literal)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "done"):
+            continue
+        arg = node.args[0]
+        for side in ([arg.body, arg.orelse] if isinstance(arg, ast.IfExp) else [arg]):
+            if isinstance(side, ast.Constant) and isinstance(side.value, str):
+                narrow.add(side.value)
+
+    wide = _hook_outcomes()
+    missing = sorted(wide - narrow)
+    assert not missing, (
+        "these outcomes are enumerable by memkit's own reader and not by the "
+        f"consumer's: {missing}"
+    )
+
+
+def test_a_spawn_with_no_tool_use_id_gets_no_ledger_rather_than_a_shared_one(
+    tmp_path, monkeypatch
+) -> None:
+    """The per-call ledger is the whole basis of this path's dedup story, and
+    the key comes from the harness. It is set unconditionally today, which is a
+    claim about one build on a fast release cadence; this is what runs when
+    that stops being true.
+
+    Sharing one file under a fixed name serves the first spawn on the machine
+    and answers every one after it `task:deduped` — which reads in the log as
+    the system working as designed. Being served twice is the fail-open
+    direction, and the degradation is named on the record instead.
+    """
+    memo = tmp_path / "corpus" / "sprocket_alignment.md"
+    memo.parent.mkdir(parents=True)
+    memo.write_text(
+        "---\nname: sprocket_alignment\ndescription: Sprocket backlash after a "
+        "gearbox rebuild comes from the shim stack.\ntype: reference\n---\n\n"
+        "# Sprocket alignment\n\nBacklash measured at the output sprocket after "
+        "a gearbox rebuild is a shim stack fault, not chain tension. Measure "
+        "the stack cold: a warm gearbox reads short, and repeatability on the "
+        "stand is what a vendor argument rests on. Record the torque.\n"
+    )
+    records = []
+    for _ in range(2):
+        records.append(_drive_task(monkeypatch, tmp_path, [str(memo)], ""))
+    state = tmp_path / ".cache" / "memory-recall"
+
+    for record in records:
+        assert record["outcome"] == "task:injected", record
+        assert record["state"] == "unkeyed", record
+    assert not list(state.glob(f"{hook.TASK_STATE_PREFIX}*.json")), (
+        "an unkeyed spawn must not write a ledger every other one would read"
+    )
+
+
+def test_a_tool_shaped_payload_under_another_event_name_says_so(tmp_path) -> None:
+    """The dispatch is one equality against a literal with the prompt path as
+    the default, so a harness that renames the event or moves the key drops
+    every subagent payload into the prompt branch — where an Agent payload has
+    no `prompt`, `prompt_gate` answers `gate:empty`, and the run records a user
+    submitting an empty prompt. Delivery stops, nothing says so, and the
+    mislabelled records inflate `gate:empty` in the per-prompt population.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    payload = {
+        "session_id": "tsk6",
+        "hook_event_name": "PreToolUseV2",
+        "tool_name": "Agent",
+        "tool_use_id": "toolu_renamed",
+        "tool_input": {"prompt": _brief("served/backlash-rig.md"), "description": "d"},
+    }
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert out.returncode == 0, out.stderr
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl")
+        .read_text().splitlines()[-1]
+    )
+    assert record["outcome"] != "gate:empty", record
+    assert record["outcome"].startswith("task:"), record
+
+
+def test_the_dispatch_leaves_the_post_delivery_region_reachable_from_both(
+) -> None:
+    """`main()` is the one function two entry points share, and everything
+    after its dispatch is work neither path's delivery is finished without.
+
+    A `return` out of one branch would make that region the other path's alone,
+    silently. The case that makes it concrete is the derived-state sweep: the
+    task path is the ONLY writer of the per-tool-call ledger a sweep collects,
+    so a sweep reachable from the prompt path only is a collector that never
+    sees what it exists to collect.
+
+    Asserted over the dispatch's shape rather than by driving it, because what
+    goes wrong is a keyword nobody re-reads.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    main = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    dispatch = next(
+        node for node in main.body
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(call, ast.Call)
+            and getattr(call.func, "id", "") == "_task_main"
+            for call in ast.walk(node)
+        )
+    )
+    for branch in ast.walk(dispatch):
+        assert not isinstance(branch, ast.Return), (
+            "a `return` here takes everything after the dispatch away from one "
+            "of the two paths"
+        )
+    # Both entry points are reached from it, and neither is reached anywhere
+    # else — a second call site would pay the tail twice or not at all.
+    called = [
+        node.func.id for node in ast.walk(main)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert called.count("_task_main") == 2, called  # the event, and the fallthrough
+    assert called.count("_prompt_main") == 1, called

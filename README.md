@@ -314,8 +314,9 @@ every rate you compute a rate over an unknown mixture.
 | `task:index-unavailable` | the stores were asked and at least one could not answer — an index mid-rebuild, or a corpus that could not be read. Distinct from `task:nomatch`, which means the search ran and found nothing: parallel spawns share one index, and a contender that loses the race to a cold build meets one holding no rows yet |
 | `task:oversize` | the brief plus its pointers would exceed the 16 KiB write bound. The brief is echoed back inside the emission, so nothing can be shed to make room and the pointers are dropped whole |
 | `task:unsafe` | the emission did not match the one permitted output shape, so nothing was written. This one is a defect report: the shape is built in one place and the check is over that place's output |
+| `state: "unkeyed"` on a `task:injected` record | the tool call carried no id to key a ledger on, so this spawn was served without one. Not an outcome — a field, and the fail-open direction: a shared ledger would serve the first spawn on the machine and dedup every one after it |
 | `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside |
-| `task:nobrief` | the tool call carried no `prompt` string to read |
+| `task:nobrief` | the tool call carried no `prompt` string to read, or was for a tool this hook does not serve under an event name it does not recognise |
 | `task:killed` · `task:output-lost` · `task:error` | as the unprefixed three |
 | `trust:unconfigured` | **`trust.json`, not the soak log** — the install has no config on any route it reads, so the hook refused before it would have created the shared state directory |
 | `trust:config-error` | the same file: a config was found and could not be used — unreadable, unparseable, or a schema this build does not speak |

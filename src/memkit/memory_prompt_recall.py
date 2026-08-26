@@ -3666,8 +3666,14 @@ def _task_floor() -> dict:
 # `gate:long` is deliberately absent and is the one difference from
 # PROMPT_SHAPE_GATES. The paste ceiling exists because a prompt that long is a
 # log somebody dropped in; a brief that long is a brief.
+#
+# `task:stopwords` is outside the set for the same reason `gate:stopwords` is:
+# `task:nodirs` outranks it. A machine with no searchable store could not have
+# answered whatever the brief said, so blaming the brief's vocabulary is an
+# answer about the wrong thing. Having it INSIDE the set reversed that order
+# and left the second dispatch below unreachable.
 TASK_SHAPE_GATES = frozenset(
-    {"task:envelope", "task:empty", "task:slash", "task:short", "task:stopwords"}
+    {"task:envelope", "task:empty", "task:slash", "task:short"}
 )
 
 
@@ -3986,22 +3992,53 @@ def _task_main(payload: dict, t0: float) -> None:
         stripped = brief.strip()
         rec["brief_sha"] = hashlib.sha256(stripped.encode()).hexdigest()[:12]
         rec["words"] = len(stripped.split())
+        # EVERY OUTCOME AS A LITERAL AT ITS OWN CALL SITE, which is what
+        # `done`'s contract asks for and what a relayed `done(gate)` breaks
+        # here. The consumer's collector reads `done(...)` call sites for
+        # string literals and skips an `ast.Name` first argument — safely, on
+        # the prompt path, because it separately reads `prompt_gate`'s
+        # returns. It has never heard of `task_gate`. Relayed, these five
+        # outcomes reached a downstream log with the classification test still
+        # green, in neither the declined nor the search-reaching population
+        # and inside the denominator of every rate computed over it.
+        #
+        # Spelled out rather than looped, because a loop variable is an
+        # `ast.Name` again and the point is the literal.
         gate = task_gate(stripped)
-        if gate in TASK_SHAPE_GATES:
-            return done(gate)
+        if gate == "task:envelope":
+            return done("task:envelope")
+        if gate == "task:empty":
+            return done("task:empty")
+        if gate == "task:slash":
+            return done("task:slash")
+        if gate == "task:short":
+            return done("task:short")
         if not _search_dirs():
             why = {"config": _CONFIG_ERROR} if _CONFIG_ERROR else {}
             return done("task:nodirs", **why)
-        if gate:
-            return done(gate)
+        # After the store check, so a machine with nothing to search is not
+        # told its brief was the problem.
+        if gate == "task:stopwords":
+            return done("task:stopwords")
 
         # Keyed on the tool call, never on the session. A subagent spawned late
         # in a long session would find every pointer it wants already spent by
         # prompts it never saw, so the parent's ledger is not read and not
         # written; two spawns in one turn are two ids and neither can starve
         # the other.
-        state_path = _task_state_path(str(payload.get("tool_use_id", "") or "notool"))
-        shown, _spent = _load_session(state_path)
+        #
+        # NO ID MEANS NO LEDGER, rather than a shared one under a fixed name.
+        # The id is set unconditionally on this payload today, which is a
+        # claim about one build of a harness on a fast release cadence; the
+        # fallback is what runs when that stops being true. Sharing one file
+        # then serves the first spawn on the machine and answers every one
+        # after it `task:deduped` — an outcome that reads in the log as the
+        # system working as designed, for as long as the file survives. Being
+        # served twice is the fail-open direction here, and the degradation
+        # gets a name on the record rather than a silence.
+        tool_use_id = str(payload.get("tool_use_id", "") or "")
+        state_path = _task_state_path(tool_use_id) if tool_use_id else None
+        shown = _load_session(state_path)[0] if state_path else set()
 
         query = build_task_query(stripped)
         terms = list(dict.fromkeys((query or "").split()))
@@ -4062,7 +4099,7 @@ def _task_main(payload: dict, t0: float) -> None:
                 sys.stdout.flush()
             except (BrokenPipeError, OSError):
                 delivered = False
-            if delivered:
+            if delivered and state_path is not None:
                 # Written beside and renamed over, as the session ledger is:
                 # `open(path, "w")` destroys the old file before writing the
                 # new one, and a torn write here reads back as a tool call
@@ -4099,7 +4136,11 @@ def _task_main(payload: dict, t0: float) -> None:
                 overlap=[len(m) for _, m, _ in picks],
                 scores=_scores(fresh),
                 **_floored_stat(floored),
-                **({} if persisted or not delivered else {"state": "unwritten"}),
+                **(
+                    {}
+                    if persisted or not delivered
+                    else {"state": "unkeyed" if state_path is None else "unwritten"}
+                ),
             )
     except Exception as exc:
         if not logged:
@@ -4142,13 +4183,46 @@ def main() -> None:
 
     payload = json.load(sys.stdin)
 
-    # The one branch. Everything the task path needs differs from here down —
-    # the gate, the query builder, the floor bars, the ledger, the budget and
-    # the output shape — so it forks at the payload rather than threading a
-    # mode through the prompt path.
+    # THE DISPATCH, and it is a dispatch rather than an early return on
+    # purpose. Everything the task path needs differs from here down — the
+    # gate, the query builder, the floor bars, the ledger, the budget and the
+    # output shape — so the two paths are two functions. What they share is
+    # the tail below: work neither path's delivery is finished without, and
+    # which a `return` out of one of them would silently make the other's
+    # alone. The derived-state sweep is the case that makes this concrete —
+    # the task path is the ONLY writer of the per-tool-call state it
+    # collects, so a sweep reachable only from the prompt path would be a
+    # collector that never sees what it exists to collect.
     if payload.get("hook_event_name") == TASK_EVENT:
-        return _task_main(payload, t0)
+        _task_main(payload, t0)
+    elif "tool_name" in payload or "tool_input" in payload:
+        # A tool-shaped payload that did not match the event name. The
+        # dispatch is one equality against a literal, so a harness that
+        # renames the event or moves the key drops the whole path into the
+        # prompt branch, where an Agent payload has no `prompt` and records as
+        # a user submitting an empty one — subagent delivery stops, nothing
+        # says so, and the mislabelled records inflate `gate:empty`. Sent to
+        # the path that has a name for it.
+        _task_main(payload, t0)
+    else:
+        _prompt_main(payload, t0)
 
+    # --- after delivery, for both paths -------------------------------------
+    #
+    # Anything added here runs on every invocation of the hook, whichever
+    # entry point served it. That is the property the region exists for; a
+    # `return` above would take it away from one path without saying so.
+
+
+def _prompt_main(payload: dict, t0: float) -> None:
+    """The UserPromptSubmit path: read a prompt, print pointers, record what
+    happened.
+
+    Split out of `main()` when the second entry point arrived, verbatim. What
+    `main()` keeps is the part both paths share — the fail-open signal
+    disposition, the trust gate, the payload read, the dispatch, and the tail
+    that runs after either.
+    """
     prompt = payload.get("prompt", "") or ""
 
     stripped = prompt.strip()
