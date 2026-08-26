@@ -2368,6 +2368,7 @@ def _passes_floor(
     n_total: int,
     mtype: str,
     *,
+    min_matched: int | None = None,
     min_terms: int | None = None,
     min_ratio: float | None = None,
     feedback_min_terms: int | None = None,
@@ -2382,7 +2383,17 @@ def _passes_floor(
       >= ALL_COMMON_MIN_RATIO share of the query's terms.
     - type: feedback additionally keeps the stricter original bars.
 
-    The four bars are ARGUMENTS so that a caller whose queries are a different
+    `min_matched` is the bar that applies to EVERY hit, distinctive evidence
+    or not, and it is 1 on the prompt path — i.e. exactly the zero-match
+    rejection below and nothing more. It exists because the distinctive
+    short-circuit is a claim about a PROMPT: in eight terms, one word the
+    corpus and the prompt share and English does not is the subject. In three
+    hundred terms it is a coincidence waiting to happen — one project name,
+    one acronym, one filename fragment anywhere in four kilobytes of brief —
+    and every bar below it is unreachable, because the short-circuit returns
+    first.
+
+    The five bars are ARGUMENTS so that a caller whose queries are a different
     shape can bring its own without moving the module constants — the prompt
     path's numbers are what every calibration in this file and the consumer's
     eval snapshot were measured against, and a second population must not
@@ -2400,12 +2411,15 @@ def _passes_floor(
     contradiction between claim and evidence, and this is the last place that
     can say so.
     """
+    min_matched = 1 if min_matched is None else min_matched
     min_terms = MIN_MATCHED_TERMS if min_terms is None else min_terms
     min_ratio = ALL_COMMON_MIN_RATIO if min_ratio is None else min_ratio
     fb_terms = FEEDBACK_MIN_TERMS if feedback_min_terms is None else feedback_min_terms
     fb_ratio = FEEDBACK_MIN_RATIO if feedback_min_ratio is None else feedback_min_ratio
     n_matched = len(matched)
-    if n_matched == 0:
+    # ABOVE the short-circuit, which is the whole point of it: a bar the
+    # distinctive branch can return past is a bar that never binds.
+    if n_matched < min_matched:
         return False
     ratio = n_matched / n_total if n_total else 0.0
     if mtype == "feedback" and (n_matched < fb_terms or ratio < fb_ratio):
@@ -3069,7 +3083,14 @@ def recall(
 
 
 def _eligible(
-    paths: list[str], terms: list[str]
+    paths: list[str],
+    terms: list[str],
+    *,
+    min_matched: int | None = None,
+    min_terms: int | None = None,
+    min_ratio: float | None = None,
+    feedback_min_terms: int | None = None,
+    feedback_min_ratio: float | None = None,
 ) -> tuple[list[tuple[str, list[str], int]], list[str]]:
     """Hits that clear the relevance floor, in rank order, and which did not.
 
@@ -3085,12 +3106,28 @@ def _eligible(
     that turn out to be three coincidence hits is worse than no notice. The
     cost is one read per surplus candidate; _description, the other read, is
     still paid only for the lines actually rendered.
+
+    The floor's bars pass straight through, so a caller with its own
+    calibration gets this loop rather than a copy of it. That matters more
+    than it looks: the eval harness scores retrieval by re-deriving this
+    pipeline, so a copy here and a copy there can disagree about which bars
+    are in force and the only automated gate over the task path's relevance
+    would be measuring a retriever no subagent meets.
     """
     kept: list[tuple[str, list[str], int]] = []
     floored: list[str] = []
     for path in paths:
         matched, total, mtype = _relevance(terms, path)
-        if _passes_floor(matched, total, mtype):
+        if _passes_floor(
+            matched,
+            total,
+            mtype,
+            min_matched=min_matched,
+            min_terms=min_terms,
+            min_ratio=min_ratio,
+            feedback_min_terms=feedback_min_terms,
+            feedback_min_ratio=feedback_min_ratio,
+        ):
             kept.append((path, matched, total))
         else:
             floored.append(path)
@@ -3461,9 +3498,10 @@ TASK_QUERY_MAX_TERMS = 2000
 # and the count carries the branch alone.
 #
 # The count is what the negative half of the slice buys: at 6 matched common
-# terms 7 of the 8 irrelevant briefs get a pointer, at 10 two still do, and 12
-# is the lowest value that admits none. 14 is two counts above that, free on the
-# measured corpus (every value from 12 to 25 serves the same 7 of 8).
+# terms 7 of the 8 term-poor irrelevant briefs get a pointer, at 10 two still
+# do, and 12 is the lowest value that admits none. 14 is two counts above that,
+# free on the measured corpus (every value from 12 to 25 serves the same 7 of
+# 8).
 TASK_MIN_MATCHED_TERMS = 14
 TASK_ALL_COMMON_MIN_RATIO = 0.0
 # `type: feedback` keeps its count bar and loses its share bar for the reason
@@ -3473,6 +3511,57 @@ TASK_ALL_COMMON_MIN_RATIO = 0.0
 # as a corpus with nothing to say.
 TASK_FEEDBACK_MIN_TERMS = 2
 TASK_FEEDBACK_MIN_RATIO = 0.0
+# The bar that applies to every hit whether or not it has distinctive evidence,
+# and the one that decides most of what this path serves.
+#
+# Everything above governs the ALL-COMMON branch, and on the prompt path that
+# is where the interesting decisions are. Here it is not, because the floor
+# short-circuits to pass on the first matched term that is not common English
+# — a rule that reads a PROMPT correctly (in eight terms, one word the corpus
+# and the prompt share and English does not IS the subject) and a brief
+# wrongly. Four kilobytes of brief carry one project name, one acronym or one
+# filename fragment by coincidence, and that single token used to admit three
+# pointers to a corpus with nothing to say about the work — the exact
+# incorrect injection the slice's ceiling exists to bound, on the surface that
+# REWRITES a spawning agent's instructions.
+#
+# Calibrated against a negative class written for it: four irrelevant briefs
+# that each carry one incidental distinctive token — a street name, a football
+# club, a conveyor part — alongside the eight that carry none. Without that
+# class no negative case in the slice ever reached the short-circuit, so the
+# bar it guards was measured only from below.
+#
+# The sweep separates cleanly, which is the whole reason a count works here:
+# every brief that SHOULD be served matches 12 to 17 of the corpus file's
+# terms, and every incidental-token leak matches 3 to 8. At 1 all four leak;
+# 9 is the lowest value that stops them; 12 is the highest that still serves
+# 7 of 8. Ten sits in the middle of that window — two counts above the
+# strongest coincidence and two below the weakest real hit.
+TASK_MIN_MATCHED = 10
+
+
+def _task_floor() -> dict:
+    """The task path's floor bars, as keyword arguments for `_eligible`.
+
+    ONE source, read by the hook and by the eval harness that gates it. They
+    used to be two spellings of the same five values, and the harness scoring
+    a copy is the failure that costs most here: the slice is the only
+    automated gate over this path's relevance, so a copy that drifts turns it
+    into a measurement of a retriever no subagent meets. Measured before this
+    existed: substituting the prompt path's bars at the eval's call site left
+    the slice byte-identical at 7/8 served and 0/8 leaked.
+
+    A function rather than a dict built at import, for the reason
+    `_bounded_block` gives about its own default: a value bound at definition
+    is a second copy that an A/B moving the constant cannot reach.
+    """
+    return {
+        "min_matched": TASK_MIN_MATCHED,
+        "min_terms": TASK_MIN_MATCHED_TERMS,
+        "min_ratio": TASK_ALL_COMMON_MIN_RATIO,
+        "feedback_min_terms": TASK_FEEDBACK_MIN_TERMS,
+        "feedback_min_ratio": TASK_FEEDBACK_MIN_RATIO,
+    }
 
 # What `task_gate` can refuse for the BRIEF'S SHAPE. Named for the same reason
 # PROMPT_SHAPE_GATES is: a gate added to the function and missed at the dispatch
@@ -3847,22 +3936,7 @@ def _task_main(payload: dict, t0: float) -> None:
         if not candidates:
             return done("task:deduped", hits=len(hits))
 
-        eligible = []
-        floored = []
-        for path in candidates:
-            matched, total, mtype = _relevance(terms, path)
-            if _passes_floor(
-                matched,
-                total,
-                mtype,
-                min_terms=TASK_MIN_MATCHED_TERMS,
-                min_ratio=TASK_ALL_COMMON_MIN_RATIO,
-                feedback_min_terms=TASK_FEEDBACK_MIN_TERMS,
-                feedback_min_ratio=TASK_FEEDBACK_MIN_RATIO,
-            ):
-                eligible.append((path, matched, total))
-            else:
-                floored.append(path)
+        eligible, floored = _eligible(candidates, terms, **_task_floor())
         if not eligible:
             return done("task:floored", hits=len(hits), **_floored_stat(floored))
 

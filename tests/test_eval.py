@@ -174,7 +174,7 @@ def test_the_long_brief_slice_reports_both_rates_and_the_thresholds(
     assert out.returncode == 0, out.stdout + out.stderr
     line = _rates(out.stdout)
     assert "7/8 served (0.875, floor 0.750)" in line, line
-    assert "0/8 leaked (0.000, ceiling 0.125)" in line, line
+    assert "0/12 leaked (0.000, ceiling 0.084)" in line, line
     # Per-case rows too, so a single outcome moving is visible in a diff even
     # though it is under the rate slack.
     assert "[BRIEF-SERVED]" in out.stdout
@@ -212,7 +212,7 @@ def test_injection_over_the_ceiling_fails_the_run(corpus: Path) -> None:
     out = _eval(corpus)
     assert out.returncode != 0, out.stdout
     assert "long-brief injection" in out.stderr
-    assert "over the 0.125 ceiling" in out.stderr
+    assert "over the 0.084 ceiling" in out.stderr
     assert "[BRIEF-LEAK  ]" in out.stdout
 
 

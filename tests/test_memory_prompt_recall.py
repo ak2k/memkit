@@ -7355,11 +7355,18 @@ def test_a_ledger_the_run_could_not_write_says_so_in_its_record(
     """
     memo = tmp_path / "corpus" / "sprocket_alignment.md"
     memo.parent.mkdir(parents=True)
+    # Enough overlap with the brief to clear TASK_MIN_MATCHED — the stub
+    # rebuilds matched terms from this text, so a two-line memo is a hit the
+    # floor now correctly rejects and the case would test nothing.
     memo.write_text(
         "---\nname: sprocket_alignment\n"
         "description: Sprocket backlash after a gearbox rebuild comes from the "
         "shim stack and not from chain tension.\ntype: reference\n---\n\n"
-        "# Sprocket alignment\n\nbacklash sprocket gearbox shim stack.\n"
+        "# Sprocket alignment\n\n"
+        "Backlash measured at the output sprocket after a gearbox rebuild is a "
+        "shim stack fault, not chain tension. Measure the stack cold: a warm "
+        "gearbox reads short, and repeatability on the stand is what a vendor "
+        "argument rests on. Record the torque and the thermal state.\n"
     )
     state = tmp_path / ".cache" / "memory-recall"
 
@@ -7532,3 +7539,124 @@ def test_the_task_frames_sanitizer_runs_at_the_emission_point(tmp_path) -> None:
     assert "\x1b" not in block
     # The embedded newline is gone, so the forged second line cannot be one.
     assert len([ln for ln in block.splitlines() if ln.startswith("- ")]) == 1, block
+
+
+# --- the task floor's bars, pinned where the slice cannot see them ------------
+
+
+def test_a_single_incidental_distinctive_term_no_longer_carries_a_brief(
+) -> None:
+    """The bar the distinctive short-circuit used to make unreachable.
+
+    `_passes_floor` returns True on the FIRST matched term that is not common
+    English. That reads a PROMPT correctly — in eight terms, one word the
+    corpus and the prompt share and English does not IS the subject — and a
+    brief wrongly: four kilobytes carry one project name or one filename
+    fragment by coincidence, and that single token used to admit three
+    pointers into a spawn's instructions.
+
+    Measured on the fixture briefs: every hit that SHOULD be served matches 12
+    to 17 terms, every incidental-token coincidence matches 3 to 8.
+    """
+    # One distinctive term out of 240, which is what a street named Flange
+    # looks like to the index.
+    coincidence = ["flange", "the", "and"]
+    assert hook._passes_floor(coincidence, 240, "reference"), (
+        "the prompt path's answer, unchanged"
+    )
+    assert not hook._passes_floor(coincidence, 240, "reference", **_bars())
+    # And a real hit, at the weakest strength the fixtures actually produce.
+    real = ["flange", "fasteners", "sealing", "crossing", "sequence", "passes",
+            "face", "warps", "single", "value", "pass", "tighten"]
+    assert len(real) == 12
+    assert hook._passes_floor(real, 240, "reference", **_bars())
+
+
+def _bars(**over) -> dict:
+    bars = dict(hook._task_floor())
+    bars.update(over)
+    return bars
+
+
+def test_every_task_floor_bar_is_the_deciding_one_for_some_input() -> None:
+    """Two of these bars are 0.0 and one is numerically the prompt path's, so
+    a reader cannot tell an intentional value from a forgotten one and no
+    other test moved them. Each is pinned by an input it alone decides.
+    """
+    # min_matched: below it, distinctive evidence does not save the hit.
+    below = ["sprocket"] * (hook.TASK_MIN_MATCHED - 1)
+    assert not hook._passes_floor(below, 300, "reference", **_bars())
+    assert hook._passes_floor(below + ["shim"], 300, "reference", **_bars())
+
+    # min_ratio: 0.0 rather than the prompt path's 0.20, and the difference is
+    # visible only on all-common evidence over a long brief.
+    common = ["see", "fix", "use", "yes", "sure", "make", "take", "give",
+              "know", "want", "need", "help", "look", "find"]
+    assert len(common) >= hook.TASK_MIN_MATCHED_TERMS
+    assert hook._passes_floor(common, 300, "reference", **_bars())
+    assert not hook._passes_floor(
+        common, 300, "reference", **_bars(min_ratio=hook.ALL_COMMON_MIN_RATIO)
+    )
+
+    # min_terms: the all-common branch's own count. Held one below the bar,
+    # with min_matched relaxed so this bar is the only one that can reject.
+    short = common[: hook.TASK_MIN_MATCHED_TERMS - 1]
+    assert len(short) == hook.TASK_MIN_MATCHED_TERMS - 1
+    assert not hook._passes_floor(short, 300, "reference", **_bars(min_matched=1))
+    assert hook._passes_floor(common, 300, "reference", **_bars(min_matched=1))
+
+    # feedback_min_ratio: 0.0 rather than 0.12, which over a brief is the
+    # difference between reachable and silenced.
+    feedback = ["sprocket", "shim"] + ["the"] * (hook.TASK_MIN_MATCHED - 2)
+    assert hook._passes_floor(feedback, 300, "feedback", **_bars())
+    assert not hook._passes_floor(
+        feedback, 300, "feedback", **_bars(feedback_min_ratio=hook.FEEDBACK_MIN_RATIO)
+    )
+
+
+def test_the_hook_and_the_eval_read_the_task_floor_from_one_place() -> None:
+    """The floor decision had three implementations — `_eligible`, an inline
+    copy in `_task_main`, and a comprehension in the eval harness — and the
+    eval is the only automated gate over this path's relevance. Measured
+    before this collapsed: substituting the prompt path's bars at the eval's
+    call site left the slice byte-identical at 7/8 served and 0/8 leaked, so
+    the gate could not see the two paths diverge on the bars at all.
+    """
+    from memkit import eval_memory_recall as ev
+
+    source = Path(hook.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_task_main"
+    )
+    calls = [
+        n.func.id for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    ]
+    assert "_eligible" in calls, "the task path must call the shared floor loop"
+    assert "_passes_floor" not in calls, "a second implementation of the floor"
+    # And the harness's TASK scorer reaches the same two functions rather than
+    # its own copy. Scoped to that function: the prompt-path scorer beside it
+    # calls `_passes_floor` directly and correctly, on the prompt path's own
+    # defaults.
+    ev_tree = ast.parse(Path(ev.__file__).read_text(encoding="utf-8"))
+    scorer = next(
+        n for n in ast.walk(ev_tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "task_pointers"
+    )
+    reached = {
+        n.func.attr for n in ast.walk(scorer)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    assert "_eligible" in reached and "_task_floor" in reached, sorted(reached)
+    assert "_passes_floor" not in reached, sorted(reached)
+
+    # The bars themselves resolve at call time, so an A/B that moves a
+    # constant reaches them.
+    before = hook.TASK_MIN_MATCHED
+    try:
+        hook.TASK_MIN_MATCHED = 99
+        assert hook._task_floor()["min_matched"] == 99
+    finally:
+        hook.TASK_MIN_MATCHED = before

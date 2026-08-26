@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "note": "Paired cases for the long-brief eval slice. Every brief here is longer than the prompt path's 4000-character shape ceiling, because that is the population the task path exists to serve and the prompt path refuses outright. `served` names the memory in the fixture corpus a brief of this shape ought to surface; `unserved` names none, and a pointer on one of those is an incorrect injection. Both halves are needed: a coverage rate alone is met by a gate that serves everything, and an injection rate alone by a gate that serves nothing.",
-  "note_thresholds": "The two rates this set gates on, and the measured values they were set from: 7 of 8 served (0.875) and 0 of 8 leaked (0.0), at the TASK_* floor bars in the hook. One case of slack each — the per-case rows in the eval snapshot already show a single outcome moving, so these bound systemic loosening rather than restating that. A rate is checked on every run INCLUDING --update-snapshot: the snapshot records what happened and a re-baseline accepts it, while these record what has to be true, and a floor a re-baseline can silence is not a floor.",
+  "note": "Paired cases for the long-brief eval slice. Every brief here is longer than the prompt path's 4000-character shape ceiling, because that is the population the task path exists to serve and the prompt path refuses outright. `served` names the memory in the fixture corpus a brief of this shape ought to surface; `unserved` names none, and a pointer on one of those is an incorrect injection. Both halves are needed: a coverage rate alone is met by a gate that serves everything, and an injection rate alone by a gate that serves nothing. The `unserved` set has two classes on purpose: eight briefs with no distinctive overlap at all, and four that carry ONE distinctive corpus token by coincidence — a street name, a club name, a conveyor part. The second class is what the floor's per-hit minimum is calibrated against, and without it the relevance floor's distinctive short-circuit is never exercised by a negative case.",
+  "note_thresholds": "The two rates this set gates on, and the measured values they were set from: 7 of 8 served (0.875) and 0 of 12 leaked (0.0), at the TASK_* floor bars in the hook. One case of slack each — the per-case rows in the eval snapshot already show a single outcome moving, so these bound systemic loosening rather than restating that; 0.084 is one leak in twelve. A rate is checked on every run INCLUDING --update-snapshot: the snapshot records what happened and a re-baseline accepts it, while these record what has to be true, and a floor a re-baseline can silence is not a floor.",
   "min_served": 0.75,
-  "max_injected": 0.125,
+  "max_injected": 0.084,
   "served": [
     {
       "brief": "served/firmware-fleet-rollout.md",
@@ -64,6 +64,22 @@
     },
     {
       "brief": "unserved/grant-reporting.md"
+    },
+    {
+      "brief": "unserved/conveyor-noise-complaint.md",
+      "note": "carries `sprocket` incidentally — a despatch conveyor, not a gearbox rebuild"
+    },
+    {
+      "brief": "unserved/kiosk-firmware-procurement.md",
+      "note": "carries `firmware` incidentally — a procurement question, not a trim table"
+    },
+    {
+      "brief": "unserved/rotor-club-sponsorship.md",
+      "note": "carries `rotor` incidentally — the name of a football club"
+    },
+    {
+      "brief": "unserved/flange-street-lease.md",
+      "note": "carries `flange` incidentally — the name of a street"
     }
   ]
 }

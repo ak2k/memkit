@@ -392,18 +392,12 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     query = hook.build_task_query(brief)
     hits = hook.recall(brief, dirs=dirs, query=query)
     terms = list(dict.fromkeys((query or "").split()))
-    passed = [
-        pathlib.Path(h).name
-        for h in hits
-        if hook._passes_floor(
-            *hook._relevance(terms, h),
-            min_terms=hook.TASK_MIN_MATCHED_TERMS,
-            min_ratio=hook.TASK_ALL_COMMON_MIN_RATIO,
-            feedback_min_terms=hook.TASK_FEEDBACK_MIN_TERMS,
-            feedback_min_ratio=hook.TASK_FEEDBACK_MIN_RATIO,
-        )
-    ]
-    return passed[: hook.MAX_HITS]
+    # `_eligible` with the hook's own bars, not a comprehension with a copy of
+    # them: this slice is the only automated gate over the task path's
+    # relevance, so a second spelling of the floor here is a gate that can
+    # silently score a retriever no subagent meets.
+    eligible, _floored = hook._eligible(hits, terms, **hook._task_floor())
+    return [pathlib.Path(p).name for p, _, _ in eligible][: hook.MAX_HITS]
 
 
 def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:
