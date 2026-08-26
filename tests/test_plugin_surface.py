@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
 REPO = Path(__file__).resolve().parent.parent
@@ -64,6 +65,12 @@ PAYLOAD = [
     # a module the adopter does not have. Safe to add — its only first-party
     # import is `memkit.memory_prompt_recall`, already here.
     "src/memkit/memory_integrity.py",
+    # The two skills. Not reached by any import, so the closure assertion below
+    # cannot find them; they are payload in the sense that matters — a plugin
+    # install without them registers `Skills (0)` and every command an agent
+    # was told to reach for is unreachable.
+    "skills/doctor/SKILL.md",
+    "skills/init/SKILL.md",
 ]
 
 
@@ -3611,3 +3618,189 @@ def test_every_outcome_the_readme_publishes_has_a_reason_doctor_can_render(
         sorted(published - set(OUTCOME_REASONS)),
         sorted(set(OUTCOME_REASONS) - published),
     )
+
+
+# --- the two skills ----------------------------------------------------------
+
+SKILLS = REPO / "skills"
+
+
+def _frontmatter(path: Path) -> dict:
+    """The SKILL.md frontmatter as a flat mapping. Deliberately not a YAML
+    parser: these files are hand-written and small, and a dependency to read
+    two of them is a dependency in the payload."""
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("---\n"), path
+    block = text.split("---\n", 2)[1]
+    out: dict = {}
+    key = ""
+    for line in block.splitlines():
+        if line.startswith(" ") and key:
+            out[key] += " " + line.strip()
+        elif ":" in line:
+            key, _, value = line.partition(":")
+            key = key.strip()
+            out[key] = value.strip()
+    return out
+
+
+def test_both_skills_are_there_and_declare_what_the_harness_reads(root) -> None:
+    """`Skills (2)` on a real install, measured on 2.1.241. A skill the harness
+    does not register is a command an agent was told to reach for and cannot.
+
+    Against the STAGED payload rather than the repository, because that is what
+    an adopter receives: a skill in the working tree and not in the payload
+    list is a skill the install does not carry, and `Skills (0)` is what the
+    harness then reports.
+    """
+    for name in ("doctor", "init"):
+        assert (root / "skills" / name / "SKILL.md").is_file(), name
+        path = SKILLS / name / "SKILL.md"
+        assert path.is_file(), path
+        front = _frontmatter(path)
+        assert front["name"] == name
+        assert len(front["description"]) > 80, front["description"]
+        # The description is what a model matches on, so it has to say when to
+        # reach for it and not only what it is.
+        assert "Use " in front["description"], front["description"]
+
+
+def test_init_is_not_model_invocable_and_doctor_is() -> None:
+    """init writes files. A model may not decide to run it, and the harness key
+    that enforces that is the one thing standing between a two-turn consent
+    handshake and a one-turn mutation."""
+    assert _frontmatter(SKILLS / "init" / "SKILL.md")[
+        "disable-model-invocation"
+    ] == "true"
+    assert "disable-model-invocation" not in _frontmatter(
+        SKILLS / "doctor" / "SKILL.md"
+    )
+
+
+def test_every_allowed_tools_entry_pins_an_exact_argument_shape() -> None:
+    """An open-ended prefix over `memkit` pre-approves `init --confirm` from a
+    doctor grant. `:*` is the narrowest form that admits a digest and nothing
+    else, and it is used on exactly the one entry that needs it.
+    """
+    grants = {}
+    for name in ("doctor", "init"):
+        raw = _frontmatter(SKILLS / name / "SKILL.md")["allowed-tools"]
+        grants[name] = [entry.strip() for entry in raw.split("), Bash(")]
+    doctor_entries = _frontmatter(SKILLS / "doctor" / "SKILL.md")["allowed-tools"]
+    assert doctor_entries == (
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit doctor --json)"
+    ), doctor_entries
+
+    init_entries = _frontmatter(SKILLS / "init" / "SKILL.md")["allowed-tools"]
+    assert init_entries == (
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run), "
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --confirm:*)"
+    ), init_entries
+    # No bare prefix anywhere: `Bash(.../memkit:*)` or `Bash(.../memkit *)`
+    # would make the doctor grant cover every subcommand this binary has.
+    for name, entries in grants.items():
+        for entry in entries:
+            assert "/bin/memkit doctor" in entry or "/bin/memkit init" in entry, (
+                name, entry
+            )
+            assert not entry.rstrip(")").endswith("/bin/memkit"), (name, entry)
+
+
+def test_the_doctor_skill_says_to_relay_the_report_rather_than_re_derive_it():
+    """The most reliable way to produce a confident wrong answer about an
+    install is to attach a plausible summary to a correct report: the reader
+    then has two accounts and no way to tell which was measured."""
+    body = (SKILLS / "doctor" / "SKILL.md").read_text(encoding="utf-8")
+    assert "verbatim" in body
+    assert "summarise it" in body
+    assert "re-derive" in body
+    # The branching rule, in the fields an agent actually reads.
+    assert "actor" in body and "terminal" in body
+    assert "zero `FAIL`" in body
+    for status in doctor.STATUSES:
+        assert status in body, status
+
+
+def test_the_init_skill_describes_both_turns_and_the_codes_it_can_return():
+    """A two-turn handshake a skill does not describe is one an agent will
+    collapse into a single turn."""
+    body = (SKILLS / "init" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--dry-run" in body and "--confirm" in body
+    assert "new message" in body or "new turn" in body or "in a new" in body
+    assert "writes nothing" in body
+    from memkit import cli_init
+
+    for code in (cli_init.EXIT_OK, cli_init.EXIT_USAGE, cli_init.EXIT_REFUSED,
+                 cli_init.EXIT_INCOMPLETE):
+        assert f"| {code} |" in body, code
+
+
+def _doctor_remedies() -> list[str]:
+    """Every `remedy` string doctor can emit, read out of the source.
+
+    Statically rather than by running it, because a run only reaches the
+    states that machine is in — and the remedies that matter most belong to
+    the states an adopter's machine is in and this one is not.
+    """
+    import ast
+
+    tree = ast.parse((REPO / "src" / "memkit" / "cli_doctor.py").read_text())
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else ""
+        if name != "Check":
+            continue
+        remedy = None
+        if len(node.args) >= 4:
+            remedy = node.args[3]
+        for keyword in node.keywords:
+            if keyword.arg == "remedy":
+                remedy = keyword.value
+        if remedy is None:
+            continue
+        # Only the literal parts. An f-string's interpolations are paths and
+        # counts, not command names, and this is a check about command names.
+        pieces = []
+        for part in (
+            remedy.values if isinstance(remedy, ast.JoinedStr) else [remedy]
+        ):
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                pieces.append(part.value)
+        if pieces:
+            out.append("".join(pieces))
+    return out
+
+
+def test_no_doctor_remedy_tells_a_terminal_to_run_a_plugin_binary(root) -> None:
+    """The channel-correct-command invariant, on the third reader-facing
+    surface.
+
+    `memkit-recall` exists — it is in the plugin's `bin/` — so a scrape that
+    checks a command against what the plugin SHIPS passes it happily. The
+    failure is about WHERE: that directory is added to the agent's PATH and to
+    nothing else, so the same command typed into a terminal exits 127. Doctor's
+    remedies are relayed to a person, which puts them under the same rule as
+    the README's own terminal-facing sections.
+    """
+    plugin_binaries = {
+        entry.name
+        for entry in (root / "bin").iterdir()
+        if entry.is_file() and os.access(entry, os.X_OK)
+    }
+    assert "memkit-recall" in plugin_binaries
+
+    remedies = _doctor_remedies()
+    # Non-vacuity: there ARE remedies, and enough of them that a scrape reading
+    # none would be visibly wrong.
+    assert len(remedies) >= 10, len(remedies)
+    offenders = []
+    for remedy in remedies:
+        for command in re.findall(r"`([^`\n]+)`", remedy):
+            head = command.split()[0] if command.split() else ""
+            if head in plugin_binaries:
+                offenders.append((command, remedy))
+    assert not offenders, offenders
+    # And the scrape really does see backticked commands in remedy text.
+    assert any("`" in remedy for remedy in remedies), remedies
