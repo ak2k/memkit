@@ -800,6 +800,47 @@ class ConfigDrivenStores(unittest.TestCase):
             any(w.startswith("CITED-PATHS-UNCONFIGURED") for w in warnings), warnings
         )
 
+    def test_a_store_that_never_declared_citations_is_not_told_off_for_it(self):
+        # The other half, and it is the commonest store there is: a config that
+        # never mentions `citations` has opted OUT of the feature. Both
+        # findings above were the first thing a fresh adopter's checker run
+        # said, about a check they never asked for — and a report whose first
+        # two lines are noise is a report they learn to skim.
+        #
+        # Declared-and-empty keeps the warning, because that IS a citation
+        # check configured to match nothing.
+        store = mi._store(self.tmp, STORE_DIR, cited_roots=(), citations_declared=False)
+        for sub in ("hot", "search"):
+            (store["dir"] / sub).mkdir(parents=True)
+        (store["dir"] / "MEMORY.md").write_text(MEMORY_HEAD)
+        (store["dir"] / "SEARCH.md").write_text(SEARCH_HEAD)
+        _, warnings = mi.check(store, False, set())
+        self.assertEqual([w for w in warnings if w.startswith("CITED-PATHS")], [])
+
+    def test_whether_citations_were_declared_survives_the_config_read(self):
+        # Absent-or-empty collapses the two states away, and the checker needs
+        # the difference. Read off the config rather than asserted about the
+        # store dict alone, because the store is built FROM it.
+        declared = self.load(
+            [{"id": "s", "dir": STORE_DIR, "live_root": "home"}], cited=False
+        )
+        self.assertTrue(declared.citations_declared)
+        path = self.tmp / "nocit.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": hook.SCHEMA,
+                    "roots": {"home": {"kind": "path", "path": str(self.tmp)}},
+                    "stores": [{"id": "s", "dir": STORE_DIR, "live_root": "home"}],
+                }
+            )
+        )
+        silent = hook.load_config(str(path))
+        assert silent is not None
+        self.assertFalse(silent.citations_declared)
+        stores, _ = mi.stores_from_config(silent)
+        self.assertFalse(stores[0]["citations_declared"])
+
     def test_a_newer_schema_is_refused_rather_than_half_read(self) -> None:
         # A reader that met a higher number and carried on would be reading
         # half a config, which for a fail-open hook is a silent retrieval

@@ -676,7 +676,8 @@ def _config_parse(machine: Machine) -> list[Check]:
         Check(
             "config-parse",
             PASS,
-            f"{cfg.path} parses; schema {SCHEMA}, {len(cfg.stores)} store(s)",
+            f"{_display_path(cfg.path)} parses; schema {SCHEMA}, "
+            f"{len(cfg.stores)} store(s)",
         )
     ]
 

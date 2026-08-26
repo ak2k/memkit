@@ -286,6 +286,15 @@ class Config:
             Store(s, i) for i, s in enumerate(_optional_list(raw, "stores"))
         ]
         citations = _optional_mapping(raw, "citations")
+        # Whether the config MENTIONS citations at all, which absent-or-empty
+        # collapses away — and the checker needs the difference. A store whose
+        # config never names the feature has opted out of it, and warning
+        # about an unconfigured citation check there is the checker telling an
+        # adopter off for a choice they made. A config that DECLARES the block
+        # and leaves `roots` empty is a different thing: that is a citation
+        # check configured to match nothing, which is the vacuous green the
+        # checker exists to refuse.
+        self.citations_declared = "citations" in raw
         self.cited_roots = _require_str_tuple(citations, "roots", "citations")
         self.extra_suffixes = _require_str_tuple(
             citations, "extra_suffixes", "citations"

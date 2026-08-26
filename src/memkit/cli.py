@@ -52,6 +52,12 @@ EXIT_NOT_IN_BUILD = 4
 # is "you asked for something this will not do". The move it calls for is to
 # relay the reason and stop, not to retry with different arguments.
 EXIT_REFUSED = 5
+# A subcommand that started and did not finish — a write that failed partway,
+# or a store that was created and then failed its own integrity check. Its own
+# number because the MOVE is different from every other code here: re-run the
+# same command. A refusal wants something changed first; this wants the journal
+# read and the run repeated, which converges on what is already there.
+EXIT_INCOMPLETE = 6
 # Emitted by the plugin's `bin/memkit` wrapper and never by this module: it is
 # what a caller gets when the dispatcher could not be STARTED — no interpreter
 # resolved, or the plugin payload is incomplete. Declared here anyway, because
@@ -194,7 +200,8 @@ def _parser() -> argparse.ArgumentParser:
         f"all (stderr names what is missing) / {EXIT_USAGE} usage error or "
         f"unknown subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but "
         f"is not in this build / {EXIT_REFUSED} a subcommand refused by name "
-        "and wrote nothing."
+        f"and wrote nothing / {EXIT_INCOMPLETE} a subcommand started and did "
+        "not finish; re-running converges."
         "\nThe search CLI's table is its own and swaps these two: there "
         f"{EXIT_NO_MATCH} means nothing matched and {EXIT_CANNOT_START} "
         f"means it could not start. Its {EXIT_INERT} has no counterpart here "

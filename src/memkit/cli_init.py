@@ -31,11 +31,13 @@ adopter who ran a setup command has no reason to look for one.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import subprocess
 import sys
+import time
 
 from memkit.cli_doctor import (
     CANARY_NAME,
@@ -49,6 +51,7 @@ from memkit.cli_doctor import (
 from memkit.memory_prompt_recall import (
     DEFAULT_SEARCH_CLI,
     EXCLUDE_BASENAMES,
+    INIT_JOURNAL_NAME,
     PLUGIN_DATA_ENV,
     PLUGIN_SEARCH_CLI,
     SCHEMA,
@@ -79,6 +82,7 @@ CREATE_DIR = "create-dir"
 CREATE_FILE = "create-file"
 REWRITE_FILE = "rewrite-file"
 APPEND_LINE = "append-line"
+MERGE_CONFIG = "merge-config"
 SETTINGS_WRITE = "settings-write"
 VERIFY = "verify"
 
@@ -111,7 +115,15 @@ def _state_of(path: str) -> str:
 class Action:
     """One filesystem effect, and everything needed to describe or journal it."""
 
-    __slots__ = ("op", "path", "before", "content", "note", "authored_config")
+    __slots__ = (
+        "op",
+        "path",
+        "before",
+        "content",
+        "note",
+        "authored_config",
+        "payload",
+    )
 
     def __init__(
         self,
@@ -120,6 +132,7 @@ class Action:
         content: str = "",
         note: str = "",
         authored_config: bool = False,
+        payload: object = None,
     ) -> None:
         self.op = op
         self.path = path
@@ -127,6 +140,11 @@ class Action:
         self.content = content
         self.note = note
         self.authored_config = authored_config
+        # What a MERGE_CONFIG action re-derives its content from at apply time.
+        # `content` is the merge as it would land against the tree the plan was
+        # built over; `payload` is what has to be merged in whatever the tree
+        # holds when the lock is finally taken.
+        self.payload = payload
 
     @property
     def after(self) -> str:
@@ -254,17 +272,23 @@ def _terminal_realpath(path: str) -> str:
 # --- the content init writes -------------------------------------------------
 
 
-def _canary_nonce(config_path: str, store: str) -> str:
+def _canary_nonce(config_path: str) -> str:
     """The token doctor searches for, derived rather than random.
 
     Derived, and that is a decision: a random token would be regenerated on
     every run, so the dry-run's digest and the confirm's would never match and
     a converged install would look like a changed one. What the nonce has to be
     is unlikely to appear in the adopter's own corpus, which a derivation over
-    two absolute paths satisfies as well as randomness does. It is not a
-    secret; nothing is authorised by holding it.
+    an absolute path satisfies as well as randomness does. It is not a secret;
+    nothing is authorised by holding it.
+
+    Keyed on the CONFIG and not on the store, because one config holds one
+    `canary_nonce` and may hold several stores: doctor asks one fixed query
+    per store, so a per-store token would leave every store but one answering
+    nothing for it. Two inits appending different stores to one config derive
+    the same nonce and seed canaries that agree.
     """
-    return "mkc" + _sha(config_path + "\0" + store)[:10]
+    return "mkc" + _sha(config_path)[:10]
 
 
 def _canary_body(nonce: str) -> str:
@@ -339,41 +363,62 @@ run the integrity checker with `--write` after adding a memory.
     return f"{preamble}\n{row}\n"
 
 
-def _config_body(
-    *, store: str, nonce: str, interpreter: str, store_id: str
-) -> str:
-    """The minimal working config, and every field in it is load-bearing.
+def _config_entries(*, store: str, store_id: str) -> dict:
+    """The root and the store one init contributes to a config.
 
-    `interpreter` is recorded because PATH probing alone hands the process that
-    reads every prompt to whatever direnv/mise/venv shim the launching shell
-    carried. `search_cli` is written for the channel that is running, because
-    one config file is read by every channel and a name that resolves on one
-    resolves to nothing — or to another install's stores — on another. No
-    `citations` block at all: it is optional, and a config that declared an
-    empty one would make the first checker run an adopter does report two
-    warnings about a feature they never opted into.
+    Split from the file body because a second init against the same config
+    must be able to ADD these to whatever is already there rather than replace
+    it. Two adopters' worth of stores in one config is a state the design
+    admits, and a setup command that clobbered the first one would be the
+    lost update the whole handshake exists to prevent.
     """
-    blob = {
-        "schema": SCHEMA,
-        "interpreter": interpreter,
-        "search_cli": PLUGIN_SEARCH_CLI if _plugin_install() else DEFAULT_SEARCH_CLI,
-        "canary_nonce": nonce,
-        "roots": {store_id: {"kind": "path", "path": store}},
-        "stores": [
-            {
-                "id": store_id,
-                # Personal, and therefore ungated: a store the adopter reaches
-                # from anywhere is the one that makes the first prompt after
-                # init produce a pointer. A project store needs a `cwd_gate`
-                # and a repository to gate to, and init has neither to guess
-                # from.
-                "role": "personal",
-                "dir": ".",
-                "live_root": store_id,
-                "sub_indexes": [],
-            }
-        ],
+    return {
+        "root": (store_id, {"kind": "path", "path": store}),
+        "store": {
+            "id": store_id,
+            # Personal, and therefore ungated: a store the adopter reaches
+            # from anywhere is the one that makes the first prompt after init
+            # produce a pointer. A project store needs a `cwd_gate` and a
+            # repository to gate to, and init has neither to guess from.
+            "role": "personal",
+            "dir": ".",
+            "live_root": store_id,
+            "sub_indexes": [],
+        },
     }
+
+
+def _merge_config(existing: str, *, nonce: str, interpreter: str, entries: dict) -> str:
+    """`existing` with one store's root and entry added, and nothing removed.
+
+    Every field is set only where it is ABSENT. A second init must not
+    retarget the first one's interpreter or renumber its nonce — the nonce in
+    particular is what doctor's fixed query is, and changing it would make
+    every canary already on disk stop answering.
+    """
+    blob: dict = {}
+    if existing.strip():
+        loaded = json.loads(existing)
+        if isinstance(loaded, dict):
+            blob = loaded
+    blob.setdefault("schema", SCHEMA)
+    blob.setdefault("interpreter", interpreter)
+    blob.setdefault(
+        "search_cli", PLUGIN_SEARCH_CLI if _plugin_install() else DEFAULT_SEARCH_CLI
+    )
+    blob.setdefault("canary_nonce", nonce)
+    roots = blob.setdefault("roots", {})
+    name, spec = entries["root"]
+    if isinstance(roots, dict):
+        roots.setdefault(name, spec)
+    stores = blob.setdefault("stores", [])
+    if isinstance(stores, list) and not any(
+        isinstance(s, dict) and s.get("id") == entries["store"]["id"] for s in stores
+    ):
+        stores.append(entries["store"])
+    # No `citations` block, ever. It is optional, and an empty one makes the
+    # first checker run an adopter does report two warnings about a feature
+    # they never opted into.
     return json.dumps(blob, indent=2) + "\n"
 
 
@@ -681,7 +726,7 @@ def build_plan(
         wire_claude_md=wire_claude_md,
         auto_dream_off=auto_dream_off,
     )
-    nonce = _canary_nonce(config_path, store_path)
+    nonce = _canary_nonce(config_path)
     store_id = _store_id(store_path)
     actions = [
         Action(
@@ -693,17 +738,23 @@ def build_plan(
         ),
         Action(CREATE_DIR, os.path.dirname(config_path)),
         Action(
-            CREATE_FILE,
+            MERGE_CONFIG,
             config_path,
-            _config_body(
-                store=store_path,
+            _merge_config(
+                _read_or_empty(config_path),
                 nonce=nonce,
                 interpreter=_interpreter(),
-                store_id=store_id,
+                entries=_config_entries(store=store_path, store_id=store_id),
             ),
-            note=f"records interpreter {_display_path(_interpreter())} and "
-            f"canary nonce {nonce}",
+            note=f"adds root and store {store_id!r}; records interpreter "
+            f"{_display_path(_interpreter())} and canary nonce {nonce}. "
+            "Existing stores are kept",
             authored_config=True,
+            payload={
+                "nonce": nonce,
+                "interpreter": _interpreter(),
+                "entries": _config_entries(store=store_path, store_id=store_id),
+            },
         ),
         Action(CREATE_DIR, store_path),
         # search/ FIRST, and the order in this list is the order they are made.
@@ -867,6 +918,11 @@ EXIT_USAGE = 2
 # something this will not do". A skill branches on this to relay the reason to
 # the person and stop, which is a different move from retrying.
 EXIT_REFUSED = 5
+# Started and did not finish. Distinct from a refusal because the move is
+# different: a refusal wants something changed before re-running, and this
+# wants the run repeated — the journal says how far it got and every action
+# already done is a no-op the second time.
+EXIT_INCOMPLETE = 6
 
 
 EPILOG = """\
@@ -881,7 +937,8 @@ The digest binds the state of the tree, not the text you read. Pass the same
 flags to both calls: a different request produces a different digest.
 
 Exit codes: 0 done (or the manifest printed) / 2 usage error / 5 refused, and
-nothing was written — stderr names which refusal."""
+nothing was written — stderr names which refusal / 6 started and did not
+finish; the journal says how far, and re-running converges."""
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -926,6 +983,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run(args: argparse.Namespace) -> int:
     machine = Machine()
+    config_path = _resolve_config(machine, getattr(args, "config", None))
     try:
         plan = build_plan(
             machine,
@@ -936,8 +994,32 @@ def run(args: argparse.Namespace) -> int:
         )
     except Refusal as refusal:
         return _refuse(refusal)
+    if getattr(args, "dry_run", False):
+        print(plan.render())
+        return EXIT_OK
+
+    supplied = getattr(args, "confirm", "")
+    if supplied != plan.digest:
+        return _refuse(
+            Refusal(
+                "stale-digest",
+                f"the plan you approved was {supplied}; the plan against this "
+                f"tree is {plan.digest}. Something under the manifest changed, "
+                "or these flags are not the ones the manifest was built from. "
+                "Re-run --dry-run, read what it says now, and confirm that.",
+            )
+        )
+    # THE APPLIED TEXT, IN THE TRANSCRIPT. "Relay this verbatim" is an
+    # instruction to a model and not a control, so the only way to be sure the
+    # human saw what is about to happen is to put it where the turn itself
+    # records it — beside the writes rather than one turn earlier.
     print(plan.render())
-    return EXIT_OK
+    print()
+    print("applying:")
+    try:
+        return apply_plan(machine, plan, config_path)
+    except Refusal as refusal:
+        return _refuse(refusal)
 
 
 def _refuse(refusal: Refusal) -> int:
@@ -952,3 +1034,222 @@ def _refuse(refusal: Refusal) -> int:
         file=sys.stderr,
     )
     return EXIT_REFUSED
+
+
+# --- applying, and the journal that describes it -----------------------------
+
+
+def _read_or_empty(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, ValueError):
+        return ""
+
+
+class Journal:
+    """One record per mutation, written AT the mutation.
+
+    Not batched at the end, and that is the whole point: a crash between two
+    mutations has to leave a journal that describes what happened, or the
+    re-run cannot tell what it already did and a later `--undo` has nothing to
+    undo.
+
+    It lives in the state directory rather than under `${CLAUDE_PLUGIN_DATA}`,
+    because `claude plugin uninstall` removes plugin data unless `--keep-data`
+    — which would delete the record shipped precisely so a later undo is
+    possible, and strand the out-of-harness fallback with no config to point at.
+    """
+
+    def __init__(self, state_dir: str, manifest: str) -> None:
+        self.path = os.path.join(state_dir, INIT_JOURNAL_NAME)
+        self.manifest = manifest
+        self.run = _sha(f"{manifest}{time.time()}{os.getpid()}")[:12]
+
+    def record(self, action: Action, after: str) -> None:
+        line = json.dumps(
+            {
+                "v": 1,
+                "run": self.run,
+                "manifest": self.manifest,
+                "ts": int(time.time()),
+                "op": action.op,
+                "path": action.path,
+                "before": None if action.before == "absent" else action.before,
+                "after": after,
+                "authored_config": action.authored_config,
+            },
+            separators=(",", ":"),
+        )
+        # Line-buffered append and an explicit flush: the next mutation must
+        # not be able to happen before this record is on disk, because the only
+        # thing a crash leaves behind is what got there first.
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+
+class _Lock:
+    """An advisory lock around the config's read-modify-write.
+
+    `os.replace` makes the file untearable and does nothing at all about a LOST
+    APPEND: two inits that both read the config, both add their own store and
+    both write, leave one store. The lock is what serialises read→merge→write→
+    journal into one step.
+
+    Best-effort by design — a filesystem with no working `flock` degrades to
+    the behaviour every earlier build had, which is the same race and no worse.
+    A setup command must not fail because a lock could not be taken.
+    """
+
+    def __init__(self, state_dir: str) -> None:
+        self.path = os.path.join(state_dir, "init.lock")
+        self._fd = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+
+            self._fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(self._fd, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            if self._fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(self._fd)
+            self._fd = None
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        if self._fd is None:
+            return
+        with contextlib.suppress(ImportError, OSError):
+            import fcntl
+
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(self._fd)
+        self._fd = None
+
+
+def _write_atomically(path: str, content: str, mode: int = 0o600) -> str:
+    """Write beside and rename over, returning the state token that landed.
+
+    The same care the session ledger takes, for the same reason: `open(path,
+    "w")` destroys the old file before writing the new one, so anything that
+    stops the write in between leaves a valid prefix of an invalid file — and
+    for a config, a valid prefix is a config that names half a store.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return "file:" + _sha(content)
+
+
+def _run_checker(machine: Machine, config_path: str) -> tuple:
+    route, command = _checker_route(machine)
+    if route == "none" or not command:
+        return 1, "no checker route"
+    try:
+        out = subprocess.run(
+            [*command, "--config", config_path],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=dict(os.environ, PYTHONPATH=_package_path()),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, f"{type(exc).__name__}: {exc}"
+    return out.returncode, (out.stdout + out.stderr).strip()
+
+
+def _package_path() -> str:
+    """This package's own `src` on PYTHONPATH for the checker subprocess.
+
+    The plugin channel never pip-installs memkit, so `python -m
+    memkit.memory_integrity` finds nothing unless the tree is put in front of
+    it — the same reason `bin/memkit` prepends it.
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    existing = os.environ.get("PYTHONPATH", "")
+    return f"{here}{os.pathsep}{existing}" if existing else here
+
+
+def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
+    """Perform the plan, journalling each mutation as it happens."""
+    journal = Journal(machine.state_dir, plan.digest)
+    for action in plan.pending:
+        try:
+            code = _perform(machine, journal, action, config_path)
+        except OSError as exc:
+            # Everything before this is journalled and is a no-op on the next
+            # run. Naming the journal is what makes "re-run it" a safe
+            # instruction rather than a hopeful one.
+            print(
+                f"memkit init: {action.op} {_display_path(action.path)} failed "
+                f"({type(exc).__name__}: {exc}). What was done before it is "
+                f"recorded in {_display_path(journal.path)}; re-running init "
+                "converges on the remainder.",
+                file=sys.stderr,
+            )
+            return EXIT_INCOMPLETE
+        if code != EXIT_OK:
+            return code
+    return EXIT_OK
+
+
+def _perform(
+    machine: Machine, journal: Journal, action: Action, config_path: str
+) -> int:
+    """One action, then its journal record. In that order, and never batched.
+
+    A crash between two mutations has to leave a journal that describes what
+    happened; a batch written at the end describes a run that finished, which
+    is the one case the record is not needed for.
+    """
+    if action.op == CREATE_DIR:
+        # 0700 for the shared state directory and for nothing else: it
+        # holds the soak log and the index, whose filenames are
+        # predictable, and a mode a group could read is the symlink
+        # pre-planting hazard the location was chosen to avoid.
+        mode = 0o700 if action.path == machine.state_dir else 0o755
+        os.makedirs(action.path, mode=mode, exist_ok=True)
+        journal.record(action, "dir")
+    elif action.op == MERGE_CONFIG:
+        with _Lock(machine.state_dir):
+            payload = action.payload if isinstance(action.payload, dict) else {}
+            merged = _merge_config(
+                _read_or_empty(action.path),
+                nonce=str(payload.get("nonce", "")),
+                interpreter=str(payload.get("interpreter", "")),
+                entries=payload.get("entries") or {},
+            )
+            after = _write_atomically(action.path, merged)
+            journal.record(action, after)
+    elif action.op == VERIFY:
+        code, output = _run_checker(machine, config_path)
+        if code != 0:
+            print(
+                "memkit init: the store was created and the integrity "
+                f"checker is not happy with it:\n{output}",
+                file=sys.stderr,
+            )
+            # INCOMPLETE, not refused: the store is on disk. A caller told
+            # "refused" would believe nothing was written and go looking
+            # for a store that is right there.
+            return EXIT_INCOMPLETE
+        journal.record(action, "verified")
+    else:
+        after = _write_atomically(action.path, action.content, mode=0o644)
+        journal.record(action, after)
+    return EXIT_OK

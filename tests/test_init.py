@@ -46,7 +46,11 @@ def profile(tmp_path, monkeypatch):
         "CLAUDE_PLUGIN_ROOT",
     ):
         monkeypatch.delenv(name, raising=False)
-    return tmp_path
+    yield tmp_path
+    # `_use_config` sets module globals and clears caches; a case that pointed
+    # the reader at a fixture config would otherwise leave every later case in
+    # this process reading it.
+    hook._use_config(None)
 
 
 def _args(**kw) -> argparse.Namespace:
@@ -177,25 +181,9 @@ def test_a_converged_install_manifests_nothing(profile) -> None:
     """Double init is a no-op, and the manifest says so rather than listing
     writes that would change nothing."""
     plan = _plan(profile, store=str(profile / "notes"))
-    for action in plan.actions:
-        if action.op == init.CREATE_DIR:
-            os.makedirs(action.path, exist_ok=True)
-        elif action.op in (init.CREATE_FILE, init.REWRITE_FILE):
-            os.makedirs(os.path.dirname(action.path), exist_ok=True)
-            with open(action.path, "w", encoding="utf-8") as f:
-                f.write(action.content)
-    # The journal claim the real apply writes, without which the second run
-    # meets its own config as a foreign one.
-    state = profile / "home" / ".cache" / "memory-recall"
-    state.mkdir(parents=True, exist_ok=True)
-    config = [a.path for a in plan.actions if a.path.endswith("memkit.json")][0]
-    (state / hook.INIT_JOURNAL_NAME).write_text(
-        json.dumps(
-            {"v": 1, "op": "create-file", "path": config, "authored_config": True}
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_OK
     converged = _plan(profile, store=str(profile / "notes"))
     assert converged.writes == []
     assert "already set up" in converged.render()
@@ -302,10 +290,9 @@ def test_the_nonce_is_derived_so_the_handshake_can_complete(profile) -> None:
     look like a changed one. What the nonce has to be is unlikely to appear in
     the adopter's own corpus, which a derivation over two absolute paths
     satisfies as well as randomness does."""
-    first = init._canary_nonce("/a/config.json", "/b/store")
-    assert first == init._canary_nonce("/a/config.json", "/b/store")
-    assert first != init._canary_nonce("/a/config.json", "/c/store")
-    assert first != init._canary_nonce("/z/config.json", "/b/store")
+    first = init._canary_nonce("/a/config.json")
+    assert first == init._canary_nonce("/a/config.json")
+    assert first != init._canary_nonce("/z/config.json")
 
 
 def test_the_config_goes_where_the_install_option_already_points(profile, monkeypatch):
@@ -612,3 +599,296 @@ def test_every_refusal_in_the_inventory_is_reachable() -> None:
     covered |= {"enabled-plugins"}
     assert raised - covered <= {"stale-digest"}, sorted(raised - covered)
     assert len(raised) >= 12, sorted(raised)
+
+
+# --- the confirm turn, the journal, and convergence --------------------------
+
+
+def _confirm(profile, digest, *extra):
+    return _run(
+        "--confirm", digest, *extra,
+        env=dict(
+            os.environ,
+            HOME=str(profile / "home"),
+            XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+            CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+        ),
+    )
+
+
+def _dry(profile, *extra):
+    return _run(
+        "--dry-run", *extra,
+        env=dict(
+            os.environ,
+            HOME=str(profile / "home"),
+            XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+            CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+        ),
+    )
+
+
+def _digest_of(out) -> str:
+    for line in out.stdout.splitlines():
+        if line.startswith("digest: "):
+            return line.split()[1]
+    raise AssertionError(out.stdout + out.stderr)
+
+
+def test_a_stale_digest_refuses_and_writes_nothing(profile) -> None:
+    """The digest binds the state of the TREE. A confirm carrying a number
+    computed against a different world is a consent given for something else.
+    """
+    before = _snapshot(profile)
+    out = _confirm(profile, "0000000000000000")
+    assert out.returncode == init.EXIT_REFUSED
+    assert "refused (stale-digest)" in out.stderr
+    assert _snapshot(profile) == before
+
+
+def test_the_confirm_turn_puts_the_applied_text_in_the_transcript(profile) -> None:
+    """"Relay this verbatim" is an instruction to a model and not a control, so
+    the only way to be sure the human saw what is about to happen is to put it
+    where the turn itself records it — beside the writes rather than one turn
+    earlier."""
+    manifest = _dry(profile)
+    out = _confirm(profile, _digest_of(manifest))
+    assert out.returncode == init.EXIT_OK, out.stderr
+    assert "memkit init — what this would do" in out.stdout
+    assert "applying:" in out.stdout
+    # The same manifest, not a summary of it.
+    for line in manifest.stdout.splitlines():
+        if line.strip().startswith(("create-dir", "create-file", "merge-config")):
+            assert line in out.stdout, line
+
+
+def test_the_journal_names_every_file_the_run_made_and_nothing_it_did_not(profile):
+    """A record per mutation, at the mutation. Not batched at the end: a crash
+    between two mutations has to leave a journal that describes what happened,
+    and a batch written at the end describes a run that finished — the one case
+    the record is not needed for."""
+    out = _confirm(profile, _digest_of(_dry(profile)))
+    assert out.returncode == init.EXIT_OK, out.stderr
+    journal = profile / "home" / ".cache" / "memory-recall" / hook.INIT_JOURNAL_NAME
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    journalled = {r["path"] for r in records if r["op"] != init.VERIFY}
+    on_disk = set()
+    for root, dirnames, filenames in os.walk(profile / "home"):
+        for name in dirnames + filenames:
+            on_disk.add(os.path.join(root, name))
+    made = {
+        p
+        for p in journalled
+        if not p.endswith((hook.INIT_JOURNAL_NAME, "init.lock"))
+    }
+    assert made <= on_disk, sorted(made - on_disk)
+    # And nothing it did not: every journalled path is one the plan named.
+    planned = {a.path for a in _plan(profile).actions}
+    assert made <= planned, sorted(made - planned)
+    # The config's record claims authorship, which is what makes an unclaimed
+    # rung-2 config detectable at all.
+    claims = [r for r in records if r.get("authored_config")]
+    assert len(claims) == 1
+    assert claims[0]["path"].endswith("memkit.json")
+
+
+def test_a_crash_between_two_mutations_leaves_a_journal_that_describes_it(
+    profile, monkeypatch
+) -> None:
+    """The whole reason the record is written at the mutation. A batch would
+    describe the runs that did not need describing and nothing else."""
+    plan = _plan(profile)
+    machine = doctor.Machine()
+    real = init._write_atomically
+    calls = []
+
+    def explode(path, content, mode=0o600):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("no space left on device")
+        return real(path, content, mode)
+
+    monkeypatch.setattr(init, "_write_atomically", explode)
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    journal = profile / "home" / ".cache" / "memory-recall" / hook.INIT_JOURNAL_NAME
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    # Everything before the failure is on the record, and the failure is not.
+    assert records
+    assert calls[1] not in {r["path"] for r in records}
+
+
+def test_a_partial_run_converges_when_it_is_run_again(profile, monkeypatch) -> None:
+    """Every action already done is a no-op the second time, so re-running is
+    the safe instruction the incomplete exit code gives."""
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    real = init._write_atomically
+    calls = []
+
+    def explode(path, content, mode=0o600):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("no space left on device")
+        return real(path, content, mode)
+
+    monkeypatch.setattr(init, "_write_atomically", explode)
+    assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_INCOMPLETE
+
+    monkeypatch.setattr(init, "_write_atomically", real)
+    assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_OK
+    assert _plan(profile).writes == []
+
+
+def test_two_inits_appending_different_stores_both_survive(profile) -> None:
+    """`os.replace` makes the file untearable and does nothing about a LOST
+    APPEND: two inits that both read the config, both add their own store and
+    both write leave one store."""
+    first = _confirm(
+        profile, _digest_of(_dry(profile, "--store", str(profile / "a"))),
+        "--store", str(profile / "a"),
+    )
+    assert first.returncode == init.EXIT_OK, first.stderr
+    second = _confirm(
+        profile, _digest_of(_dry(profile, "--store", str(profile / "b"))),
+        "--store", str(profile / "b"),
+    )
+    assert second.returncode == init.EXIT_OK, second.stderr
+    blob = json.loads(
+        (profile / "home" / ".config" / "memkit" / "memkit.json").read_text()
+    )
+    assert {s["id"] for s in blob["stores"]} == {"a", "b"}
+    assert set(blob["roots"]) == {"a", "b"}
+    # One nonce for the whole config, so doctor's fixed query answers for both
+    # stores rather than for whichever one ran last.
+    assert blob["canary_nonce"] == init._canary_nonce(
+        str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+
+
+def test_the_config_write_re_reads_under_the_lock(profile, monkeypatch) -> None:
+    """The interleave the lock is for: another init committed between this
+    one's plan and its write. Writing the plan-time content would silently
+    drop that store."""
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(profile, store=str(profile / "mine"))
+    os.makedirs(os.path.dirname(config), exist_ok=True)
+    # A peer's config, committed after our plan was built.
+    peer = init._merge_config(
+        "",
+        nonce=init._canary_nonce(config),
+        interpreter=sys.executable,
+        entries=init._config_entries(store=str(profile / "theirs"), store_id="theirs"),
+    )
+    with open(config, "w", encoding="utf-8") as f:
+        f.write(peer)
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert "theirs" not in action.content, "the fixture is not exercising the race"
+
+    journal = init.Journal(str(machine.state_dir), plan.digest)
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    init._perform(machine, journal, action, config)
+    with open(config, encoding="utf-8") as f:
+        blob = json.loads(f.read())
+    assert {s["id"] for s in blob["stores"]} == {"theirs", "mine"}
+
+
+def test_a_second_init_does_not_renumber_the_first_ones_nonce(profile) -> None:
+    """Changing it would make every canary already on disk stop answering the
+    fixed query, which is the one thing the canary exists to do."""
+    config = str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    os.makedirs(os.path.dirname(config), exist_ok=True)
+    with open(config, "w", encoding="utf-8") as f:
+        f.write(
+            init._merge_config(
+                "", nonce="mkcORIGINAL", interpreter=sys.executable,
+                entries=init._config_entries(store=str(profile / "a"), store_id="a"),
+            )
+        )
+    with open(config, encoding="utf-8") as f:
+        current = f.read()
+    merged = init._merge_config(
+        current,
+        nonce="mkcSECOND",
+        interpreter="/other/python",
+        entries=init._config_entries(store=str(profile / "b"), store_id="b"),
+    )
+    blob = json.loads(merged)
+    assert blob["canary_nonce"] == "mkcORIGINAL"
+    assert blob["interpreter"] == sys.executable
+
+
+def test_the_seeded_store_passes_the_checker_and_answers_doctors_query(profile):
+    """§5.7's verification, end to end without the harness: a cold init
+    produces a store doctor rates with zero FAIL checks and a canary that comes
+    back for the fixed query."""
+    out = _confirm(profile, _digest_of(_dry(profile)))
+    assert out.returncode == init.EXIT_OK, out.stderr
+    config = str(profile / "home" / ".config" / "memkit" / "memkit.json")
+
+    # The checker, clean — including the two citation warnings a config with an
+    # empty `citations` block would produce about a feature nobody opted into.
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", config],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "CITED-PATHS" not in checked.stdout
+
+    hook._use_config(config)
+    machine = doctor.Machine(config)
+    checks = doctor.collect(machine, ["canary-retrieval", "corpus-root", "config-parse"])
+    assert [c.status for c in checks if c.id == "canary-retrieval"] == [doctor.PASS], [
+        c.detail for c in checks
+    ]
+    assert doctor.verdict(checks) == "OK", [c.detail for c in checks if c.status == "FAIL"]
+
+
+def test_a_second_confirm_is_a_no_op_that_still_verifies(profile) -> None:
+    """Double init converges. The manifest says there is nothing to write and
+    the check still runs, because a second init has nothing to do and still has
+    something to check."""
+    assert _confirm(profile, _digest_of(_dry(profile))).returncode == init.EXIT_OK
+    again = _dry(profile)
+    assert "already set up" in again.stdout
+    applied = _confirm(profile, _digest_of(again))
+    assert applied.returncode == init.EXIT_OK, applied.stderr
+
+
+def test_a_store_that_fails_its_own_check_is_incomplete_and_not_refused(profile):
+    """The store is on disk by then. A caller told "refused" would believe
+    nothing was written and go looking for a store that is right there — and
+    the move that fixes it is to repair the store and re-run, which is what
+    the incomplete code means."""
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_OK
+    # A memory at the store root, which is the layout the checker refuses.
+    (profile / "home" / "notes" / "stray.md").write_text(
+        "---\nname: stray\ndescription: d\ntype: reference\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_INCOMPLETE
+    assert (profile / "home" / "notes" / "search" / doctor.CANARY_NAME).is_file()
+
+
+def test_a_failed_write_never_destroys_what_was_already_there(profile, monkeypatch):
+    """`open(path, "w")` destroys the old file before writing the new one, so
+    anything that stops the write in between leaves a valid prefix of an
+    invalid file — and for a config, a valid prefix is a config that names half
+    a store."""
+    target = profile / "config.json"
+    target.write_text('{"schema": 1, "stores": []}', encoding="utf-8")
+    original = target.read_text()
+
+    def refuse(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(OSError):
+        init._write_atomically(str(target), "{}" * 100)
+    assert target.read_text() == original
+    # And no scratch file left behind for the next reader to find.
+    assert [p.name for p in profile.glob("config.json*")] == ["config.json"]

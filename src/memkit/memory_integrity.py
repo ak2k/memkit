@@ -110,6 +110,7 @@ def _store(
     link_roots: tuple[Path, ...] = (),
     cited_roots: tuple[str, ...] = (),
     cited_suffixes: tuple[str, ...] = (),
+    citations_declared: bool = True,
     blame_base: str = DEFAULT_BLAME_BASE,
 ) -> dict:
     """One store, fully described — nothing below reads a module-level tree.
@@ -126,6 +127,13 @@ def _store(
     layout memkit was never told about — and check() reports it rather than
     passing quietly, because a citation check that silently matches nothing is
     the vacuous green this whole file exists to refuse.
+
+    `citations_declared` is the other half of that, and without it the report
+    is wrong for the commonest store there is. A config that never mentions
+    `citations` has opted OUT of the feature, and a checker that answered a
+    fresh adopter's first run with two warnings about a check they never asked
+    for is one they will learn to skim. Declared-and-empty keeps the warning;
+    never-declared says nothing, because there is nothing to say.
     """
     d = root / mem_dir
     return {
@@ -142,6 +150,7 @@ def _store(
         "link_roots": tuple(link_roots) or (root,),
         "cited_roots": tuple(cited_roots),
         "cited_suffixes": tuple(cited_suffixes),
+        "citations_declared": citations_declared,
         "blame_base": blame_base,
     }
 
@@ -192,6 +201,7 @@ def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
                 link_roots=link_roots,
                 cited_roots=cfg.cited_roots,
                 cited_suffixes=cfg.extra_suffixes,
+                citations_declared=getattr(cfg, "citations_declared", True),
                 blame_base=cfg.blame_base,
             )
         )
@@ -1069,7 +1079,11 @@ def check(
     # along with the world's. `scan` is what gets read; `changed` is what this
     # commit is answerable for.
     audit = all_citations or bool(os.environ.get("MEMORY_INTEGRITY_ALL_CITATIONS"))
-    if not store["cited_roots"]:
+    # A store whose config never mentions citations has opted out, and neither
+    # of the two findings below has anything to report about a feature nobody
+    # asked for. Both were the first thing a fresh adopter's checker run said.
+    declared = store.get("citations_declared", True)
+    if declared and not store["cited_roots"]:
         # Say it. With no configured top-level trees the citation regex matches
         # nothing at all, so every memory in the store passes the check without
         # a single path being looked at — a green that means "not configured"
@@ -1097,7 +1111,7 @@ def check(
     # this store was read, NOT on whether the tree was clean: "clean tree" was
     # the only case named before, so a single unrelated dirty file — a README,
     # a flake.nix — silently put the run back into passing without looking.
-    if not audit and not _read_any(store, changed):
+    if declared and not audit and not _read_any(store, changed):
         # "none to read" rather than "none changed": a deleted memory IS in the
         # changed set and still lands here, having nothing left to open.
         reason = degraded or f"no {rel_dir}/ memory in the changed set is readable"
