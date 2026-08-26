@@ -283,11 +283,19 @@ class Settings:
     what the parser said.
     """
 
-    __slots__ = ("scope", "path", "data", "error")
+    __slots__ = ("scope", "path", "data", "error", "adopter_owned")
 
-    def __init__(self, scope: str, path: str) -> None:
+    def __init__(self, scope: str, path: str, adopter_owned: bool = True) -> None:
         self.scope = scope
         self.path = path
+        # WHO CAN WRITE THIS FILE. `managed` and `user` are the adopter's and
+        # their administrator's; `project` and `local` sit in whatever
+        # directory the session stands in, which on a cloned repository means
+        # its author's. Carried as data because the distinction decides
+        # whether a command in the file may be EXECUTED, and a rule that
+        # important should not be a scope-name comparison repeated at each
+        # reader.
+        self.adopter_owned = adopter_owned
         self.data: dict = {}
         self.error = ""
         if not os.path.isfile(path):
@@ -315,8 +323,14 @@ def settings_scopes() -> list[Settings]:
     return [
         Settings("managed", os.path.join(_managed_dir(), MANAGED_SETTINGS_NAME)),
         Settings("user", os.path.join(user, SETTINGS_NAME)),
-        Settings("project", os.path.join(cwd, ".claude", SETTINGS_NAME)),
-        Settings("local", os.path.join(cwd, ".claude", LOCAL_SETTINGS_NAME)),
+        Settings(
+            "project", os.path.join(cwd, ".claude", SETTINGS_NAME),
+            adopter_owned=False,
+        ),
+        Settings(
+            "local", os.path.join(cwd, ".claude", LOCAL_SETTINGS_NAME),
+            adopter_owned=False,
+        ),
     ]
 
 
@@ -1187,6 +1201,13 @@ HOOK_PROBE_TIMEOUT = 25
 HOOK_WRAPPER = "bin/memkit-hook"
 
 
+NO_HOOK_REMEDY = (
+    "Nothing serves pointers on this machine until a hook is registered. On "
+    "the plugin channel that is `claude plugin install`; on nix it is the "
+    "home-manager module."
+)
+
+
 def _payload_roots(machine: Machine) -> list:
     """Where this install's own payload might be, best first.
 
@@ -1239,11 +1260,24 @@ def _installed_hook(machine: Machine) -> tuple:
     than run: the harness hands it to a shell, and a diagnostic that evaluated
     a shell fragment out of a settings file would be executing whatever that
     file says on a machine whose configuration is already in doubt.
+
+    NOTHING A REPOSITORY WROTE IS EVER EXECUTED, and that is the sharper half
+    of the same rule. `.claude/settings.json` and `.claude/settings.local.json`
+    sit in the directory the session stands in, so on a cloned repository they
+    are its author's files. This command is model-invocable and its skill
+    pre-approves the exact argv, so running it inside somebody else's checkout
+    would be that checkout choosing a program to run as the user, with the
+    session's whole environment — every token in it — inherited by the child.
+    Claude Code gates project-scoped hooks behind a folder-trust prompt; there
+    is no such gate here, and there does not need to be one: those scopes are
+    REPORTED instead, quoted, which is the half of the check that was ever
+    worth having from a directory nobody vouched for.
     """
     for root in _payload_roots(machine):
         path = os.path.join(root, HOOK_WRAPPER)
         if os.path.isfile(path) and os.access(path, os.X_OK):
-            return [path], f"the plugin's own wrapper at {_display_path(path)}"
+            return [path], f"the plugin's own wrapper at {_display_path(path)}", ""
+    reported = ()
     for scope in machine.settings:
         events = scope.data.get("hooks")
         if not isinstance(events, dict):
@@ -1253,15 +1287,59 @@ def _installed_hook(machine: Machine) -> tuple:
                 command = (spec or {}).get("command")
                 if not isinstance(command, str) or "memkit" not in command:
                     continue
-                if os.path.isfile(command) and os.access(command, os.X_OK):
-                    return [command], f"the {scope.scope}-settings registration"
-                return (
-                    [],
-                    f"the {scope.scope}-settings registration runs "
-                    f'"{command}", which is not an executable file this can '
-                    "run on its own",
-                )
-    return [], "nothing registers a UserPromptSubmit hook for memkit"
+                if not scope.adopter_owned:
+                    # Kept as the fallback answer rather than returned at once:
+                    # an adopter-owned entry further down the list is still
+                    # worth running, and this one is worth SAYING either way.
+                    reported = reported or (
+                        f"the {scope.scope}-settings registration runs "
+                        f'"{command}". That file is in the directory this '
+                        "session stands in, so it is not run from here — a "
+                        "diagnostic that executed what a checkout registered "
+                        "would be running whatever the checkout chose",
+                        "This directory registers a UserPromptSubmit hook. "
+                        "Read the command above before trusting it: a "
+                        "project-scoped hook is whatever the checkout's "
+                        "author put there, and Claude Code asks you about "
+                        "those separately.",
+                    )
+                    continue
+                if not (os.path.isfile(command) and os.access(command, os.X_OK)):
+                    return (
+                        [],
+                        f"the {scope.scope}-settings registration runs "
+                        f'"{command}", which is not an executable file this '
+                        "can run on its own",
+                        NO_HOOK_REMEDY,
+                    )
+                if _under_cwd(command):
+                    # Defence in depth, for what the scope rule cannot see: the
+                    # scope says an adopter wrote the ENTRY and says nothing
+                    # about who wrote the file it points at.
+                    return (
+                        [],
+                        f"the {scope.scope}-settings registration runs "
+                        f'"{command}", which resolves inside this directory. '
+                        "Not run from here",
+                        "Read the command above before trusting it. A hook "
+                        "whose program lives in the directory the session "
+                        "stands in is that directory's choice, whichever "
+                        "settings scope names it.",
+                    )
+                return [command], f"the {scope.scope}-settings registration", ""
+    if reported:
+        return [], reported[0], reported[1]
+    return [], "nothing registers a UserPromptSubmit hook for memkit", NO_HOOK_REMEDY
+
+
+def _under_cwd(path: str) -> bool:
+    """Whether `path` lands inside the directory this session stands in."""
+    try:
+        cwd = os.path.realpath(os.getcwd())
+        target = os.path.realpath(path)
+    except OSError:
+        return True
+    return target == cwd or target.startswith(cwd + os.sep)
 
 
 def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
@@ -1351,18 +1429,11 @@ def _hook_path(machine: Machine) -> list[Check]:
     and that span is exactly where both walkthroughs' installs were broken
     while every other light was green.
     """
-    command, how = _installed_hook(machine)
+    command, how, remedy = _installed_hook(machine)
     if not command:
         return [
-            Check(
-                "hook-path",
-                UNKNOWN,
-                f"no hook was run: {how}",
-                "Nothing serves pointers on this machine until a hook is "
-                "registered. On the plugin channel that is `claude plugin "
-                "install`; on nix it is the home-manager module.",
-                actor=USER,
-            )
+            Check("hook-path", UNKNOWN, f"no hook was run: {how}",
+                  remedy, actor=USER)
         ]
     cfg = machine.config()
     nonce = cfg.canary_nonce if cfg is not None else ""

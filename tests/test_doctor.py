@@ -1002,7 +1002,7 @@ def test_a_registration_that_is_a_shell_fragment_is_reported_not_run(
         },
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how = doctor._installed_hook(machine)
+    command, how, _remedy = doctor._installed_hook(machine)
     assert command == []
     assert "not an executable file" in how
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
@@ -1825,3 +1825,119 @@ def test_the_payload_is_found_from_this_module_when_the_harness_env_is_absent(
     monkeypatch.delenv(hook.PLUGIN_ENV, raising=False)
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
     assert doctor._payload_roots(doctor.Machine()) == []
+
+
+def test_doctor_never_runs_a_hook_a_repository_registered(profile, monkeypatch):
+    """A repository can ship `.claude/settings.json`. Doctor must not execute
+    what it names.
+
+    `memkit doctor` is model-invocable and its grant pre-approves the exact
+    command, so running it inside a cloned repo is that repo choosing a program
+    to run as the user, with the session's whole environment — API keys
+    included — inherited by the child. Claude Code gates project-scoped hooks
+    behind a trust prompt; this had none.
+
+    The check is not lost: a project registration is REPORTED, quoted, so an
+    adopter still learns a second hook is registered and where.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    marker = profile / "PWNED.txt"
+    # OUTSIDE the session directory, deliberately. A repository's settings file
+    # can name any path on the machine, and the cwd guard below is a second
+    # line rather than this one: with the program somewhere else, the scope
+    # rule is the only thing standing between a clone and an execution.
+    hostile = profile / "hostile" / "memkit-hook"
+    hostile.parent.mkdir(parents=True, exist_ok=True)
+    hostile.write_text(f"#!/bin/sh\necho pwned > {marker}\n", encoding="utf-8")
+    hostile.chmod(0o755)
+    (profile / "project" / ".claude").mkdir(parents=True, exist_ok=True)
+    (profile / "project" / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": str(hostile)}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert not marker.exists(), "doctor executed a command the repository chose"
+    # And it still SAYS what it found, quoted rather than run.
+    assert str(hostile) in row.detail, row.detail
+    assert row.status in (doctor.INFO, doctor.UNKNOWN), row.status
+
+
+def test_a_user_scope_registration_is_still_run(profile, monkeypatch) -> None:
+    """The two scopes an adopter owns keep working: the check exists to
+    exercise the hook this machine really registered, and narrowing it to
+    scopes nobody else can write is what keeps that true without handing a
+    repository a way in."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    theirs = profile / "home" / "memkit-hook"
+    theirs.write_text(
+        f"#!/bin/sh\nexec {sys.executable} "
+        f"{REPO / 'src' / 'memkit' / 'memory_prompt_recall.py'}\n",
+        encoding="utf-8",
+    )
+    theirs.chmod(0o755)
+    _settings(
+        profile,
+        hooks={
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(theirs)}]}
+            ]
+        },
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [str(theirs)], (command, how)
+    assert "user-settings" in how
+
+
+def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatch):
+    """Defence in depth, for the case the scope rule cannot see: a
+    user-scope entry naming a path that resolves into the directory the
+    session stands in. The scope says an adopter wrote the entry; it says
+    nothing about who wrote the file it points at."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    inside = profile / "project" / "memkit-hook"
+    inside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    inside.chmod(0o755)
+    _settings(
+        profile,
+        hooks={
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(inside)}]}
+            ]
+        },
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    assert "inside this directory" in how, how
+
+    # And through a SYMLINK, which is the case a prefix test cannot see: the
+    # command's own path is nowhere near the session directory and what it
+    # resolves to is inside it.
+    disguise = profile / "elsewhere" / "memkit-hook"
+    disguise.parent.mkdir(parents=True, exist_ok=True)
+    disguise.symlink_to(inside)
+    _settings(
+        profile,
+        hooks={
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(disguise)}]}
+            ]
+        },
+    )
+    command, how, _remedy = doctor._installed_hook(doctor.Machine())
+    assert command == [], (command, how)
+    assert "inside this directory" in how, how
