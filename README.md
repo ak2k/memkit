@@ -547,18 +547,31 @@ rule is a contract rather than an implementation note.
   it from both halves — a silently unclassified outcome is a rate computed over
   a denominator nobody checked.
 - **`"concludes": false` marks a record that is not a prompt outcome**, and it
-  is the ONLY filter that isolates the per-prompt population. Two kinds carry
-  it: duplicate-registration detection, which is about the machine and is
-  written beside the record the prompt produces for itself, and every record
-  the search CLI writes, since an agent running a command is not a prompt
-  anyone typed. Exclude both from any per-prompt population.
+  is the filter that isolates the per-prompt population. Three kinds carry it:
+  duplicate-registration detection, which is about the machine and is written
+  beside the record the prompt produces for itself; every record the search CLI
+  writes, since an agent running a command is not a prompt anyone typed; and
+  every record from the subagent path, which concludes a spawn rather than a
+  prompt. Exclude all three from any per-prompt population.
+- **`"population"` says which population a record DOES conclude.** Absent means
+  the per-prompt one, so nothing written before this field existed changes
+  shape; `"task"` is the subagent path. Group by this rather than by the
+  `task:` prefix — a prefix is a naming convention and a name is a thing each
+  new outcome teaches you, which is the coupling a discriminator exists to
+  remove. A consumer computing per-spawn rates wants
+  `population == "task"`, and one computing per-prompt rates wants
+  `concludes is not false`, which already excludes them.
 - **Do not filter on `prompt_sha` or `ms`.** The CLI's records carry both — it
   hashes the query the same way — so a consumer keying on them pulls a
   command-line search into the denominator of every injection rate. Keying on
   the outcome's NAME instead means learning each new name as it arrives; the
   discriminator is there so you do not have to.
 - **What a record may contain is bounded**: hashes, counts, basenames, and the
-  sanitized query terms. Never raw prompt text, and never file contents.
+  sanitized query terms. Never raw prompt text, and never file contents. The
+  query field is capped at 160 characters on both paths, but the two paths
+  build it at different widths — 80 words and 40 terms of a prompt, 4000 and
+  2000 of a brief — so on a `population: "task"` record those 160 characters
+  are the opening of a subagent brief.
 
 ## Exit codes
 

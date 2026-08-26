@@ -8078,3 +8078,79 @@ def test_the_dispatch_leaves_the_post_delivery_region_reachable_from_both(
     ]
     assert called.count("_task_main") == 2, called  # the event, and the fallthrough
     assert called.count("_prompt_main") == 1, called
+
+
+def test_task_records_carry_both_population_discriminators(
+    tmp_path, monkeypatch
+) -> None:
+    """The soak log is a cross-repo contract and this branch added a second
+    population to the same file. Without a discriminator every spawn lands in
+    `len(real)` — the denominator of the gate rate, the injection rate, the
+    search-reaching share and every latency row — while `outcome ==
+    "injected"` never matches it, so every one of those rates deflates by the
+    volume of spawns and a 7-second budget's timings mix into percentiles
+    calibrated on a 15-second one.
+
+    Both fields, because they answer different questions: `concludes` is what
+    the existing analyzers already filter on and keeps the per-prompt
+    population honest with no change over there, and `population` is what a
+    reader of the OTHER population groups by without learning a name per
+    outcome.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook, "_search_dirs", list)
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    hook._task_main(
+        {
+            "session_id": "tsk5",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_use_id": "toolu_pop",
+            "tool_input": {"prompt": _brief("served/backlash-rig.md"), "description": "d"},
+        },
+        time.monotonic(),
+    )
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert record["concludes"] is False, record
+    assert record["population"] == "task", record
+
+    # A prompt record carries neither, so absent means the per-prompt
+    # population and nothing written before these fields existed changes shape.
+    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None: [])
+    monkeypatch.setattr(
+        hook.sys, "stdin",
+        io.StringIO(json.dumps({"session_id": "tsk5", "prompt": "the unionfs mount is stale"})),
+    )
+    hook.main()
+    record = json.loads(log.read_text().splitlines()[-1])
+    assert "population" not in record, record
+    assert "concludes" not in record, record
+
+
+def test_every_record_the_task_path_writes_carries_the_discriminators(
+) -> None:
+    """Over the SET rather than one call site: `rec` is built once and every
+    outcome flows through the same emitter, so the property is structural —
+    and stating it that way is what catches a future record built some other
+    way."""
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_task_main"
+    )
+    writers = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_soak_log"
+    ]
+    assert len(writers) == 1, "a second writer would not go through `rec`"
+    assert writers[0].args[0].id == "rec"
+    keys = {
+        k.value for node in ast.walk(fn)
+        if isinstance(node, ast.Dict)
+        for k in node.keys
+        if isinstance(k, ast.Constant)
+    }
+    assert {"concludes", "population"} <= keys, sorted(keys)

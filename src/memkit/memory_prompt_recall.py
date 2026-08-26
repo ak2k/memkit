@@ -2935,14 +2935,23 @@ def _soak_log(record: dict) -> None:
     injection.
 
     What a record may carry is a contract, and it is not "no prompt text": a
-    record that reached retrieval also holds `query`, the terms build_query
-    kept — stopwords dropped, non-word characters replaced, capped at 40 terms
-    and 160 characters. That field is prompt-DERIVED and the only one; the raw
-    prompt is never written, and everything else here is a hash, a count, or a
-    basename. It stays because the offline shadow harness replays it: the
-    field is that harness's entire corpus, so dropping it is the same decision
-    as retiring the harness, and three docstrings claiming the log held no
-    prompt text was how it nearly got dropped as dead weight.
+    record that reached retrieval also holds `query`, the terms the query
+    builder kept — stopwords dropped, non-word characters replaced, then
+    capped at 160 characters. That field is TEXT-DERIVED and the only one; the
+    raw prompt or brief is never written, and everything else here is a hash, a
+    count, or a basename. It stays because the offline shadow harness replays
+    it: the field is that harness's entire corpus, so dropping it is the same
+    decision as retiring the harness, and three docstrings claiming the log
+    held no prompt text was how it nearly got dropped as dead weight.
+
+    TWO BUILDERS FEED THAT FIELD, at different caps, and the contract has to
+    say so or a reader checks a record against a shape it does not have.
+    `build_query` keeps 80 words and 40 terms of a prompt; `build_task_query`
+    keeps 4000 and 2000 of a subagent brief. The 160-character slice applies
+    to both, so the written volume is the same either way — roughly the first
+    two dozen content words — but on a `task:` record those words come from a
+    brief. Records from the two populations are told apart by `population`,
+    never by the outcome's prefix.
     """
     with contextlib.suppress(Exception):
         record["ts"] = int(time.time())
@@ -3950,6 +3959,26 @@ def _task_main(payload: dict, t0: float) -> None:
         # the same reason: it joins a record to a spawn and the rest of the id
         # buys nothing this log's contract wants to hold.
         "tool_use": _log_session(payload.get("tool_use_id", "")),
+        # TWO DISCRIMINATORS, because this file now carries two populations and
+        # the consumer's rates are counts over one of them.
+        #
+        # `concludes: false` is what the downstream analyzers already filter
+        # on, and it is literally true here: these records do not conclude a
+        # PROMPT, which is the population every rate over there is computed
+        # over. Without it a subagent spawn lands in `len(real)` — the
+        # denominator of the gate rate, the injection rate, the search-reaching
+        # share and every latency row — while `outcome == "injected"` never
+        # matches it, so every one of those rates deflates by the volume of
+        # spawns and a 7-second budget's timings mix into percentiles
+        # calibrated on a 15-second one.
+        #
+        # `population` is what a reader wanting the OTHER population groups by.
+        # Keying on the `task:` prefix would work and is the coupling a
+        # discriminator exists to remove — the prefix is a naming convention,
+        # and a name is a thing each new outcome teaches you. Absent means the
+        # per-prompt population, so nothing already written changes shape.
+        "concludes": False,
+        "population": "task",
     }
     logged = False
 
