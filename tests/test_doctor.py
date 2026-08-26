@@ -696,11 +696,15 @@ def test_a_torn_journal_line_is_skipped_rather_than_read_as_no_claim(
     state = profile / "home" / ".cache" / "memory-recall"
     state.mkdir(parents=True)
     claimed = str(profile / "plugin-data" / "memkit.json")
+    good = json.dumps({"v": 1, "op": "create-file", "path": claimed,
+                       "authored_config": True})
+    torn = '{"v": 1, "op": "create-fi'
+    # The torn line BEFORE the claim as well as after it. A reader that
+    # abandons the file at the first line it cannot parse keeps every claim
+    # that came first, so a fixture with the good record first cannot tell that
+    # reader from this one.
     (state / hook.INIT_JOURNAL_NAME).write_text(
-        json.dumps({"v": 1, "op": "create-file", "path": claimed,
-                    "authored_config": True})
-        + "\n"
-        + '{"v": 1, "op": "create-fi',
+        torn + "\n" + good + "\n" + torn,
         encoding="utf-8",
     )
     assert doctor.authored_configs(str(state)) == {claimed}

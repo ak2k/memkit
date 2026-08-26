@@ -430,14 +430,23 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     quietly losing the half about admission while keeping the inventory.
     """
     note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
-    for subject in (
-        "memkitConfig",
-        "$CLAUDE_PLUGIN_DATA",
-        "MEMKIT_CONFIG",
-        "interpreter",
-        "UserPromptSubmit",
-    ):
-        assert subject in note, subject
+    # IN THE SECTION THAT OWES THE ANSWER, not anywhere in the file. A subject
+    # pinned against the whole document is defeated by a second mention of the
+    # word somewhere else — which is exactly what happened: a sentence about
+    # `memkitConfig` added two sections earlier let the trust-boundary half
+    # drop its own.
+    start = note.index("## Where the trust boundary sits")
+    boundary = note[start : note.index("\n## ", start + 10)]
+    for subject in ("memkitConfig", "$CLAUDE_PLUGIN_DATA", "MEMKIT_CONFIG",
+                    "interpreter"):
+        assert subject in boundary, subject
+    # The COUNT, which is the claim rather than the wording: rung 3 was deleted
+    # because a file in the payload tree is a file the repository can ship, and
+    # a note saying the config is admitted from "a number of places" is a note
+    # that has stopped making the promise this section exists to make.
+    assert "exactly two places" in boundary, boundary[:400]
+    # And the inventory half keeps the one that is its own.
+    assert "UserPromptSubmit" in note[: note.index("## Where the trust")]
     # The count it states is the count of THIS TREE, not of the currently
     # pinned sha, and the difference is the whole of how a release works here.
     #
