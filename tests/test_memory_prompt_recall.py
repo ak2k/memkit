@@ -6823,15 +6823,26 @@ def test_the_sweep_is_bounded_per_invocation(state) -> None:
 
 
 def test_the_sweep_abandons_at_its_deadline_and_leaves_a_consistent_directory(
-    state,
+    state, monkeypatch
 ) -> None:
     """Abandoning is not failing: what it leaves is a directory with fewer
-    files in it and every one of them intact."""
+    files in it and every one of them intact.
+
+    The deadline has to expire DURING the loop, not before it. A sweep that
+    arrives with no budget returns at the check above the stamp, which does not
+    exercise the in-loop break at all — and that break is what stops a long
+    walk from running past a prompt's turn.
+    """
     for i in range(50):
         _index(state, f"fts5-{i:012x}", root=str(state / "gone"))
-    stats = hook._sweep(deadline=time.monotonic() - 1)
-    assert stats["stat"] == 0
-    assert len(list(state.glob("fts5-*"))) == 250
+    clock = iter([time.monotonic()] * 3 + [time.monotonic() + 999] * 500)
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    stats = hook._sweep(deadline=time.monotonic() + 1)
+    assert stats["skipped"] is False, stats
+    # It stopped early, and everything it did not reach is untouched.
+    assert stats["stat"] < 50, stats
+    remaining = list(state.glob("fts5-*"))
+    assert remaining, "it collected everything, so the break never fired"
 
 
 def test_the_sweep_creates_no_state_directory(tmp_path, monkeypatch) -> None:

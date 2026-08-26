@@ -1011,20 +1011,19 @@ def build_plan(
                 "it cannot see.",
             ) from exc
         line = _import_line(store_path)
-        # CONVERGE, do not duplicate. `redundant` cannot see this: appending
-        # the same line twice produces a different file every time, so the
-        # action would look new on every run and a CLAUDE.md would grow one
-        # import per init — a file the adopter then has to clean up by hand.
-        if line not in existing.splitlines():
-            actions.append(
-                Action(
-                    APPEND_LINE,
-                    target,
-                    _appended(existing, line),
-                    note=f"appends {line}",
-                    payload={"line": line},
-                )
+        # CONVERGE, do not duplicate — and the convergence lives in `_appended`
+        # alone, which is also what the apply path re-derives through. A second
+        # guard here would make the plan and the write disagree about when the
+        # line is already present, which is the one question they both answer.
+        actions.append(
+            Action(
+                APPEND_LINE,
+                target,
+                _appended(existing, line),
+                note=f"appends {line}",
+                payload={"line": line},
             )
+        )
         notes.append(
             "The @-import puts each HOT memory's description in every session "
             "— one line per memory, from MEMORY.md — and not its body. The "

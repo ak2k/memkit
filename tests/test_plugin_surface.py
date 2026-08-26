@@ -4116,3 +4116,7 @@ def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
     # And the recipe names the tree the table counts, rather than one that
     # answers differently.
     assert "git ls-files | wc -l" in note
+    # ONCE. A second count in prose is a number nobody updates with the first,
+    # and this document's whole claim is that a reader can check it.
+    counts = {int(n) for n in re.findall(r"\b(\d+) files\b", note)}
+    assert counts == {len(listed)}, counts
