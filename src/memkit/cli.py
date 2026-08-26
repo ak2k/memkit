@@ -186,6 +186,17 @@ def _parser() -> argparse.ArgumentParser:
         "and in scope for this directory.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # Which build am I on — the precondition for reading any other answer this
+    # binary gives, and until now no command anywhere had it. Rendered from the
+    # same three facts doctor's `build` check reports, because two spellings of
+    # "which build" is the drift that makes both useless.
+    ap.add_argument(
+        "--version",
+        action="version",
+        version=cli_doctor.version_line(),
+        help="the installed distribution, the hook's content hash, and the "
+        "payload's commit",
+    )
     sub = ap.add_subparsers(dest="subcommand", metavar="SUBCOMMAND")
     for name, (summary, epilog, declare) in _SUBCOMMANDS.items():
         declare(

@@ -64,6 +64,7 @@ from memkit.memory_prompt_recall import (
     PLUGIN_ENV,
     SCHEMA,
     SOAK_LOG_NAME,
+    SWEEP_STAMP_NAME,
     TASK_OUTCOME_PREFIX,
     ConfigError,
     _corpus_files,
@@ -74,6 +75,7 @@ from memkit.memory_prompt_recall import (
     _session_state_path,
     _state_dir_candidate,
     _store_live_dir,
+    _version,
     load_config,
     recall,
     sanitize,
@@ -215,6 +217,11 @@ CHECK_IDS: tuple[str, ...] = (
     "subagent-delivery",
     "harness-stamp",
     "auto-memory",
+    "build",
+    "interpreter",
+    "state-dir",
+    "hooks-layout",
+    "uninstall-story",
 )
 
 # id -> the function that answers it, given the machine. A producer returns a
@@ -370,6 +377,14 @@ class Machine:
         self._parsed = False
         self._config = None
         self._config_error = ""
+        # The checker route, probed at most once per process on the channels
+        # that have no wrapper to have decided it already.
+        self._route: tuple | None = None
+        # Set by the one check that executes anything, and read by the one that
+        # reports what is left behind. A disclosure that was printed whether or
+        # not the run happened is a disclosure nobody can rely on — `--check
+        # state-dir` on its own runs no hook.
+        self.hook_probed = False
 
     @property
     def plugin(self) -> bool:
@@ -1185,7 +1200,7 @@ def _installed_hook(machine: Machine) -> tuple:
     return [], "nothing registers a UserPromptSubmit hook for memkit"
 
 
-def _probe_hook(command: list, prompt: str) -> tuple:
+def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
     """One real run of the installed hook. Returns (stdout, stderr, code, ms).
 
     Against the REAL state directory and the REAL config, which is the whole
@@ -1199,6 +1214,7 @@ def _probe_hook(command: list, prompt: str) -> tuple:
     the SECOND doctor run report no pointer, which is a false FAIL on a healthy
     install.
     """
+    machine.hook_probed = True
     session = "memkit-doctor-" + secrets.token_hex(6)
     payload = json.dumps(
         {
@@ -1275,7 +1291,9 @@ def _hook_path(machine: Machine) -> list[Check]:
     cfg = machine.config()
     nonce = cfg.canary_nonce if cfg is not None else ""
     if not nonce:
-        stdout, stderr, code, ms = _probe_hook(command, "memkit doctor probe prompt")
+        stdout, stderr, code, ms = _probe_hook(
+            machine, command, "memkit doctor probe prompt"
+        )
         if code is None:
             return [
                 Check(
@@ -1297,7 +1315,7 @@ def _hook_path(machine: Machine) -> list[Check]:
             )
         ]
 
-    stdout, stderr, code, ms = _probe_hook(command, canary_query(nonce))
+    stdout, stderr, code, ms = _probe_hook(machine, command, canary_query(nonce))
     if code is None:
         return [
             Check(
@@ -1895,6 +1913,401 @@ def _auto_memory(machine: Machine) -> list[Check]:
             "Two memory systems on one project is a choice rather than a "
             'fault. To run memkit alone, set "autoDreamEnabled": false in '
             f"{_display_path(config_dir)}/settings.json.",
+            actor=USER,
+        )
+    ]
+
+
+# --- the machine, and what is left behind ------------------------------------
+
+
+# The two files the nix channel links into the harness's hook directory, and
+# the layout the ROLLOUT runbook's per-host verify asserts by eye. A machine
+# reader for a recipe that was only ever run by hand.
+NIX_HOOK_FILES = ("memory-prompt-recall.py", "common-words.txt")
+NIX_STORE = "/nix/store/"
+
+# The checker's floor, and the same two numbers `bin/lib/common.sh` holds. It
+# lives in two files by necessity — one of them is POSIX sh and cannot import
+# the other — and a test scrapes them against each other.
+CHECKER_FLOOR = (3, 12)
+# The hook's floor, which is NOT the checker's. A stock macOS python is 3.9.6
+# and every current Linux distribution clears it.
+HOOK_FLOOR = (3, 9)
+
+ROUTE_ENV = "MEMKIT_CHECKER_ROUTE"
+ROUTE_CMD_ENV = "MEMKIT_CHECKER_CMD"
+
+
+def build_facts() -> tuple:
+    """(package version, hook version, payload sha) — the three answers to
+    "which build am I on", each None when this install cannot derive it.
+
+    A precondition for reading any other line of this report, and until now no
+    command anywhere answered it: a critic filed the absence of `--version` as
+    a defect against all four binaries.
+    """
+    package = None
+    with contextlib.suppress(Exception):
+        from importlib.metadata import version
+
+        package = version("memkit")
+    hook_version = None
+    with contextlib.suppress(Exception):
+        hook_version = _version()
+    payload = None
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if root and os.path.isdir(os.path.join(root, ".git")):
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            out = subprocess.run(
+                ["git", "-C", root, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if out.returncode == 0:
+                payload = out.stdout.strip()[:12]
+    return package, hook_version, payload
+
+
+def version_line() -> str:
+    """What `memkit --version` prints. One line, three facts, and the ones
+    this install cannot derive are named as unknown rather than omitted — a
+    missing field reads as a field that does not exist."""
+    package, hook_version, payload = build_facts()
+    return (
+        f"memkit {package or '(no installed distribution)'} "
+        f"hook:{hook_version or '?'} payload:{payload or '(not a clone)'}"
+    )
+
+
+@_produces("build")
+def _build(machine: Machine) -> list[Check]:
+    package, hook_version, payload = build_facts()
+    if not any((package, hook_version, payload)):
+        return [
+            Check(
+                "build",
+                UNKNOWN,
+                "no version is derivable here: no installed distribution, the "
+                "hook module could not be hashed, and the payload is not a "
+                "clone",
+            )
+        ]
+    return [Check("build", INFO, version_line())]
+
+
+def _checker_route(machine: Machine) -> tuple:
+    """(route, command) for checker-backed work.
+
+    Read from the environment when the wrapper resolved it, which is the whole
+    point of the wrapper exporting it: the route is decided once per invocation
+    so that two subcommands cannot pick differently. Probed only where there is
+    no wrapper — the pip and uvx channels — and cached on the machine, because
+    each probe is a fork.
+    """
+    route = os.environ.get(ROUTE_ENV)
+    if route:
+        # Split on whitespace and nothing cleverer: it is a space-joined
+        # string, and the wrapper's own contract says so.
+        return route, (os.environ.get(ROUTE_CMD_ENV) or "").split()
+    if machine._route is None:
+        machine._route = _probe_checker_route()
+    return machine._route
+
+
+def _probe_checker_route() -> tuple:
+    if sys.version_info[:2] >= CHECKER_FLOOR:
+        return "python", [sys.executable, "-m", "memkit.memory_integrity"]
+    for name in ("python3.14", "python3.13", "python3.12", "python3"):
+        found = shutil.which(name)
+        if not found:
+            continue
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            out = subprocess.run(
+                [found, "-c", "import sys; print(sys.version_info[:2])"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if out.returncode == 0 and "(3, 1" in out.stdout:
+                pair = out.stdout.strip().strip("()").split(",")
+                if (int(pair[0]), int(pair[1])) >= CHECKER_FLOOR:
+                    return "python", [found, "-m", "memkit.memory_integrity"]
+    if shutil.which("uvx"):
+        return "uvx", ["uvx", "memory-integrity"]
+    return "none", []
+
+
+def _recorded_interpreter(machine: Machine) -> str:
+    """The `interpreter` the config records, read as a field rather than by the
+    wrapper's line scrape. Doctor has a JSON parser; the wrapper does not."""
+    if not machine.resolved_config:
+        return ""
+    with contextlib.suppress(OSError, ValueError):
+        with open(machine.resolved_config, encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            value = raw.get("interpreter")
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+@_produces("interpreter")
+def _interpreter(machine: Machine) -> list[Check]:
+    """Which python runs the hook, and which route runs the checker.
+
+    The stock-mac case is the one this exists for: `python3` there is 3.9.6 and
+    the checker's floor is 3.12, so an install that works perfectly for
+    retrieval cannot regenerate a ledger without `uvx`. That is INFORMATION,
+    never a failure — and reporting WHICH route resolved is what makes the
+    claim scoreable instead of a shrug.
+    """
+    running = ".".join(str(n) for n in sys.version_info[:3])
+    route, command = _checker_route(machine)
+    recorded = _recorded_interpreter(machine)
+    honoured = ""
+    if recorded:
+        expanded = os.path.expanduser(recorded)
+        if not (os.path.isfile(expanded) and os.access(expanded, os.X_OK)):
+            honoured = (
+                f'. The config records "interpreter": "{recorded}", which is '
+                "not an executable file, so the wrapper falls back to the "
+                "python3 on PATH"
+            )
+        elif os.path.realpath(expanded) != os.path.realpath(sys.executable):
+            honoured = (
+                f'. The config records "{recorded}" and this process is '
+                f"{_display_path(sys.executable)}"
+            )
+    if route == "none":
+        return [
+            Check(
+                "interpreter",
+                FAIL,
+                f"hook interpreter {running}; NO checker route: no python "
+                f"meets {CHECKER_FLOOR[0]}.{CHECKER_FLOOR[1]} and there is no "
+                f"uvx{honoured}",
+                "Install python 3.12 or newer, or install uv. Until then any "
+                "command that regenerates a ledger refuses by name and writes "
+                "nothing — a seeded memory with no ledger row is a broken "
+                "store, so half-completing is worse than not starting.",
+                actor=USER,
+                terminal=True,
+            )
+        ]
+    if sys.version_info[:2] < HOOK_FLOOR:
+        return [
+            Check(
+                "interpreter",
+                FAIL,
+                f"hook interpreter {running}, below the {HOOK_FLOOR[0]}."
+                f"{HOOK_FLOOR[1]} floor the hook imports under",
+                "Record an absolute path to a python 3.9 or newer as "
+                '"interpreter" in the memkit config.',
+                actor=USER,
+                terminal=True,
+            )
+        ]
+    where = " ".join(command) if command else "?"
+    if route == "uvx":
+        return [
+            Check(
+                "interpreter",
+                INFO,
+                f"hook interpreter {running}; checker route uvx ({where}), "
+                f"because no local python meets {CHECKER_FLOOR[0]}."
+                f"{CHECKER_FLOOR[1]}. Retrieval is unaffected{honoured}",
+            )
+        ]
+    if honoured:
+        return [
+            Check(
+                "interpreter",
+                INFO,
+                f"hook interpreter {running}; checker route {route} "
+                f"({where}){honoured}",
+            )
+        ]
+    return [
+        Check(
+            "interpreter",
+            PASS,
+            f"hook interpreter {running}; checker route {route} ({where})",
+        )
+    ]
+
+
+def _dir_size(path: str) -> tuple:
+    """(files, bytes) under one directory, one level deep.
+
+    The state directory is flat by construction and can hold five figures of
+    files, so this is the cheapest complete answer rather than a walk.
+    """
+    files = 0
+    total = 0
+    with contextlib.suppress(OSError), os.scandir(path) as entries:
+        for entry in entries:
+            files += 1
+            with contextlib.suppress(OSError):
+                total += entry.stat(follow_symlinks=False).st_size
+    return files, total
+
+
+def _mib(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f} MiB"
+
+
+@_produces("state-dir")
+def _state_dir_check(machine: Machine) -> list[Check]:
+    """What is in the shared cache, how big it is, and what is deliberately
+    never collected.
+
+    A number nobody had until it was asked for: on the author's own machine
+    this directory held 14,349 files and 289 MB, of which one file was the soak
+    log the analyzers treat as their corpus.
+
+    This check also discloses doctor's own footprint. `hook-path` runs the
+    installed hook once against this directory, which appends a soak record and
+    may run the sweep, and a read-only claim that quietly did that would be the
+    kind of thing this whole report exists to stop.
+    """
+    path = machine.state_dir
+    if not os.path.isdir(path):
+        parent = os.path.dirname(path)
+        degraded = (
+            ""
+            if os.access(parent, os.W_OK)
+            else f". {_display_path(parent)} is not writable, so the hook would "
+            "fall back to a private temporary directory and every session "
+            "would start cold"
+        )
+        return [
+            Check(
+                "state-dir",
+                INFO,
+                f"{_display_path(path)} does not exist: nothing has written "
+                f"derived state here. An install nobody configured writes "
+                f"none, deliberately{degraded}",
+            )
+        ]
+    files, total = _dir_size(path)
+    log = os.path.join(path, SOAK_LOG_NAME)
+    log_size = 0
+    with contextlib.suppress(OSError):
+        log_size = os.stat(log).st_size
+    swept = "never swept"
+    with contextlib.suppress(OSError):
+        stamp = os.stat(os.path.join(path, SWEEP_STAMP_NAME)).st_mtime
+        swept = "last swept " + time.strftime(
+            "%Y-%m-%d %H:%M", time.localtime(stamp)
+        )
+    footprint = (
+        ". This doctor run appended one soak record here and may have run the "
+        "sweep"
+        if machine.hook_probed
+        else ""
+    )
+    return [
+        Check(
+            "state-dir",
+            INFO,
+            f"{_display_path(path)}: {files} file(s), {_mib(total)}; "
+            f"{SOAK_LOG_NAME} {_mib(log_size)}; {swept}{footprint}",
+            f"{SOAK_LOG_NAME} is deliberately never collected — the soak "
+            "analyzers treat it as their corpus — so it grows one line per "
+            "invocation. Everything else here is a cache that rebuilds itself.",
+            actor=USER,
+        )
+    ]
+
+
+@_produces("hooks-layout")
+def _hooks_layout(machine: Machine) -> list[Check]:
+    """The nix channel's layout, as the rollout runbook asserts it by eye.
+
+    `n/a` off that channel rather than absent: a check that vanished would look
+    like one that had not run.
+    """
+    module = getattr(sys.modules[__name__], "__file__", "") or ""
+    if not module.startswith(NIX_STORE):
+        return [
+            Check(
+                "hooks-layout",
+                INFO,
+                "n/a: this is not the nix channel, which is the only one with "
+                "a layout to assert",
+            )
+        ]
+    config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
+    hooks = os.path.join(config_dir, "hooks")
+    wrong = []
+    for name in NIX_HOOK_FILES:
+        entry = os.path.join(hooks, name)
+        if not os.path.islink(entry):
+            wrong.append(f"{_display_path(entry)} is not a symlink")
+        elif not os.path.realpath(entry).startswith(NIX_STORE):
+            wrong.append(
+                f"{_display_path(entry)} points outside {NIX_STORE} "
+                f"({os.path.realpath(entry)})"
+            )
+    if wrong:
+        return [
+            Check(
+                "hooks-layout",
+                FAIL,
+                "; ".join(wrong),
+                "A tracked hook file that is a regular file rather than a "
+                "store symlink is the conversion defect the rollout runbook "
+                "names. Look before cleaning: a `.backup` beside it is the "
+                "only copy of what it used to hold.",
+                actor=USER,
+            )
+        ]
+    return [
+        Check(
+            "hooks-layout",
+            PASS,
+            f"{', '.join(NIX_HOOK_FILES)} under {_display_path(hooks)} are "
+            f"symlinks into {NIX_STORE}",
+        )
+    ]
+
+
+@_produces("uninstall-story")
+def _uninstall_story(machine: Machine) -> list[Check]:
+    """What leaving takes with it, and what it does not.
+
+    The store sits outside every plugin-managed path BY DESIGN, so no uninstall
+    sweep reaches it — which is right, and is exactly the thing an adopter
+    removing memkit needs told rather than left to discover. Always INFO: none
+    of this is a fault.
+    """
+    cfg = machine.config()
+    canaries = []
+    if cfg is not None:
+        for store in cfg.stores:
+            with contextlib.suppress(ConfigError):
+                live = cfg.store_dir(store, "live")
+                canaries.append(
+                    _display_path(os.path.join(_search_root(live), CANARY_NAME))
+                )
+    survives = [f"your stores{' (' + ', '.join(canaries) + ')' if canaries else ''}"]
+    if machine.resolved_config:
+        survives.append(_display_path(machine.resolved_config))
+    survives.append(f"{_display_path(machine.state_dir)} (index, log, journal)")
+    return [
+        Check(
+            "uninstall-story",
+            INFO,
+            "`claude plugin uninstall memkit@memkit` removes the payload and "
+            "the plugin data directory; `--keep-data` keeps the second. "
+            "Neither touches: " + "; ".join(survives),
+            "The canary memories above are memkit's own and are safe to "
+            "delete by hand; everything else in your stores is yours. Nothing "
+            "removes them for you, because the store is deliberately outside "
+            "every plugin-managed path.",
             actor=USER,
         )
     ]

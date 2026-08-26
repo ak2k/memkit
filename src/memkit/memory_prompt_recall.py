@@ -2436,6 +2436,7 @@ def _state_dir_candidate() -> str:
 GENERATED_CONFIG_NAME = "memkit.json"
 INIT_JOURNAL_NAME = "init-journal.jsonl"
 SOAK_LOG_NAME = "log.jsonl"
+SWEEP_STAMP_NAME = "sweep.stamp"
 
 
 def _session_state_path(session_id: str) -> str:

@@ -1226,7 +1226,7 @@ def test_a_disabled_plugin_fails_while_the_count_still_reports_one(
     (enabled,) = _only(checks, "plugin-enabled")
     assert enabled.status == doctor.FAIL
     assert "DISABLED" in enabled.detail
-    assert "claude plugin enable memkit@memkit" == enabled.remedy
+    assert enabled.remedy == "claude plugin enable memkit@memkit"
     (count,) = _only(checks, "registrations-count")
     assert count.status == doctor.PASS, count.detail
 
@@ -1409,3 +1409,216 @@ def test_the_measured_harness_stamp_is_the_one_ci_measures_on() -> None:
     stamp reporting agreement nobody established."""
     workflow = (REPO / ".github" / "workflows" / "check.yml").read_text()
     assert f'CLAUDE_CODE_VERSION: "{doctor.MEASURED_HARNESS}"' in workflow
+
+
+# --- the machine, and what is left behind ------------------------------------
+
+
+def test_which_build_am_i_on_is_answerable_at_all(profile, monkeypatch) -> None:
+    """A precondition for reading any other line of this report, and until now
+    no command anywhere answered it — a critic filed the absence of
+    `--version` as a defect against all four binaries.
+
+    Three facts, and the ones this install cannot derive are named as unknown
+    rather than omitted: a missing field reads as a field that does not exist.
+    """
+    (row,) = _only(doctor.collect(doctor.Machine()), "build")
+    assert row.status == doctor.INFO
+    assert "hook:" in row.detail and "payload:" in row.detail
+    # The same three facts `memkit --version` prints, from one derivation.
+    out = subprocess.run(
+        [sys.executable, "-m", "memkit.cli", "--version"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0
+    assert out.stdout.strip() == row.detail
+
+
+def test_the_build_check_falls_back_to_unknown_rather_than_guessing(monkeypatch):
+    monkeypatch.setattr(doctor, "build_facts", lambda: (None, None, None))
+    (row,) = _only(doctor._PRODUCERS["build"](doctor.Machine()), "build")
+    assert row.status == doctor.UNKNOWN
+
+
+def test_no_checker_route_is_terminal_and_never_silent(profile, monkeypatch):
+    """A seeded memory with no ledger row is a broken store, so a command that
+    needs the checker refuses by name and writes nothing. `terminal` is what
+    tells an agent that retrying cannot help."""
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv(doctor.ROUTE_ENV, "none")
+    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "")
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "interpreter")
+    assert row.status == doctor.FAIL
+    assert row.terminal is True
+    assert doctor.verdict(checks) != "OK"
+
+
+def test_a_uvx_checker_route_is_information_and_leaves_the_verdict_green(
+    profile, monkeypatch
+) -> None:
+    """The stock-mac case: `python3` is 3.9.6 and the checker's floor is 3.12,
+    so an install that retrieves perfectly cannot regenerate a ledger without
+    uvx. Reporting WHICH route resolved is what makes the claim scoreable
+    rather than a shrug."""
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv(doctor.ROUTE_ENV, "uvx")
+    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "uvx --from git+https://x memory-integrity")
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, path)),
+        "interpreter",
+    )
+    assert row.status == doctor.INFO
+    assert "uvx" in row.detail
+    assert "Retrieval is unaffected" in row.detail
+    assert doctor.verdict([row]) == "OK"
+
+
+def test_the_route_is_read_from_the_wrapper_rather_than_probed_again(
+    profile, monkeypatch
+) -> None:
+    """The wrapper resolves it once per invocation and exports it precisely so
+    two subcommands cannot pick differently. Splitting the command on
+    whitespace and nothing cleverer is the wrapper's own written contract."""
+    monkeypatch.setenv(doctor.ROUTE_ENV, "python")
+    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "/opt/py -m memkit.memory_integrity")
+    monkeypatch.setattr(
+        doctor, "_probe_checker_route", lambda: pytest.fail("probed anyway")
+    )
+    route, command = doctor._checker_route(doctor.Machine())
+    assert route == "python"
+    assert command == ["/opt/py", "-m", "memkit.memory_integrity"]
+
+
+def test_a_recorded_interpreter_that_is_not_honoured_is_said_out_loud(
+    profile, monkeypatch
+) -> None:
+    """Silence there is the wrong answer: the install goes on working under a
+    python the adopter did not choose, and no other surface in this build
+    reports the resolved interpreter."""
+    path = profile / "memkit.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "interpreter": "/opt/homebrew/opt/python@3.12/libexec/bin",
+                "roots": {"home": {"kind": "path", "path": str(profile)}},
+                "stores": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, str(path))),
+        "interpreter",
+    )
+    assert row.status == doctor.INFO
+    assert "not an executable file" in row.detail
+
+
+def test_the_state_dir_reports_its_size_and_discloses_doctors_own_write(
+    profile, monkeypatch
+) -> None:
+    """A number nobody had until it was asked for. The disclosure is
+    conditional on the probe having run — a claim printed whether or not it
+    happened is a claim nobody can rely on, and `--check state-dir` runs no
+    hook."""
+    path = _store_config(profile, stores=["personal"])
+    _soak(profile, {"ts": 1, "outcome": "injected"})
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["state-dir"](machine), "state-dir")
+    assert row.status == doctor.INFO
+    assert "1 file(s)" in row.detail
+    assert hook.SOAK_LOG_NAME in row.detail
+    assert "never swept" in row.detail
+    assert "appended one soak record" not in row.detail
+
+    machine.hook_probed = True
+    (row,) = _only(doctor._PRODUCERS["state-dir"](machine), "state-dir")
+    assert "appended one soak record" in row.detail
+    # And the file the sweep must never collect is named as such.
+    assert "never collected" in row.remedy
+
+
+def test_a_state_dir_that_does_not_exist_yet_is_not_created_to_report_on_it(
+    profile, monkeypatch
+) -> None:
+    """An install nobody configured writes no derived state, deliberately, and
+    a diagnostic that created the directory would answer its own question."""
+    path = _store_config(profile, stores=["personal"])
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["state-dir"](machine), "state-dir")
+    assert row.status == doctor.INFO
+    assert "does not exist" in row.detail
+    assert not os.path.exists(machine.state_dir)
+
+
+def test_the_hooks_layout_is_n_a_rather_than_absent_off_the_nix_channel(
+    profile, monkeypatch
+) -> None:
+    """A check that vanished would look like one that had not run."""
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(doctor.collect(_machine(profile, monkeypatch, path)), "hooks-layout")
+    assert row.status == doctor.INFO
+    assert "n/a" in row.detail
+
+
+def test_the_nix_layout_fails_on_a_hook_file_that_is_not_a_store_symlink(
+    profile, monkeypatch
+) -> None:
+    """Lifted from the rollout runbook's per-host verify so the recipe has a
+    machine reader: a tracked hook file that is a regular file rather than a
+    store symlink is the conversion defect it names."""
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setattr(doctor, "__file__", doctor.NIX_STORE + "x/cli_doctor.py")
+    hooks = profile / "claude-config" / "hooks"
+    hooks.mkdir(parents=True)
+    for name in doctor.NIX_HOOK_FILES:
+        (hooks / name).write_text("not a symlink\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["hooks-layout"](_machine(profile, monkeypatch, path)),
+        "hooks-layout",
+    )
+    assert row.status == doctor.FAIL
+    assert "is not a symlink" in row.detail
+    assert ".backup" in row.remedy
+
+    store = profile / "fake-store"
+    store.mkdir()
+    for name in doctor.NIX_HOOK_FILES:
+        (hooks / name).unlink()
+        (store / name).write_text("x", encoding="utf-8")
+        (hooks / name).symlink_to(store / name)
+    (row,) = _only(
+        doctor._PRODUCERS["hooks-layout"](doctor.Machine()), "hooks-layout"
+    )
+    # Points outside /nix/store, which is the other half of the assertion.
+    assert row.status == doctor.FAIL
+    assert "points outside" in row.detail
+
+
+def test_the_uninstall_story_names_the_canaries_by_path(profile, monkeypatch):
+    """The store sits outside every plugin-managed path by design, so no
+    uninstall sweep reaches it. That is right, and it is exactly the thing an
+    adopter removing memkit needs told rather than left to discover."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    (row,) = _only(
+        doctor.collect(_machine(profile, monkeypatch, path)), "uninstall-story"
+    )
+    assert row.status == doctor.INFO
+    assert "--keep-data" in row.detail
+    assert doctor.CANARY_NAME in row.detail
+    assert "search" in row.detail
+    # And the state directory, whose journal a later --undo would need.
+    assert "index, log, journal" in row.detail
+
+
+def test_the_checker_floor_matches_the_one_the_wrappers_hold() -> None:
+    """The number lives in two files by necessity — one of them is POSIX sh and
+    cannot import the other — and a floor that drifted would route a 3.11
+    python straight into the guard it exists to avoid."""
+    common = (REPO / "bin" / "lib" / "common.sh").read_text(encoding="utf-8")
+    major, minor = doctor.CHECKER_FLOOR
+    assert f"MEMKIT_CHECKER_FLOOR_MAJOR={major}" in common
+    assert f"MEMKIT_CHECKER_FLOOR_MINOR={minor}" in common
