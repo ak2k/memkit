@@ -5922,8 +5922,12 @@ def test_the_bound_is_measured_in_bytes_rather_than_argued_from_characters(
     # `_bounded_block` says nothing about which function `main` hands its lines
     # to, and that is where the check has to be.
     source = Path(hook.__file__).read_text(encoding="utf-8")
-    assert "payload, kept = _bounded_block(lines)" in source
-    assert "sys.stdout.write(payload)" in source
+    # The write goes through the BOUNDED block, never through `_framed`
+    # directly. Read off the source because the property is about which value
+    # reaches `sys.stdout.write`, and both spellings emit the same bytes on
+    # every payload small enough to fit.
+    assert "block, kept = _bounded_block(lines)" in source
+    assert "sys.stdout.write(block)" in source
     assert "sys.stdout.write(_framed(" not in source
 
     assert len(hook._framed(lines).encode()) > hook.PIPE_BUFFER_BOUND
@@ -8241,12 +8245,13 @@ def test_every_record_the_task_path_writes_carries_the_discriminators(
         and n.func.id == "_soak_log"
     ]
     assert len(writers) == 1, "a second writer would not go through `rec`"
-    assert writers[0].args[0].id == "rec"
+    target = writers[0].args[0]
+    assert isinstance(target, ast.Name) and target.id == "rec"
     keys = {
         k.value for node in ast.walk(fn)
         if isinstance(node, ast.Dict)
         for k in node.keys
-        if isinstance(k, ast.Constant)
+        if isinstance(k, ast.Constant) and isinstance(k.value, str)
     }
     assert {"concludes", "population"} <= keys, sorted(keys)
 

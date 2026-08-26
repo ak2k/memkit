@@ -4561,7 +4561,10 @@ def _prompt_main(payload: dict, t0: float) -> None:
         # spending it against the session budget and reporting it as `injected`
         # would burn a memory the agent never saw — and `shown` would refuse to
         # offer it again for the rest of the session.
-        payload, kept = _bounded_block(lines)
+        # `block`, not `payload`: the incoming payload is a parameter now that
+        # this path is its own function, and one name for a dict and the string
+        # written to stdout is a name a reader has to disambiguate by line.
+        block, kept = _bounded_block(lines)
         shed = len(lines) - len(kept)
         if shed:
             # Shedding drops from the END, so the survivors are a prefix — and
@@ -4589,7 +4592,7 @@ def _prompt_main(payload: dict, t0: float) -> None:
         delivered = True
         with _sigterm_masked():
             try:
-                sys.stdout.write(payload)
+                sys.stdout.write(block)
                 sys.stdout.flush()
             except (BrokenPipeError, OSError):
                 delivered = False

@@ -305,15 +305,32 @@ def test_an_older_hook_with_no_task_path_skips_the_slice_rather_than_scoring_it(
     assert not re.search(r"long briefs: \d+/\d+ served", out.stdout), out.stdout
 
 
+def _copy_hook(tmp_path: Path, old: str, new: str) -> Path:
+    """A writable copy of the package with one substitution applied.
+
+    The WHOLE directory, because the hook resolves `common-words.txt` beside
+    `__file__` and `load_hook` refuses a lone `.py`. `copytree` preserves mode
+    and the source is read-only under `nix flake check`, so the copy is chmodded
+    — same reason the `corpus` fixture does.
+
+    A copy rather than an edit in place: the shipped tree is read-only on that
+    leg, and editing it would mutate the source other tests in the same session
+    are running against.
+    """
+    root = tmp_path / "memkit"
+    shutil.copytree(Path(__file__).resolve().parent.parent / "src" / "memkit", root)
+    for path in (root, *root.rglob("*")):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    src = root / "memory_prompt_recall.py"
+    text = src.read_text()
+    assert text.count(old) == 1, old
+    src.write_text(text.replace(old, new))
+    return src
+
+
 def _strip_task_path(tmp_path: Path) -> Path:
     """A writable copy of the package with `task_gate` renamed away."""
-    stripped = tmp_path / "memkit"
-    shutil.copytree(Path(__file__).resolve().parent.parent / "src" / "memkit", stripped)
-    for path in (stripped, *stripped.rglob("*")):
-        path.chmod(path.stat().st_mode | stat.S_IWUSR)
-    src = stripped / "memory_prompt_recall.py"
-    src.write_text(src.read_text().replace("def task_gate(", "def _no_task_gate("))
-    return src
+    return _copy_hook(tmp_path, "def task_gate(", "def _no_task_gate(")
 
 
 def test_the_shipped_hook_losing_its_task_path_is_a_failure_not_a_skip(
@@ -416,7 +433,7 @@ def test_a_population_too_small_to_carry_a_rate_is_refused(corpus: Path) -> None
 
 
 def test_the_slice_scores_what_reaches_the_subagent_not_what_ranked(
-    corpus: Path,
+    corpus: Path, tmp_path: Path
 ) -> None:
     """The slice stopped at the relevance floor, so a brief whose emission the
     harness would refuse — a malformed `updatedInput`, or one over the write
@@ -429,15 +446,8 @@ def test_the_slice_scores_what_reaches_the_subagent_not_what_ranked(
     before = _eval(corpus)
     assert "7/8 served" in _rates(before.stdout), before.stdout
 
-    hook_dir = Path(__file__).resolve().parent.parent / "src" / "memkit"
-    src = hook_dir / "memory_prompt_recall.py"
-    original = src.read_text()
-    try:
-        src.write_text(original.replace("PIPE_BUFFER_BOUND = 16384",
-                                        "PIPE_BUFFER_BOUND = 64"))
-        out = _eval(corpus)
-    finally:
-        src.write_text(original)
+    src = _copy_hook(tmp_path, "PIPE_BUFFER_BOUND = 16384", "PIPE_BUFFER_BOUND = 64")
+    out = _eval(corpus, "--hook", str(src))
     assert "0/8 served" in _rates(out.stdout), out.stdout
     assert out.returncode != 0, out.stdout
     assert "long-brief coverage" in out.stderr
