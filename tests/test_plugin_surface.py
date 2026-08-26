@@ -3704,18 +3704,24 @@ def test_every_allowed_tools_entry_pins_an_exact_argument_shape() -> None:
     assert "init" not in doctor_entries
 
     init_entries = _frontmatter(SKILLS / "init" / "SKILL.md")["allowed-tools"]
-    # BOTH prefix matches, and the asymmetry was the tell: the skill body tells
-    # the agent to pass `--store`, `--config`, `--wire-claude-md` or
-    # `--auto-dream-off` on turn one and repeat them on turn two, and only the
-    # second grant covered them. Any documented flag dropped the agent out of
-    # the pre-approval and into a permission prompt halfway through the one
-    # handshake that is supposed to be the consent moment. `--dry-run` writes
-    # nothing by construction — the flake check asserts it against a whole
-    # scratch HOME — so widening the read-only turn costs no consent.
+    # ONE entry, and it is the turn that writes nothing.
+    #
+    # `--confirm` is deliberately absent. A prefix grant over it let the whole
+    # handshake happen inside one turn — run the dry-run, read the digest out
+    # of the model's own tool result, and apply it with `--wire-claude-md` and
+    # `--auto-dream-off` attached — writing to the user's `CLAUDE.md` and
+    # `settings.json` with no message they ever saw. The permission prompt on
+    # the writing call is the only part of this consent the harness enforces
+    # rather than the model observing.
+    #
+    # The read-only turn IS a prefix match, and the asymmetry used to run the
+    # other way: the body tells the agent to pass four flags, and an exact
+    # grant dropped it into a prompt for using one of them on the turn that
+    # writes nothing.
     assert init_entries == (
-        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*), "
-        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --confirm:*)"
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*)"
     ), init_entries
+    assert "--confirm" not in init_entries, init_entries
     # No bare prefix anywhere: `Bash(.../memkit:*)` or `Bash(.../memkit *)`
     # would make the doctor grant cover every subcommand this binary has.
     for name, entries in grants.items():
@@ -3774,6 +3780,10 @@ def test_the_init_skill_describes_both_turns_and_the_codes_it_can_return():
     assert "--dry-run" in body and "--confirm" in body
     assert "new message" in body or "new turn" in body or "in a new" in body
     assert "writes nothing" in body
+    # And the writing turn says why it will ask, so an agent meeting the
+    # prompt does not read it as a misconfiguration to route around.
+    assert "not pre-approved" in body
+    assert "Do not work around the prompt" in body
     from memkit import cli_init
 
     for code in (cli_init.EXIT_OK, cli_init.EXIT_USAGE, cli_init.EXIT_REFUSED,

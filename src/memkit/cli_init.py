@@ -1092,6 +1092,15 @@ EXIT_USAGE = 2
 # start, and doctor found problems — and neither of them is "you asked for
 # something this will not do". A skill branches on this to relay the reason to
 # the person and stop, which is a different move from retrying.
+# A subcommand that understood the request and will not do it — a store inside
+# the plugin payload, a stale digest, an unparseable settings file. Its own
+# number because 1 already carries two meanings a caller has to tell apart (the
+# wrapper could not start; doctor found problems), and neither is "you asked
+# for something this will not do". The move it calls for is to relay the reason
+# and stop, not to retry with different arguments.
+#
+# `cli.py` re-exports this rather than declaring its own, so the number the
+# help table advertises is the number the process returns.
 EXIT_REFUSED = 5
 # Started and did not finish. Distinct from a refusal because the move is
 # different: a refusal wants something changed before re-running, and this

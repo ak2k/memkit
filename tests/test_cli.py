@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -110,7 +111,7 @@ def test_the_pending_heading_renders_nothing_when_nothing_is_pending() -> None:
     assert "Not in this build yet" not in cli._parser().format_help()
 
 
-def test_both_help_surfaces_carry_the_fallback_not_just_the_name() -> None:
+def test_both_help_surfaces_carry_the_fallback_not_just_the_name(monkeypatch):
     """`--help` is the cheaper probe and the one an agent tries before running
     anything, so a help page listing two names and no way forward is a dead
     end reached in preference to the refusal that has one. Both levels: the
@@ -121,17 +122,33 @@ def test_both_help_surfaces_carry_the_fallback_not_just_the_name() -> None:
     Exit 0 stays, because that is what `--help` means. The fix is what it
     says, not what it returns.
     """
-    top = _run("--help")
-    for name, (summary, template) in cli._PENDING.items():
-        meanwhile = cli._meanwhile(template)
-        assert meanwhile in " ".join(top.stdout.split()), name
+    # Through a STAND-IN and the in-process parser, because nothing is pending
+    # in this build: iterating `_PENDING` skipped every assertion in this body
+    # and the case passed without exercising anything. Its two siblings were
+    # updated for exactly this reason and this one was not, which left the
+    # pending subparser's `description=` — the whole refusal M3 will land on —
+    # with no coverage at all. A subprocess cannot see the monkeypatch, so the
+    # parser is built here.
+    summary = "classify a store's memories"
+    template = 'meanwhile: `{search_config}`, and `{search} "<terms>"`'
+    monkeypatch.setitem(cli._PENDING, "triage", (summary, template))
+    meanwhile = cli._meanwhile(template)
 
-        own = _run(name, "--help")
-        assert own.returncode == 0
-        collapsed = " ".join(own.stdout.split())
-        assert summary in collapsed
-        assert "NOT IN THIS BUILD YET" in collapsed
-        assert meanwhile in collapsed
+    top = " ".join(cli._parser().format_help().split())
+    assert meanwhile in top
+
+    # argparse keeps the subparsers on the one positional it added, and the
+    # only way to reach a subparser's own help is through it.
+    sub = None
+    for action in cli._parser()._actions:
+        found = getattr(action, "choices", None)
+        if isinstance(found, dict) and "triage" in found:
+            sub = found["triage"]
+    assert sub is not None, "no subparser for the stand-in name"
+    collapsed = " ".join(sub.format_help().split())
+    assert summary in collapsed
+    assert "NOT IN THIS BUILD YET" in collapsed
+    assert meanwhile in collapsed
 
 
 def test_the_refusal_names_the_search_binary_this_install_actually_has(
@@ -366,3 +383,43 @@ def test_a_whitespace_only_search_cli_is_replaced_before_it_is_split(
         hook._use_config(None)
     assert "memory-recall --search" in rendered, rendered
     assert "memory-recall --debug-config" in rendered, rendered
+
+
+def test_every_exit_code_the_help_advertises_is_one_the_process_returns():
+    """The table `--help` renders and the numbers the commands return have to
+    be the same objects, not two constants that happen to agree.
+
+    `cli.EXIT_REFUSED` rendered the table while the process returned
+    `cli_init.EXIT_REFUSED`, with nothing asserting they were equal — so one
+    side could move and `--help` would advertise a code the command never
+    returns, the skill's table (pinned to the other side) would disagree with
+    the binary's own help, and no test would go red.
+    """
+    import ast
+
+    from memkit import cli_doctor, cli_init
+
+    # By the SOURCE, not by `is`. Both sides are small ints, which CPython
+    # interns — so `cli.EXIT_REFUSED is cli_init.EXIT_REFUSED` is True for two
+    # independent literals and the drift this exists to catch is invisible to
+    # it. What has to hold is that there is one definition.
+    tree = ast.parse(pathlib.Path(cli.__file__).read_text())
+    assigned = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                assigned[target.id] = node.value
+    for name in ("EXIT_REFUSED", "EXIT_INCOMPLETE"):
+        value = assigned.get(name)
+        assert isinstance(value, ast.Attribute), (name, ast.dump(value or ast.Pass()))
+        assert value.attr == name, (name, value.attr)
+    assert cli.EXIT_REFUSED == cli_init.EXIT_REFUSED
+    assert cli.EXIT_INCOMPLETE == cli_init.EXIT_INCOMPLETE
+    # And the one every module spells for itself, because argparse owns it.
+    assert cli.EXIT_USAGE == cli_init.EXIT_USAGE == cli_doctor.EXIT_USAGE == 2
+
+    rendered = " ".join(_run("--help").stdout.split())
+    for code in (0, cli.EXIT_NO_RUNTIME, cli.EXIT_USAGE, cli.EXIT_NOT_IN_BUILD,
+                 cli.EXIT_REFUSED, cli.EXIT_INCOMPLETE):
+        assert f"/ {code} " in rendered or f": {code} " in rendered, code

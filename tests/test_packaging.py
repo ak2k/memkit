@@ -12,6 +12,7 @@ import ast
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -421,3 +422,25 @@ def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(monkeypatch)
     with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
         test_the_hook_and_both_subcommands_run_on_a_real_39()
     assert caught.typename == "Skipped", caught.typename
+
+
+def test_the_wrapper_guards_exactly_the_files_it_will_import() -> None:
+    """The third copy of the 3.9 closure, and the only one nothing pinned.
+
+    `pyrightconfig-hook39.json`'s include list and `PAYLOAD` are both asserted
+    equal to a computed closure. `bin/memkit`'s `for _need in ...` loop holds
+    the same fact and was hand-edited three times this milestone with nothing
+    checking it — and a module added later and forgotten there produces exactly
+    the failure the loop's own comment says it exists to prevent: a raw
+    traceback out of the import machinery where the sibling wrappers print one
+    sentence, on the surface an adopter reaches when something is already
+    wrong.
+    """
+    wrapper = (REPO / "bin" / "memkit").read_text(encoding="utf-8")
+    listed = re.search(r"for _need in ([^;]+); do", wrapper)
+    assert listed, wrapper
+    guarded = {name.strip() for name in listed.group(1).split() if name.strip()}
+    reachable = {str(path.relative_to(REPO)) for path in _import_closure(PKG / "cli.py")}
+    assert guarded == reachable, (
+        sorted(guarded - reachable), sorted(reachable - guarded)
+    )

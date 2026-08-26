@@ -45,19 +45,14 @@ from memkit.memory_prompt_recall import (
 # forever.
 EXIT_USAGE = 2
 EXIT_NOT_IN_BUILD = 4
-# A subcommand that understood the request and will not do it — `init` refusing
-# a store inside the plugin payload, a stale digest, an unparseable settings
-# file. Its own number because 1 already carries two meanings a caller has to
-# tell apart (the wrapper could not start; doctor found problems), and neither
-# is "you asked for something this will not do". The move it calls for is to
-# relay the reason and stop, not to retry with different arguments.
-EXIT_REFUSED = 5
-# A subcommand that started and did not finish — a write that failed partway,
-# or a store that was created and then failed its own integrity check. Its own
-# number because the MOVE is different from every other code here: re-run the
-# same command. A refusal wants something changed first; this wants the journal
-# read and the run repeated, which converges on what is already there.
-EXIT_INCOMPLETE = 6
+# Re-exported from the subcommand that RETURNS them, not declared again here.
+# The help table below is rendered from these names while the process returns
+# `cli_init`'s, and nothing asserted the two were equal — so one side could
+# move and `--help` would advertise a code the command never returns, with the
+# skill's table (which IS pinned, to cli_init's) disagreeing with the binary's
+# own help and no test going red.
+EXIT_REFUSED = cli_init.EXIT_REFUSED
+EXIT_INCOMPLETE = cli_init.EXIT_INCOMPLETE
 # Emitted by the plugin's `bin/memkit` wrapper and never by this module: it is
 # what a caller gets when the dispatcher could not be STARTED — no interpreter
 # resolved, or the plugin payload is incomplete. Declared here anyway, because

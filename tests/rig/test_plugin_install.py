@@ -538,9 +538,16 @@ def test_without_the_option_the_same_turn_leaves_a_refusal_and_no_store(
 
     marker = profile.config_dir / "plugins" / "data" / "memkit-memkit" / "trust.json"
     assert marker.is_file(), "the gate refused without recording it"
-    assert [r["outcome"] for r in json.loads(marker.read_text())["records"]] == [
-        "trust:unconfigured"
-    ]
+    # The SET of outcomes, not a one-element list. How many times the harness
+    # dispatches UserPromptSubmit for a turn is not memkit's to control, and
+    # the marker's own writer says two hooks refusing at the same instant can
+    # lose a record to the other. Both make an exact-length assertion red for
+    # reasons that say nothing about the property under test — which is that
+    # the gate refused, recorded it, and recorded nothing else. This is a
+    # harness-tier case that FAILS rather than skips in CI, so a flake here is
+    # a red build nobody can act on.
+    outcomes = [r["outcome"] for r in json.loads(marker.read_text())["records"]]
+    assert outcomes and set(outcomes) == {"trust:unconfigured"}, outcomes
     assert not (profile.home / ".cache" / "memory-recall").exists()
 
 
@@ -606,8 +613,8 @@ def test_an_uninitialised_install_refuses_and_leaves_a_record(
 
     marker = profile.config_dir / "plugins" / "data" / "memkit-memkit" / "trust.json"
     assert marker.is_file(), "the gate refused without recording it"
-    records = json.loads(marker.read_text())["records"]
-    assert [r["outcome"] for r in records] == ["trust:unconfigured"]
+    outcomes = [r["outcome"] for r in json.loads(marker.read_text())["records"]]
+    assert outcomes and set(outcomes) == {"trust:unconfigured"}, outcomes
     # And nothing in the shared state dir: an uninitialised install has not
     # been consented to and does not get to create it.
     assert not (profile.home / ".cache" / "memory-recall").exists()
@@ -823,7 +830,11 @@ def test_every_allowed_tools_entry_is_a_command_the_payload_can_run(
         assert raw, name
         for entry in raw[0].split("allowed-tools:", 1)[1].split("), Bash("):
             entries.append(entry.strip().removeprefix("Bash(").rstrip(")"))
-    assert len(entries) == 3, entries
+    # Two: doctor's prefix over its own subcommand, and init's read-only turn.
+    # `init --confirm` is deliberately ungranted — the permission prompt on the
+    # writing call is the consent the harness enforces.
+    assert len(entries) == 2, entries
+    assert not any("--confirm" in entry for entry in entries), entries
 
     for entry in entries:
         command = entry.replace("${CLAUDE_PLUGIN_ROOT}", str(payload))

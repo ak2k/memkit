@@ -2,7 +2,7 @@
 name: init
 description: Set up memkit on this machine — create the memory store, write the config, and seed a memory that proves retrieval works. Use ONLY when the user asks to set up, initialise or configure memkit. This command writes files and requires the user's explicit consent between two turns.
 disable-model-invocation: true
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*), Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --confirm:*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*)
 ---
 
 # memkit init
@@ -18,10 +18,10 @@ ${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run
 ```
 
 Optional flags, each of which changes the plan and therefore the digest, so
-whichever you pass here you must pass again in turn two. Both grants are prefix
-matches, so passing any of them keeps you inside the pre-approval — an exact
-grant on turn one would have dropped you into a permission prompt in the middle
-of the handshake for using a flag this page told you to use:
+whichever you pass here you must pass again in turn two. The turn-one grant is
+a prefix match, so passing any of them keeps this read-only call inside the
+pre-approval — an exact grant would have dropped you into a permission prompt
+for using a flag this page told you to use, on the turn that writes nothing:
 
 - `--store PATH` — where the memory store goes.
 - `--config PATH` — where the config goes.
@@ -41,6 +41,15 @@ Then stop and ask.
 ```
 ${CLAUDE_PLUGIN_ROOT}/bin/memkit init --confirm <the digest from turn one>
 ```
+
+**This call is deliberately not pre-approved.** Turn one is, because it writes
+nothing; this one will raise a permission prompt showing the exact argv, and
+that prompt IS the consent — the only part of this handshake the harness
+enforces rather than the model observing. A pre-approved `--confirm:*` would
+let the whole thing happen inside one turn: run the dry-run, read the digest
+out of your own tool result, and apply it with `--wire-claude-md` and
+`--auto-dream-off` attached, writing to the user's `CLAUDE.md` and
+`settings.json` without a message they ever saw. Do not work around the prompt.
 
 The digest binds the state of the tree, not the text that was read. If anything
 under the manifest changed in between, this refuses and nothing is written —
