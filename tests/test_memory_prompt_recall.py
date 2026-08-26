@@ -8142,16 +8142,15 @@ def test_a_tool_shaped_payload_under_another_event_name_says_so(tmp_path) -> Non
     assert record["outcome"].startswith("task:"), record
 
 
-def test_the_dispatch_leaves_the_post_delivery_region_reachable_from_both(
-) -> None:
-    """`main()` is the one function two entry points share, and everything
-    after its dispatch is work neither path's delivery is finished without.
+def test_the_dispatch_keeps_both_paths_symmetric_in_main() -> None:
+    """Once the prompt path is a CALL rather than the rest of `main()`,
+    `return f()` and `f()` are a coin flip, and one side silently makes
+    anything later added to this function's tail the prompt path's alone.
 
-    A `return` out of one branch would make that region the other path's alone,
-    silently. The case that makes it concrete is the derived-state sweep: the
-    task path is the ONLY writer of the per-tool-call ledger a sweep collects,
-    so a sweep reachable from the prompt path only is a collector that never
-    sees what it exists to collect.
+    Nothing lives in that tail today — the work that follows either path is in
+    `cli()`, past the stdout flush — so this pins symmetry rather than a claim
+    about what runs there. What actually has to hold is the case below: that
+    `main()` returns to `cli()` on the task path.
 
     Asserted over the dispatch's shape rather than by driving it, because what
     goes wrong is a keyword nobody re-reads.
@@ -8448,3 +8447,77 @@ def contextlib_suppress():
     import contextlib
 
     return contextlib.suppress(Exception)
+
+
+def test_the_task_path_returns_to_cli_so_the_work_after_main_still_runs(
+    tmp_path, monkeypatch
+) -> None:
+    """The property the dispatch's shape is a proxy for, asserted directly.
+
+    `cli()` calls `main()` under a suppress and then does work of its own —
+    the stdout flush, and on the consumer side a derived-state sweep after it.
+    A task path that exited the process, or raised past the suppress, would
+    take that work away from every subagent spawn while leaving the prompt
+    path's intact. Both the ordinary path and the failing one have to come
+    back.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook, "_search_dirs", list)
+    flushed = []
+    real_flush = hook.sys.stdout.flush
+    monkeypatch.setattr(
+        hook.sys.stdout, "flush", lambda: (flushed.append(True), real_flush())[1]
+    )
+    payload = {
+        "session_id": "tsk2",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_use_id": "toolu_cli",
+        "tool_input": {"prompt": _brief("served/backlash-rig.md"), "description": "d"},
+    }
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(hook.sys, "argv", ["memory-recall"])
+    with pytest.raises(SystemExit) as exited:
+        hook.cli()
+    assert exited.value.code == 0
+    assert flushed, "cli() never reached its post-main work on the task path"
+
+    # And when the task path RAISES, which it does on any unexpected failure
+    # after recording — `cli()`'s suppress is what turns that into a served
+    # turn, and the work after it still has to run.
+    flushed.clear()
+    monkeypatch.setattr(hook, "_search_dirs", _raising(RuntimeError("boom")))
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps(payload)))
+    with pytest.raises(SystemExit) as exited:
+        hook.cli()
+    assert exited.value.code == 0
+    assert flushed, "a raising task path skipped the work after main()"
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl")
+        .read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:error", record
+
+
+def test_every_task_outcome_is_registered_under_the_task_prefix() -> None:
+    """Doctor's subagent-delivery check enumerates this path's records by
+    prefix, so an outcome outside it is a record that check cannot see — the
+    same blindness the vocabulary tripwire has, arriving through a different
+    reader.
+
+    Asserted over the whole set rather than over the names known today, and
+    against the CONSTANT rather than the literal, so the shim and the check
+    move together.
+    """
+    task = {o for o in _hook_outcomes() if o.startswith(hook.TASK_OUTCOME_PREFIX)}
+    written = {
+        o for o in _hook_outcomes()
+        if o not in hook.PROMPT_SHAPE_GATES
+        and not o.startswith(("gate:", "cli:"))
+        and o not in ("injected", "deduped", "floored", "killed", "error",
+                      "output-lost", "nomatch", "dup-registration")
+    }
+    assert written == task, sorted(written ^ task)
+    assert len(task) >= 17, sorted(task)
+    # And the prefix is the one the other side declares.
+    assert hook.TASK_OUTCOME_PREFIX == "task:"

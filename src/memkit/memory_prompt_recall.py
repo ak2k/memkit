@@ -3696,6 +3696,13 @@ def _task_floor() -> dict:
 # answered whatever the brief said, so blaming the brief's vocabulary is an
 # answer about the wrong thing. Having it INSIDE the set reversed that order
 # and left the second dispatch below unreachable.
+# Every outcome this path writes begins with this, and that is a registration
+# rather than a naming habit: doctor's subagent-delivery check enumerates the
+# task path's records by this prefix, so an outcome outside it is a record that
+# check cannot see. Part of the same drop-on-rebase shim as
+# `TASK_STATE_PREFIX` — Track A declares it beside the outcome vocabulary.
+TASK_OUTCOME_PREFIX = "task:"
+
 TASK_SHAPE_GATES = frozenset(
     {"task:envelope", "task:empty", "task:slash", "task:short"}
 )
@@ -4223,16 +4230,19 @@ def main() -> None:
 
     payload = json.load(sys.stdin)
 
-    # THE DISPATCH, and it is a dispatch rather than an early return on
-    # purpose. Everything the task path needs differs from here down — the
-    # gate, the query builder, the floor bars, the ledger, the budget and the
-    # output shape — so the two paths are two functions. What they share is
-    # the tail below: work neither path's delivery is finished without, and
-    # which a `return` out of one of them would silently make the other's
-    # alone. The derived-state sweep is the case that makes this concrete —
-    # the task path is the ONLY writer of the per-tool-call state it
-    # collects, so a sweep reachable only from the prompt path would be a
-    # collector that never sees what it exists to collect.
+    # THE DISPATCH. Everything the task path needs differs from here down —
+    # the gate, the query builder, the floor bars, the ledger, the budget and
+    # the output shape — so the two paths are two functions rather than one
+    # with a mode threaded through it.
+    #
+    # A dispatch rather than `return _task_main(...)`, and the reason is
+    # modest: once the prompt path is a CALL rather than the rest of this
+    # function, `return f()` and `f()` are a coin flip, and one of the two
+    # sides silently makes anything later added to this function's tail the
+    # prompt path's alone. Nothing lives in that tail today. The work that
+    # runs after either path is in `cli()`, past the stdout flush, and both
+    # spellings reach it — `main()` returns normally on both paths, which is
+    # the property that actually matters and is pinned by test.
     if payload.get("hook_event_name") == TASK_EVENT:
         _task_main(payload, t0)
     elif "tool_name" in payload or "tool_input" in payload:
@@ -4247,11 +4257,9 @@ def main() -> None:
     else:
         _prompt_main(payload, t0)
 
-    # --- after delivery, for both paths -------------------------------------
-    #
-    # Anything added here runs on every invocation of the hook, whichever
-    # entry point served it. That is the property the region exists for; a
-    # `return` above would take it away from one path without saying so.
+    # Anything added below this point runs on every invocation, whichever
+    # entry point served it. `cli()` is where the work that follows either
+    # path actually lives.
 
 
 def _prompt_main(payload: dict, t0: float) -> None:
