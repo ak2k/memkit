@@ -2,7 +2,7 @@
 name: init
 description: Set up memkit on this machine — create the memory store, write the config, and seed a memory that proves retrieval works. Use ONLY when the user asks to set up, initialise or configure memkit. This command writes files and requires the user's explicit consent between two turns.
 disable-model-invocation: true
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run), Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --confirm:*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*), Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --confirm:*)
 ---
 
 # memkit init
@@ -18,7 +18,10 @@ ${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run
 ```
 
 Optional flags, each of which changes the plan and therefore the digest, so
-whichever you pass here you must pass again in turn two:
+whichever you pass here you must pass again in turn two. Both grants are prefix
+matches, so passing any of them keeps you inside the pre-approval — an exact
+grant on turn one would have dropped you into a permission prompt in the middle
+of the handshake for using a flag this page told you to use:
 
 - `--store PATH` — where the memory store goes.
 - `--config PATH` — where the config goes.

@@ -27,6 +27,34 @@ from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
 
+@pytest.fixture(autouse=True)
+def _never_the_real_machine(monkeypatch, request):
+    """No case in this file may resolve state to the developer's own cache.
+
+    Two did — they took no `profile` fixture, so all twenty-five checks ran
+    against the live `~/.cache/memory-recall`: reading a real soak log,
+    executing the installed hook, and asserting that two renderings match while
+    a concurrent session appended to the file between them.
+
+    A guard rather than a fix to those two, because the fix is invisible: the
+    next case written without the fixture reads exactly as green.
+    """
+    real = os.path.realpath(os.path.expanduser("~"))
+    original = doctor.Machine.__init__
+
+    def guarded(self, *a, **kw):
+        original(self, *a, **kw)
+        resolved = os.path.realpath(self.state_dir)
+        assert not (
+            resolved == real or resolved.startswith(real + os.sep)
+        ), (
+            f"{request.node.name} resolved state to {self.state_dir}, which is "
+            "under the real home — add the `profile` fixture"
+        )
+
+    monkeypatch.setattr(doctor.Machine, "__init__", guarded)
+
+
 def _args(**kw) -> argparse.Namespace:
     ns = argparse.Namespace(as_json=False, only=None, config=None)
     for key, value in kw.items():
@@ -103,7 +131,7 @@ def test_green_is_zero_fail_and_not_zero_non_pass() -> None:
     assert doctor.verdict(broken) == "PROBLEMS: 1 FAIL, 2 unverified"
 
 
-def test_the_exit_code_is_the_verdict_and_nothing_else(monkeypatch) -> None:
+def test_the_exit_code_is_the_verdict_and_nothing_else(profile, monkeypatch):
     """0 on OK, 1 on any FAIL. A skill branches on this before it reads a
     byte of the report."""
     monkeypatch.setitem(
@@ -121,11 +149,18 @@ def test_the_exit_code_is_the_verdict_and_nothing_else(monkeypatch) -> None:
     assert doctor.run(_args()) == doctor.EXIT_PROBLEMS
 
 
-def test_json_and_human_modes_answer_from_the_same_pass(capsys) -> None:
+def test_json_and_human_modes_answer_from_the_same_pass(profile, capsys) -> None:
     """Both renderings over one seeded fixture, compared field by field. They
     cannot disagree, because the human text is IN the envelope — this is the
     assertion that the `--json` consumer and the human are reading the same
-    run."""
+    run.
+
+    On the SCRATCH profile, and that is not tidiness. Without it this ran all
+    twenty-five checks against the developer's real `~/.cache/memory-recall` —
+    reading a live soak log and running the installed hook — and asserted that
+    two passes render identically, which one concurrent prompt between them
+    makes false.
+    """
     doctor.run(_args(as_json=True))
     blob = json.loads(capsys.readouterr().out)
     doctor.run(_args())
@@ -210,7 +245,7 @@ def test_every_declared_check_has_a_producer_and_every_producer_is_declared():
 
 
 def test_a_producer_that_raises_is_one_unknown_row_and_not_a_dead_doctor(
-    monkeypatch,
+    profile, monkeypatch
 ) -> None:
     """The reader is somebody whose install is already misbehaving. A traceback
     in place of the other twenty answers is the worst thing this command can
@@ -265,7 +300,7 @@ def test_an_argument_the_parser_did_not_recognise_is_refused_by_name() -> None:
 # --- platform ----------------------------------------------------------------
 
 
-def test_windows_is_named_rather_than_met_as_an_obscure_failure(monkeypatch):
+def test_windows_is_named_rather_than_met_as_an_obscure_failure(profile, monkeypatch):
     """The wrappers are POSIX sh and the paths are POSIX paths. `terminal` is
     what tells an agent that retrying with different arguments cannot help."""
     monkeypatch.setattr(sys, "platform", "win32")
@@ -276,7 +311,7 @@ def test_windows_is_named_rather_than_met_as_an_obscure_failure(monkeypatch):
     assert "Windows" in row.remedy
 
 
-def test_linux_is_unverified_rather_than_claimed(monkeypatch) -> None:
+def test_linux_is_unverified_rather_than_claimed(profile, monkeypatch) -> None:
     """Linux is where the adopters are and no scenario runs there. Calling it
     PASS would be this report making exactly the claim it exists to stop other
     surfaces making — and INFO never blocks green, so it costs nothing."""
@@ -287,7 +322,7 @@ def test_linux_is_unverified_rather_than_claimed(monkeypatch) -> None:
     assert doctor.verdict([row]) == "OK"
 
 
-def test_macos_is_the_one_platform_that_passes(monkeypatch) -> None:
+def test_macos_is_the_one_platform_that_passes(profile, monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     (row,) = doctor._PRODUCERS["platform"](doctor.Machine())
     assert row.status == doctor.PASS
@@ -1441,7 +1476,7 @@ def test_which_build_am_i_on_is_answerable_at_all(profile, monkeypatch) -> None:
     assert out.stdout.strip() == row.detail
 
 
-def test_the_build_check_falls_back_to_unknown_rather_than_guessing(monkeypatch):
+def test_the_build_check_falls_back_to_unknown_rather_than_guessing(profile, monkeypatch):
     monkeypatch.setattr(doctor, "build_facts", lambda: (None, None, None))
     (row,) = _only(doctor._PRODUCERS["build"](doctor.Machine()), "build")
     assert row.status == doctor.UNKNOWN
@@ -1977,3 +2012,186 @@ def test_a_config_outside_plugin_data_is_still_named_as_surviving(
     survives = row.detail.split("Neither touches:", 1)[1]
     assert "elsewhere.json" in survives, row.detail
     assert "goes with the plugin data directory" not in row.detail
+
+
+# --- what the probe accepts as a delivery ------------------------------------
+
+
+def _stub_hook(profile, body: str):
+    path = profile / "stub" / "memkit-hook"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_a_hook_that_prints_the_marker_and_fails_is_not_a_delivery(
+    profile, monkeypatch
+) -> None:
+    """PASS meant "the canary's name and the frame tag both appear in stdout",
+    which a stub, a stale wrapper or a hook that died after printing can
+    satisfy without delivering anything. An all-green verdict then approves a
+    hook that cannot serve a prompt — the false green in the one check that
+    exists to rule it out.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    # A pointer that is VALID in every other respect — the frame is closed, the
+    # line parses, and the file it names is really there — so the exit code is
+    # the only thing standing. A stub whose pointer was also bogus would let
+    # this pass on the wrong guard.
+    real = profile / "stores" / "personal" / "search" / doctor.CANARY_NAME
+    assert real.is_file()
+    stub = _stub_hook(
+        profile,
+        "#!/bin/sh\n"
+        f'echo "<{hook.FRAME_TAG}>"\n'
+        f'echo "- {real} — a canary [matches 3/3 prompt terms: a, b, c]"\n'
+        f'echo "</{hook.FRAME_TAG}>"\n'
+        "exit 3\n",
+    )
+    _settings(
+        profile,
+        hooks={
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(stub)}]}
+            ]
+        },
+    )
+    (row,) = _only(doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
+                   "hook-path")
+    assert row.status == doctor.FAIL, row.detail
+    assert "exited 3" in row.detail
+
+
+def test_a_hook_that_names_a_canary_that_is_not_there_is_not_a_delivery(
+    profile, monkeypatch
+) -> None:
+    """A pointer names a file to open. One naming a path that does not exist is
+    a line the agent cannot act on, and counting it as a delivery is the same
+    false green one exit code up."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    stub = _stub_hook(
+        profile,
+        "#!/bin/sh\n"
+        f'echo "<{hook.FRAME_TAG}>"\n'
+        f'echo "- /nowhere/{doctor.CANARY_NAME} — hi [matches 1/3 prompt terms: x]"\n'
+        f'echo "</{hook.FRAME_TAG}>"\n',
+    )
+    _settings(
+        profile,
+        hooks={
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(stub)}]}
+            ]
+        },
+    )
+    (row,) = _only(doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
+                   "hook-path")
+    assert row.status == doctor.FAIL, row.detail
+    assert "does not exist" in row.detail
+
+
+def test_hook_ever_fired_tells_an_absent_log_from_an_unhelpful_one(
+    profile, monkeypatch
+) -> None:
+    """Doctor printed "no log.jsonl — this hook has never run" while the file
+    was sitting there, put there by doctor's own probe two checks earlier. The
+    adopter is told to look for a file they will find, in the one report whose
+    value is that everything in it was measured."""
+    path = _store_config(profile, stores=["personal"])
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert "never run" in row.detail
+
+    _soak(profile, {"ts": 1, "outcome": "injected", "doctor": True})
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert row.status == doctor.UNKNOWN
+    assert "never run" not in row.detail
+    assert "1 record" in row.detail
+    assert "none of them from a prompt" in row.detail
+
+
+def test_a_corrupt_refusal_marker_is_not_reported_as_no_refusals(
+    profile, monkeypatch
+) -> None:
+    """A present-but-unreadable marker was converted to an empty record set and
+    reported PASS — hiding precisely the evidence needed to diagnose the
+    install it exists for."""
+    path = _store_config(profile, stores=["personal"])
+    data = profile / "plugin-data"
+    data.mkdir()
+    (data / hook.MARKER_NAME).write_text("{ torn", encoding="utf-8")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    (row,) = _only(
+        doctor._PRODUCERS["plugin-diagnostics"](_machine(profile, monkeypatch, path)),
+        "plugin-diagnostics",
+    )
+    assert row.status == doctor.UNKNOWN, row.detail
+    assert "could not be read" in row.detail
+
+
+def test_a_missing_cache_parent_is_not_reported_as_unwritable(profile, monkeypatch):
+    """On a fresh macOS account `~/.cache` does not exist — macOS uses
+    `~/Library/Caches` — and doctor told the adopter it was not writable and
+    that every session would start cold. `_state_dir` calls `makedirs`, so it
+    creates the directory and never reaches the fallback; `os.access` simply
+    cannot tell a missing parent from a read-only one."""
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv("XDG_CACHE_HOME", str(profile / "no" / "such" / "cache"))
+    (row,) = _only(
+        doctor._PRODUCERS["state-dir"](_machine(profile, monkeypatch, path)),
+        "state-dir",
+    )
+    assert "not writable" not in row.detail, row.detail
+    assert "does not exist" in row.detail
+
+
+def test_a_genuinely_unwritable_cache_parent_is_still_named(profile, monkeypatch):
+    locked = profile / "locked"
+    locked.mkdir(mode=0o500)
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv("XDG_CACHE_HOME", str(locked / "cache"))
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["state-dir"](_machine(profile, monkeypatch, path)),
+            "state-dir",
+        )
+    finally:
+        locked.chmod(0o700)
+    assert "not writable" in row.detail, row.detail
+
+
+def test_the_machine_holds_no_input_nothing_reads(profile) -> None:
+    """A field with no readers is a field a maintainer will trust a comment
+    about. The check that separates a set-but-wrong option from a never-set one
+    reads the settings value, not the environment one, and the two can
+    disagree."""
+    machine = doctor.Machine()
+    assert not hasattr(machine, "option_value"), (
+        "an unread input is a second answer to a question one reader settles"
+    )
+
+
+def test_a_tilde_rendered_pointer_still_resolves(profile, monkeypatch) -> None:
+    """Pointers render `~`-relative on purpose — unambiguous from any cwd — so
+    a delivery check that stat'd the rendered string would call every real
+    delivery a miss."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    cfg = hook.load_config(path)
+    # UNDER HOME, which is what makes the renderer shorten it — and what every
+    # real store is, since the default is `~/notes`.
+    canary = profile / "home" / "notes" / "search" / doctor.CANARY_NAME
+    canary.parent.mkdir(parents=True, exist_ok=True)
+    canary.write_text("a canary\n", encoding="utf-8")
+    rendered = hook._display_path(str(canary))
+    assert rendered.startswith("~/"), rendered
+    stdout = (
+        f"<{hook.FRAME_TAG}>\n"
+        f"- {rendered} — a canary [matches 3/3 prompt terms: a, b, c]\n"
+        f"</{hook.FRAME_TAG}>\n"
+    )
+    monkeypatch.setenv("HOME", str(profile / "home"))
+    ok, why = doctor._delivered_canary(stdout, 0, cfg)
+    assert ok, why

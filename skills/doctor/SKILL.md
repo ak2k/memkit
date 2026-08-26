@@ -1,7 +1,7 @@
 ---
 name: doctor
 description: Report whether memkit's memory retrieval is actually working on this machine. Use when memkit was installed and no pointers appear, when a prompt should have surfaced a memory and did not, when asked to check or diagnose a memkit install, or before concluding that a memory does not exist.
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit doctor --json)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit doctor:*)
 ---
 
 # memkit doctor
@@ -11,6 +11,14 @@ Run it, relay it, act only on what it says is yours to act on.
 ```
 ${CLAUDE_PLUGIN_ROOT}/bin/memkit doctor --json
 ```
+
+Two follow-ups are covered by the same grant, and no other subcommand is:
+
+- `--config <path>` re-runs against a specific config. One check's remedy asks
+  for exactly this, and without it that remedy named a command this skill
+  could not issue.
+- `--check <id>` re-runs one check by name after a fix, which is cheaper than
+  a whole report and is how you show something is now green.
 
 ## Relay the report verbatim
 

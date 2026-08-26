@@ -382,13 +382,13 @@ class Machine:
         # of the one rule the whole design rests on — and a second copy that
         # agreed would prove nothing, while one that disagreed would be a
         # diagnostic contradicting the thing it diagnoses. What doctor does
-        # instead is report the wrapper's OUTPUT against the wrapper's INPUTS,
-        # which is what makes the set-but-wrong option visible: the option is
-        # in the environment, and the resolved config is not.
+        # instead is compare the literal `memkitConfig` a settings scope
+        # records against the config this process resolved. That comparison is
+        # what makes the set-but-wrong option visible, and it reads SETTINGS
+        # rather than the environment: the environment variable reaches hook
+        # processes and not this one, so a second copy of the answer here
+        # would be an input nothing reads and a comment nobody could trust.
         self.resolved_config = config_path or os.environ.get(CONFIG_ENV) or ""
-        self.option_value = os.environ.get(
-            "CLAUDE_PLUGIN_OPTION_" + OPTION_KEY.upper(), ""
-        )
         self.plugin_data = os.environ.get(PLUGIN_DATA_ENV, "")
         self._parsed = False
         self._config = None
@@ -655,7 +655,8 @@ def _config_route(machine: Machine) -> list[Check]:
                 FAIL,
                 f"no config on any route this install reads ({routes}), so it "
                 "is inert: no stores, no pointers, exit 0 on every prompt",
-                "Run /memkit:init, or write the config by hand and name it "
+                f"Run {_init_command(machine)}, or write the config by hand "
+                "and name it "
                 f"with --config or ${CONFIG_ENV}.",
                 actor=USER,
             )
@@ -897,7 +898,8 @@ def _store_roots(machine: Machine) -> list[Check]:
                 FAIL,
                 f"{_display_path(cfg.path)} declares no stores, so this "
                 "install has nothing to search and never will",
-                "Add a store to the config, or run /memkit:init to write one.",
+                f"Add a store to the config, or run {_init_command(machine)} "
+                "to write one.",
                 actor=USER,
             )
         ]
@@ -964,7 +966,7 @@ def _corpus_root(machine: Machine) -> list[Check]:
                     f"{store.id}: {_display_path(live)} is not a directory, so "
                     "the store is configured and not on disk",
                     f"Create {_display_path(live)}/search/ and put memories in "
-                    "it, or run /memkit:init.",
+                    f"it, or run {_init_command(machine)}.",
                     actor=USER,
                 )
             )
@@ -1170,7 +1172,8 @@ def _canary_retrieval(machine: Machine) -> list[Check]:
                     "not answer",
                     f"Check that {CANARY_NAME} is under this store's search/ "
                     "directory and carries the config's canary_nonce in its "
-                    "description. Re-running /memkit:init reseeds it.",
+                    f"description. Re-running {_init_command(machine)} "
+                    "reseeds it.",
                     actor=USER,
                 )
             )
@@ -1201,6 +1204,20 @@ HOOK_PROBE_TIMEOUT = 25
 # root arrives with a TRAILING SLASH (measured on 2.1.238 and still true on
 # 2.1.241), which `os.path.join` absorbs and naive string arithmetic does not.
 HOOK_WRAPPER = "bin/memkit-hook"
+
+
+def _init_command(machine: Machine) -> str:
+    """How to reach init ON THIS CHANNEL.
+
+    Skills ship only in the plugin payload, so `/memkit:init` is a command a
+    nix or pip adopter's harness does not have — and those are the channels the
+    rollout runbook sends to doctor first. A remedy that guessed would send
+    them to a command they cannot run, which is exactly the failure the channel
+    check exists one screen earlier to prevent.
+    """
+    if machine.plugin:
+        return "/memkit:init"
+    return "`memkit init --dry-run`, then `memkit init --confirm <digest>`"
 
 
 NO_HOOK_REMEDY = (
@@ -1421,6 +1438,49 @@ def _forget_probe_session(session: str) -> None:
                     os.unlink(os.path.join(parent, name))
 
 
+# One pointer line, as `_pointer_line` builds it: `- <path> — <description>`
+# with the evidence tags after. Matching the SHAPE rather than a substring is
+# what makes the probe a delivery check: the canary's name appearing anywhere
+# in stdout is something a stub, a stale wrapper or a hook that died after
+# printing can all arrange.
+_POINTER = re.compile(r"^- (\S.*?) — ", re.MULTILINE)
+
+
+def _delivered_canary(stdout: str, code, cfg) -> tuple:
+    """(True, "") when this output really is a pointer to the canary.
+
+    Four things have to hold, and each was reachable without the others: the
+    hook exited 0, the frame is there and closed, a pointer line parses out of
+    it, and the path that line names is the canary and is a file that exists.
+    A pointer names something to open, so one naming a path that is not there
+    is a line the agent cannot act on — counting it as a delivery is the same
+    false green one exit code up.
+    """
+    if code != 0:
+        return False, f"it exited {code}"
+    opened = f"<{FRAME_TAG}>"
+    closed = f"</{FRAME_TAG}>"
+    if opened not in stdout or closed not in stdout:
+        return False, "the output carries no closed pointer frame"
+    inside = stdout.split(opened, 1)[1].split(closed, 1)[0]
+    paths = _POINTER.findall(inside)
+    if not paths:
+        return False, "the frame holds no pointer line"
+    named = [path for path in paths if os.path.basename(path) == CANARY_NAME]
+    if not named:
+        return False, (
+            "the pointers are to " + ", ".join(os.path.basename(p) for p in paths[:3])
+        )
+    for path in named:
+        # `~`-expanded, because that is how a pointer renders a path: the
+        # emitter writes them `~`-relative on purpose, so they are unambiguous
+        # from any cwd. The probe runs the hook with this process's own
+        # environment, so the same `~` resolves to the same home.
+        if os.path.isfile(os.path.expanduser(path)):
+            return True, ""
+    return False, f"it points at {named[0]}, which does not exist"
+
+
 @_produces("hook-path")
 def _hook_path(machine: Machine) -> list[Check]:
     """Run the installed hook once, and say whether a pointer came out.
@@ -1478,7 +1538,8 @@ def _hook_path(machine: Machine) -> list[Check]:
                 actor=USER,
             )
         ]
-    if CANARY_NAME in stdout and FRAME_TAG in stdout:
+    delivered, why = _delivered_canary(stdout, code, cfg)
+    if delivered:
         supplied = (
             "; the config came from --config, so this proves the wrapper and "
             "retrieval and not that the install's own route delivers it"
@@ -1497,8 +1558,8 @@ def _hook_path(machine: Machine) -> list[Check]:
         Check(
             "hook-path",
             FAIL,
-            f"{how} exited {code} in {ms}ms and emitted no pointer to "
-            f"{CANARY_NAME}. stderr: {stderr[:200] or '(empty)'}",
+            f"{how} exited {code} in {ms}ms and delivered no pointer to "
+            f"{CANARY_NAME}: {why}. stderr: {stderr[:200] or '(empty)'}",
             "The store answers and the installed path does not, so the break "
             "is between them: the wrapper's config resolution, the "
             "interpreter it picked, or the registration itself. The "
@@ -1599,15 +1660,32 @@ def _hook_ever_fired(machine: Machine) -> list[Check]:
     injection here is a store the gate or the corpus is keeping out of this
     project, and an injection here is the thing working.
     """
-    records = _prompt_records(_soak_tail(machine.state_dir, GATE_WINDOW))
+    everything = _soak_tail(machine.state_dir, GATE_WINDOW)
+    records = _prompt_records(everything)
     if not records:
+        if not everything and not os.path.isfile(
+            os.path.join(machine.state_dir, SOAK_LOG_NAME)
+        ):
+            return [
+                Check(
+                    "hook-ever-fired",
+                    UNKNOWN,
+                    f"no {SOAK_LOG_NAME} in {_display_path(machine.state_dir)}: "
+                    "this hook has never run. An install that was never "
+                    "configured writes none, deliberately",
+                )
+            ]
+        # The file is THERE and holds nothing this question is about — most
+        # often because doctor's own probe put the only record in it two checks
+        # ago. Telling an adopter to look for a file they will find is the one
+        # thing a report whose value is measurement may not do.
         return [
             Check(
                 "hook-ever-fired",
                 UNKNOWN,
-                f"no {SOAK_LOG_NAME} in {_display_path(machine.state_dir)}: "
-                "this hook has never run. An install that was never configured "
-                "writes none, deliberately",
+                f"{SOAK_LOG_NAME} holds {len(everything)} record(s) and none "
+                "of them from a prompt — a doctor probe and the search "
+                "command both write here. No prompt has been served yet",
             )
         ]
     here = _cwd_digest()
@@ -1846,18 +1924,41 @@ def _plugin_diagnostics(machine: Machine) -> list[Check]:
         else ""
     )
     records = []
+    unreadable = ""
     if marker and os.path.isfile(marker):
-        with contextlib.suppress(OSError, ValueError):
+        try:
             with open(marker, encoding="utf-8") as f:
                 blob = json.load(f)
-            if isinstance(blob, dict):
-                loaded = blob.get("records")
-                records = loaded if isinstance(loaded, list) else []
+        except (OSError, ValueError) as exc:
+            # NOT "no refusals". A marker that is there and cannot be read is
+            # the evidence for the install this check exists to diagnose, and
+            # reporting its absence as a clean bill is the same false green
+            # every other check here is written against.
+            unreadable = str(exc)
+            blob = None
+        if isinstance(blob, dict):
+            loaded = blob.get("records")
+            records = loaded if isinstance(loaded, list) else []
+        elif blob is not None:
+            unreadable = f"its top level is a {type(blob).__name__}"
     dups = [
         r
         for r in _soak_tail(machine.state_dir, GATE_WINDOW)
         if r.get("outcome") == "dup-registration"
     ]
+    if unreadable:
+        return [
+            Check(
+                "plugin-diagnostics",
+                UNKNOWN,
+                f"{_display_path(marker)} exists and could not be read "
+                f"({unreadable}), so what this install refused is not knowable "
+                "from here",
+                "That file is the only record of a refusal the harness "
+                "swallowed. Read it, or delete it and reproduce the state.",
+                actor=USER,
+            )
+        ]
     if not records and not dups:
         return [
             Check(
@@ -2331,7 +2432,19 @@ def _state_dir_check(machine: Machine) -> list[Check]:
     """
     path = machine.state_dir
     if not os.path.isdir(path):
+        # The nearest EXISTING ancestor, not the immediate parent. On a fresh
+        # macOS account `~/.cache` does not exist — the platform uses
+        # `~/Library/Caches` — and `os.access` returns False for a path that is
+        # not there, so the guard could not tell a missing parent from a
+        # read-only one and told the adopter their cache was unwritable. The
+        # hook calls `makedirs`, so a missing parent is created and the
+        # fallback is never reached.
         parent = os.path.dirname(path)
+        while parent and not os.path.isdir(parent):
+            nxt = os.path.dirname(parent)
+            if nxt == parent:
+                break
+            parent = nxt
         degraded = (
             ""
             if os.access(parent, os.W_OK)

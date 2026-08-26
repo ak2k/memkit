@@ -3693,13 +3693,27 @@ def test_every_allowed_tools_entry_pins_an_exact_argument_shape() -> None:
         raw = _frontmatter(SKILLS / name / "SKILL.md")["allowed-tools"]
         grants[name] = [entry.strip() for entry in raw.split("), Bash(")]
     doctor_entries = _frontmatter(SKILLS / "doctor" / "SKILL.md")["allowed-tools"]
+    # A prefix over `memkit doctor` and not over `memkit`: it admits `--json`,
+    # `--config <path>` and `--check <id>` — the two follow-ups the report's
+    # own remedies ask for — and cannot reach `init`, which is the subcommand
+    # that writes. An exact-string grant left the one agent-actor remedy that
+    # names a next command naming one this skill could not issue.
     assert doctor_entries == (
-        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit doctor --json)"
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit doctor:*)"
     ), doctor_entries
+    assert "init" not in doctor_entries
 
     init_entries = _frontmatter(SKILLS / "init" / "SKILL.md")["allowed-tools"]
+    # BOTH prefix matches, and the asymmetry was the tell: the skill body tells
+    # the agent to pass `--store`, `--config`, `--wire-claude-md` or
+    # `--auto-dream-off` on turn one and repeat them on turn two, and only the
+    # second grant covered them. Any documented flag dropped the agent out of
+    # the pre-approval and into a permission prompt halfway through the one
+    # handshake that is supposed to be the consent moment. `--dry-run` writes
+    # nothing by construction — the flake check asserts it against a whole
+    # scratch HOME — so widening the read-only turn costs no consent.
     assert init_entries == (
-        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run), "
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*), "
         "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --confirm:*)"
     ), init_entries
     # No bare prefix anywhere: `Bash(.../memkit:*)` or `Bash(.../memkit *)`
@@ -3725,6 +3739,32 @@ def test_the_doctor_skill_says_to_relay_the_report_rather_than_re_derive_it():
     assert "zero `FAIL`" in body
     for status in doctor.STATUSES:
         assert status in body, status
+
+
+def test_every_flag_the_init_skill_documents_is_inside_a_grant() -> None:
+    """A skill that tells the agent to pass a flag and then leaves it outside
+    the pre-approval is a handshake with a permission prompt in the middle of
+    it — on the one skill where the two turns are the whole of the consent."""
+    body = (SKILLS / "init" / "SKILL.md").read_text(encoding="utf-8")
+    grants = [
+        entry.strip().removeprefix("Bash(").rstrip(")")
+        for entry in _frontmatter(SKILLS / "init" / "SKILL.md")[
+            "allowed-tools"
+        ].split("), Bash(")
+    ]
+    prefixes = [g[: -len(":*")] for g in grants if g.endswith(":*")]
+    assert prefixes, grants
+    documented = set(re.findall(r"^- `(--[a-z-]+)(?: [A-Z]+)?`", body, re.M))
+    assert documented >= {"--store", "--config", "--wire-claude-md"}, documented
+    for flag in documented:
+        # Every documented flag has to be reachable from at least one prefix
+        # grant: appended to it, the command is still inside the pattern.
+        assert any(
+            f"{prefix} {flag}".startswith(prefix) for prefix in prefixes
+        ), flag
+    # And the read-only turn is one of the prefixes, which is the half that was
+    # missing.
+    assert any(p.endswith("init --dry-run") for p in prefixes), prefixes
 
 
 def test_the_init_skill_describes_both_turns_and_the_codes_it_can_return():
@@ -3922,3 +3962,55 @@ def test_a_claim_about_a_command_the_pin_cannot_serve_carries_the_marker() -> No
         )
     else:
         assert FROM_THE_NEXT_RELEASE in first_mention, first_mention
+
+
+def test_no_doctor_remedy_names_a_slash_command_off_the_plugin_channel() -> None:
+    """Skills ship only in the plugin payload, so `/memkit:init` is a command a
+    nix or pip adopter's harness does not have — and the rollout runbook sends
+    the nix operator to doctor first.
+
+    The sibling scrape above matches command HEADS that are plugin binary
+    names, so it never saw a slash command. This is the same invariant on the
+    surface the channel split was built for: a remedy that guessed would send
+    an adopter to a command their channel cannot run.
+
+    Over the REMEDY strings, like its sibling — a docstring naming the command
+    it is explaining is prose, and a scrape that could not tell the two apart
+    would be one somebody silences.
+    """
+    hardcoded = [text for text in _doctor_remedies() if "/memkit:" in text]
+    # Exactly one literal survives, and it is inside the branch that has
+    # already tested the channel: `_config_route`'s plugin arm returns before
+    # the non-plugin one is reached. Everything else interpolates
+    # `_init_command`, which asks.
+    unguarded = [
+        text for text in hardcoded
+        if "On this channel it writes the config" not in text
+    ]
+    assert not unguarded, unguarded
+    assert hardcoded, "the scrape sees nothing, so it proves nothing"
+
+
+def test_the_init_remedy_names_a_command_each_channel_has(root) -> None:
+    """Both halves, run rather than read: on the plugin channel the slash
+    command, off it the binary the channel really ships."""
+    from memkit import cli_doctor as doc
+
+    plugin = doc.Machine()
+    off = doc.Machine()
+    saved = os.environ.get(hook.PLUGIN_ENV)
+    try:
+        os.environ[hook.PLUGIN_ENV] = "1"
+        assert doc._init_command(plugin) == "/memkit:init"
+        os.environ.pop(hook.PLUGIN_ENV, None)
+        rendered = doc._init_command(off)
+    finally:
+        if saved is None:
+            os.environ.pop(hook.PLUGIN_ENV, None)
+        else:
+            os.environ[hook.PLUGIN_ENV] = saved
+    assert "/memkit:" not in rendered, rendered
+    assert "memkit init --dry-run" in rendered
+    # And it is a command this channel ships: `memkit` is a console script the
+    # pip and nix installs both put on the adopter's own PATH.
+    assert rendered.split("`")[1].split()[0] == "memkit"

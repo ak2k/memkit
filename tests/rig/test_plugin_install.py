@@ -828,11 +828,14 @@ def test_every_allowed_tools_entry_is_a_command_the_payload_can_run(
     for entry in entries:
         command = entry.replace("${CLAUDE_PLUGIN_ROOT}", str(payload))
         args = command.split()
-        # The digest pattern is a grant shape, not a runnable argument. Its
-        # executable half is the same binary and the same subcommand; the
-        # digest itself is exercised by the handshake scenario below.
-        if args[-1].endswith("--confirm:*"):
-            args = args[:-1] + ["--confirm", "not-a-real-digest"]
+        # `:*` is a grant SHAPE, not a runnable argument. Stripped here and,
+        # where that leaves an argument that needs a value, given one — what
+        # is being checked is that the binary and the flags on the left of the
+        # wildcard are real, which is the half that can be wrong.
+        if args[-1].endswith(":*"):
+            args[-1] = args[-1][: -len(":*")]
+            if args[-1] == "--confirm":
+                args.append("not-a-real-digest")
         assert os.access(args[0], os.X_OK), args[0]
         out = subprocess.run(
             args, capture_output=True, text=True, timeout=300,
