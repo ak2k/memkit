@@ -297,7 +297,7 @@ def test_macos_is_the_one_platform_that_passes(monkeypatch) -> None:
 
 
 def test_the_channel_is_named_because_every_later_remedy_is_phrased_for_it(
-    monkeypatch,
+    profile, monkeypatch
 ) -> None:
     """Three channels ship memkit and they do not share a repair. A remedy that
     guessed would send an adopter to a command their channel does not have."""
@@ -341,7 +341,14 @@ def profile(tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
     tmp_path.joinpath("state").mkdir(exist_ok=True)
-    return tmp_path
+    # The CHANNEL is pinned rather than inherited. `channel`, `hooks-layout`
+    # and the payload derivation all key on where this module's file lives, so
+    # a suite that let it be wherever the runner installed it would answer
+    # differently in a checkout and in a nix build — which is a test measuring
+    # its own environment rather than the thing it names.
+    monkeypatch.setattr(doctor, "__file__", "/opt/under-test/src/memkit/cli_doctor.py")
+    yield tmp_path
+    hook._use_config(None)
 
 
 def _settings(profile, **blob) -> None:
@@ -1801,8 +1808,9 @@ def test_the_payload_is_found_from_this_module_when_the_harness_env_is_absent(
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
     monkeypatch.setenv(hook.PLUGIN_ENV, "1")
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MEMKITCONFIG", path)
-    # This module lives in the repo's own payload, so the derivation finds the
-    # wrapper beside it with no harness variable at all.
+    # The REAL module location, which the profile fixture otherwise pins: this
+    # is the one case whose subject is the derivation itself.
+    monkeypatch.setattr(doctor, "__file__", str(REPO / "src" / "memkit" / "cli_doctor.py"))
     assert str(REPO) in doctor._payload_roots(doctor.Machine())
     (row,) = _only(doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
                    "hook-path")

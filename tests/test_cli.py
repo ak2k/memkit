@@ -312,3 +312,57 @@ def test_a_handler_takes_over_from_the_pending_message(monkeypatch) -> None:
     (args,) = seen
     assert args.as_json is True
     assert args.subcommand == "doctor"
+
+
+def test_the_diagnostic_form_keeps_the_config_the_search_form_carries(
+    tmp_path, monkeypatch
+) -> None:
+    """On the plugin channel the advertised command carries `--config <path>`,
+    and that is the half that makes it runnable rather than merely spelled
+    correctly: the agent's Bash tool gets the plugin's `bin/` and none of the
+    plugin's environment.
+
+    Rebuilding the diagnostic form from the command's first word dropped it,
+    which handed an agent a command that answers `inert` on a serving install
+    — the one conclusion the interpolation exists to prevent.
+    """
+    from memkit import memory_prompt_recall as hook
+
+    config = tmp_path / "memkit.json"
+    config.write_text(
+        json.dumps({"schema": 1, "roots": {}, "stores": [],
+                    "search_cli": "memory-recall --search"})
+    )
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.CONFIG_ENV, str(config))
+    hook._use_config(None)
+    try:
+        rendered = cli._meanwhile("{search} :: {search_config}")
+    finally:
+        hook._use_config(None)
+    assert f"memkit-recall --config {config} --search" in rendered, rendered
+    assert f"memkit-recall --config {config} --debug-config" in rendered, rendered
+
+
+def test_a_whitespace_only_search_cli_is_replaced_before_it_is_split(
+    tmp_path, monkeypatch
+) -> None:
+    """An EMPTY `search_cli` is falsy, so the config applies the default and
+    never reaches this code. A whitespace-only one is truthy, so the config
+    keeps it — and this runs while the parser is being built, which makes an
+    IndexError here a `memkit --help` that does not run at all."""
+    from memkit import memory_prompt_recall as hook
+
+    config = tmp_path / "ws.json"
+    config.write_text(
+        json.dumps({"schema": 1, "roots": {}, "stores": [], "search_cli": "   "})
+    )
+    monkeypatch.delenv(hook.PLUGIN_ENV, raising=False)
+    monkeypatch.setenv(hook.CONFIG_ENV, str(config))
+    hook._use_config(None)
+    try:
+        rendered = cli._meanwhile("{search} :: {search_config}")
+    finally:
+        hook._use_config(None)
+    assert "memory-recall --search" in rendered, rendered
+    assert "memory-recall --debug-config" in rendered, rendered

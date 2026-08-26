@@ -162,9 +162,16 @@ def test_the_digest_is_stable_across_runs_on_an_unchanged_tree(profile) -> None:
 def test_the_digest_moves_when_the_target_state_moves(profile) -> None:
     """It binds the TREE, not the request. A file that appeared between the two
     turns is a world the human did not approve."""
-    before = _plan(profile, store=str(profile / "notes")).digest
-    (profile / "notes" / "search").mkdir(parents=True)
-    assert _plan(profile, store=str(profile / "notes")).digest != before
+    store = profile / "notes"
+    # The store itself exists in BOTH plans, deliberately. The verification
+    # step's `after` is its `before`, so moving the store's own state would
+    # move the digest through that action whether or not any other one carried
+    # the tree — and the property under test is that a CREATE_DIR whose result
+    # is always "dir" still binds what was there first.
+    store.mkdir()
+    before = _plan(profile, store=str(store)).digest
+    (store / "hot").mkdir()
+    assert _plan(profile, store=str(store)).digest != before
 
 
 def test_the_digest_moves_when_the_request_moves(profile) -> None:

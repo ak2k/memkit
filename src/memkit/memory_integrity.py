@@ -815,7 +815,7 @@ def _rows_at(
     return found
 
 
-def _row_lost(store: dict, rowed: dict, write: bool) -> list:
+def _row_lost(store: dict, write: bool) -> list:
     """Rows a MACHINE WRITE took away, named so the loss is not silent.
 
     `SEARCH.md` is generated, and a generated ledger is a file a tool rewrites
@@ -843,9 +843,14 @@ def _row_lost(store: dict, rowed: dict, write: bool) -> list:
     at_base = _rows_at(ledger, store["dir"], store["root"], base)
     if at_base is None:
         return []
+    # The ledger AS FOUND, re-read here rather than taken from the caller's
+    # earlier scan. That is what makes the call's POSITION load-bearing: after
+    # the rewrite below, the row is back and this finding would report nothing
+    # — which is precisely the erasure it exists to describe.
+    current = _rows(ledger, store["dir"])
     lost = []
     for rel in sorted(at_base):
-        if rel in rowed:
+        if rel in current:
             continue
         if not (store["dir"] / rel).is_file():
             # Deleted, not lost. An author removing a memory is the ledger
@@ -1072,7 +1077,7 @@ def check(
     # BEFORE the generated ledgers are rewritten below, because after them the
     # question cannot be asked: `--write` is about to make the ledger agree
     # with the tree, and what this reports is a row that stopped agreeing.
-    errors.extend(_row_lost(store, rowed, write))
+    errors.extend(_row_lost(store, write))
 
     on_disk = {str(p.relative_to(d)) for p in live}
     errors.extend(
