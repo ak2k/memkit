@@ -311,3 +311,275 @@ def test_the_channel_is_named_because_every_later_remedy_is_phrased_for_it(
     monkeypatch.setattr(doctor, "__file__", "/nix/store/abc-memkit/cli_doctor.py")
     (row,) = doctor._PRODUCERS["channel"](doctor.Machine())
     assert "nix" in row.detail
+
+
+# --- the config, its route, and who wrote it ---------------------------------
+
+
+@pytest.fixture
+def profile(tmp_path, monkeypatch):
+    """A scratch harness profile: its own config dir, its own HOME, its own
+    cwd. Every settings scope this reads is inside it, so a developer's own
+    `.claude/settings.json` cannot answer for the fixture."""
+    home = tmp_path / "home"
+    config_dir = tmp_path / "claude-config"
+    project = tmp_path / "project"
+    for path in (home, config_dir, project):
+        path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config_dir))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
+    monkeypatch.chdir(project)
+    for name in (
+        hook.CONFIG_ENV,
+        hook.PLUGIN_ENV,
+        hook.PLUGIN_DATA_ENV,
+        "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
+        "CLAUDE_PLUGIN_ROOT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    tmp_path.joinpath("state").mkdir(exist_ok=True)
+    return tmp_path
+
+
+def _settings(profile, **blob) -> None:
+    path = profile / "claude-config" / "settings.json"
+    path.write_text(json.dumps(blob), encoding="utf-8")
+
+
+def _config_file(path, *, schema=1, stores=(), search_cli=None) -> str:
+    blob = {
+        "schema": schema,
+        "roots": {"home": {"kind": "path", "path": str(path.parent)}},
+        "stores": [
+            {"id": s, "role": "personal", "dir": s, "live_root": "home"}
+            for s in stores
+        ],
+    }
+    if search_cli is not None:
+        blob["search_cli"] = search_cli
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    return str(path)
+
+
+def _only(checks, check_id):
+    rows = [c for c in checks if c.id == check_id]
+    assert rows, [c.id for c in checks]
+    return rows
+
+
+def test_a_memkitconfig_that_names_nothing_is_named_rather_than_silent(
+    profile, monkeypatch
+) -> None:
+    """The highest-cost silent state in the entire field log.
+
+    A `memkitConfig` typo'd by one character installs exactly as quietly as a
+    right one: `plugin details` still reports `Hooks (1)`, no soak record is
+    written at all, and the trust marker records `trust:unconfigured` — the
+    same bytes a never-configured install writes. Doctor is the only reader
+    that can separate the two, because it reads the settings value directly and
+    the wrapper has already blanked the resolved one.
+    """
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    _settings(
+        profile,
+        pluginConfigs={
+            "memkit@memkit": {"options": {"memkitConfig": "/nowhere/memkit.json"}}
+        },
+    )
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-route")
+    assert row.status == doctor.FAIL
+    # BOTH values, which is the distinction the trust marker cannot make.
+    assert "/nowhere/memkit.json" in row.detail
+    assert "does not exist" in row.detail
+    assert "byte-identical to never having been configured" in row.detail
+    assert row.actor == doctor.USER
+    # The remedy names the file to edit, not "your settings".
+    assert str(profile / "claude-config" / "settings.json") in row.remedy
+
+
+def test_an_option_and_a_config_that_disagree_are_two_answers_to_one_question(
+    profile, monkeypatch
+) -> None:
+    """A route resolved and it is not the one the adopter named. Silence there
+    means a hook reading directories nobody pointed it at."""
+    served = _config_file(profile / "served.json")
+    _settings(
+        profile,
+        pluginConfigs={
+            "memkit@memkit": {"options": {"memkitConfig": str(profile / "asked.json")}}
+        },
+    )
+    monkeypatch.setenv(hook.CONFIG_ENV, served)
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-route")
+    assert row.status == doctor.FAIL
+    assert "asked.json" in row.detail and "served.json" in row.detail
+
+
+def test_an_unconfigured_plugin_install_names_exactly_two_rungs(
+    profile, monkeypatch
+) -> None:
+    """Two, and the count is the check.
+
+    A third rung reading a `memkit.json` beside the wrappers was deleted
+    because a plugin install is a clone of a pinned commit, so a file in the
+    payload tree is a file the repo can ship. A remedy naming a third would
+    teach an adopter to recreate exactly that.
+    """
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-route")
+    assert row.status == doctor.FAIL
+    assert "inert" in row.detail
+    # The hook's own list, so a rung deleted there cannot leave a confident
+    # sentence here.
+    for route in hook.PLUGIN_CONFIG_ROUTES:
+        assert route in row.detail, (route, row.detail)
+    # And nothing that reads as a payload-relative rung.
+    for forbidden in ("CLAUDE_PLUGIN_ROOT", "MEMKIT_ROOT", "beside the wrappers"):
+        assert forbidden not in row.detail + row.remedy
+
+
+def test_a_resolved_config_names_the_rung_that_answered(profile, monkeypatch):
+    path = _config_file(profile / "memkit.json")
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-route")
+    assert row.status == doctor.INFO
+    assert path in row.detail
+    assert hook.CONFIG_ENV in row.detail
+
+
+def test_a_broken_config_is_never_green(profile, monkeypatch) -> None:
+    """The regression this check exists for: a diagnostic that read a config it
+    could not honour as an install with nothing to say."""
+    bad = profile / "bad.json"
+    bad.write_text("{ not json at all", encoding="utf-8")
+    monkeypatch.setenv(hook.CONFIG_ENV, str(bad))
+    checks = doctor.collect(doctor.Machine())
+    (row,) = _only(checks, "config-parse")
+    assert row.status == doctor.FAIL
+    # The CLI's own error string, verbatim: it names the file, the field and
+    # the cause, and a paraphrase would be a second wording of a message the
+    # adopter may already have met.
+    assert str(bad) in row.detail
+    assert doctor.verdict(checks) != "OK"
+
+
+def test_a_config_that_raises_outside_configerror_still_fails_rather_than_dies(
+    profile, monkeypatch
+) -> None:
+    """`json.load` on a deeply nested document raises RecursionError, which the
+    config reader does not convert. A diagnostic that died there would be
+    unreachable in the state it exists for."""
+    deep = profile / "deep.json"
+    deep.write_text('{"schema": 1, "roots": {}, "stores": "notalist"}', encoding="utf-8")
+    monkeypatch.setenv(hook.CONFIG_ENV, str(deep))
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-parse")
+    assert row.status == doctor.FAIL
+
+
+def test_a_schema_this_build_does_not_speak_names_the_build_not_the_file(
+    profile, monkeypatch
+) -> None:
+    """`SCHEMA` has never bumped and nothing here bumps it, so a mismatch means
+    the wrong BUILD is installed. Telling an adopter to edit the number in the
+    file would change what the fields claim to mean and nothing else."""
+    path = _config_file(profile / "future.json", schema=99)
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    checks = doctor.collect(doctor.Machine())
+    (row,) = _only(checks, "schema")
+    assert row.status == doctor.FAIL
+    assert "99" in row.detail and str(hook.SCHEMA) in row.detail
+    assert "build" in row.remedy
+    # Read out of the RAW file: the parse refuses a schema it does not speak,
+    # so a check reading the parsed object could only ever report agreement.
+    (parsed,) = _only(checks, "config-parse")
+    assert parsed.status == doctor.FAIL
+
+
+def test_a_rung_two_config_no_journal_claims_is_a_fail(profile, monkeypatch):
+    """The residual `bin/lib/common.sh` records and `docs/ADMISSION.md`
+    defers: the rung-2 directory is harness-owned and payload-writable, so a
+    release could write that file on one prompt and be honoured by every later
+    clean release."""
+    data = profile / "plugin-data"
+    data.mkdir()
+    planted = data / "memkit.json"
+    _config_file(planted)
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-authorship")
+    assert row.status == doctor.FAIL
+    assert str(planted) in row.detail
+    assert "memkit did not write this file" in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_a_rung_two_config_the_journal_claims_is_fine(profile, monkeypatch):
+    data = profile / "plugin-data"
+    data.mkdir()
+    planted = data / "memkit.json"
+    _config_file(planted)
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    (state / hook.INIT_JOURNAL_NAME).write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "run": "r",
+                "op": "create-file",
+                "path": str(planted),
+                "authored_config": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-authorship")
+    assert row.status == doctor.PASS
+
+
+def test_a_torn_journal_line_is_skipped_rather_than_read_as_no_claim(
+    profile, monkeypatch
+) -> None:
+    """The journal is append-only and a partial line is a crash, not a
+    corruption. Reading it the other way would turn one interrupted init into a
+    FAIL against memkit's own file."""
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    claimed = str(profile / "plugin-data" / "memkit.json")
+    (state / hook.INIT_JOURNAL_NAME).write_text(
+        json.dumps({"v": 1, "op": "create-file", "path": claimed,
+                    "authored_config": True})
+        + "\n"
+        + '{"v": 1, "op": "create-fi',
+        encoding="utf-8",
+    )
+    assert doctor.authored_configs(str(state)) == {claimed}
+
+
+def test_an_unset_plugin_data_never_becomes_a_root_level_path(profile, monkeypatch):
+    """`${unset}/memkit.json` is `/memkit.json`, and a diagnostic that stat'd a
+    root-level path it did not mean to name is the same defect the wrapper's
+    rung-2 guard exists for. A relative value is refused for the other half of
+    the same reason."""
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    assert doctor.Machine().rung_two == ""
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, "relative/dir")
+    assert doctor.Machine().rung_two == ""
+
+
+def test_the_config_is_parsed_once_however_many_checks_ask(profile, monkeypatch):
+    """Four checks ask, and four parses of one file is four chances for a
+    config edited mid-run to give two surfaces different answers."""
+    path = _config_file(profile / "memkit.json")
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    calls = []
+    real = hook.load_config
+    monkeypatch.setattr(
+        doctor, "load_config", lambda p, **kw: calls.append(p) or real(p, **kw)
+    )
+    machine = doctor.Machine()
+    doctor.collect(machine)
+    assert calls == [path], calls

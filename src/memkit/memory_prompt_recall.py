@@ -2386,16 +2386,42 @@ def _state_dir() -> str:
     wrappers refuse a relative config path: the directory an every-prompt hook
     writes into is not the session's to choose.
     """
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    if xdg and os.path.isabs(xdg):
-        d = os.path.join(xdg, "memory-recall")
-    else:
-        d = os.path.expanduser("~/.cache/memory-recall")
+    d = _state_dir_candidate()
     try:
         os.makedirs(d, mode=0o700, exist_ok=True)
     except OSError:
         d = tempfile.gettempdir()
     return d
+
+
+def _state_dir_candidate() -> str:
+    """Where the state dir WOULD be, without creating it.
+
+    Split out because doctor is read-only and asks this question of an install
+    that has not been set up: an unconfigured install deliberately creates no
+    state directory, and a diagnostic that created one while reporting on it
+    would answer its own question. It is also what the sweep's keep-list and
+    init's manifest name, neither of which wants a mkdir as a side effect of
+    resolving a path.
+    """
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg and os.path.isabs(xdg):
+        return os.path.join(xdg, "memory-recall")
+    return os.path.expanduser("~/.cache/memory-recall")
+
+
+# The files the state directory holds that are not derived — the ones a sweep
+# must keep and a diagnostic must be able to name. Constants because three
+# things need the same spelling: init writes them, the sweep's keep-list
+# excludes them, and doctor reports on them.
+#
+# The config and the journal live HERE rather than under `${CLAUDE_PLUGIN_DATA}`
+# because `claude plugin uninstall` removes plugin data unless `--keep-data`,
+# and that would delete the journal a later `--undo` needs and strand the uvx
+# out-of-harness fallback with no config to point MEMKIT_CONFIG at.
+GENERATED_CONFIG_NAME = "memkit.json"
+INIT_JOURNAL_NAME = "init-journal.jsonl"
+SOAK_LOG_NAME = "log.jsonl"
 
 
 def _session_state_path(session_id: str) -> str:
@@ -2811,7 +2837,8 @@ def _soak_log(record: dict) -> None:
     with contextlib.suppress(Exception):
         record["ts"] = int(time.time())
         record["v"] = _version()
-        with open(os.path.join(_state_dir(), "log.jsonl"), "a", encoding="utf-8") as f:
+        path = os.path.join(_state_dir(), SOAK_LOG_NAME)
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
