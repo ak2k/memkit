@@ -385,6 +385,7 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
         "MEMKIT_CONFIG",
         "interpreter",
         "UserPromptSubmit",
+        "PreToolUse",
     ):
         assert subject in note, subject
     # The count it states is the count of THIS TREE, not of the currently
@@ -3551,3 +3552,76 @@ def test_the_task_registration_matches_the_subagent_tool_and_nothing_else() -> N
     # a hook that must see every prompt.
     for group in _json(HOOKS_JSON)["hooks"]["UserPromptSubmit"]:
         assert "matcher" not in group, group
+
+
+def test_the_docs_count_the_hooks_the_registration_actually_declares() -> None:
+    """`plugin details` is the only surface that tells an adopter whether
+    registration took, and six places across README.md and docs/ROLLOUT.md
+    certify a number for it. The number moved with this registration and the
+    prose did not, so a correct install failed the reader's first verification
+    step while the install that half-failed passed it.
+
+    Pinned against `hooks.json` rather than against a literal, so the next
+    registration change cannot land without the documentation.
+    """
+    handlers = len(_entries())
+    assert handlers == 2, handlers
+    for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
+        text = path.read_text(encoding="utf-8")
+        assert f"Hooks ({handlers})" in text, path
+        # Every PRESCRIPTIVE statement — the ones a reader checks their own
+        # install against — names the live count. A stale one turns a correct
+        # install into a reported failure at the reader's first verification
+        # step, and certifies the half-registered one as healthy.
+        for stated in re.findall(r"must report Hooks \((\d+)\)", text):
+            assert int(stated) == handlers, (path, stated)
+        for stated in re.findall(r"Hooks \((\d+)\)` is a working install", text):
+            assert int(stated) == handlers, (path, stated)
+        # Every OTHER count that appears has to be talking about a failure.
+        # `Hooks (0)` is the payload-less install; `Hooks (1)` is now the
+        # half-registered one, and both are named as such where they appear.
+        # Read over a window rather than a line, because the sentence that
+        # names the failure wraps and a line-scoped check is a test of the
+        # line breaks.
+        for wrong in (f"Hooks ({n})" for n in range(4) if n != handlers):
+            start = 0
+            while (at := text.find(wrong, start)) != -1:
+                # Tight, because it has to be a claim about THIS mention: the
+                # word has to sit in the same clause, not merely on the same
+                # screen as some other count's explanation. Every real site
+                # measures 18-32 characters away.
+                window = text[max(0, at - 60) : at + 60].lower()
+                assert "failure" in window, (path, wrong, window)
+                start = at + 1
+
+
+def test_the_admission_note_names_both_events_it_registers() -> None:
+    """The note is what the README points at for 'what runs on my machine'.
+    Its subject list is asserted by name above; this is the half that a new
+    event silently escapes — the higher-consequence of the two, since it
+    rewrites a tool call rather than printing to a transcript."""
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    # The INVENTORY block, not the prose around it: a paragraph can mention an
+    # event while the list a reader counts stays one short, which is the shape
+    # this went wrong in.
+    after = note[note.index("## What runs, and when") :]
+    block = after[after.index("```") + 3 : after.index("```", after.index("```") + 3)]
+    for event, handler in _entries():
+        assert event in block, (event, block)
+        assert f"{handler['timeout']}s" in block, (event, block)
+    assert hook.TASK_TOOL in block, block
+
+
+def test_the_remote_tier_counts_hooks_from_the_manifest_it_installed() -> None:
+    """The remote tier asserts a hook count against a clone of the sha in
+    `.claude-plugin/marketplace.json`, and that sha is whichever release is
+    current — so a literal there is a snapshot that goes red on the release
+    that moves the pin, not in the review that changed the registration.
+
+    The tier itself is opt-in and needs the network, so what is checked here is
+    the derivation it now uses: over this tree, the manifest and the
+    registration agree.
+    """
+    from rig.test_remote_install import _registered_hooks
+
+    assert _registered_hooks(REPO) == len(_entries())

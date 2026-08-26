@@ -1,8 +1,9 @@
 # memkit
 
-Injects pointers to your own memory files into every Claude Code prompt:
-lexical retrieval over a directory of markdown, plus a checker and an eval for
-it. It never injects file contents — the model decides what to open.
+Injects pointers to your own memory files into every Claude Code prompt, and
+into every subagent brief: lexical retrieval over a directory of markdown, plus
+a checker and an eval for it. It never injects file contents — the model
+decides what to open.
 
 When it fires, this is what lands in the prompt:
 
@@ -12,6 +13,7 @@ When it fires, this is what lands in the prompt:
 
 - [Quick start](#quick-start) — install to first pointer
 - [Your store](#your-store) — what a memory file is · [docs/STORE.md](docs/STORE.md) for the rest
+- [Subagents get pointers too](#subagents-get-pointers-too) — the second hook, and what it rewrites
 - [Why nothing appeared](#why-nothing-appeared) — every silent gate, in the order you hit them
 - [The four commands](#the-four-commands) · [Config](#config) · [Exit codes](#exit-codes)
 - [Install (details)](#install-details) — the other two channels, and every caveat
@@ -59,7 +61,7 @@ the mistyped case does not — so read the value back:
 
 ```
 claude plugin list                                   # memkit@memkit must be ✔ enabled
-claude plugin details memkit@memkit                  # must report Hooks (1)
+claude plugin details memkit@memkit                  # must report Hooks (2)
 python3 -c 'import json,os,sys;print(json.load(open(os.path.expanduser(
   sys.argv[1])))["pluginConfigs"]["memkit@memkit"]["options"])' \
   "${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json"
@@ -70,9 +72,12 @@ result, or a `KeyError`, is an install that skipped or mistyped `--config` —
 which is inert by design and says nothing at runtime, so this is the only place
 it surfaces.
 
-`Hooks (1)` says the hook is registered; it does **not** say the plugin is
-enabled — a disabled plugin still reports it — which is why `plugin list` comes
-first.
+`Hooks (2)` says both hooks are registered — the per-prompt one and the
+subagent one. It does **not** say the plugin is enabled: a disabled plugin
+still reports its hooks, which is why `plugin list` comes first. And `Hooks (1)`
+is its own failure rather than a healthy older install: it means the harness
+took one registration and not the other, so prompts are served and subagent
+briefs are not.
 
 **3. Write the config.** Four lines is the whole minimum. Put it somewhere you
 would keep a dotfile — **not** under `~/.cache/`, which this page tells you
@@ -185,6 +190,45 @@ stores — what is searched and what is skipped, how a pointer gets chosen, the
 `CLAUDE.md` block for letting your agent write the memories — is in
 [docs/STORE.md](docs/STORE.md).
 
+## Subagents get pointers too
+
+memkit registers a second hook, on the `Agent` tool, and it behaves differently
+enough from the per-prompt one to be worth reading before you meet it.
+
+It fires when Claude Code is about to spawn a subagent, before the subagent
+runs. Rather than printing to the transcript, it **rewrites the tool call's
+input**: your brief comes back verbatim with a delimited block appended to it,
+and the subagent reads the whole thing as its instructions. Nothing is removed
+and nothing is reworded. If it has nothing to add, or anything at all goes
+wrong, it emits nothing and the spawn runs exactly as it would without memkit.
+
+What differs from the prompt path:
+
+- **No length ceiling.** The 4000-character paste gate is a prompt gate; a
+  four-kilobyte brief is a brief, and it is the population this exists for.
+  Every other shape gate still applies.
+- **Dedup is per tool call, not per session.** Two subagents spawned in one
+  turn are two ledgers, and neither is charged for what the parent's prompts
+  were shown. A retry of the same call is not served twice.
+- **A different relevance bar.** Share-of-the-query gets stricter the longer
+  the text is, which is backwards for a brief, so this path uses a plain count
+  of matched terms instead — see [Retrieval disclosures](#retrieval-disclosures).
+- **Up to three pointers**, in a block of roughly 700 bytes plus the pointer
+  lines, appended to the end of the brief.
+- **A 10-second timeout** with a 7-second internal budget, against the prompt
+  path's 15 and 12. A hook on this event stalls a spawn, so it is given less
+  room.
+- **A brief plus its block over 16 KiB gets nothing.** The brief is echoed back
+  inside the replacement, so there is nothing memkit may shed to make room, and
+  it refuses whole rather than trimming your text.
+- **Its own outcomes**, all prefixed `task:`, in the same `log.jsonl`.
+
+The block is marked as retrieved data rather than as instructions, and its
+delimiter carries a value generated at the moment it is written — so no text
+sitting in a memory store can spell the delimiter and put its own words outside
+the marked region. That matters more here than on the prompt path: a subagent
+acts on its brief unattended.
+
 ## Why nothing appeared
 
 You typed something and no pointer came back. Every gate below is silent by
@@ -211,20 +255,25 @@ is on your own `PATH`.
 
 | what stopped it | how you can tell | what to do |
 |---|---|---|
-| **The plugin was installed mid-session** | `plugin details` says `Hooks (1)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
-| **The plugin is disabled** | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (1)` | re-enable it |
+| **The plugin was installed mid-session** | `plugin details` says `Hooks (2)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
+| **The plugin is disabled** | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (2)` | re-enable it |
+| **Only one hook registered** | `plugin details` says `Hooks (1)` | a half-registered failure: the harness took one entry and not the other, so prompts are served and subagent briefs are not. Reinstall, and if it recurs, say which event is missing |
 | **No config reached the hook** | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Quick start](#quick-start) step 2 |
 | **The config path is wrong** | `--debug-config` says the path does not exist | fix the path and re-run the install command |
 | **The prompt was under three words** | `gate:short`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
 | **The prompt began with `/`** | no record at all — Claude Code resolves slash commands before the hook runs, so an empty `tail -1` is the tell | deliberate: a slash command is an instruction to Claude Code, not a question about your work |
-| **The prompt was over 4000 characters** | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste |
+| **The prompt was over 4000 characters** | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste. **Prompts only** — a subagent brief has no length ceiling, since a long brief is a brief |
 | **The prompt was all common words** | `gate:stopwords` | "is it the" leaves no term to search on |
-| **The same prompt already fired this session** | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session |
+| **The same prompt already fired this session** | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session. On the subagent path the same outcome is per TOOL CALL — a spawn is never charged for what the parent's prompts were shown |
 | **The prompt began with an editor or tool envelope** | `gate:envelope`; the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
-| **The hook ran out of time** | `killed` | it is registered with a 15-second timeout and gives up rather than delaying your prompt. A first run on a large store builds the index; the next one is fast |
+| **The hook ran out of time** | `killed`, or `task:killed` on the subagent path | the prompt hook is registered with a 15-second timeout and its own 12-second budget; the subagent hook with 10 and 7, because that one stalls a spawn. Either gives up rather than delaying you. A first run on a large store builds the index; the next one is fast |
 | **The corpus is not where you think** | `--debug-config` prints the corpus root, its file count, and a line naming any files stranded outside it | move them, or point `dir` at the right directory |
 | **Nothing matched well enough** | `--search` exits 1 and prints `no match in N files under <root>` | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
 | **The session budget is spent** | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
+| **A subagent got no pointers** | the last `task:` record in `log.jsonl` names the reason — `tail -1` it and read the `outcome` against the table in the outcome table under [Why nothing appeared](#why-nothing-appeared) | every row below is one of those reasons |
+| **The brief plus its pointers exceeded 16 KiB** | `task:oversize` | the brief is echoed back inside the replacement, so there is nothing memkit may shed to make room; the pointers are dropped whole rather than the brief being trimmed |
+| **The hook was called for another tool** | `task:notool`, naming the tool | the registration and the harness disagree — what a tool rename looks like from inside. Reinstall; if it persists, the entry needs its matcher changed |
+| **The tool call carried no brief** | `task:nobrief` | there was no `prompt` string in the tool's input to read |
 
 The prompt-shape gates — the three-word floor, the slash prefix, the paste
 ceiling, the all-stopword case and the envelope prefix — are the reason the hook
@@ -630,7 +679,10 @@ resolves `git+https://github.com/ak2k/memkit@v0.2.1` — the release tag, not
 subcommand that regenerates a ledger.
 
 **Check that it took.** `claude plugin details memkit@memkit` reports the hooks
-it registered: `Hooks (1)` is a working install and `Hooks (0)` is not. Worth
+it registered: `Hooks (2)` is a working install. `Hooks (0)` is the failure
+where nothing registered at all, and `Hooks (1)` is the quieter failure in
+between — one of the two entries was taken and the other was not, which serves
+prompts and leaves subagent briefs alone. Worth
 running once, because a memkit that installed correctly and has not been given
 a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.
@@ -864,7 +916,14 @@ mutual information were each measured dead or inverted.
 **A relevance floor keyed on English word frequency does the work instead.** A
 hit whose matched terms are all common English is treated as conversational
 coincidence unless at least three terms matched *and* they are a real share of
-the prompt. The wordlist behind that floor is a committed artifact
+the prompt. That rule is **the prompt path's**; the subagent path uses a
+different one, and the reason is arithmetic rather than taste. Share-of-the-
+query is a bar that gets STRICTER as the text gets longer — a fifth of eight
+terms is two, a fifth of three hundred is sixty — which is backwards for a
+brief, so on that path the share bar is off and a plain count carries it: at
+least ten of the brief's terms matched, whatever they are. That count is what
+stops a four-kilobyte brief being carried into a spawn by one project name it
+happens to mention. The wordlist behind both floors is a committed artifact
 (`src/memkit/common-words.txt`), regenerated by `tools/generate-common-words.py`
 against a pinned corpus-frequency dataset. It is a floor calibrated on one
 corpus; the shape of the rule is likely to transfer, the exact thresholds are
@@ -876,7 +935,11 @@ not instructions — paths and descriptions are file contents, and every one of
 them is sanitized before it is rendered, so a memory cannot close the block or
 smuggle control characters through it. The block is the frame plus one line per
 pointer: **559 bytes fixed** on any prompt that fires, plus the pointer lines
-themselves, which are as long as your descriptions. When the per-prompt cap cuts
+themselves, which are as long as your descriptions. The subagent block is the
+same shape and **926 bytes fixed**, appended to the brief rather than printed;
+a brief plus its block over 16 KiB is refused whole rather than trimmed,
+because the brief is echoed back inside the replacement and none of it is
+memkit's to shed. When the per-prompt cap cuts
 matches, a truncation notice is added carrying the search command to see the
 rest — measured at **another ~460 bytes**, since it quotes your config path and
 the whole query. A prompt that retrieves nothing costs nothing: the hook writes

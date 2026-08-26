@@ -8,13 +8,13 @@ number here is read out of the tree at the pinned sha rather than remembered.
 
 `/plugin install memkit@memkit` clones **the whole tracked tree** at the sha
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
-subset chosen for the hook. At the sha this release pins that is **81 files,
+subset chosen for the hook. At the sha this release pins that is **85 files,
 about 1.5 MiB**:
 
 | what | files | why it is there |
 |---|---|---|
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/` | 13 | the payload proper — the wrappers, the hook module, the manifests |
-| `tests/` | 45 | not needed at run time; see below |
+| `tests/` | 49 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 16 | likewise |
 | `README.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 7 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |
@@ -48,15 +48,33 @@ are inert unless you run them yourself by path.
 
 ## What runs, and when
 
-One hook, registered by `hooks/hooks.json`:
+Two hooks, both registered by `hooks/hooks.json`, both running the same wrapper:
 
 ```
-UserPromptSubmit → ${CLAUDE_PLUGIN_ROOT}/bin/memkit-hook   (timeout 15s)
+UserPromptSubmit                  → ${CLAUDE_PLUGIN_ROOT}/bin/memkit-hook   (timeout 15s)
+PreToolUse (matcher: Agent)       → ${CLAUDE_PLUGIN_ROOT}/bin/memkit-hook   (timeout 10s)
 ```
 
-It runs on every prompt you submit. It exits 0 on every path it has — including
-every failure — because on `UserPromptSubmit` a non-zero exit takes your prompt
-away from you.
+The first runs on every prompt you submit and prints its pointers to the
+transcript.
+
+The second runs before Claude Code spawns a **subagent**, and it is the one to
+read this section for: it does not print, it **rewrites the tool call's input**.
+It appends a delimited block of pointer lines to the brief the subagent is
+about to be given, and hands the whole thing back. Your brief is echoed
+verbatim inside that replacement — nothing is removed or reworded — and the
+appended block is marked as retrieved data rather than as instructions. It
+fires on the `Agent` tool and on no other.
+
+Both exit 0 on every path they have, including every failure, and they have
+different reasons. On `UserPromptSubmit` a non-zero exit takes your prompt away
+from you. On `PreToolUse` it is worse than that: the exit status of a hook on
+that event decides whether the tool call is blocked, and a malformed
+replacement is refused by the harness and cancels the spawn. So the subagent
+path emits nothing at all unless the replacement it built is exactly the shape
+the harness accepts — same keys as the input it was handed, every value but the
+brief untouched, the brief a verbatim substring — and a spawn that gets no
+pointers runs exactly as it would have without memkit installed.
 
 Until you give it a config it is **inert**: it reads no directory of yours,
 writes nothing but a record of its own refusal, and prints nothing. With a
