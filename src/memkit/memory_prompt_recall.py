@@ -349,6 +349,14 @@ class Config:
             _require_str_tuple(ev, "gating_slices", "eval") or ("suite",)
         )
         self.eval_cases = _optional_mapping(ev, "cases", where="eval")
+        # A directory of long subagent briefs and the two rates they gate
+        # on, relative to the eval root. Its own key rather than a fourth
+        # entry under `cases` because these cases are FILES — a brief is
+        # kilobytes of prose and would make a config unreadable — and
+        # because the rates that judge them live beside them rather than
+        # here, so the briefs and the numbers measured over them move
+        # together.
+        self.eval_long_briefs = ev.get("long_briefs")
 
     def root(self, name: str) -> str:
         """Absolute path of a named root, resolved once and reported with it.

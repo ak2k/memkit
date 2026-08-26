@@ -13,6 +13,7 @@ anybody edits, and it read as green for most of this check's life.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import stat
 import subprocess
@@ -144,3 +145,162 @@ def test_a_real_regression_still_fails_on_a_matched_corpus(corpus: Path) -> None
     assert out.returncode != 0, out.stdout
     assert "REGRESSION" in out.stdout
     assert "corpus moved" not in out.stderr
+
+
+# --- the long-brief slice ----------------------------------------------------
+#
+# Two rates over sixteen paired briefs, and they gate differently from
+# everything above: the snapshot records what happened and `--update-snapshot`
+# accepts it, while these record what has to be true whatever happened.
+
+BRIEFS = "long-briefs"
+
+
+def _served(corpus: Path, name: str) -> Path:
+    return corpus / BRIEFS / "served" / name
+
+
+def _rates(stdout: str) -> str:
+    return next(ln for ln in stdout.splitlines() if ln.startswith("long briefs:"))
+
+
+def test_the_long_brief_slice_reports_both_rates_and_the_thresholds(
+    corpus: Path,
+) -> None:
+    """The control, and the calibration restated as a measurement: the numbers
+    the task gate's constants were set from are reproduced by the shipped
+    tree, beside the thresholds they were set to."""
+    out = _eval(corpus)
+    assert out.returncode == 0, out.stdout + out.stderr
+    line = _rates(out.stdout)
+    assert "7/8 served (0.875, floor 0.750)" in line, line
+    assert "0/8 leaked (0.000, ceiling 0.125)" in line, line
+    # Per-case rows too, so a single outcome moving is visible in a diff even
+    # though it is under the rate slack.
+    assert "[BRIEF-SERVED]" in out.stdout
+    assert "[BRIEF-QUIET ]" in out.stdout
+
+
+def test_coverage_under_the_floor_fails_the_run(corpus: Path) -> None:
+    """A task gate that stops serving briefs it was calibrated to serve is the
+    unit's headline failure, and it is silent everywhere else: every brief
+    still gets a spawn, the spawn still runs, and nothing anywhere says the
+    pointers stopped arriving."""
+    for name in ("backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md"):
+        _served(corpus, name).write_text(
+            "# Brief\n\n" + "Sort the mailroom trays by postcode. " * 200
+        )
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "long-brief coverage" in out.stderr
+    assert "under the 0.750 floor" in out.stderr
+    assert "4/8 served" in _rates(out.stdout)
+
+
+def test_injection_over_the_ceiling_fails_the_run(corpus: Path) -> None:
+    """The other half of the pair. A coverage floor on its own is met by a gate
+    that serves every brief, so the ceiling is what stops the fix for the case
+    above being "lower the bars until everything passes"."""
+    leak = (
+        "\n\nThe sprocket backlash after a gearbox rebuild traces to the shim "
+        "stack rather than chain tension, and the flange fasteners want a "
+        "crossing sequence over three passes.\n"
+    )
+    for name in ("accessibility-audit.md", "warehouse-slotting.md"):
+        path = corpus / BRIEFS / "unserved" / name
+        path.write_text(path.read_text() + leak)
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "long-brief injection" in out.stderr
+    assert "over the 0.125 ceiling" in out.stderr
+    assert "[BRIEF-LEAK  ]" in out.stdout
+
+
+def test_a_rate_failure_is_not_accepted_by_a_re_baseline(corpus: Path) -> None:
+    """`--update-snapshot` accepts what a run reported, which is right for the
+    snapshot and wrong for a floor: a threshold a re-baseline can silence is
+    not a threshold.
+
+    The write still lands — the remedy for a moved corpus must not be blocked
+    by this — so what is asserted is the exit status and the message, not the
+    absence of a file.
+    """
+    for name in ("backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md"):
+        _served(corpus, name).write_text("# Brief\n\n" + "mailroom trays. " * 200)
+    snapshot = corpus / "eval-expectations.json"
+    before = snapshot.read_text()
+    out = _eval(corpus, "--update-snapshot")
+    assert out.returncode != 0, out.stdout
+    assert "under the 0.750 floor" in out.stderr
+    assert "wrote" in out.stdout
+    assert snapshot.read_text() != before, "the re-baseline itself must still land"
+
+
+def test_a_rate_failure_survives_a_moved_corpus_instead_of_becoming_drift(
+    corpus: Path,
+) -> None:
+    """A moved corpus makes every SNAPSHOT comparison unattributable, and the
+    run refuses on that. A rate is not a comparison — it is an absolute
+    measurement of the corpus in front of it — so it still answers, and it has
+    to answer first: filed as drift, a coverage collapse gets re-baselined away
+    by the very command the refusal recommends."""
+    _drift(corpus)
+    for name in ("backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md"):
+        _served(corpus, name).write_text("# Brief\n\n" + "mailroom trays. " * 200)
+    out = _eval(corpus)
+    assert out.returncode != 0
+    assert "long-brief coverage" in out.stderr
+    assert "corpus moved" not in out.stderr
+
+
+def test_an_edited_brief_reads_as_a_new_case_rather_than_inheriting_one(
+    corpus: Path,
+) -> None:
+    """The corpus fingerprint covers the stores and not this directory, because
+    these are the queries rather than the corpus. So the brief's own digest is
+    in its snapshot key — otherwise an edited brief silently keeps the outcome
+    recorded for the text it used to have, which is the one kind of drift no
+    case line can report."""
+    first = _eval(corpus)
+    assert first.returncode == 0, first.stdout + first.stderr
+    # The control, and the half that fails under a filename-only key: the
+    # committed snapshot's keys are the ones this run produces, so nothing is
+    # unrecorded before anything is edited.
+    assert "NEW (no expectation recorded" not in first.stdout, first.stdout
+
+    path = _served(corpus, "rotor-swap-programme.md")
+    path.write_text(path.read_text() + "\nOne more paragraph nobody asked for.\n")
+    out = _eval(corpus)
+    # The edited brief is unrecorded, and the row for its previous text is now
+    # an expectation nothing iterates. Both name that brief and only that
+    # brief — a key scheme that changed for everything would satisfy a bare
+    # substring search on either word.
+    new_rows = [ln for ln in out.stdout.splitlines() if "NEW (no expectation" in ln]
+    stale = [ln for ln in out.stdout.splitlines() if "not in the suite" in ln]
+    assert len(new_rows) == 1, new_rows
+    assert len(stale) == 1, stale
+    assert "rotor-swap-programme.md#" in new_rows[0]
+    assert "rotor-swap-programme.md#" in stale[0]
+
+
+def test_the_slice_scores_the_task_path_and_not_the_prompt_path(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """A slice scored through `build_query` and the prompt path's floor bars
+    would measure a retriever no subagent ever meets — and would pass, because
+    the prompt path refuses these briefs outright and "refused" scores exactly
+    like "the corpus had nothing".
+
+    Driven as a --hook A/B against a copy with the task gate removed, which is
+    also the case the skip below is for: an old hook has no task path, and
+    reporting the absence of a feature as a quality regression is the one
+    comparison an A/B must not make.
+    """
+    stripped = tmp_path / "memkit"
+    shutil.copytree(Path(__file__).resolve().parent.parent / "src" / "memkit", stripped)
+    src = stripped / "memory_prompt_recall.py"
+    src.write_text(src.read_text().replace("def task_gate(", "def _no_task_gate("))
+    out = _eval(corpus, "--hook", str(src))
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "no task path — slice skipped" in out.stdout
+    assert not re.search(r"long briefs: \d+/\d+ served", out.stdout), out.stdout

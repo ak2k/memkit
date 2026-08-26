@@ -54,6 +54,64 @@
         "position": "search",
         "status": "VOCAB-FOUND"
       }
+    },
+    "longbrief": {
+      "served/firmware-fleet-rollout.md#0939972ccd34": {
+        "file": "widget_calibration.md",
+        "status": "BRIEF-SERVED"
+      },
+      "served/readings-drift-investigation.md#14fc6c1d921e": {
+        "file": "widget_calibration.md",
+        "status": "BRIEF-MISS"
+      },
+      "served/vessel-reassembly.md#5323a9e71736": {
+        "file": "flange_torque.md",
+        "status": "BRIEF-SERVED"
+      },
+      "served/warped-face-postmortem.md#a4311874b5ed": {
+        "file": "flange_torque.md",
+        "status": "BRIEF-SERVED"
+      },
+      "served/gearbox-acceptance.md#0153fedd7046": {
+        "file": "sprocket_alignment.md",
+        "status": "BRIEF-SERVED"
+      },
+      "served/backlash-rig.md#8cd2cfa88d7a": {
+        "file": "sprocket_alignment.md",
+        "status": "BRIEF-SERVED"
+      },
+      "served/rotor-swap-programme.md#c54be088d4f9": {
+        "file": "turbine_balancing.md",
+        "status": "BRIEF-SERVED"
+      },
+      "served/period-close-automation.md#bcbda2ad2feb": {
+        "file": "ledger_reconciliation.md",
+        "status": "BRIEF-SERVED"
+      },
+      "unserved/accessibility-audit.md#ad5c1c8b53be": {
+        "status": "BRIEF-QUIET"
+      },
+      "unserved/warehouse-slotting.md#eeea015f5de6": {
+        "status": "BRIEF-QUIET"
+      },
+      "unserved/support-triage-rework.md#89955d613bd0": {
+        "status": "BRIEF-QUIET"
+      },
+      "unserved/translation-pipeline.md#c646169e531b": {
+        "status": "BRIEF-QUIET"
+      },
+      "unserved/archive-digitisation.md#9e5cce732cab": {
+        "status": "BRIEF-QUIET"
+      },
+      "unserved/onboarding-portal.md#4b591beee2de": {
+        "status": "BRIEF-QUIET"
+      },
+      "unserved/mobile-release-process.md#cc9cede6bd1e": {
+        "status": "BRIEF-QUIET"
+      },
+      "unserved/grant-reporting.md#083b13f0d8ea": {
+        "status": "BRIEF-QUIET"
+      }
     }
   }
 }

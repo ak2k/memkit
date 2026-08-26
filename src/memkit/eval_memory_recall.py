@@ -339,6 +339,73 @@ def pointers(hook, prompt: str, hits: list[str]) -> tuple[list[str], list[str]]:
     return passed, passed[: hook.MAX_HITS]
 
 
+def long_brief_set(root: pathlib.Path) -> dict:
+    """The paired brief set at `root`: briefs read off disk, plus the two rates
+    they gate on.
+
+    Files rather than config entries because a brief is kilobytes of prose, and
+    the rates sit beside them rather than in the config for the same reason the
+    corpus fingerprint sits in the snapshot: a number is only worth what it was
+    measured over, so it travels with the thing it was measured over.
+    """
+    index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+    for key in ("min_served", "max_injected"):
+        if not isinstance(index.get(key), (int, float)):
+            raise RuntimeError(f"{root / 'index.json'}: no {key} rate to gate on")
+    def _read(case: dict) -> dict:
+        brief = (root / case["brief"]).read_text(encoding="utf-8").strip()
+        # The snapshot key carries a digest of the brief, so an EDITED brief
+        # reads as a new case and its old row as a stale one rather than
+        # quietly inheriting a recorded outcome. The config's own cases get
+        # this for free — their key is the prompt text — and a case keyed on a
+        # filename alone would be the one kind of drift nothing reports: the
+        # corpus fingerprint does not cover this directory, because these are
+        # the queries and not the corpus.
+        digest = hashlib.sha256(brief.encode()).hexdigest()[:12]
+        return {
+            "name": f"{case['brief']}#{digest}",
+            "file": case.get("file"),
+            "brief": brief,
+        }
+    return {
+        "min_served": float(index["min_served"]),
+        "max_injected": float(index["max_injected"]),
+        "served": [_read(c) for c in index.get("served", [])],
+        "unserved": [_read(c) for c in index.get("unserved", [])],
+    }
+
+
+def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
+    """What the TASK path would point a subagent at, best-first, capped.
+
+    Every stage is the task path's own — its gate, its query builder, its floor
+    bars — because that is the whole subject: a slice scored through
+    `build_query` and the prompt path's bars would measure a retriever no
+    subagent ever meets, and would report the shape of the population this
+    exists to prove is served.
+
+    A gated brief returns nothing, which is the same answer as no hits and is
+    correct here: the question this slice asks is what reaches the subagent.
+    """
+    if hook.task_gate(brief) is not None:
+        return []
+    query = hook.build_task_query(brief)
+    hits = hook.recall(brief, dirs=dirs, query=query)
+    terms = list(dict.fromkeys((query or "").split()))
+    passed = [
+        pathlib.Path(h).name
+        for h in hits
+        if hook._passes_floor(
+            *hook._relevance(terms, h),
+            min_terms=hook.TASK_MIN_MATCHED_TERMS,
+            min_ratio=hook.TASK_ALL_COMMON_MIN_RATIO,
+            feedback_min_terms=hook.TASK_FEEDBACK_MIN_TERMS,
+            feedback_min_ratio=hook.TASK_FEEDBACK_MIN_RATIO,
+        )
+    ]
+    return passed[: hook.MAX_HITS]
+
+
 def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:
     """The committed expectations — {"corpus": digest, "cases": slice -> prompt
     -> record}; None if absent.
@@ -604,7 +671,9 @@ def main() -> None:
     # file, so nothing about them is resolved from the stores.
     scored = {"search": [0, 0], "hot": [0, 0], "noinject": [0, 0]}
     skipped = 0
-    seen_cases: dict[str, dict[str, dict]] = {"suite": {}, "noinject": {}, "vocab": {}}
+    seen_cases: dict[str, dict[str, dict]] = {
+        "suite": {}, "noinject": {}, "vocab": {}, "longbrief": {}
+    }
     tally = {"regression": 0, "drift": 0, "new": 0}
     # Per SLICE, how many cases actually met a recorded expectation. Counted
     # because "0 failures" and "0 comparisons" print the same exit code, and
@@ -760,6 +829,48 @@ def main() -> None:
             f"(retrieved {len(hits)}, distinctive overlap {n}){moved}"
         )
 
+    # The long-brief slice. Its cases are FILES rather than config entries, its
+    # scoring is the task path's rather than the prompt path's, and it gates on
+    # two RATES rather than on the snapshot — see below for why it needs both.
+    served_hit = leaked = 0
+    briefs = None
+    if cfg.eval_long_briefs:
+        brief_root = repo / cfg.eval_long_briefs
+        if not (brief_root / "index.json").is_file():
+            sys.exit(
+                f"eval.long_briefs names {brief_root}, which has no index.json"
+            )
+        if getattr(hook, "task_gate", None) is None:
+            # A --hook copy from before the task path existed. Scoring it as
+            # "served nothing" would report the absence of a feature as a
+            # quality regression, which is the comparison an A/B is for.
+            print("\nlong briefs: this hook has no task path — slice skipped")
+        else:
+            briefs = long_brief_set(brief_root)
+            print()
+            for case in briefs["served"]:
+                shown = task_pointers(hook, case["brief"], dirs)
+                ok = case["file"] in shown
+                served_hit += ok
+                mark = "BRIEF-SERVED" if ok else "BRIEF-MISS"
+                moved = against_snapshot(
+                    "longbrief", case["name"], case_record(mark, case["file"])
+                )
+                print(
+                    f"[{mark:<12}] {case['name'][:58]:<58} -> "
+                    f"{case['file']} (got {shown or '(nothing)'}){moved}"
+                )
+            for case in briefs["unserved"]:
+                shown = task_pointers(hook, case["brief"], dirs)
+                ok = not shown
+                leaked += not ok
+                mark = "BRIEF-QUIET" if ok else "BRIEF-LEAK"
+                moved = against_snapshot(
+                    "longbrief", case["name"], case_record(mark)
+                )
+                got = f"injected {shown}" if shown else "(nothing)"
+                print(f"[{mark:<12}] {case['name'][:58]:<58} -> {got}{moved}")
+
     # A case deleted from a list up there leaves its expectation behind, and a
     # stale expectation is the one kind of drift no case line can report —
     # nothing iterates it any more.
@@ -785,6 +896,36 @@ def main() -> None:
         f"vocab slice: {served}/{vocab_tot} symptom-worded prompts served by the "
         "lexical stage — an instrument, gated only if eval.gating_slices says so"
     )
+    # The rates, and whether they hold. Two of them, because either alone is
+    # met by a gate that does nothing: a coverage floor on its own is satisfied
+    # by a path that serves every brief, and an injection ceiling by one that
+    # serves none. The pair is what makes the numbers a calibration rather than
+    # a count — "non-vacuous" bounds neither a gate too strict for real briefs
+    # nor one too loose for irrelevant ones.
+    rate_fail: list[str] = []
+    if briefs is not None:
+        n_served = len(briefs["served"]) or 1
+        n_unserved = len(briefs["unserved"]) or 1
+        served_rate = served_hit / n_served
+        leak_rate = leaked / n_unserved
+        print(
+            f"long briefs: {served_hit}/{len(briefs['served'])} served "
+            f"({served_rate:.3f}, floor {briefs['min_served']:.3f}); "
+            f"{leaked}/{len(briefs['unserved'])} leaked "
+            f"({leak_rate:.3f}, ceiling {briefs['max_injected']:.3f})"
+        )
+        if served_rate < briefs["min_served"]:
+            rate_fail.append(
+                f"long-brief coverage {served_rate:.3f} is under the "
+                f"{briefs['min_served']:.3f} floor — the task gate is refusing "
+                "briefs it was calibrated to serve"
+            )
+        if leak_rate > briefs["max_injected"]:
+            rate_fail.append(
+                f"long-brief injection {leak_rate:.3f} is over the "
+                f"{briefs['max_injected']:.3f} ceiling — the task gate is "
+                "rewriting spawns the corpus has nothing to say about"
+            )
     loose = tally["regression"] + tally["new"] - gate_fails
     parts = [f"{gate_fails} gating failure(s) in {'/'.join(sorted(gating))}"]
     if loose:
@@ -794,6 +935,14 @@ def main() -> None:
     if tally["new"]:
         parts.append(f"{tally['new']} unrecorded (newer than the snapshot)")
     print("vs snapshot: " + ", ".join(parts))
+    if rate_fail and not args.update_snapshot:
+        # Ahead of the corpus-moved refusal, and deliberately: that refusal
+        # says nothing was attributable, which is true of every SNAPSHOT
+        # comparison and false of these. A rate is an absolute measurement of
+        # the corpus in front of it, so a moved corpus is exactly when it still
+        # answers — and exactly when a coverage collapse would otherwise be
+        # filed as drift and re-baselined away.
+        sys.exit("; ".join(rate_fail))
     if prior is not None and not corpus_matches and not args.update_snapshot:
         print(
             "             these stores are not the ones baselined, so every "
@@ -836,7 +985,13 @@ def main() -> None:
         # the run reported, and a nonzero exit here would make the accepted
         # state indistinguishable from a refusal to write.
         print(f"wrote {snap_path}")
-        sys.exit(0)
+        # Except the rate floors, which a re-baseline may not accept. The
+        # snapshot records WHAT HAPPENED and accepting it is the whole point;
+        # the rates record what has to be true whatever happened, and a floor
+        # that `--update-snapshot` can silence is not a floor. The write still
+        # lands first, so the remedy for a moved corpus is not blocked by this
+        # — the run just does not report success.
+        sys.exit("; ".join(rate_fail) if rate_fail else 0)
     # A gating slice that compared nothing is the failure mode a green cannot
     # show: zero failures and zero comparisons print the same exit code, and
     # an empty or missing slice would otherwise buy a pass by having no

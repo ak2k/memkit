@@ -1,6 +1,9 @@
 {
   "schema": 1,
   "note": "Paired cases for the long-brief eval slice. Every brief here is longer than the prompt path's 4000-character shape ceiling, because that is the population the task path exists to serve and the prompt path refuses outright. `served` names the memory in the fixture corpus a brief of this shape ought to surface; `unserved` names none, and a pointer on one of those is an incorrect injection. Both halves are needed: a coverage rate alone is met by a gate that serves everything, and an injection rate alone by a gate that serves nothing.",
+  "note_thresholds": "The two rates this set gates on, and the measured values they were set from: 7 of 8 served (0.875) and 0 of 8 leaked (0.0), at the TASK_* floor bars in the hook. One case of slack each — the per-case rows in the eval snapshot already show a single outcome moving, so these bound systemic loosening rather than restating that. A rate is checked on every run INCLUDING --update-snapshot: the snapshot records what happened and a re-baseline accepts it, while these record what has to be true, and a floor a re-baseline can silence is not a floor.",
+  "min_served": 0.75,
+  "max_injected": 0.125,
   "served": [
     {
       "brief": "served/firmware-fleet-rollout.md",
@@ -38,13 +41,29 @@
     }
   ],
   "unserved": [
-    { "brief": "unserved/accessibility-audit.md" },
-    { "brief": "unserved/warehouse-slotting.md" },
-    { "brief": "unserved/support-triage-rework.md" },
-    { "brief": "unserved/translation-pipeline.md" },
-    { "brief": "unserved/archive-digitisation.md" },
-    { "brief": "unserved/onboarding-portal.md" },
-    { "brief": "unserved/mobile-release-process.md" },
-    { "brief": "unserved/grant-reporting.md" }
+    {
+      "brief": "unserved/accessibility-audit.md"
+    },
+    {
+      "brief": "unserved/warehouse-slotting.md"
+    },
+    {
+      "brief": "unserved/support-triage-rework.md"
+    },
+    {
+      "brief": "unserved/translation-pipeline.md"
+    },
+    {
+      "brief": "unserved/archive-digitisation.md"
+    },
+    {
+      "brief": "unserved/onboarding-portal.md"
+    },
+    {
+      "brief": "unserved/mobile-release-process.md"
+    },
+    {
+      "brief": "unserved/grant-reporting.md"
+    }
   ]
 }
