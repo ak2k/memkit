@@ -2711,9 +2711,20 @@ def _state_dir() -> str:
     return d
 
 
+def _state_name(key: str, prefix: str = "") -> str:
+    """`<prefix><key>.json` in the state dir, with the key made a filename.
+
+    One sanitizer for both ledgers. The rule is the same rule about the same
+    directory — a harness-supplied id is not a name this may trust — and two
+    copies of it drift in the direction where one of them stops bounding the
+    length or stops dropping a separator.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)[:80]
+    return os.path.join(_state_dir(), f"{prefix}{safe}.json")
+
+
 def _session_state_path(session_id: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[:80]
-    return os.path.join(_state_dir(), f"{safe}.json")
+    return _state_name(session_id)
 
 
 # The prefix every per-task state file carries. Its whole job is to make the
@@ -2733,8 +2744,7 @@ def _task_state_path(tool_use_id: str) -> str:
     rather than one — and two spawns in a single turn are two ids, so they
     neither share a budget nor race for the same name.
     """
-    safe = re.sub(r"[^A-Za-z0-9_-]", "_", tool_use_id)[:80]
-    return os.path.join(_state_dir(), f"{TASK_STATE_PREFIX}{safe}.json")
+    return _state_name(tool_use_id, TASK_STATE_PREFIX)
 
 
 # --- the plugin channel: trust gate, marker, registration fingerprint ---------

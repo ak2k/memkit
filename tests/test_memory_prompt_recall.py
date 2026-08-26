@@ -2323,6 +2323,25 @@ def test_session_state_path_sanitizes_traversal() -> None:
     assert "/" not in Path(p).name.replace(".json", "")
 
 
+def test_both_ledgers_sanitize_a_harness_supplied_id_the_same_way() -> None:
+    """Two ledgers, one rule — and it was written out twice.
+
+    Both keys come from the harness and neither is a name this may trust, so
+    the drift that matters is one copy quietly stopping bounding the length or
+    stopping dropping a separator. The task ledger differs only by its prefix,
+    which exists so a sweep's predicate can be a filename rather than a parse.
+    """
+    hostile = "../../etc/passwd"
+    session = Path(hook._session_state_path(hostile)).name
+    task = Path(hook._task_state_path(hostile)).name
+    assert task == f"{hook.TASK_STATE_PREFIX}{session}", (task, session)
+    assert "/" not in task and ".." not in task
+    # The length bound, on both: an id is somebody else's string.
+    long = Path(hook._task_state_path("z" * 500)).name
+    assert len(long) < 100, long
+    assert len(Path(hook._session_state_path("z" * 500)).name) < 100
+
+
 # --- end-to-end gates (subprocess: gates fire before any search) -------------
 
 
