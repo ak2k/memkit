@@ -37,7 +37,9 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -56,11 +58,13 @@ from memkit.memory_prompt_recall import (
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
     INIT_JOURNAL_NAME,
+    MARKER_NAME,
     PLUGIN_CONFIG_ROUTES,
     PLUGIN_DATA_ENV,
     PLUGIN_ENV,
     SCHEMA,
     SOAK_LOG_NAME,
+    TASK_OUTCOME_PREFIX,
     ConfigError,
     _corpus_files,
     _cwd_digest,
@@ -205,6 +209,12 @@ CHECK_IDS: tuple[str, ...] = (
     "hook-path",
     "hook-ever-fired",
     "gate-outcomes",
+    "plugin-enabled",
+    "registrations-count",
+    "plugin-diagnostics",
+    "subagent-delivery",
+    "harness-stamp",
+    "auto-memory",
 )
 
 # id -> the function that answers it, given the machine. A producer returns a
@@ -1496,6 +1506,396 @@ def _gate_outcomes(machine: Machine) -> list[Check]:
             "gate-outcomes",
             INFO,
             f"last {len(records)} prompts: " + ", ".join(parts) + median,
+        )
+    ]
+
+
+# --- coexistence -------------------------------------------------------------
+
+
+# The harness build memkit's claims about the harness were MEASURED against:
+# the option-name mangling, the trailing slash on the plugin root, the
+# exit-2-blocks-the-turn behaviour the zero-argument pin rests on. Pinned to
+# the workflows' own `CLAUDE_CODE_VERSION` by a test, because a stamp that
+# drifted from the build CI measures on is a stamp that reports agreement
+# nobody established.
+MEASURED_HARNESS = "2.1.238"
+
+# Where the harness keeps the built-in memory feature's per-project state.
+# Measured on 2.1.241: `<config dir>/projects/<sanitized cwd>/memory/`, with
+# the cwd sanitized by replacing `/` and `.` with `-`. The lock beside it is
+# how "armed" and "actually running" are told apart.
+CONSOLIDATE_LOCK = ".consolidate-lock"
+# An hour, which is the harness's own consolidation interval. A lock older than
+# that is a run that finished, not one in flight.
+CONSOLIDATE_RECENT = 3600
+
+
+def _memkit_registrations(machine: Machine) -> list:
+    """Every way this machine has asked for memkit's hook to run.
+
+    The runtime half of this — the `dup-registration` fingerprint — is loud and
+    cannot name the entry, and is blind to the likeliest duplicate of all: a
+    plugin entry and a settings entry naming ONE config of one release, where
+    the version stamp is a hash of identical bytes. Counting registrations is
+    the half that can name which one to remove.
+    """
+    found = []
+    for scope in machine.settings:
+        events = scope.data.get("hooks")
+        if not isinstance(events, dict):
+            continue
+        for entry in events.get("UserPromptSubmit") or []:
+            for spec in (entry or {}).get("hooks") or []:
+                command = (spec or {}).get("command")
+                if isinstance(command, str) and (
+                    "memkit" in command or "memory_prompt_recall" in command
+                ):
+                    found.append(
+                        f'{scope.scope} settings ({_display_path(scope.path)}): '
+                        f'"{command}"'
+                    )
+    if _plugin_enabled(machine) is True:
+        found.append(f"the {PLUGIN_KEY} plugin registration")
+    return found
+
+
+def _plugin_enabled(machine: Machine):
+    """True, False, or None for "this machine has no opinion".
+
+    Three states, because the middle one is the trap: a disabled plugin still
+    reports `Hooks (1)` from `plugin details`, and only `plugin list` disagrees.
+    Both walkthroughs met that and read it as a working install.
+    """
+    for scope in machine.settings:
+        enabled = scope.data.get("enabledPlugins")
+        if isinstance(enabled, dict) and PLUGIN_KEY in enabled:
+            return bool(enabled[PLUGIN_KEY])
+    return None
+
+
+@_produces("registrations-count")
+def _registrations_count(machine: Machine) -> list[Check]:
+    """Exactly one, or say which entries to choose between.
+
+    Two registrations both serving one prompt is a silent lost update from
+    inside: each process injects, each writes the session ledger, and the later
+    write wins. What the user sees is pointers that come and go for no reason.
+    """
+    found = _memkit_registrations(machine)
+    if len(found) == 1:
+        return [Check("registrations-count", PASS, f"one registration: {found[0]}")]
+    if not found:
+        if machine.plugin:
+            return [
+                Check(
+                    "registrations-count",
+                    FAIL,
+                    "this process was started by the plugin's own wrapper and "
+                    "no settings scope records the plugin as enabled, so "
+                    "nothing here says a hook is registered",
+                    "Check `claude plugin list`. A plugin that is installed "
+                    "and disabled still reports `Hooks (1)` from `plugin "
+                    "details`.",
+                    actor=USER,
+                )
+            ]
+        return [
+            Check(
+                "registrations-count",
+                INFO,
+                "no memkit hook registration in any settings scope and no "
+                "enabled plugin, so nothing runs on a prompt here",
+            )
+        ]
+    return [
+        Check(
+            "registrations-count",
+            FAIL,
+            f"{len(found)} registrations serve every prompt: " + "; ".join(found),
+            "Remove all but one. Both run, both write this session's ledger, "
+            "and the later write wins — which shows up as pointers that come "
+            "and go for no reason rather than as an error.",
+            actor=USER,
+        )
+    ]
+
+
+@_produces("plugin-enabled")
+def _plugin_enabled_check(machine: Machine) -> list[Check]:
+    """`claude plugin list` should be the first check, and this is it.
+
+    The trap it names: `plugin details` reports a registered hook on a plugin
+    that is switched off. Only `plugin list` disagrees, and nothing sends an
+    adopter there.
+    """
+    enabled = _plugin_enabled(machine)
+    if enabled is None:
+        return [
+            Check(
+                "plugin-enabled",
+                INFO,
+                f"no settings scope mentions {PLUGIN_KEY}, so this machine has "
+                "no plugin install to enable or disable",
+            )
+        ]
+    if enabled:
+        return [Check("plugin-enabled", PASS, f"{PLUGIN_KEY} is enabled")]
+    return [
+        Check(
+            "plugin-enabled",
+            FAIL,
+            f"{PLUGIN_KEY} is installed and DISABLED. `claude plugin details` "
+            "still reports `Hooks (1)` in this state, which reads as a working "
+            "install",
+            f"claude plugin enable {PLUGIN_KEY}",
+            actor=USER,
+        )
+    ]
+
+
+@_produces("plugin-diagnostics")
+def _plugin_diagnostics(machine: Machine) -> list[Check]:
+    """What the trust gate and the duplicate detector recorded.
+
+    Otherwise the instrumentation those two write has no reader on an adopter's
+    machine — the marker is a file in a plugin data directory nobody is told
+    about, and the `dup-registration` records sit in a log documented for
+    downstream analyzers.
+
+    `actor: user` on every remedy here, because the marker records REFUSALS and
+    a refusal is a setup fact rather than something an agent may act on.
+    """
+    marker = (
+        os.path.join(machine.plugin_data, MARKER_NAME)
+        if machine.plugin_data
+        else ""
+    )
+    records = []
+    if marker and os.path.isfile(marker):
+        with contextlib.suppress(OSError, ValueError):
+            with open(marker, encoding="utf-8") as f:
+                blob = json.load(f)
+            if isinstance(blob, dict):
+                loaded = blob.get("records")
+                records = loaded if isinstance(loaded, list) else []
+    dups = [
+        r
+        for r in _soak_tail(machine.state_dir, GATE_WINDOW)
+        if r.get("outcome") == "dup-registration"
+    ]
+    if not records and not dups:
+        return [
+            Check(
+                "plugin-diagnostics",
+                PASS,
+                "no refusals recorded and no duplicate registration seen at "
+                "runtime",
+            )
+        ]
+    outcomes: dict = {}
+    for record in records:
+        name = record.get("outcome")
+        if isinstance(name, str):
+            outcomes[name] = outcomes.get(name, 0) + 1
+    where = len({r.get("cwd") for r in records if r.get("cwd")})
+    parts = [f"{name} x{count}" for name, count in sorted(outcomes.items())]
+    if dups:
+        parts.append(f"dup-registration x{len(dups)} in the soak log")
+    return [
+        Check(
+            "plugin-diagnostics",
+            INFO,
+            f"{len(records)} refusal(s) across {where} directory/ies: "
+            + ", ".join(parts),
+            "`trust:unconfigured` means the hook refused before reading a "
+            "prompt because no config resolved — see config-route. "
+            "`dup-registration` means two installs served one prompt — see "
+            "registrations-count.",
+            actor=USER,
+        )
+    ]
+
+
+@_produces("subagent-delivery")
+def _subagent_delivery(machine: Machine) -> list[Check]:
+    """Whether memories reach a subagent, and whether that has ever happened.
+
+    Registered-and-never-fired and fired-and-refused are different states with
+    different next moves, and both look like silence. UNKNOWN is the answer
+    while the subagent path is not in the build at all — a state the closed
+    status set already has, and one that does not block green.
+    """
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    registered = False
+    if root:
+        with contextlib.suppress(OSError, ValueError):
+            with open(os.path.join(root, "hooks", "hooks.json"), encoding="utf-8") as f:
+                blob = json.load(f)
+            for entry in (blob.get("hooks") or {}).get("PreToolUse") or []:
+                matcher = (entry or {}).get("matcher")
+                if matcher and "Agent" in str(matcher):
+                    registered = True
+    if not registered:
+        return [
+            Check(
+                "subagent-delivery",
+                UNKNOWN,
+                "no PreToolUse-on-Agent entry in this payload's hooks.json, so "
+                "the subagent path is not in this build. Subagents get no "
+                "pointers and nothing is wrong",
+            )
+        ]
+    task = [
+        r
+        for r in _soak_tail(machine.state_dir, GATE_WINDOW)
+        if isinstance(r.get("outcome"), str)
+        and r["outcome"].startswith(TASK_OUTCOME_PREFIX)
+    ]
+    if not task:
+        return [
+            Check(
+                "subagent-delivery",
+                INFO,
+                "registered, and it has never fired here",
+            )
+        ]
+    last = task[-1]["outcome"]
+    if last == TASK_OUTCOME_PREFIX + "injected":
+        return [
+            Check(
+                "subagent-delivery",
+                PASS,
+                f"last subagent brief was served at {_when(task[-1])}",
+            )
+        ]
+    return [
+        Check(
+            "subagent-delivery",
+            INFO,
+            f"registered and firing; the last outcome was {last!r} rather than "
+            "a delivery",
+        )
+    ]
+
+
+@_produces("harness-stamp")
+def _harness_stamp(machine: Machine) -> list[Check]:
+    """The harness this build's claims were measured against, versus the one
+    running.
+
+    NEVER BLOCKS GREEN. Harness releases outpace stamps, so a mismatch is the
+    normal case for every adopter who is not on the pinned build — and a
+    criterion that counted it would make all-green unreachable for almost
+    everybody, which is how a report stops being read.
+    """
+    binary = shutil.which("claude")
+    if binary is None:
+        return [
+            Check(
+                "harness-stamp",
+                UNKNOWN,
+                f"no `claude` on PATH to ask, so the running harness version is "
+                f"not knowable from here. memkit's claims were measured "
+                f"against {MEASURED_HARNESS}",
+            )
+        ]
+    try:
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [
+            Check(
+                "harness-stamp",
+                UNKNOWN,
+                f"`claude --version` could not be run ({type(exc).__name__}); "
+                f"memkit's claims were measured against {MEASURED_HARNESS}",
+            )
+        ]
+    running = (out.stdout.split() or [""])[0]
+    if running == MEASURED_HARNESS:
+        return [
+            Check("harness-stamp", PASS, f"harness {running}, the build memkit "
+                  "measured its harness claims against")
+        ]
+    return [
+        Check(
+            "harness-stamp",
+            UNVERIFIED,
+            f"harness {running or '?'}; memkit measured its harness claims "
+            f"against {MEASURED_HARNESS}. Nothing is known to have changed, "
+            "and nothing here re-measured it",
+        )
+    ]
+
+
+def _sanitized_cwd() -> str:
+    """The harness's own per-project directory name for this cwd.
+
+    Measured on 2.1.241: `/` and `.` both become `-`, so
+    `/Users/x/.config/nix` is `-Users-x--config-nix`.
+    """
+    return re.sub(r"[/.]", "-", os.getcwd())
+
+
+@_produces("auto-memory")
+def _auto_memory(machine: Machine) -> list[Check]:
+    """The harness's own memory feature, running beside memkit's.
+
+    The one differentiator the field survey found unclaimed: none of the six
+    competitors handles built-in auto-memory coexistence at all. Two stores
+    writing memories about the same work, in two formats, with two retrieval
+    paths, is a state an adopter should choose rather than discover.
+    """
+    setting = None
+    where = ""
+    for scope in machine.settings:
+        for key in ("autoDreamEnabled", "autoMemoryEnabled"):
+            if key in scope.data:
+                setting = (key, scope.data[key])
+                where = scope.scope
+                break
+        if setting:
+            break
+    config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
+    project = os.path.join(config_dir, "projects", _sanitized_cwd())
+    recent = ""
+    for candidate in (
+        os.path.join(project, CONSOLIDATE_LOCK),
+        os.path.join(project, "memory", CONSOLIDATE_LOCK),
+    ):
+        with contextlib.suppress(OSError):
+            age = int(time.time() - os.stat(candidate).st_mtime)
+            if age < CONSOLIDATE_RECENT:
+                recent = f"; a consolidation ran {age}s ago"
+            else:
+                recent = f"; last consolidation {age // 3600}h ago"
+            break
+    if setting is None:
+        return [
+            Check(
+                "auto-memory",
+                PASS,
+                "no auto-memory setting in any scope" + (recent or ""),
+            )
+        ]
+    key, value = setting
+    if not value:
+        return [
+            Check("auto-memory", PASS, f"{key} is off in {where} settings" + recent)
+        ]
+    return [
+        Check(
+            "auto-memory",
+            INFO,
+            f"{key} is ON in {where} settings{recent}. The harness writes and "
+            "consolidates its own memories under "
+            f"{_display_path(project)}/memory/, beside memkit's store",
+            "Two memory systems on one project is a choice rather than a "
+            'fault. To run memkit alone, set "autoDreamEnabled": false in '
+            f"{_display_path(config_dir)}/settings.json.",
+            actor=USER,
         )
     ]
 

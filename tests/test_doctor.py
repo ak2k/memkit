@@ -1158,3 +1158,254 @@ def test_a_torn_final_log_line_is_skipped_rather_than_taken_as_an_empty_log(
         "gate-outcomes",
     )
     assert "last 1 prompts" in row.detail
+
+
+# --- coexistence -------------------------------------------------------------
+
+
+def _registration(command: str) -> dict:
+    return {"UserPromptSubmit": [{"hooks": [{"type": "command",
+                                             "command": command}]}]}
+
+
+def test_two_registrations_serving_one_prompt_is_a_fail_that_names_them(
+    profile, monkeypatch
+) -> None:
+    """A silent lost update from inside: both hooks inject, both write this
+    session's ledger, and the later write wins. What the user sees is pointers
+    that come and go for no reason rather than an error.
+
+    The runtime half — the `dup-registration` fingerprint — is loud and cannot
+    name the entry. This is the half that can.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(
+        profile,
+        enabledPlugins={"memkit@memkit": True},
+        hooks=_registration("/opt/other/memory_prompt_recall.py"),
+    )
+    (row,) = _only(
+        doctor.collect(_machine(profile, monkeypatch, path)), "registrations-count"
+    )
+    assert row.status == doctor.FAIL
+    assert "2 registrations" in row.detail
+    # WHICH entries, by scope and by command.
+    assert "/opt/other/memory_prompt_recall.py" in row.detail
+    assert "user settings" in row.detail
+    assert "memkit@memkit" in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_one_registration_is_the_green_case(profile, monkeypatch) -> None:
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, enabledPlugins={"memkit@memkit": True})
+    (row,) = _only(
+        doctor.collect(_machine(profile, monkeypatch, path)), "registrations-count"
+    )
+    assert row.status == doctor.PASS
+
+
+def test_a_disabled_plugin_fails_while_the_count_still_reports_one(
+    profile, monkeypatch
+) -> None:
+    """`plugin details` reports `Hooks (1)` on a plugin that is switched off,
+    and only `plugin list` disagrees. Both walkthroughs met that and read it as
+    a working install.
+
+    The count stays at one deliberately: the settings entry is still there, and
+    a report that said "0 registrations" would send an adopter to install
+    something they have already installed.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(
+        profile,
+        enabledPlugins={"memkit@memkit": False},
+        hooks=_registration("/opt/other/memkit-hook"),
+    )
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (enabled,) = _only(checks, "plugin-enabled")
+    assert enabled.status == doctor.FAIL
+    assert "DISABLED" in enabled.detail
+    assert "claude plugin enable memkit@memkit" == enabled.remedy
+    (count,) = _only(checks, "registrations-count")
+    assert count.status == doctor.PASS, count.detail
+
+
+def test_a_machine_with_no_plugin_has_no_opinion_about_enabling_one(
+    profile, monkeypatch
+) -> None:
+    """Three states, and the third is not a failure: a nix or pip install has
+    no plugin to enable."""
+    path = _store_config(profile, stores=["personal"])
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "plugin-enabled")
+    assert row.status == doctor.INFO
+
+
+def test_the_trust_markers_refusals_finally_have_a_reader(profile, monkeypatch):
+    """Otherwise U2's instrumentation has no reader on an adopter's machine:
+    the marker is a file in a plugin data directory nobody is told about."""
+    path = _store_config(profile, stores=["personal"])
+    data = profile / "plugin-data"
+    data.mkdir()
+    (data / hook.MARKER_NAME).write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "records": [
+                    {"cwd": "aaa", "outcome": "trust:unconfigured", "ts": 1},
+                    {"cwd": "bbb", "outcome": "trust:unconfigured", "ts": 2},
+                    {"cwd": "bbb", "outcome": "trust:config-error", "ts": 3},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    (row,) = _only(
+        doctor.collect(_machine(profile, monkeypatch, path)), "plugin-diagnostics"
+    )
+    assert row.status == doctor.INFO
+    assert "3 refusal(s) across 2 director" in row.detail
+    assert "trust:unconfigured x2" in row.detail
+    # A refusal is a setup fact, not something an agent may act on.
+    assert row.actor == doctor.USER
+
+
+def test_no_refusals_and_no_duplicates_is_the_green_case(profile, monkeypatch):
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor.collect(_machine(profile, monkeypatch, path)), "plugin-diagnostics"
+    )
+    assert row.status == doctor.PASS
+
+
+def test_subagent_delivery_is_unknown_until_that_path_is_in_the_build(
+    profile, monkeypatch
+) -> None:
+    """A state the closed status set already has, and one that does not block
+    green. Subagents getting no pointers is not a fault while nothing claims
+    they should."""
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO) + "/")
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "subagent-delivery")
+    assert row.status == doctor.UNKNOWN
+    assert "not in this build" in row.detail
+    assert doctor.verdict([row]) == "OK"
+
+
+def test_subagent_delivery_reads_the_entry_and_the_last_task_outcome(
+    profile, monkeypatch
+) -> None:
+    """Registered-and-never-fired and fired-and-refused are different states
+    with different next moves, and both look like silence.
+
+    The payload here carries the entry the subagent path will register, so this
+    is the check answering the moment that lands rather than the commit after.
+    """
+    path = _store_config(profile, stores=["personal"])
+    payload = profile / "payload"
+    (payload / "hooks").mkdir(parents=True)
+    (payload / "hooks" / "hooks.json").write_text(
+        json.dumps(
+            {"hooks": {"PreToolUse": [{"matcher": "Agent",
+                                       "hooks": [{"type": "command",
+                                                  "command": "x"}]}]}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload) + "/")
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery")
+    assert row.status == doctor.INFO
+    assert "never fired" in row.detail
+
+    _soak(profile, {"ts": 5, "outcome": hook.TASK_OUTCOME_PREFIX + "gate:budget"})
+    (row,) = _only(doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery")
+    assert row.status == doctor.INFO
+    assert "rather than a delivery" in row.detail
+
+    _soak(profile, {"ts": 6, "outcome": hook.TASK_OUTCOME_PREFIX + "injected"})
+    (row,) = _only(doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery")
+    assert row.status == doctor.PASS
+
+
+def test_a_harness_mismatch_never_blocks_green(profile, monkeypatch) -> None:
+    """Harness releases outpace stamps, so a mismatch is the normal case for
+    every adopter who is not on the pinned build. A criterion that counted it
+    would make all-green unreachable for almost everybody, which is how a
+    report stops being read."""
+    path = _store_config(profile, stores=["personal"])
+    fake = profile / "bin"
+    fake.mkdir()
+    (fake / "claude").write_text("#!/bin/sh\necho '9.9.9 (Claude Code)'\n")
+    (fake / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ["PATH"])
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "harness-stamp")
+    assert row.status == doctor.UNVERIFIED
+    assert "9.9.9" in row.detail and doctor.MEASURED_HARNESS in row.detail
+    assert doctor.verdict([row]) == "OK"
+
+    (fake / "claude").write_text(
+        f"#!/bin/sh\necho '{doctor.MEASURED_HARNESS} (Claude Code)'\n"
+    )
+    (fake / "claude").chmod(0o755)
+    (row,) = _only(doctor._PRODUCERS["harness-stamp"](doctor.Machine()), "harness-stamp")
+    assert row.status == doctor.PASS
+
+
+def test_no_claude_on_path_is_unknown_rather_than_a_guess(profile, monkeypatch):
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv("PATH", str(profile / "empty"))
+    (row,) = _only(
+        doctor._PRODUCERS["harness-stamp"](_machine(profile, monkeypatch, path)),
+        "harness-stamp",
+    )
+    assert row.status == doctor.UNKNOWN
+
+
+def test_auto_memory_armed_is_information_and_names_the_setting(profile, monkeypatch):
+    """The one differentiator the field survey found unclaimed: none of the six
+    competitors handles built-in auto-memory coexistence at all. Two memory
+    systems on one project is a choice, so it is INFO and the remedy names the
+    exact key."""
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoDreamEnabled=True)
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "auto-memory")
+    assert row.status == doctor.INFO
+    assert "autoDreamEnabled is ON" in row.detail
+    assert '"autoDreamEnabled": false' in row.remedy
+    assert doctor.verdict([row]) == "OK"
+
+    _settings(profile, autoDreamEnabled=False)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+
+
+def test_auto_memory_reports_whether_a_consolidation_actually_ran(
+    profile, monkeypatch
+) -> None:
+    """"Armed" and "actually running" are different, and the lock beside the
+    harness's own per-project memory directory is what separates them."""
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoDreamEnabled=True)
+    project = (
+        profile / "claude-config" / "projects" / doctor._sanitized_cwd() / "memory"
+    )
+    project.mkdir(parents=True)
+    (project / doctor.CONSOLIDATE_LOCK).touch()
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "consolidation ran" in row.detail
+
+
+def test_the_measured_harness_stamp_is_the_one_ci_measures_on() -> None:
+    """A stamp that drifted from the build CI runs its scenarios against is a
+    stamp reporting agreement nobody established."""
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text()
+    assert f'CLAUDE_CODE_VERSION: "{doctor.MEASURED_HARNESS}"' in workflow

@@ -2467,6 +2467,13 @@ PLUGIN_ENV = "MEMKIT_PLUGIN"
 # what the hook does may branch on it, or doctor would be exercising a path no
 # prompt takes.
 DOCTOR_ENV = "MEMKIT_DOCTOR"
+# The prefix every soak outcome on the SUBAGENT path carries. Declared here,
+# beside the vocabulary it belongs to, because two things need it and they land
+# in different units: the delivery path that writes those records, and doctor's
+# `subagent-delivery` check, which has to be able to say "registered, never
+# fired" before that path exists. A prefix rather than a fixed name so the
+# outcomes stay individually greppable and collectively separable.
+TASK_OUTCOME_PREFIX = "task:"
 # Plugin-scoped storage, which `claude plugin uninstall` removes unless
 # `--keep-data`. That is exactly the right lifetime for a record of refusals
 # and precisely the wrong one for anything a later `--undo` would need, which
