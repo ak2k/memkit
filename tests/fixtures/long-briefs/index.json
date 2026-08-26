@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "note": "Paired cases for the long-brief eval slice. Every brief here is longer than the prompt path's 4000-character shape ceiling, because that is the population the task path exists to serve and the prompt path refuses outright. `served` names the memory in the fixture corpus a brief of this shape ought to surface; `unserved` names none, and a pointer on one of those is an incorrect injection. Both halves are needed: a coverage rate alone is met by a gate that serves everything, and an injection rate alone by a gate that serves nothing.",
+  "served": [
+    {
+      "brief": "served/firmware-fleet-rollout.md",
+      "file": "widget_calibration.md",
+      "note": "the brief never says `widget` or `trim`; it says what the reader is doing"
+    },
+    {
+      "brief": "served/readings-drift-investigation.md",
+      "file": "widget_calibration.md"
+    },
+    {
+      "brief": "served/vessel-reassembly.md",
+      "file": "flange_torque.md"
+    },
+    {
+      "brief": "served/warped-face-postmortem.md",
+      "file": "flange_torque.md"
+    },
+    {
+      "brief": "served/gearbox-acceptance.md",
+      "file": "sprocket_alignment.md"
+    },
+    {
+      "brief": "served/backlash-rig.md",
+      "file": "sprocket_alignment.md",
+      "note": "the 6KB case: past the shape ceiling by half again"
+    },
+    {
+      "brief": "served/rotor-swap-programme.md",
+      "file": "turbine_balancing.md"
+    },
+    {
+      "brief": "served/period-close-automation.md",
+      "file": "ledger_reconciliation.md"
+    }
+  ],
+  "unserved": [
+    { "brief": "unserved/accessibility-audit.md" },
+    { "brief": "unserved/warehouse-slotting.md" },
+    { "brief": "unserved/support-triage-rework.md" },
+    { "brief": "unserved/translation-pipeline.md" },
+    { "brief": "unserved/archive-digitisation.md" },
+    { "brief": "unserved/onboarding-portal.md" },
+    { "brief": "unserved/mobile-release-process.md" },
+    { "brief": "unserved/grant-reporting.md" }
+  ]
+}
