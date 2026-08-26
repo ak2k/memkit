@@ -58,6 +58,29 @@ check("prompt gate, short", hook.prompt_gate("hi"), "gate:short")
 check("prompt gate, ok", hook.prompt_gate("why do prepared statements break"), None)
 check("query builder", hook.build_query("why do prepared statements break") is None, False)
 check("sanitizer", hook.sanitize("a\x1b[31m  b"), "a b")
+
+# --- EVERYTHING BELOW HERE RUNS AGAINST A SCRATCH HOME -----------------------
+#
+# The runner passes the whole environment through, stripping only `MEMKIT_*`,
+# so until this block runs `$HOME` is the developer's and `_state_dir()` is
+# their real cache. `_sweep()` was called fifteen lines above it: on this
+# machine that is 28,000 files, and the run unlinked from them and rewrote
+# their cursor. It was flaky as well as destructive — `unlink` is 0 only while
+# the real stamp is under an hour old, so the same suite passed at 12:30 and
+# failed at 13:30.
+
+home = tempfile.mkdtemp()
+os.environ["HOME"] = home
+os.environ["XDG_CACHE_HOME"] = os.path.join(home, ".cache")
+for name in ("MEMKIT_CONFIG", "MEMKIT_PLUGIN", "CLAUDE_PLUGIN_DATA",
+             "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG"):
+    os.environ.pop(name, None)
+os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(home, "claude")
+# Asserted rather than assumed: this file is a script with no fixtures, so
+# nothing but this line stands between a later check and the real cache.
+check("state is hermetic",
+      hook._state_dir_candidate().startswith(tempfile.gettempdir()), True)
+
 check("state dir is absolute", os.path.isabs(hook._state_dir_candidate()), True)
 check("task state path", os.path.basename(hook._task_state_path("t")).startswith("t-"), True)
 check("sweep on an absent dir", hook._sweep()["unlink"], 0)
@@ -75,13 +98,6 @@ check("init default config is absolute after expansion",
 # Every doctor check runs, which is what makes this more than an import test:
 # a check that raises is caught and reported as UNKNOWN, so a floor break would
 # otherwise hide inside the envelope rather than failing.
-home = tempfile.mkdtemp()
-os.environ["HOME"] = home
-os.environ["XDG_CACHE_HOME"] = os.path.join(home, ".cache")
-for name in ("MEMKIT_CONFIG", "MEMKIT_PLUGIN", "CLAUDE_PLUGIN_DATA",
-             "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG"):
-    os.environ.pop(name, None)
-os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(home, "claude")
 report = cli_doctor.envelope(cli_doctor.collect(cli_doctor.Machine()))
 broke = [c for c in report["checks"] if "the check itself failed" in c["detail"]]
 check("no doctor check raised", [c["id"] for c in broke], [])

@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -367,7 +368,7 @@ def _floor_interpreter() -> str | None:
     return shutil.which("python3.9")
 
 
-def test_the_hook_and_both_subcommands_run_on_a_real_39() -> None:
+def test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path) -> None:
     """The floor, EXECUTED — which is what a static pass cannot do.
 
     pyright at 3.9 catches a PEP-604 annotation evaluated at runtime and a
@@ -393,16 +394,36 @@ def test_the_hook_and_both_subcommands_run_on_a_real_39() -> None:
             )
         pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
     assert interpreter is not None
+    # A HOME OF ITS OWN, WITH SOMETHING TO LOSE IN IT. The floor script is not
+    # a pytest module, so no fixture isolates it and the runner passes the
+    # whole environment through — and it called `_sweep()` fifteen lines before
+    # it redirected HOME, so running the suite unlinked from the developer's
+    # real cache (28,000 files here) and rewrote its cursor. Seeding a
+    # collectible file in the HOME handed over is what turns "it is hermetic"
+    # into something this can observe.
+    home = tmp_path / "home"
+    state = home / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    victim = state / "aaaaaaaa-1111-4222-8333-aaaaaaaaaaaa.json"
+    victim.write_text("{}", encoding="utf-8")
+    stale = time.time() - 30 * 86400
+    os.utime(victim, (stale, stale))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MEMKIT_")}
+    env["HOME"] = str(home)
+    env.pop("XDG_CACHE_HOME", None)
     out = subprocess.run(
         [interpreter, str(REPO / "tests" / "floor39.py")],
         capture_output=True, text=True, timeout=600,
-        env={k: v for k, v in os.environ.items() if not k.startswith("MEMKIT_")},
+        env=env,
     )
     assert out.returncode == 0, out.stdout + out.stderr
     assert "floor39: ok on 3.9" in out.stdout, out.stdout
+    assert victim.is_file(), "the floor gate swept the HOME it was handed"
 
 
-def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(monkeypatch):
+def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(
+    monkeypatch, tmp_path
+):
     """A gate that quietly stops gating is the shape of the failure the gate
     exists to catch, so the skip has to be switchable off and the switch has to
     be tested — otherwise the one thing CI relies on is the one thing nobody
@@ -414,13 +435,13 @@ def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(monkeypatch)
     # marks this case skipped, which reads as green. The exact failure this
     # test exists to catch would therefore have been invisible to it.
     with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
-        test_the_hook_and_both_subcommands_run_on_a_real_39()
+        test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path)
     assert caught.typename == "AssertionError", caught.typename
     assert "no 3.9 interpreter" in str(caught.value)
 
     monkeypatch.delenv(FLOOR_REQUIRED_ENV)
     with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
-        test_the_hook_and_both_subcommands_run_on_a_real_39()
+        test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path)
     assert caught.typename == "Skipped", caught.typename
 
 
