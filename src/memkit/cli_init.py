@@ -809,16 +809,22 @@ def build_plan(
                 existing = f.read()
         except OSError:
             existing = ""
-        actions.append(
-            Action(
-                APPEND_LINE,
-                target,
-                existing.rstrip("\n") + "\n" + _import_line(store_path) + "\n"
-                if existing.strip()
-                else _import_line(store_path) + "\n",
-                note=f"appends {_import_line(store_path)}",
+        line = _import_line(store_path)
+        # CONVERGE, do not duplicate. `redundant` cannot see this: appending
+        # the same line twice produces a different file every time, so the
+        # action would look new on every run and a CLAUDE.md would grow one
+        # import per init — a file the adopter then has to clean up by hand.
+        if line not in existing.splitlines():
+            actions.append(
+                Action(
+                    APPEND_LINE,
+                    target,
+                    existing.rstrip("\n") + "\n" + line + "\n"
+                    if existing.strip()
+                    else line + "\n",
+                    note=f"appends {line}",
+                )
             )
-        )
         notes.append(
             "The @-import puts each HOT memory's description in every session "
             "— one line per memory, from MEMORY.md — and not its body. The "

@@ -892,3 +892,96 @@ def test_a_failed_write_never_destroys_what_was_already_there(profile, monkeypat
     assert target.read_text() == original
     # And no scratch file left behind for the next reader to find.
     assert [p.name for p in profile.glob("config.json*")] == ["config.json"]
+
+
+# --- the two consented writes ------------------------------------------------
+
+
+def test_the_settings_write_appears_only_with_its_own_flag(profile) -> None:
+    """The ONLY settings key init may write, and only when asked. A setup
+    command that turned a harness feature off because it seemed tidy would be
+    making a decision about somebody else's tool."""
+    assert not [a for a in _plan(profile).actions if a.op == init.SETTINGS_WRITE]
+    with_flag = _plan(profile, auto_dream_off=True)
+    (action,) = [a for a in with_flag.actions if a.op == init.SETTINGS_WRITE]
+    assert json.loads(action.content) == {"autoDreamEnabled": False}
+    assert any("auto-dream off" in note for note in with_flag.notes)
+
+
+def test_the_claude_md_import_appears_only_with_its_own_flag(profile) -> None:
+    """It writes to a file adopters treat as theirs, on a path where the
+    consent that was given was about a memory store."""
+    assert not [a for a in _plan(profile).actions if a.op == init.APPEND_LINE]
+    plan = _plan(profile, wire_claude_md=True, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.APPEND_LINE]
+    assert action.content.strip() == f"@{profile / 'notes' / 'MEMORY.md'}"
+
+
+def test_the_import_offer_states_the_honest_version_of_what_it_buys(profile):
+    """An @-import of MEMORY.md puts each hot memory's DESCRIPTION in every
+    session — one line per memory — and not its body. The bodies stay files to
+    open. That is narrower than the docs have implied, and it is the reason
+    this is behind a flag rather than on by default."""
+    plan = _plan(profile, wire_claude_md=True)
+    notes = " ".join(plan.notes)
+    assert "description" in notes and "not its body" in notes
+    assert "files to open" in notes
+
+
+def test_the_import_converges_rather_than_duplicating(profile) -> None:
+    """Re-running must not append the same line twice: a CLAUDE.md that grew
+    one import per init is a file the adopter has to clean up by hand."""
+    target = profile / "claude-config" / "CLAUDE.md"
+    target.write_text("# mine\n", encoding="utf-8")
+    plan = _plan(profile, wire_claude_md=True, store=str(profile / "notes"))
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_OK
+    body = target.read_text()
+    assert body.count("@") == 1, body
+    assert body.startswith("# mine")
+
+    again = _plan(profile, wire_claude_md=True, store=str(profile / "notes"))
+    assert not [a for a in again.writes if a.op == init.APPEND_LINE]
+
+
+def test_a_git_tracked_claude_md_is_warned_about_rather_than_refused(profile):
+    """An adopter may well keep their CLAUDE.md in a dotfiles repo on purpose.
+    What they may not do is find a line in it they will be asked to commit and
+    have nobody mention it."""
+    repo = profile / "claude-config"
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=60)
+    target = repo / "CLAUDE.md"
+    target.write_text("# mine\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "CLAUDE.md"],
+        cwd=repo, check=True, timeout=60,
+    )
+    plan = _plan(profile, wire_claude_md=True)
+    notes = " ".join(plan.notes)
+    assert "tracked by git" in notes
+    assert "commit" in notes
+    # A warning, not a refusal: the plan still carries the write.
+    assert [a for a in plan.actions if a.op == init.APPEND_LINE]
+
+
+def test_the_generated_config_advertises_a_command_the_agent_can_run(profile):
+    """On the plugin channel the config PATH is part of the command, and that
+    is what makes it runnable rather than merely spelled correctly: a Bash-tool
+    process gets the plugin's bin on PATH and none of the plugin environment,
+    so a bare `memkit-recall --search` there answers inert."""
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_OK
+    cfg = hook.load_config(config)
+    assert cfg is not None
+    assert hook._advertised_search_cli(cfg) == hook.DEFAULT_SEARCH_CLI
+
+    os.environ[hook.PLUGIN_ENV] = "1"
+    try:
+        advertised = hook._advertised_search_cli(cfg)
+    finally:
+        os.environ.pop(hook.PLUGIN_ENV, None)
+    assert advertised.startswith(f"{hook.PLUGIN_SEARCH_BINARY} --config ")
+    assert advertised.endswith("--search")
+    assert config in advertised
