@@ -1969,6 +1969,23 @@ def _fts_answerable(con: sqlite3.Connection) -> bool:
 # index-maintenance function and in the tests that call them directly. The
 # process is one-shot, but recall() zeroes them first so a harness that calls
 # it in a loop (the eval, this suite) still reports per-call.
+# The largest file this index will read. A file over it is SPARED — held out
+# of the identity comparison and out of the sweep — exactly as an unreadable
+# one is, so it costs nothing per prompt and its rows, if it has any, keep
+# answering.
+#
+# The bound exists because the transaction's one-file minimum is
+# unconditional: the first file of a run is read and tokenized whatever the
+# clock says, so its cost cannot be bounded by the clock and has to be bounded
+# by something else. The file-count rate the minimum is argued from ("~163,000
+# files to reach one a run") assumes files cost about the same, and one
+# pathological file defeats that arithmetic on its own. Measured on the worst
+# shape found — a heading every second line, so one chunk per two lines —
+# 4 MiB costs 0.9 s to tokenize and insert, 8 MiB 1.8 s and 32 MiB 7.8 s,
+# which is the whole task-path budget in a single file. 4 MiB it is: an
+# eighth of that budget at the worst shape, and about a thousand times the
+# size of any memory anybody writes.
+INDEX_FILE_MAX_BYTES = 4 * 1024 * 1024
 _LEX_COUNTS: dict[str, int] = {
     "lex_spared": 0,
     "lex_unwalked": 0,
@@ -1984,6 +2001,14 @@ _LEX_COUNTS: dict[str, int] = {
     # and a small corpus otherwise write the same record — a low file count and
     # no error — and the two want opposite responses.
     "lex_deadline": 0,
+    # Files over INDEX_FILE_MAX_BYTES, which are never read. Counted because
+    # the store owner is the only one who can decide whether a memory that big
+    # was meant to be one, and nothing else in the record would say it exists.
+    "lex_oversize": 0,
+    # Rows a sweep ran out of budget before deleting. They still answer, which
+    # is the same tolerance a spared path has; what it costs is that a mass
+    # deletion takes more than one run to disappear from the index.
+    "lex_unswept": 0,
 }
 
 # Where each hit came from INSIDE its file: path -> the heading of the
@@ -2014,8 +2039,10 @@ _LEX_MATCHED: dict[str, list[str]] = {}
 _LEX_SCORES: dict[str, float] = {}
 
 
-def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set[str]]:
-    """Walk one corpus root: (stat-able identities, spared paths, unwalked).
+def _fts_scan(
+    root: str,
+) -> tuple[dict[str, tuple[int, int, int]], set[str], set[str], set[str]]:
+    """Walk one corpus root: (stat-able identities, spared, unwalked, oversize).
 
     A file this walk cannot establish anything about is SPARED rather than
     indexed: it is held out of the identity comparison, so a mismatch it can
@@ -2037,10 +2064,16 @@ def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set
     authoritative where it reached — an unreadable subtree is invisible, not
     empty, and treating it as empty would sweep every memory in it out of
     the index.
+
+    `oversize` is the files past INDEX_FILE_MAX_BYTES. Decided HERE, from the
+    stat this walk already does, because the point of the cap is that the
+    bytes are never read — a size checked after the open has already paid for
+    what it was meant to refuse.
     """
     disk: dict[str, tuple[int, int, int]] = {}
     spared: set[str] = set()
     unwalked: set[str] = set()
+    oversize: set[str] = set()
 
     def unreadable(exc: OSError) -> None:
         unwalked.add(exc.filename or root)
@@ -2058,8 +2091,11 @@ def _fts_scan(root: str) -> tuple[dict[str, tuple[int, int, int]], set[str], set
             except OSError:
                 spared.add(path)
                 continue
+            if st.st_size > INDEX_FILE_MAX_BYTES:
+                oversize.add(path)
+                continue
             disk[path] = (st.st_mtime_ns, st.st_ctime_ns, st.st_size)
-    return disk, spared, unwalked
+    return disk, spared, unwalked, oversize
 
 
 class _QueryTimeout(Exception):
@@ -2135,17 +2171,19 @@ def _fts_sync(
     indistinguishable from a corpus with nothing to say once the rows are
     gone, and "no hits" is an answer the caller trusts.
 
-    `deadline` TRUNCATES BOTH LOOPS, and it is the only thing that bounds this
-    function at all. The callers' budgets were admission checks between corpus
-    dirs, never a bound on work inside one, and a cold build is the one
+    `deadline` TRUNCATES ALL THREE LOOPS — staging, insert, sweep — and it is
+    the only thing that bounds this function at all. The callers' budgets were
+    admission checks between corpus dirs, never a bound on work inside one,
+    and a cold build is the one
     unbounded stage in the hook: measured, 2800 files of prose take 11.3 s to
     index from nothing, which is past both the task path's 7 s budget and its
     10 s harness kill. Past the kill the failure does not self-heal — each
     attempt discards the WAL it had written and starts again, so every spawn
     pays the full timeout and receives nothing, indefinitely.
 
-    BOTH LOOPS, because the first version of this bound checked the clock only
-    in the staging walk that READS the files, which is ~1% of a cold build:
+    ALL THREE, because each version of this bound left one out. The first
+    checked the clock only in the staging walk that READS the files, which is
+    ~1% of a cold build:
     reads cost ~43 us/file and the tokenize-and-insert transaction ~5 ms, so a
     7-second budget truncated nothing until a corpus reached ~163,000 files
     while the transaction blew that budget at ~1500. Measured on the reference
@@ -2154,14 +2192,30 @@ def _fts_sync(
     the executemany is one file's chunks — so the transaction commits the
     slice it reached and the rest is spared.
 
-    The transaction always inserts at least one file, whatever the clock says.
-    Staging truncates against the same instant, so on a corpus large enough to
-    exhaust the budget on READS the transaction would otherwise open, find
-    itself already past the deadline, and commit nothing — the same
-    never-converges loop this bound exists to end, reached from the other
-    side. One file a run is a poor rate and it is a rate; it takes a corpus
-    around 160,000 files to reach it at the task path's budget, and the answer
-    there is a larger budget rather than a smaller slice.
+    The second checked both loops and left the SWEEP unbounded, which is one
+    DELETE per vanished path with the transaction already open — cheap on a
+    corpus that loses a file and unbounded on one that loses a directory. It
+    stops on the clock too now, and the rows it did not delete stay
+    answerable: stale, which is the tolerance a spared path already has, and
+    the cheaper of the two failures.
+
+    A file over INDEX_FILE_MAX_BYTES is never read at all — see the constant
+    for why the minimum below makes that a size question rather than a clock
+    question.
+
+    BOTH LOOPS INSERT AT LEAST ONE FILE, whatever the clock says. Staging
+    truncates against the same instant the transaction does, so a corpus large
+    enough to exhaust the budget on READS would otherwise leave the
+    transaction already past its deadline and commit nothing. Giving the
+    minimum to the transaction alone was not enough, because staging's own
+    truncation does `del disk[path]`: with every candidate truncated `disk`
+    empties, the identity comparison finds no difference, `BEGIN IMMEDIATE` is
+    never reached and the transaction's minimum never applies. So staging
+    reads its first candidate unconditionally, which is what keeps a
+    difference for the transaction to open on. One file a run is a poor rate
+    and it is a rate; it takes a corpus around 160,000 files to reach it at
+    the task path's budget, and the answer there is a larger budget rather
+    than a smaller slice.
 
     Truncating converts that into convergence. A path this run did not get to
     is moved into `spared`, which is exactly the classification an unreadable
@@ -2170,8 +2224,13 @@ def _fts_sync(
     finish. Each run commits the slice it managed to read, and the next run
     starts from there.
     """
-    disk, spared, unwalked = _fts_scan(root)
+    disk, spared, unwalked, oversize = _fts_scan(root)
+    # Spared, with the same guarantee every other spared path carries: it
+    # empties `sweep`, so a file this run declined to read cannot have its
+    # existing rows deleted on the strength of that refusal.
+    spared |= oversize
     _LEX_COUNTS["lex_unwalked"] += len(unwalked)
+    _LEX_COUNTS["lex_oversize"] += len(oversize)
     snapshot = _fts_identity(con)
     if unwalked:
         # An incomplete walk cannot tell "deleted" from "in the part I could
@@ -2189,10 +2248,11 @@ def _fts_sync(
     # every session at once.
     staged: dict[str, list[str]] = {}
     truncated = 0
+    unswept = 0
     for path, ident in list(disk.items()):
         if snapshot.get(path) == ident:
             continue
-        if deadline is not None and time.monotonic() >= deadline:
+        if staged and deadline is not None and time.monotonic() >= deadline:
             # Out of time, so this path is one this run cannot account for —
             # the same thing an unreadable file is, and classified the same
             # way. Not `break`-and-leave-it-in-`disk`: a path left there is
@@ -2261,7 +2321,17 @@ def _fts_sync(
                     [(path, *ident, section) for section in sections],
                 )
                 inserted += 1
-            for path, ident in sweep.items():
+            for n, (path, ident) in enumerate(sweep.items()):
+                if deadline is not None and time.monotonic() >= deadline:
+                    # The rows left standing are stale and still answer, which
+                    # is the tolerance a spared path already has. The
+                    # alternative is the failure this whole bound exists to
+                    # end: a mass deletion is one DELETE per vanished path,
+                    # and a transaction that runs past the harness kill is
+                    # abandoned uncommitted, so the next spawn finds the same
+                    # rows and does the same work again, forever.
+                    unswept = len(sweep) - n
+                    break
                 if stored.get(path) != ident:
                     # Its row changed, or is gone, since the walk. Either way
                     # another session has been here with a fresher view of this
@@ -2284,12 +2354,19 @@ def _fts_sync(
     # record — a low file count and no error.
     _LEX_COUNTS["lex_spared"] += len(spared)
     _LEX_COUNTS["lex_deadline"] += truncated
+    _LEX_COUNTS["lex_unswept"] += unswept
     if (spared or unwalked) and not _fts_answerable(con):
-        if truncated == len(spared) and not unwalked:
-            # Nothing here is unreadable; there was no time. Said in the words
-            # of the actual cause, because this message is what an operator
-            # reads first and "unreadable" sends them at the filesystem.
-            raise _IndexTruncated(f"index empty and {root} not indexed in budget")
+        if truncated + len(oversize) == len(spared) and not unwalked:
+            # Nothing here is unreadable: it was the budget, the file cap, or
+            # both. Said in the words of the actual cause, because this message
+            # is what an operator reads first and "unreadable" sends them at
+            # the filesystem.
+            why = "not indexed in budget"
+            if oversize:
+                why = f"over the {INDEX_FILE_MAX_BYTES}-byte file cap"
+                if truncated:
+                    why = f"{why} or not indexed in budget"
+            raise _IndexTruncated(f"index empty and {root} {why}")
         raise OSError(f"index empty and part of {root} unreadable")
     # `disk` still holds any path the in-transaction backstop failed to reopen
     # — it cannot be deleted there, since that loop iterates the live dict —

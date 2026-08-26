@@ -1750,14 +1750,26 @@ def test_a_corpus_that_ran_out_of_budget_is_not_recorded_as_unreadable(
     assert record["outcome"] == hook.BUILD_TRUNCATED, record
     assert 0 < record["files"] < 40, record
 
-    # And the empty case: readable corpus, no time at all, so the index can
-    # answer nothing. Still a refusal — an empty index answers "no hits" and is
-    # believed — but recorded and worded as what it is.
+    # And the empty case: a readable corpus this build declined whole, so the
+    # index can answer nothing. Still a refusal — an empty index answers "no
+    # hits" and is believed — but recorded and worded as what it is.
+    #
+    # Declined for SIZE rather than for time, because time can no longer get
+    # here: staging reads its first candidate whatever the clock says, so a run
+    # short of budget alone commits one file and converges. A store of nothing
+    # but files over the cap is the same state with the same answer, and it is
+    # the state this branch is now for.
     for suffix in ("", "-wal", "-shm"):
         Path(hook._fts_db(str(corpus)) + suffix).unlink(missing_ok=True)
-    _tick(monkeypatch)
-    with pytest.raises(OSError, match="not indexed in budget") as raised:
-        hook._fts_dir("sprocket backlash", str(corpus), 0.0)
+    for memo in corpus.glob("*.md"):
+        memo.unlink()
+    (corpus / "huge.md").write_text("## H\nsprocket backlash gearbox\n" * 160_000)
+    # The real clock back, and only the clock: `undo()` would also drop the
+    # fixture's `_state_dir` redirect and send this build at the operator's own
+    # index.
+    monkeypatch.setattr(hook.time, "monotonic", time.monotonic)
+    with pytest.raises(OSError, match="file cap") as raised:
+        hook._fts_dir("sprocket backlash", str(corpus), None)
     assert isinstance(raised.value, hook._IndexTruncated)
     record = json.loads(build.read_text())
     assert record["outcome"] == hook.BUILD_TRUNCATED, record
@@ -8748,18 +8760,19 @@ def test_a_sync_out_of_budget_indexes_a_slice_rather_than_all_or_nothing(
 
     con = hook._fts_connect(hook._fts_db(str(corpus)))
     try:
-        # Forty readings to stage, then five and a half to insert: the first
-        # insert takes no reading (the loop has to make progress before it may
-        # stop), so six files land.
+        # Thirty-nine readings to stage — the first candidate is read without
+        # consulting the clock, for the same reason the first insert is — then
+        # six and a half to insert, and the first of those takes no reading
+        # either, so seven files land.
         files, spared, unwalked, truncated = hook._fts_sync(con, str(corpus), 1045.5)
-        assert files == 6, files
-        assert spared == 34, spared
+        assert files == 7, files
+        assert spared == 33, spared
         assert unwalked == 0
-        assert truncated == 34
-        assert hook._LEX_COUNTS["lex_deadline"] == 34
+        assert truncated == 33
+        assert hook._LEX_COUNTS["lex_deadline"] == 33
         # The slice it managed IS committed, and nothing was swept on the
         # strength of a walk that did not finish.
-        assert con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0] == 6
+        assert con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0] == 7
     finally:
         con.close()
 
@@ -8790,22 +8803,149 @@ def test_a_sync_whose_budget_went_on_reading_still_commits_one_file(
         con.close()
 
 
-def test_a_sync_that_read_nothing_refuses_rather_than_answering_empty(
-    corpus: Path, monkeypatch
+def test_a_sync_whose_budget_went_before_the_first_read_still_commits_one_file(
+    corpus: Path,
 ) -> None:
-    """A truncation that got to no file at all leaves an index holding
-    nothing, and an empty index answers `no hits` — which the caller believes.
-    That is the same state an entirely unreadable corpus reaches, and it takes
-    the same answer: raise, so the stage reports an error rather than an
-    absence."""
-    _many_memos(corpus, 5)
-    _tick(monkeypatch)
+    """The other door into the never-converges loop, and the one the insert
+    loop's minimum does not reach.
+
+    Staging truncates every candidate it cannot read in time, and truncation
+    does `del disk[path]` — so on a cold index where the budget is already
+    spent at staging entry, `disk` empties, the identity comparison finds no
+    difference, `BEGIN IMMEDIATE` is never reached, and the transaction's own
+    one-file minimum never applies. The store stays at zero rows and every
+    later run repeats it. Reproduced on a 60-file corpus: `_IndexTruncated`
+    with zero rows committed, for as long as the deadline held.
+    """
+    _many_memos(corpus, 60)
     con = hook._fts_connect(hook._fts_db(str(corpus)))
     try:
-        with pytest.raises(OSError, match="index empty"):
-            hook._fts_sync(con, str(corpus), 0.0)
+        files, spared, unwalked, truncated = hook._fts_sync(
+            con, str(corpus), time.monotonic() - 1.0
+        )
+        assert (files, unwalked) == (1, 0), (files, spared, unwalked, truncated)
+        assert spared == 59 and truncated == 59, (spared, truncated)
+        rows = con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0]
+        assert rows == 1, rows
     finally:
         con.close()
+
+
+def test_the_file_the_transaction_must_read_is_bounded_in_size(
+    corpus: Path,
+) -> None:
+    """The mandatory insert has to happen whatever the clock says, so its cost
+    has to be bounded by something other than the clock.
+
+    The file-count arithmetic the one-a-run rate rests on ("~163,000 files to
+    reach it") assumes files cost about the same. One pathological file
+    defeats it on its own: nothing capped `st_size`, both read sites did
+    `_md_sections(f.read())` whole, and the deadline check inside the
+    transaction is gated on `inserted`, so the first file's read and tokenize
+    always run to completion. Measured on the worst shape found (a
+    heading-per-line file, one chunk every two lines): 8 MiB costs 1.8 s and
+    32 MiB costs 7.8 s, which is the whole task-path budget in one file.
+    """
+    _many_memos(corpus, 3)
+    huge = corpus / "huge.md"
+    huge.write_text("## H\nsprocket backlash gearbox\n" * 160_000)
+    assert huge.stat().st_size > hook.INDEX_FILE_MAX_BYTES, huge.stat().st_size
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        files, spared, unwalked, truncated = hook._fts_sync(con, str(corpus))
+        assert (files, spared, unwalked, truncated) == (3, 1, 0, 0)
+        indexed = {
+            os.path.basename(row[0])
+            for row in con.execute("SELECT DISTINCT path FROM chunks")
+        }
+        assert indexed == {"m0000.md", "m0001.md", "m0002.md"}, indexed
+    finally:
+        con.close()
+
+
+def test_a_store_of_nothing_but_oversized_files_says_so(corpus: Path) -> None:
+    """An empty index answers "no hits", which the caller believes — so an
+    index left empty by a rule of memkit's own has to raise rather than answer.
+
+    The same shape as the truncated case and for the same reason, and the
+    message names the actual cause: an operator told "unreadable" goes at the
+    filesystem, and there is nothing wrong with the filesystem here.
+    """
+    huge = corpus / "huge.md"
+    huge.write_text("## H\nsprocket backlash gearbox\n" * 160_000)
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        with pytest.raises(hook._IndexTruncated, match="over"):
+            hook._fts_sync(con, str(corpus))
+    finally:
+        con.close()
+
+
+def test_a_sweep_that_runs_out_of_budget_stops_and_finishes_next_run(
+    corpus: Path, monkeypatch
+) -> None:
+    """The one loop in this transaction the deadline never reached.
+
+    A mass deletion in the store — a renamed directory, a store rebuilt from a
+    different layout — leaves one DELETE per vanished path, all inside the
+    transaction, with nothing bounding them. Past the harness kill the
+    transaction is abandoned uncommitted by `_flush_on_kill`'s `os._exit`, the
+    next spawn finds the same rows and repeats the same work: the
+    non-convergence the rest of this budget work exists to end, entering
+    through the one door it left open.
+
+    Rows left standing are stale, which is the same tolerance a spared path
+    already has and the cheaper of the two failures: an answer from a file
+    that has gone is recoverable, a store that never finishes its sweep is
+    not.
+    """
+    _many_memos(corpus, 40)
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        assert hook._fts_sync(con, str(corpus))[0] == 40
+        for path in corpus.glob("*.md"):
+            path.unlink()
+        _tick(monkeypatch)
+        hook._fts_sync(con, str(corpus), 1010.5)
+        left = con.execute("SELECT count(DISTINCT path) FROM chunks").fetchone()[0]
+        assert 0 < left < 40, left
+        # And the next run, with a budget, finishes what this one left.
+        monkeypatch.setattr(hook.time, "monotonic", time.monotonic)
+        hook._fts_sync(con, str(corpus))
+        assert con.execute("SELECT count(*) FROM chunks").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root reads mode-000 files, so nothing is unreadable"
+)
+def test_a_sync_that_read_nothing_refuses_rather_than_answering_empty(
+    corpus: Path,
+) -> None:
+    """A sync that got to no file at all leaves an index holding nothing, and
+    an empty index answers `no hits` — which the caller believes. So it raises,
+    and the stage reports an error rather than an absence.
+
+    Reached through the corpus rather than through the clock. The budget can no
+    longer produce this state: staging reads its first candidate whatever the
+    clock says, so a run that is only short of TIME commits one file and
+    converges, which is the point of that minimum. What is left here is the
+    corpus that cannot be read at all — and the message has to say so, since
+    "unreadable" is what sends an operator at the filesystem.
+    """
+    _many_memos(corpus, 5)
+    for path in corpus.glob("*.md"):
+        path.chmod(0o000)
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        with pytest.raises(OSError, match="index empty and part of") as raised:
+            hook._fts_sync(con, str(corpus))
+        assert not isinstance(raised.value, hook._IndexTruncated), raised.value
+    finally:
+        con.close()
+        for path in corpus.glob("*.md"):
+            path.chmod(0o600)
 
 
 def test_a_truncated_sync_converges_across_runs(corpus: Path, monkeypatch) -> None:
@@ -8826,7 +8966,7 @@ def test_a_truncated_sync_converges_across_runs(corpus: Path, monkeypatch) -> No
             con.close()
     # Accelerating, because each run stages fewer stale files than the last and
     # hands the rest of the budget to the loop that inserts them.
-    assert seen == [6, 18, 40, 40, 40, 40], seen
+    assert seen == [7, 21, 40, 40, 40, 40], seen
 
 
 def test_a_query_past_the_budget_errors_rather_than_counting_fewer_terms(
