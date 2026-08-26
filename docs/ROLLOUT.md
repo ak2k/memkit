@@ -210,9 +210,25 @@ are the only remaining copies of what those tracked files used to hold.
 
 ## Per-host verify, plugin channel
 
-The checks above read paths a plugin install does not have. These five were run
-against a real scratch install before being written here, which is the whole
-point of a verify procedure.
+The checks above read paths a plugin install does not have. Run
+`memkit doctor` first — it is the machine reader for every one of the five
+below, and it additionally exercises the installed hook, which none of them
+do:
+
+```
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+PLUGIN="$CFG/plugins/cache/memkit/memkit"
+"$(ls -d "$PLUGIN"/*/bin/memkit --2>/dev/null | tail -1)" doctor --json
+```
+
+Zero `FAIL` is the bar; `INFO`, `ASSUMPTIONS-UNVERIFIED` and `UNKNOWN` do not
+block, and the harness version stamp mismatches on almost every host. The five
+manual checks stay below it as the fallback for a host where doctor cannot run
+— no interpreter, no payload — which is precisely the state its own
+`interpreter` check would have reported if it could.
+
+These five were run against a real scratch install before being written here,
+which is the whole point of a verify procedure.
 
 The sections before this one are a NIX-FLEET rollout, written from a mixed
 darwin and NixOS estate. A colleague adopting through the plugin channel — the
@@ -351,11 +367,19 @@ that is not gating reports without blocking.
 
 **Runtime is not gated, and that is a known posture, not an oversight.** The
 hook fails open by contract; a host whose hook has been silently inert for a
-week emits nothing that distinguishes it from a quiet week. Nothing in this
-milestone changes that — the per-host checks above are the only detector, and
-they run when a human runs them. An agent-invocable doctor that answers "is
-retrieval actually working here" is deferred; until it exists, treat the verify
-recipe as mandatory per host rather than as a spot check.
+week emits nothing that distinguishes it from a quiet week.
+
+`memkit doctor --json` is the agent-invocable detector that answers "is
+retrieval actually working here", and it is what the per-host verify above
+leads with. It changes what a check COSTS, not when one happens: it still runs
+when something runs it. What it removes is the reason a per-host check used to
+be skipped — five commands whose output somebody had to read — and what it adds
+is a run of the installed hook, which no manual check in this document ever
+did.
+
+Nothing in this milestone polls it. Until something does, treat the verify as
+mandatory per host rather than as a spot check; `--json` and the exit code make
+it a thing a cron or a deploy step can gate on when somebody wants that.
 
 ## The edit-to-live loop
 

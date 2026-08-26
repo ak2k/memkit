@@ -24,8 +24,11 @@ frontmatter to be retrievable.
   this page writes memories to `<store>/search/`, so on a flat store the first
   memory your agent writes takes every earlier one out of retrieval. The
   [Quick start](../README.md#quick-start) therefore creates `search/` from the
-  first file, and so should you. If you already have a flat store, move all of
-  it in one step.
+  first file, and so should you. `/memkit:init` starts you there — it lays the
+  store out with `search/` and `hot/` before it writes anything into either, so
+  the layout never has to change — and it refuses to adopt a flat store that
+  already holds memories, naming the one-step migration instead of performing
+  it silently. If you already have a flat store, move all of it in one step.
 
   Both diagnostics catch the stranded state: `--debug-config` names the files,
   and on a pip or nix install the checker reports `STRAY-ROOT: ./<file>` for a
@@ -242,8 +245,16 @@ type: reference
 then the finding, and how it was established.
 
 Write the memory when the thing is settled, not when it is still a hypothesis.
-One claim per file. Do not edit a memory to record that it changed — write the
-new one and `git mv` the old into `~/notes/archive/`.
+One claim per file.
+
+Editing a memory in place is right when you are sharpening or correcting the
+SAME claim — a number that was wrong, a cause you now understand better. Check
+the `description:` still describes what the file now says, since that line is
+what retrieval matches on.
+
+Supersession is the other case, and it is a new file: when the claim itself has
+been replaced, write the new memory and `git mv` the old one into
+`~/notes/archive/`. Do not rewrite a memory into a record of its own history.
 
 To check a memory can be found: `memkit-recall --config <your config> --search "<terms>"`.
 ```

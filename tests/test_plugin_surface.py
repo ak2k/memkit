@@ -157,39 +157,45 @@ def test_the_option_key_is_one_the_harness_will_accept() -> None:
         assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key), key
 
 
-def test_the_option_is_required_and_says_what_it_is_for() -> None:
-    """`required` is what makes a forgotten `--config` loud.
+def test_the_option_is_optional_and_says_what_it_is_for() -> None:
+    """`required: false`, and it is a trade rather than a relaxation.
 
-    It does not block the install (measured: a warning naming the option and
-    the two ways to set it), which is the right severity — the plugin is inert
-    without it, not broken. A silently optional one would leave an adopter with
-    a plugin that installed cleanly and will never say anything.
+    A required option produces a typed prompt at enable, which is friction on
+    exactly the no-TTY path the install story promises — and it was never a
+    guarantee: a declared default is NOT exported to hook processes when the
+    option is unset (measured), so a required-but-skipped install reached the
+    hook with nothing on either rung anyway. What it bought was a warning; what
+    it cost was a prompt on every scripted install.
 
-    A `default` is declared for the interactive flow, and the wrapper must not
-    depend on it: a declared default is NOT exported to hook processes when the
-    option is unset (measured), so an install that skipped `--config` reaches
-    the hook with nothing on either rung. That state is inert, which is why the
-    warning is the right severity — and it is why the default is a suggestion
-    to the person installing rather than an input to the wrapper.
+    MEASURED on 2.1.241, and the whole decision rests on it: with
+    `required: false`, a value passed as `--config memkitConfig=<path>` still
+    arrives as `CLAUDE_PLUGIN_OPTION_MEMKITCONFIG` in the hook process. If that
+    ever stops being true this option has to go back to required, because the
+    unset case is silent by design and there would be nothing left to make the
+    set case loud.
     """
     option = _json(PLUGIN_MANIFEST)["userConfig"]["memkitConfig"]
-    assert option["required"] is True
+    assert option["required"] is False
     assert option["type"] == "string"
+    assert option["default"].startswith("~/"), option["default"]
     for field in ("title", "description"):
         assert option[field].strip(), field
     # The description is rendered by the harness during `/plugin install`, so
     # it is the first screen a cold adopter reads — and it named
-    # `/memkit:init`, which this payload ships no `commands/` directory for and
-    # `cli.py` lists in `_PENDING`. The adopter runs it, gets nothing, has no
-    # config, and the plugin stays silently inert.
+    # `/memkit:init` while `cli.py` still listed init in `_PENDING`. The
+    # adopter ran it, got nothing, had no config, and the plugin stayed
+    # silently inert.
     #
     # So any command it names in the present tense must exist.
     from memkit.cli import _HANDLERS, _PENDING
 
     described = option["description"]
     named = {n for n in (*_PENDING, *_HANDLERS) if f"/memkit:{n}" in described}
+    assert named, described
     assert named <= set(_HANDLERS), sorted(named - set(_HANDLERS))
-    assert "manual in this build" in described, described
+    # And the sentence that told an adopter to write it by hand is gone, since
+    # a command now does it.
+    assert "manual in this build" not in described, described
 
 
 def test_the_marketplace_entry_pins_a_commit_rather_than_a_branch() -> None:
@@ -2954,7 +2960,7 @@ def test_the_silent_gates_section_names_every_gate_the_hook_applies() -> None:
     # The cross-check command is reachable where the reader is standing, and
     # the section says plainly that the CLI is not subject to the prompt gates.
     assert '"$RECALL" --config <your config> --search' in section
-    assert "applies fewer\ngates than the hook" in section
+    assert "applies\nfewer gates than the hook" in section
 
 
 def _number_word(n: int) -> str:
@@ -3804,3 +3810,115 @@ def test_no_doctor_remedy_tells_a_terminal_to_run_a_plugin_binary(root) -> None:
     assert not offenders, offenders
     # And the scrape really does see backticked commands in remedy text.
     assert any("`" in remedy for remedy in remedies), remedies
+
+
+def test_every_doctor_check_id_appears_in_the_readmes_triage_table() -> None:
+    """The mechanized table and the prose table, pinned to each other.
+
+    `## Why nothing appeared` is the best-tested writing in this project — two
+    walkthroughs verified every row — and doctor is the thing that runs it for
+    you. A check id renamed on one side and not the other leaves an adopter
+    reading a report whose rows the page does not explain, or a page citing a
+    check that no longer exists.
+
+    Not every id has a triage row and that is deliberate: `channel`, `build`
+    and `uninstall-story` answer questions the table is not about. What may
+    never happen is a row citing an id that is not real.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("## Why nothing appeared")
+    section = readme[start : readme.index("\n## ", start + 10)]
+    cited = set(re.findall(r"`([a-z][a-z-]*)`", section)) & set(doctor.CHECK_IDS)
+    assert cited, section[:400]
+    # Every id the table cites is one doctor really emits.
+    bogus = {
+        name
+        for name in re.findall(r"^\| \*\*[^|]+\| `([a-z-]+)` \|", section, re.M)
+    } - set(doctor.CHECK_IDS)
+    assert not bogus, sorted(bogus)
+    # And the rows that carry an id are all of them: a row with none is a
+    # silent state the report cannot name.
+    rows = re.findall(r"^\| \*\*[^|]+\|([^|]*)\|", section, re.M)
+    assert len(rows) >= 12, len(rows)
+    assert all(row.strip().startswith("`") for row in rows), [
+        row for row in rows if not row.strip().startswith("`")
+    ]
+    # The line that told a reader doctor was not in this build is gone.
+    assert "would run this list for you, is not in this build" not in readme
+
+
+def test_the_block_the_docs_show_is_the_block_the_hook_writes(tmp_path) -> None:
+    """The 559-byte thing that enters every prompt was described three times
+    across these pages and never shown once.
+
+    Regenerated here rather than trusted: a pasted block is prose the moment
+    the emitter moves, and this one is quoted as evidence about what an install
+    puts in front of a model. `<store>` stands in for the absolute path, which
+    is the only substitution.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    out = subprocess.run(
+        ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py")],
+        input=json.dumps(
+            {
+                "session_id": "docblock",
+                "prompt": "why do sprocket backlash and flange torque matter "
+                "after a gearbox rebuild",
+            }
+        ),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": str(home),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "MEMKIT_CONFIG": str(REPO / "tests" / "fixtures" / "memkit.json"),
+        },
+    )
+    assert out.returncode == 0, out.stderr
+    corpus = str(REPO / "tests" / "fixtures" / "corpus" / "project")
+    emitted = out.stdout.replace(corpus, "<store>").strip()
+    assert emitted.startswith("<" + hook.FRAME_TAG + ">"), emitted[:80]
+
+    admission = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    shown = re.search(
+        r"```\n(<" + hook.FRAME_TAG + r">\n.*?</" + hook.FRAME_TAG + r">)\n```",
+        admission,
+        re.S,
+    )
+    assert shown, "no pointer block in the admission note"
+    assert shown.group(1) == emitted, (
+        "the block in docs/ADMISSION.md is not what the hook writes",
+        shown.group(1),
+        emitted,
+    )
+
+
+def test_a_claim_about_a_command_the_pin_cannot_serve_carries_the_marker() -> None:
+    """The `## Status` convention, enforced where it matters most.
+
+    This page describes `main`; the marketplace installs a release. An adopter
+    who reads "run /memkit:init" and installs the pin gets a plugin with no
+    such skill and no way to know why — which is the exact failure the marker
+    convention exists to prevent, on the one command the quick start now leads
+    with.
+
+    Self-retiring: once the pin carries the skill, the marker must go, and this
+    is what says so.
+    """
+    _needs_checkout()
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    at_pin = (
+        _git("cat-file", "-e", f"{sha}:skills/init/SKILL.md").returncode == 0
+    )
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("**3. Run `/memkit:init`")
+    first_mention = readme[start : start + 200]
+    if at_pin:
+        assert FROM_THE_NEXT_RELEASE not in first_mention, (
+            "the pin now carries the skill — the marker is stale"
+        )
+    else:
+        assert FROM_THE_NEXT_RELEASE in first_mention, first_mention

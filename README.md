@@ -53,7 +53,39 @@ claude plugin install memkit@memkit --yes \
   --config memkitConfig="$HOME/.config/memkit/memkit.json"
 ```
 
-**2. Check it registered, and that the option arrived.** A *wrong* `--config`
+`--config` is not optional in practice even though the install no longer
+prompts for it: it is the route the hook reads, and an install that skipped it
+is inert with nothing at runtime to say so.
+
+**2. Start a new session.** Claude Code reads its hook and skill registrations
+when a session starts, so the session you installed from has neither. This step
+is numbered because leaving it out makes step 4 fail in a way that looks like a
+broken install.
+
+**3. Run `/memkit:init`** *(from the next release)*. It prints a manifest of every path it would write
+and a digest, and writes nothing until you approve it in a reply. What it
+creates: the store — laid out with `search/` from the first file, which is the
+one decision that cannot be corrected later without moving everything — the
+config at the path you passed in step 1, and one canary memory so the very next
+prompt has something to find.
+
+Then `/memkit:doctor`, which answers whether retrieval actually works here
+rather than whether the install succeeded. Zero `FAIL` is the bar.
+
+**4. Ask for something you have a memory about.** With only the canary in the
+store, *"what is the memkit canary for"* is the question it answers.
+
+To see what init would do without running it, or to set memkit up by hand on a
+channel that has no skills, [Writing it by hand](#writing-it-by-hand) below is
+the same four files spelled out.
+
+### Writing it by hand
+
+Every step below is one init does for you. It is here for the pip and nix
+channels, which ship no skills, and for anyone who would rather see the files
+than a manifest of them.
+
+**Check the install registered, and that the option arrived.** A *wrong* `--config`
 value installs exactly as quietly as a right one — the omitted case now warns,
 the mistyped case does not — so read the value back:
 
@@ -74,7 +106,7 @@ it surfaces.
 enabled — a disabled plugin still reports it — which is why `plugin list` comes
 first.
 
-**3. Write the config.** Four lines is the whole minimum. Put it somewhere you
+**Write the config.** Four lines is the whole minimum. Put it somewhere you
 would keep a dotfile — **not** under `~/.cache/`, which this page tells you
 elsewhere is disposable and which the platform may purge; the config is the one
 file here that nothing regenerates. Pass this path to `memkitConfig` in step 1:
@@ -90,7 +122,7 @@ EOF
 
 Everything else on the [Config](#config) page is optional.
 
-**4. Write one memory and ask for it.** Memories go in `search/` — make it now
+**Write one memory and ask for it.** Memories go in `search/` — make it now
 even for your first file, so nothing has to move later. (Creating `search/`
 under a store that already has memories above it takes those out of retrieval:
 [Your store](#your-store).)
@@ -112,7 +144,8 @@ Now ask Claude Code *"why do prepared statements break under pgbouncer
 transaction pooling"*, and the pointer at the top of this page is what arrives.
 
 **Checking it by hand.** `memkit-recall` is on the *agent's* `PATH`, not your
-shell's — nothing is added to your terminal — so from your own shell reach the
+shell's — a plugin install ships that name and no `memory-recall` at all, while
+pip and nix ship the other ([Both names, once](#both-names-once)) — — nothing is added to your terminal — so from your own shell reach the
 installed copy by path:
 
 ```
@@ -191,11 +224,16 @@ You typed something and no pointer came back. Every gate below is silent by
 design — the hook exits 0 whatever happens, because a hook that fails any other
 way blocks your prompt — so this is the list, in the order a prompt meets them.
 
-The fastest triage is to ask the CLI the same question. **It applies fewer
-gates than the hook**, so a `--search` that answers while the session stays
-quiet localises the problem to this list rather than to your store. On a plugin
-install `memkit-recall` is on the agent's `PATH` and not your shell's, so from
-your own terminal reach it by path:
+**Run `/memkit:doctor` and this table is what it answers.** Every row below has
+a check id, and the report names the ones that fired against your machine
+rather than leaving you to walk the list. What follows is the same triage by
+hand, for a channel with no skills or a state doctor cannot reach.
+
+The fastest manual triage is to ask the CLI the same question. **It applies
+fewer gates than the hook**, so a `--search` that answers while the session
+stays quiet localises the problem to this list rather than to your store. On a
+plugin install `memkit-recall` is on the agent's `PATH` and not your shell's,
+so from your own terminal reach it by path:
 
 ```
 PLUGIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/memkit/memkit"
@@ -209,29 +247,30 @@ Inside Claude Code's Bash tool the bare name works, since that is the `PATH`
 the plugin adds to. On a pip or nix install the command is `memory-recall` and
 is on your own `PATH`.
 
-| what stopped it | how you can tell | what to do |
-|---|---|---|
-| **The plugin was installed mid-session** | `plugin details` says `Hooks (1)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
-| **The plugin is disabled** | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (1)` | re-enable it |
-| **No config reached the hook** | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Quick start](#quick-start) step 2 |
-| **The config path is wrong** | `--debug-config` says the path does not exist | fix the path and re-run the install command |
-| **The prompt was under three words** | `gate:short`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
-| **The prompt began with `/`** | no record at all — Claude Code resolves slash commands before the hook runs, so an empty `tail -1` is the tell | deliberate: a slash command is an instruction to Claude Code, not a question about your work |
-| **The prompt was over 4000 characters** | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste |
-| **The prompt was all common words** | `gate:stopwords` | "is it the" leaves no term to search on |
-| **The same prompt already fired this session** | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session |
-| **The prompt began with an editor or tool envelope** | `gate:envelope`; the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
-| **The hook ran out of time** | `killed` | it is registered with a 15-second timeout and gives up rather than delaying your prompt. A first run on a large store builds the index; the next one is fast |
-| **The corpus is not where you think** | `--debug-config` prints the corpus root, its file count, and a line naming any files stranded outside it | move them, or point `dir` at the right directory |
-| **Nothing matched well enough** | `--search` exits 1 and prints `no match in N files under <root>` | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
-| **The session budget is spent** | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
+| what stopped it | doctor check | how you can tell | what to do |
+|---|---|---|---|
+| **The plugin was installed mid-session** | `hook-ever-fired` | `plugin details` says `Hooks (1)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
+| **The plugin is disabled** | `plugin-enabled` | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (1)` | re-enable it |
+| **No config reached the hook** | `config-route` | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Writing it by hand](#writing-it-by-hand) |
+| **The config path is wrong** | `config-route` | `--debug-config` says the path does not exist | fix the path and re-run the install command |
+| **The prompt was under three words** | `gate-outcomes` | `gate:short`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
+| **The prompt began with `/`** | `gate-outcomes` | no record at all — Claude Code resolves slash commands before the hook runs, so an empty `tail -1` is the tell | deliberate: a slash command is an instruction to Claude Code, not a question about your work |
+| **The prompt was over 4000 characters** | `gate-outcomes` | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste |
+| **The prompt was all common words** | `gate-outcomes` | `gate:stopwords` | "is it the" leaves no term to search on |
+| **The same prompt already fired this session** | `gate-outcomes` | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session |
+| **The prompt began with an editor or tool envelope** | `gate-outcomes` | `gate:envelope`; the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
+| **The hook ran out of time** | `hook-path` | `killed` | it is registered with a 15-second timeout and gives up rather than delaying your prompt. A first run on a large store builds the index; the next one is fast |
+| **The corpus is not where you think** | `corpus-root` | `--debug-config` prints the corpus root, its file count, and a line naming any files stranded outside it | move them, or point `dir` at the right directory |
+| **Nothing matched well enough** | `canary-retrieval` | `--search` exits 1 and prints `no match in N files under <root>` | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
+| **The session budget is spent** | `gate-outcomes` | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
 
 The prompt-shape gates — the three-word floor, the slash prefix, the paste
 ceiling, the all-stopword case and the envelope prefix — are the reason the hook
 and `--search` can honestly disagree about the same words: `--search` applies
 none of them. So do the once-per-session rule and the session budget, which are
-about the session rather than the words. `memkit doctor`, which would run this
-list for you, is not in this build.
+about the session rather than the words. Doctor applies none of them either —
+it asks its own fixed query — which is why a green `canary-retrieval` beside a
+silent session sends you to `gate-outcomes` rather than to your store.
 
 **The outcome vocabulary.** Each record's `outcome` names what happened, and
 these are all of them — the first thirteen in `log.jsonl`, the last two in the
@@ -277,9 +316,10 @@ instead. That path is derived, not a stable interface, but `cat` it and the
 One limit worth knowing before you read it: a `memkitConfig` that is **set but
 wrong** records `trust:unconfigured`, the same value as never having been
 configured. The wrapper refuses the path before the hook runs, so the hook never
-learns a config was named. `--debug-config` separates the two — it names the
-path and says it does not exist — which is why step 2 of the
-[Quick start](#quick-start) reads the option back out of `settings.json`.
+learns a config was named. `--debug-config` separates the two — it names the path
+and says it does not exist — and `memkit doctor`'s `config-route` check is the
+one surface that reads the settings value directly, which is what lets it tell
+"set and wrong" from "never set" when the marker cannot.
 
 ## The four commands
 
@@ -293,9 +333,20 @@ path and says it does not exist — which is why step 2 of the
   ([docs/STORE.md](docs/STORE.md#the-ledgers-and-whether-you-need-them)).
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
   data, supplied in config; memkit ships none.
-- **`memkit`** — the dispatcher the setup and diagnosis subcommands hang off.
-  A skeleton in this build: `memkit --help` lists `doctor` and `init`, says
-  they have not landed, and names what to reach for meanwhile.
+- **`memkit`** — the dispatcher setup and diagnosis hang off, and the two
+  subcommands the plugin exposes as skills *(from the next release)*:
+  - `memkit doctor [--json]` — read-only, one envelope, one line per check.
+    Runs the *Why nothing appeared* list against your machine, including one
+    real run of the installed hook, because a store that answers proves nothing
+    about the path that serves prompts. Exit 0 when nothing FAILs, 1 otherwise.
+  - `memkit init --dry-run` / `--confirm <digest>` — a two-turn setup: the
+    first prints every path it would write and a digest and writes nothing, the
+    second applies exactly that or refuses because something moved. Exit 5 is a
+    named refusal with nothing written; exit 6 is a run that started and did
+    not finish, and re-running converges.
+
+  `memkit --version` prints the three facts every other answer depends on: the
+  installed distribution, the hook's content hash, and the payload's commit.
 
 ## Config
 
@@ -428,9 +479,9 @@ delete any of it and the next run rebuilds from the corpus.
 
 Your **config** is not, and it may be living here: earlier versions of this page
 put it at `~/.cache/memory-recall/memkit.json`, and the plugin offered that as
-its default. Nothing regenerates it — `memkit init` is not in this build — so if
-yours is under `~/.cache/`, move it somewhere a cache sweep will not reach and
-re-run the install command with the new path.
+its default. Nothing regenerates it, and the sweep below will not collect it
+either — but if yours is under `~/.cache/`, move it somewhere a platform cache
+purge will not reach and re-run the install command with the new path.
 
 - `fts5-<digest>.db` — the SQLite FTS5 index.
 - `fts5-<digest>.root` — which corpus root that digest is for. Advisory; the
@@ -457,12 +508,36 @@ not be read at all) and `rebuilt` (the index was damaged and built again).
 
 One more file per session: `<session-uuid>.json`, holding the once-per-session
 dedup ledger. It is disposable — deleting it lets that session offer a memory
-again — and one is written per session, so a long-lived cache directory
-accumulates them.
+again — and one is written per session.
 
-A sweep that collects these files must take the index, its `.root` and its
-`.build` together: an orphaned `.build` outliving its index reads as a real
-record of a corpus that is no longer there.
+**memkit collects these itself, at most hourly.** For a long time it did not,
+and the author's own cache reached 16,319 files and 264 MiB before anything
+looked. What the sweep takes, and on what evidence:
+
+| collected | when |
+|---|---|
+| an index and all four of its sidecars | its `.root` names a corpus that is **gone** (ENOENT). A stat that failed for any other reason is not evidence and the index stays — one EACCES on a mounted volume must not cost you a rebuild |
+| an index with **no `.root` at all**, older than a week | the sidecar is best-effort and a database whose root is gone is never reopened, so one that failed to write a sidecar can never acquire one. The ENOENT rule alone leaves these forever |
+| an index whose name is from a **superseded generation** | a naming change strands files under both rules above at once: the old names have live sidecars naming roots that still exist |
+| `<session-uuid>.json` older than 14 days, with its `.dup-*` claim | the claim is named after the state so whatever sweeps one sweeps the other |
+| `t-<tool_use_id>.json` older than 7 days | on filename and mtime, never on a parse: these exist in more than one shape and a reader would leave the older ones behind |
+
+**Never collected, whatever their age**: `log.jsonl`, because the soak
+analyzers treat it as their corpus; a `memkit.json` living here; the init
+journal, which a later undo needs; and the sweep's own stamp. The predicate is
+an allowlist of collectible name patterns, so anything matching none of them is
+kept — the default is keep, and it has to be, because your config may be in
+this directory.
+
+The sweep is bounded per run — 500 stats and 100 unlinks — and carries its
+position forward, so a very large directory converges over about thirty runs
+rather than spending one prompt's budget. It runs after the pointers have been
+written and flushed, and it never creates the directory: an install nobody has
+configured has none, and this is not the thing that makes one.
+
+An index and its sidecars go **together**, whichever of them the sweep sees
+first: an orphaned `.build` outliving its index reads as a real record of a
+corpus that is no longer there.
 
 #### `log.jsonl` — the soak log, and what a reader may assume of it
 
@@ -535,7 +610,9 @@ different job:
 | 0 | the subcommand ran |
 | 1 | memkit could not start at all — no interpreter, or an incomplete plugin payload. Only the plugin's `bin/memkit` wrapper emits this; stderr names what is missing |
 | 2 | usage error, or a subcommand that does not exist |
-| 4 | the subcommand exists and is not in this build — stderr names the fallback. **Not** the 4 in the table above: these are different commands and neither borrows the other's vocabulary |
+| 4 | the subcommand exists and is not in this build — stderr names the fallback. Nothing returns this today; it is kept because a caller that learned what 4 means must not find it meaning something else when the next subcommand lands. **Not** the 4 in the table above: these are different commands and neither borrows the other's vocabulary |
+| 5 | a subcommand refused by name and **wrote nothing** — `init` meeting a store inside the plugin payload, a stale digest, an unparseable settings file. stderr names which refusal. Retrying the same command cannot help; something has to change first |
+| 6 | a subcommand started and did not finish — a write that failed partway, or a store that was created and then failed its own integrity check. The init journal says how far it got, and re-running converges on the remainder. **This is the one code whose right answer is to run the same command again** |
 
 ## Install (details)
 
@@ -643,19 +720,24 @@ with the entry's `source` set to `"./"`. Both halves of that are what
 
 #### Configuring it
 
-**Setting it up is manual in this build.** `/memkit:init` — the consented,
-journalled setup this is designed around — has not landed yet, so for now write
-the config by hand (schema and a worked example under [Config](#config)) at the
-path you passed to `--config`. Until that file exists the plugin is **inert**:
-the hook exits 0, prints nothing, reads no directory of yours, and records the
-refusal in the plugin's own data directory, where a future `memkit doctor` can
-report it. You can read it now: the directory is derived rather than secret —
+**`/memkit:init` writes the config**, at the path you passed to `--config`.
+Writing it by hand is the other way and the schema is under
+[Config](#config); either is fine, and init additionally lays the store out so
+nothing has to move later.
+
+Until that file exists the plugin is **inert**: the hook exits 0, prints
+nothing, reads no directory of yours, and records the refusal in the plugin's
+own data directory. That is the intended state between installing and
+initialising, not a failure — but nothing will surface pointers until the
+config exists.
+
+`memkit doctor`'s `plugin-diagnostics` check reads those refusals back, which
+is the reason they are recorded at all. You can also read them by hand: the
+directory is derived rather than secret —
 `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/plugins/data/memkit-memkit/trust.json` —
 and [Why nothing appeared](#why-nothing-appeared) says what its `outcome`
 means: `trust:unconfigured` for no config, `trust:config-error` for one that is
-there and unreadable or unparseable.
-It is not a stable interface. That is the intended state, not a failure — but
-nothing will surface pointers until you write the config.
+there and unreadable or unparseable. It is not a stable interface.
 
 The config path reaches the hook through the `memkitConfig` option above, or
 through `$CLAUDE_PLUGIN_DATA/memkit.json`, in that order — and through no other
@@ -733,11 +815,24 @@ uvx --from git+https://github.com/ak2k/memkit@v0.2.1 memory-recall \
 
 `claude plugin uninstall memkit` additionally removes the plugin's data
 directory — which holds only the refusal records above — unless you pass
-`--keep-data`. Your config lives wherever you put it — step 3 recommends
-outside the cache — and is never touched. Your index and your soak log live in
-`$XDG_CACHE_HOME/memory-recall/` — `~/.cache/memory-recall/` when that variable
-is unset, which is the case on a mac — and your memories live wherever your
-config says; none of that is removed.
+`--keep-data`. Your config lives wherever you put it — the quick start
+recommends outside the cache — and is never touched. Your index and your soak
+log live in `$XDG_CACHE_HOME/memory-recall/` — `~/.cache/memory-recall/` when
+that variable is unset, which is the case on a mac — and your memories live
+wherever your config says; none of that is removed.
+
+**Per channel**, since only one of the three has a `plugin uninstall`:
+
+| channel | stop it | remove it |
+|---|---|---|
+| plugin | `claude plugin disable memkit@memkit` | `claude plugin uninstall memkit@memkit [--keep-data]` |
+| nix | drop the module from your configuration and rebuild | the same rebuild; the store paths are garbage-collected with the generation |
+| pip / uvx | remove the `settings.json` hook entry that names it | `pip uninstall memkit`, or nothing at all for `uvx`, which installs nothing |
+
+`memkit doctor`'s `uninstall-story` check prints this for the machine it is run
+on, including the canary memories by path — those are memkit's own and safe to
+delete, and nothing removes them for you, because the store is deliberately
+outside every path an uninstall reaches.
 
 ### Plain Python
 
@@ -939,12 +1034,13 @@ writes).
 no edit. `pyrightconfig-hook39.json` is an explicit file list, and it must name
 every file a **3.9 interpreter can execute**. That is two entry points: the
 recall hook, which Claude Code runs with whatever `python3` the `PATH`
-resolves to, and `memkit.cli`, because the plugin's `bin/memkit` runs the
-dispatcher on that same interpreter — only checker-backed work routes to 3.12,
-and sending the whole dispatcher there would put `memkit doctor` out of reach
-on any machine whose `python3` is older than 3.12 — a stock mac is the case
-that forced it, and it is the machine that most needs to ask whether its
-install works. Add a module either entry point imports and it belongs in that
+resolves to, and `memkit.cli` — with `memkit.cli_doctor` and `memkit.cli_init`,
+which the dispatcher imports at module scope — because the plugin's
+`bin/memkit` runs all of them on that same interpreter. Only checker-backed
+work routes to 3.12, and sending the whole dispatcher there would put `memkit
+doctor` out of reach on any machine whose `python3` is older than 3.12 — a
+stock mac is the case that forced it, and it is the machine that most needs to
+ask whether its install works. Add a module either entry point imports and it belongs in that
 list on the same commit; its 3.9 floor is otherwise unchecked, and the failure
 surfaces as a hook that silently retrieves nothing. The direction is easy to
 invert: a module that merely *imports* one of those two does not belong there,
