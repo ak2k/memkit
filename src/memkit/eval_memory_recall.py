@@ -104,6 +104,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import pathlib
 import sys
@@ -356,6 +357,11 @@ def pointers(hook, prompt: str, hits: list[str]) -> tuple[list[str], list[str]]:
 LONG_BRIEF_MIN_SERVED_FLOOR = 0.6
 LONG_BRIEF_MAX_INJECTED_CEILING = 0.2
 LONG_BRIEF_MIN_CASES = 6
+# The slice's name in `eval.gating_slices` and in the snapshot. One spelling,
+# because a config naming it is what makes the per-case rows gate AND what
+# makes a missing brief directory a refusal rather than a note — two facts that
+# must not be able to disagree about which slice they are about.
+LONG_BRIEF_SLICE = "longbrief"
 
 
 def long_brief_set(root: pathlib.Path) -> dict:
@@ -392,11 +398,46 @@ def long_brief_set(root: pathlib.Path) -> dict:
             f"{LONG_BRIEF_MAX_INJECTED_CEILING} ceiling this gate is allowed "
             "to be set at — an injection bar this high cannot fail"
         )
+    # A CASE is a distinct brief, and the floors below count cases. Entries
+    # were counted instead, so twelve copies of one row satisfied a bar written
+    # to mean twelve briefs — a rate re-measuring one passing case, at full
+    # strength, while every regression in the rest of the corpus went unscored.
+    # Same for one brief in both halves: a case asserting two opposite outcomes
+    # and scoring whichever half asks.
+    seen: dict[str, str] = {}
     for half in ("served", "unserved"):
-        if len(index.get(half, [])) < LONG_BRIEF_MIN_CASES:
+        entries = index.get(half, [])
+        if not isinstance(entries, list):
+            raise RuntimeError(f"{where}: the {half} half is not a list of cases")
+        for case in entries:
+            if not isinstance(case, dict) or not isinstance(case.get("brief"), str):
+                raise RuntimeError(
+                    f"{where}: a {half} case has no `brief` path: {case!r:.80}"
+                )
+            # Resolved against the root and required to stay under it: `brief`
+            # is joined onto this directory, so `..` or an absolute path reads
+            # a file nobody reviewing this directory can see.
+            rel = case["brief"]
+            full = (root / rel).resolve()
+            if not full.is_relative_to(root.resolve()):
+                raise RuntimeError(
+                    f"{where}: {half} case `{rel}` resolves outside {root}"
+                )
+            if not full.is_file():
+                raise RuntimeError(f"{where}: {half} case `{rel}` is not a file")
+            key = str(full)
+            if key in seen:
+                where_first = seen[key]
+                raise RuntimeError(
+                    f"{where}: `{rel}` is in both halves"
+                    if where_first != half
+                    else f"{where}: the {half} half names the same brief twice: {rel}"
+                )
+            seen[key] = half
+        if len(entries) < LONG_BRIEF_MIN_CASES:
             raise RuntimeError(
                 f"{where}: the {half} half has "
-                f"{len(index.get(half, []))} case(s), under the "
+                f"{len(entries)} case(s), under the "
                 f"{LONG_BRIEF_MIN_CASES} a rate can be taken over. A coverage "
                 "floor with no served briefs, or an injection ceiling with no "
                 "unserved ones, is a rate over an empty population"
@@ -422,6 +463,43 @@ def long_brief_set(root: pathlib.Path) -> dict:
         "served": [_read(c) for c in index.get("served", [])],
         "unserved": [_read(c) for c in index.get("unserved", [])],
     }
+
+
+# What `task_pointers` reaches for on the hook module. Named here rather than
+# probed for with one symbol, which is what the probe used to be: the surface
+# below it grew to nine names and a keyword, so a copy carrying `task_gate` and
+# nothing else — the immediately preceding commit of this branch qualified —
+# passed the probe and then died mid-run with an uncaught AttributeError, after
+# the suite slice had already printed its PASS lines. Exit 1 is reserved for a
+# gate failing, so a crash and a real regression were the same signal to CI.
+TASK_SURFACE = (
+    "task_gate",
+    "build_task_query",
+    "recall",
+    "_eligible",
+    "_task_floor",
+    "_task_framed",
+    "_pointer_line",
+    "_task_emission",
+    "MAX_HITS",
+)
+
+
+def task_surface_gap(hook) -> str | None:
+    """The first thing `task_pointers` needs and this hook has not got.
+
+    None when the whole surface is there. A keyword is checked as well as a
+    name: a copy can carry `_pointer_line` without the `over_brief` argument
+    this slice passes it, and the failure is the same uncaught AttributeError
+    one call later.
+    """
+    for name in TASK_SURFACE:
+        if getattr(hook, name, None) is None:
+            return name
+    params = inspect.signature(hook._pointer_line).parameters
+    if "over_brief" not in params:
+        return "`over_brief` argument to _pointer_line"
+    return None
 
 
 def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
@@ -469,8 +547,13 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
         "description": "score this brief",
         "subagent_type": "general-purpose",
     }
-    text = hook._task_payload(tool_input, block)
-    if text is None or hook._nbytes(text) > hook.PIPE_BUFFER_BOUND:
+    # THE HOOK'S OWN EMISSION DECISION, not a second copy of it. This slice
+    # re-derived it — `_task_payload`, then its own size test, and no
+    # encodability test at all — so a divergence between the two was invisible
+    # to the one gate over subagent delivery, and a brief the hook would refuse
+    # to write scored as served.
+    text, _verdict, _size = hook._task_emission(tool_input, block)
+    if text is None:
         return []
     delivered = json.loads(text)["hookSpecificOutput"]["updatedInput"]["prompt"]
     return [
@@ -746,7 +829,7 @@ def main() -> None:
     scored = {"search": [0, 0], "hot": [0, 0], "noinject": [0, 0]}
     skipped = 0
     seen_cases: dict[str, dict[str, dict]] = {
-        "suite": {}, "noinject": {}, "vocab": {}, "longbrief": {}
+        "suite": {}, "noinject": {}, "vocab": {}, LONG_BRIEF_SLICE: {}
     }
     tally = {"regression": 0, "drift": 0, "new": 0}
     # Per SLICE, how many cases actually met a recorded expectation. Counted
@@ -909,10 +992,20 @@ def main() -> None:
     served_hit = leaked = 0
     briefs = None
     if not cfg.eval_long_briefs:
-        # Said out loud, because every way of not having this gate is
-        # otherwise silent: a config predating the key, a typo in it, or a
-        # newer config read by an older memkit that drops the key it does not
-        # know. A green run has to say which gates it ran.
+        if LONG_BRIEF_SLICE in gating:
+            # The config has SAID it wants subagent delivery gated, and there
+            # is nothing to run. Printing a line and exiting 0 made that state
+            # — a config predating the key, a typo in it, or a newer config
+            # read by an older memkit that drops what it does not know — a
+            # green eval over a task path that could be completely broken.
+            # Asking for a gate that cannot run is a refusal, not a note.
+            sys.exit(
+                f"{cfg.path}: eval.gating_slices names `{LONG_BRIEF_SLICE}` "
+                "and eval.long_briefs names no brief directory, so the only "
+                "gate over subagent delivery cannot run"
+            )
+        # Otherwise said out loud, because every way of not having this gate is
+        # otherwise silent, and a green run has to say which gates it ran.
         print("\nlong briefs: eval.long_briefs is not configured — slice skipped")
     else:
         brief_root = repo / cfg.eval_long_briefs
@@ -920,23 +1013,40 @@ def main() -> None:
             sys.exit(
                 f"eval.long_briefs names {brief_root}, which has no index.json"
             )
-        if getattr(hook, "task_gate", None) is None:
-            # A hook with no task path. That is a legitimate A/B subject —
-            # scoring an older build as "served nothing" would report the
-            # absence of a feature as a quality regression — and it is NOT a
-            # legitimate state for the hook this repo ships: a regression that
-            # deletes or renames the task path would otherwise skip the only
-            # gate over it and exit 0.
+        missing = task_surface_gap(hook)
+        if missing is not None:
+            # A hook with no task path, or with an older shape of it. That is a
+            # legitimate A/B subject — scoring an older build as "served
+            # nothing" would report the absence of a feature as a quality
+            # regression — and it is NOT a legitimate state for the hook this
+            # repo ships: a regression that deletes or renames any of it would
+            # otherwise skip the only gate over it and exit 0.
             if hook_file == STOCK_HOOK.resolve():
                 sys.exit(
-                    f"{hook_file} has no `task_gate`, so the long-brief slice "
+                    f"{hook_file} has no `{missing}`, so the long-brief slice "
                     "cannot run — and this is the shipped hook rather than a "
                     "--hook copy, so the feature the slice gates is missing "
                     "rather than merely older"
                 )
-            print("\nlong briefs: this hook has no task path — slice skipped")
+            print(
+                f"\nlong briefs: this hook has no {missing} — slice skipped"
+            )
+            # An A/B subject that cannot RUN this slice is not a run that
+            # failed to gate it. The operator named another hook on purpose,
+            # and the vacuity check at the end would otherwise refuse every
+            # A/B against a build older than the task path — turning the
+            # documented `--hook` workflow into an error on the exact class of
+            # copy it exists for. The SHIPPED hook took the `sys.exit` above
+            # and never reaches this.
+            gating = gating - {LONG_BRIEF_SLICE}
         else:
-            briefs = long_brief_set(brief_root)
+            try:
+                briefs = long_brief_set(brief_root)
+            except RuntimeError as exc:
+                # A refusal rather than a traceback: exit 1 is documented as a
+                # gate failing or a refusal, and a stack trace makes a
+                # malformed fixture index look like a crash in the tool.
+                sys.exit(f"memory-eval: {exc}")
             print()
             for case in briefs["served"]:
                 shown = task_pointers(hook, case["brief"], dirs)
@@ -944,7 +1054,7 @@ def main() -> None:
                 served_hit += ok
                 mark = "BRIEF-SERVED" if ok else "BRIEF-MISS"
                 moved = against_snapshot(
-                    "longbrief", case["name"], case_record(mark, case["file"])
+                    LONG_BRIEF_SLICE, case["name"], case_record(mark, case["file"])
                 )
                 print(
                     f"[{mark:<12}] {case['name'][:58]:<58} -> "
@@ -956,7 +1066,7 @@ def main() -> None:
                 leaked += not ok
                 mark = "BRIEF-QUIET" if ok else "BRIEF-LEAK"
                 moved = against_snapshot(
-                    "longbrief", case["name"], case_record(mark)
+                    LONG_BRIEF_SLICE, case["name"], case_record(mark)
                 )
                 got = f"injected {shown}" if shown else "(nothing)"
                 print(f"[{mark:<12}] {case['name'][:58]:<58} -> {got}{moved}")

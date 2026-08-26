@@ -48,8 +48,9 @@
     "snapshot": "eval-expectations.json",
     "long_briefs": "long-briefs",
     "gating_slices": [
-      "suite",
-      "noinject"
+      "longbrief",
+      "noinject",
+      "suite"
     ],
     "cases": {
       "suite": [

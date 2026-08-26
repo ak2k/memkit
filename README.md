@@ -413,7 +413,8 @@ point.
   "eval": {
     "root": "checkout",
     "snapshot": "eval-expectations.json",
-    "gating_slices": ["suite", "noinject"],
+    "gating_slices": ["suite", "noinject", "longbrief"],
+    "long_briefs": "long-briefs",
     "cases": { "suite": [], "noinject": [], "vocab": [] }
   }
 }
@@ -480,6 +481,16 @@ point.
   assertion (`must be injected` becomes `must not be`) with no edit to the
   case. `noinject` prompts must inject nothing. `vocab` paraphrases suite
   cases in symptom words and is an instrument, not usually a gate.
+- **`eval.long_briefs`** — a directory of paired long briefs, and the only
+  automated gate over what a **subagent** receives. Its cases are files rather
+  than config entries, scored through the subagent path's own gate, query
+  builder and floor bars, and it gates on two rates as well as per-case: a
+  coverage floor over the briefs that must be served and an injection ceiling
+  over the ones that must not be. `tests/fixtures/long-briefs/` is a worked
+  example, `index.json` included. **Omit the key and there is no gate over
+  subagent delivery** — the run says so and exits 0. Name `longbrief` in
+  `gating_slices` and it becomes a gate: a run that then cannot score the
+  slice refuses instead of passing quietly.
 
 `tests/fixtures/` holds a small working example of all of it: an invented
 two-store corpus, a config, and the eval snapshot it produces.

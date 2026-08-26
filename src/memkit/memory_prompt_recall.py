@@ -3857,6 +3857,18 @@ TASK_FEEDBACK_MIN_RATIO = 0.0
 # 9 is the lowest value that stops them; 12 is the highest that still serves
 # 7 of 8. Ten sits in the middle of that window — two counts above the
 # strongest coincidence and two below the weakest real hit.
+#
+# THAT NEGATIVE CLASS AND THIS NUMBER WERE AUTHORED TOGETHER, in one commit,
+# alongside the snapshot that scores them — so the slice's green on those four
+# is the bar reproducing its own calibration set rather than independent
+# evidence that the bar is right. Four further negatives of the same shape were
+# written afterwards and scored once, as they stand, without this number
+# moving: a shift rota that says `balancing` and `alignment`, parish records
+# that say `ledger` and `reconciliation`, interview scoring that says
+# `calibration` and `drift`, and a motoring magazine called Torque. All four
+# are quiet at 10. That is the evidence this constant has; it is one sweep of
+# one corpus, and a future change here that needs a held-out brief edited to
+# stay green has found something rather than fixed something.
 TASK_MIN_MATCHED = 10
 
 
@@ -4134,6 +4146,55 @@ def _task_payload(tool_input: dict, block: str) -> str | None:
     return text if _task_emission_ok(parsed, tool_input, brief) else None
 
 
+def _task_emission(tool_input: dict, block: str) -> tuple[str | None, str, int]:
+    """(the bytes to write, the outcome that decided, their size).
+
+    `text is None` means REFUSED and the outcome names why; otherwise the
+    outcome is `task:injected` and the bytes are what goes to stdout verbatim.
+
+    A function rather than a run of statements inside `_task_main` because the
+    eval's long-brief slice is the only automated gate over what this path
+    delivers, and it was re-deriving this decision: its own `_task_payload`
+    call, its own size test against `PIPE_BUFFER_BOUND`, no encodability test
+    at all. Two spellings of "may these bytes be written", one of them the
+    thing being measured and the other the measurement — so any divergence was
+    invisible to the gate, and a brief the hook would refuse scored as served.
+
+    The write itself stays in `_task_main`: it happens under the SIGTERM mask,
+    beside the ledger it has to be atomic with, and that ordering is an
+    argument about signals rather than about payloads.
+    """
+    text = _task_payload(tool_input, block)
+    if text is None:
+        # The shape was wrong, which is a defect in this file rather than a
+        # fact about the brief. Named apart from the size refusal so the log
+        # can say which — one of them is a bug report.
+        return None, "task:unsafe", 0
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        # A lone surrogate in the brief. `json.load` produces one from an
+        # escaped `\udXXX` and the brief is echoed back VERBATIM, so it
+        # reaches the write unaltered — where `sys.stdout.write` raises
+        # part-way through encoding, after the buffer may already hold a
+        # prefix of the emission. A partial JSON object on this event is worse
+        # than none, so the refusal happens before the write rather than
+        # around it.
+        #
+        # `_nbytes` cannot see this: it encodes with `surrogatepass` because a
+        # filename the filesystem holds as undecodable bytes is a real thing a
+        # pointer line must survive. Retrieved paths are sanitized on the way
+        # in; the brief is not, and must not be.
+        return None, "task:unencodable", 0
+    if size > PIPE_BUFFER_BOUND:
+        # The brief is echoed back inside the emission, so this is the one
+        # surface that can reach the bound the SIGTERM mask rests on. It
+        # refuses whole rather than shedding pointers: what would have to go to
+        # make room is the brief, and that may not be touched.
+        return None, "task:oversize", size
+    return text, "task:injected", size
+
+
 def _task_main(payload: dict, t0: float) -> None:
     """The PreToolUse path, whole. Reads a brief, appends pointers to it, and
     records what happened — or records why it did not and writes nothing.
@@ -4319,34 +4380,22 @@ def _task_main(payload: dict, t0: float) -> None:
 
         picks = eligible[:MAX_HITS]
         block = _task_framed([_pointer_line(*e, over_brief=True) for e in picks])
-        text = _task_payload(tool_input, block)
+        # The refusals are `_task_emission`'s to decide and this dispatch's to
+        # NAME: every outcome stays a string literal at its own `done` call,
+        # which is what lets the consumer's collector enumerate the vocabulary
+        # statically. Same shape as the gate dispatch above, for the same
+        # reason.
+        text, verdict, size = _task_emission(tool_input, block)
         if text is None:
-            # The shape was wrong, which is a defect in this file rather than a
-            # fact about the brief. Named apart from the size refusal below so
-            # the log can say which — one of them is a bug report.
+            if verdict == "task:unencodable":
+                return done("task:unencodable")
+            if verdict == "task:oversize":
+                return done("task:oversize", bytes=size, picks=len(picks))
+            # Anything else that declined to produce bytes is a defect in this
+            # file rather than a fact about the brief, which is what
+            # `task:unsafe` says — and the right default for a refusal nobody
+            # here has a name for yet.
             return done("task:unsafe", picks=len(picks))
-        try:
-            size = len(text.encode("utf-8"))
-        except UnicodeEncodeError:
-            # A lone surrogate in the brief. `json.load` produces one from an
-            # escaped `\udXXX` and the brief is echoed back VERBATIM, so it
-            # reaches the write unaltered — where `sys.stdout.write` raises
-            # part-way through encoding, after the buffer may already hold a
-            # prefix of the emission. A partial JSON object on this event is
-            # worse than none, so the refusal happens before the write rather
-            # than around it.
-            #
-            # `_nbytes` cannot see this: it encodes with `surrogatepass`
-            # because a filename the filesystem holds as undecodable bytes is
-            # a real thing a pointer line must survive. Retrieved paths are
-            # sanitized on the way in; the brief is not, and must not be.
-            return done("task:unencodable")
-        if size > PIPE_BUFFER_BOUND:
-            # The brief is echoed back inside the emission, so this is the one
-            # surface that can reach the bound the SIGTERM mask rests on. It
-            # refuses whole rather than shedding pointers: what would have to
-            # go to make room is the brief, and that may not be touched.
-            return done("task:oversize", bytes=size, picks=len(picks))
 
         fresh = [p for p, _, _ in picks]
         delivered = True

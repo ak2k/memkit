@@ -174,7 +174,7 @@ def test_the_long_brief_slice_reports_both_rates_and_the_thresholds(
     assert out.returncode == 0, out.stdout + out.stderr
     line = _rates(out.stdout)
     assert "7/8 served (0.875, floor 0.750)" in line, line
-    assert "0/12 leaked (0.000, ceiling 0.084)" in line, line
+    assert "0/16 leaked (0.000, ceiling 0.084)" in line, line
     # Per-case rows too, so a single outcome moving is visible in a diff even
     # though it is under the rate slack.
     assert "[BRIEF-SERVED]" in out.stdout
@@ -301,7 +301,10 @@ def test_an_older_hook_with_no_task_path_skips_the_slice_rather_than_scoring_it(
     src = _strip_task_path(tmp_path)
     out = _eval(corpus, "--hook", str(src))
     assert out.returncode == 0, out.stdout + out.stderr
-    assert "no task path — slice skipped" in out.stdout
+    # The missing symbol by name: the probe covers nine of them plus a
+    # keyword, so "no task path" would be true of one gap and misleading about
+    # the other eight.
+    assert "this hook has no task_gate — slice skipped" in out.stdout
     assert not re.search(r"long briefs: \d+/\d+ served", out.stdout), out.stdout
 
 
@@ -370,7 +373,13 @@ def test_a_config_with_no_long_briefs_key_says_the_slice_did_not_run(
 ) -> None:
     """Every way of not having this gate was silent: a config predating the
     key, a typo in it, or a newer config read by an older memkit that drops
-    what it does not know. A green run has to say which gates it ran."""
+    what it does not know. A green run has to say which gates it ran.
+
+    The config here has also stopped NAMING the slice among its gating ones,
+    which is the difference between an adopter who never wrote paired briefs
+    and one whose gate went missing — the second is the refusal beside this.
+    """
+    _gating(corpus, "suite", "noinject")
     config = corpus / "memkit.json"
     state = json.loads(config.read_text())
     del state["eval"]["long_briefs"]
@@ -451,3 +460,189 @@ def test_the_slice_scores_what_reaches_the_subagent_not_what_ranked(
     assert "0/8 served" in _rates(out.stdout), out.stdout
     assert out.returncode != 0, out.stdout
     assert "long-brief coverage" in out.stderr
+
+
+def _gating(corpus: Path, *slices: str) -> None:
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["gating_slices"] = list(slices)
+    config.write_text(json.dumps(state))
+
+
+def test_one_leaked_brief_fails_the_run_even_under_the_rate_slack(
+    corpus: Path,
+) -> None:
+    """The rate slack exists so a corpus can move by one case without a red
+    CI; it is not a licence for one new wrong injection.
+
+    One leak in twelve is 0.083, under the 0.084 ceiling, so the RATE holds —
+    and the per-case row said `<- REGRESSION ... not gating` and never reached
+    the exit code. That made a single new injection into an autonomous
+    subagent's instructions a green run. The two controls do different jobs:
+    the rate bounds systemic loosening, the snapshot bounds one case moving.
+    """
+    path = corpus / BRIEFS / "unserved" / "accessibility-audit.md"
+    path.write_text(
+        path.read_text()
+        + "\n\nThe sprocket backlash after a gearbox rebuild traces to the "
+        "shim stack rather than chain tension, and the flange fasteners want "
+        "a crossing sequence over three passes.\n"
+    )
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    # The RATE held — this is the case the rate cannot catch.
+    assert "1/16 leaked (0.062, ceiling 0.084)" in _rates(out.stdout), out.stdout
+    assert "long-brief injection" not in out.stderr, out.stderr
+    leak = next(ln for ln in out.stdout.splitlines() if "[BRIEF-LEAK  ]" in ln)
+    assert "not gating" not in leak, leak
+    assert re.search(r"1 gating failure\(s\) in [\w/]*longbrief", out.stdout), out.stdout
+
+
+def test_the_shipped_config_gates_the_only_slice_over_subagent_delivery(
+    corpus: Path,
+) -> None:
+    """The fixture config IS the release gate, so what it names is the
+    contract. Asserted here rather than left to a reader of the JSON: the
+    slice's per-case rows are advisory until the config says otherwise, and
+    every other check in this file would stay green with the entry removed."""
+    state = json.loads((corpus / "memkit.json").read_text())
+    assert "longbrief" in state["eval"]["gating_slices"], state["eval"]
+    assert state["eval"].get("long_briefs"), state["eval"]
+
+
+def test_a_config_that_gates_a_slice_it_cannot_run_is_refused(corpus: Path) -> None:
+    """The ungated state the skip line was papering over.
+
+    A config naming `longbrief` among its gating slices has said it wants
+    subagent delivery gated. Without `eval.long_briefs` there is nothing to
+    run, and the old code printed one line and exited 0 — a green eval over a
+    task path that could be completely broken. Asking for a gate that cannot
+    run is a refusal, not a note.
+    """
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    del state["eval"]["long_briefs"]
+    config.write_text(json.dumps(state))
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "gating_slices names `longbrief`" in out.stderr, out.stderr
+
+
+def test_duplicate_or_shared_cases_cannot_stand_in_for_a_population(
+    corpus: Path,
+) -> None:
+    """The population floors count list ENTRIES, so twelve copies of one brief
+    satisfied a bar written to mean twelve briefs — a rate re-measuring one
+    passing case while the rest of the corpus regressed unobserved.
+
+    Same for a brief in both halves, which is a case asserting two opposite
+    outcomes and scoring whichever it is asked for.
+    """
+    index = corpus / BRIEFS / "index.json"
+    state = json.loads(index.read_text())
+
+    duped = dict(state)
+    duped["unserved"] = [state["unserved"][0]] * len(state["unserved"])
+    index.write_text(json.dumps(duped))
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "names the same brief twice" in out.stderr, out.stderr
+
+    shared = dict(state)
+    shared["unserved"] = [
+        {"brief": state["served"][0]["brief"]}, *state["unserved"][1:]
+    ]
+    index.write_text(json.dumps(shared))
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "in both halves" in out.stderr, out.stderr
+
+
+def test_a_case_pointing_outside_the_brief_directory_is_refused(
+    corpus: Path,
+) -> None:
+    """`brief` is joined onto the fixture root, so an absolute path or a `..`
+    walks out of it — and a case that reads a file from somewhere else is a
+    gate measuring something nobody reviewing this directory can see."""
+    index = corpus / BRIEFS / "index.json"
+    state = json.loads(index.read_text())
+    state["served"][0] = {"brief": "../../memkit.json", "file": "x.md"}
+    index.write_text(json.dumps(state))
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    # A REFUSAL, not a traceback: exit 1 is reserved for a gate failing, so a
+    # crash and a real regression were the same signal to whatever runs this.
+    assert "Traceback" not in out.stderr, out.stderr
+    assert "outside" in out.stderr, out.stderr
+
+    state["served"][0] = {"brief": 17, "file": "x.md"}
+    index.write_text(json.dumps(state))
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "Traceback" not in out.stderr, out.stderr
+    assert "brief" in out.stderr, out.stderr
+
+
+def test_a_hook_copy_missing_any_of_the_slice_is_skipped_not_crashed(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The probe was one symbol wide and the surface below it grew to nine.
+
+    A `--hook` copy with a task path but from before the floor helper — the
+    immediately preceding commit of this branch qualifies — passed the probe
+    and died mid-run with an uncaught AttributeError, after the suite slice had
+    already printed its PASS lines. Exit 1 is reserved for a gate failing, so a
+    crash and a real regression were the same signal to CI.
+    """
+    src = _copy_hook(tmp_path, "def _task_floor(", "def _no_task_floor(")
+    out = _eval(corpus, "--hook", str(src))
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "_task_floor" in out.stdout, out.stdout
+    assert "slice skipped" in out.stdout, out.stdout
+    assert "AttributeError" not in out.stderr, out.stderr
+
+
+def test_a_hook_copy_missing_the_slices_keyword_is_skipped_too(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The keyword, not only the name: a copy can carry `_pointer_line`
+    without the `over_brief` argument this slice passes it, and the failure is
+    the same uncaught TypeError one call later."""
+    src = _copy_hook(tmp_path, "over_brief: bool = False", "over_long: bool = False")
+    out = _eval(corpus, "--hook", str(src))
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "over_brief" in out.stdout, out.stdout
+    assert "slice skipped" in out.stdout, out.stdout
+
+
+def test_the_slice_emits_through_the_hooks_own_writer(corpus: Path) -> None:
+    """One spelling of "may these bytes be written".
+
+    The slice used to rebuild the emission decision itself — `_task_payload`,
+    then its own size test — so any divergence between the two was invisible
+    to the only gate over subagent delivery, and the evaluator would go on
+    extracting filenames from a string the hook would have refused to write.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "memkit" / "eval_memory_recall.py"
+    ).read_text(encoding="utf-8")
+    assert "_task_emission(" in source
+    assert "_task_payload(" not in source
+    assert "PIPE_BUFFER_BOUND" not in source
+
+
+def test_the_floor_faces_negatives_it_was_not_calibrated_against() -> None:
+    """The four incidental-token briefs that TASK_MIN_MATCHED was set from were
+    written in the same commit as the number and the snapshot that scores them,
+    so the slice's green on them says only that the bar reproduces its own
+    calibration set. These four came afterwards and were scored once, as they
+    stand. Pinned here so a later edit cannot quietly leave the bar with only
+    its own fixtures to answer to.
+    """
+    index = json.loads((FIXTURES / BRIEFS / "index.json").read_text())
+    held = [c for c in index["unserved"] if "held out" in c.get("note", "")]
+    assert len(held) >= 4, [c.get("brief") for c in index["unserved"]]
+    assert "note_holdout" in index
+    for case in held:
+        assert (FIXTURES / BRIEFS / case["brief"]).is_file(), case
