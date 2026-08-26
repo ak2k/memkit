@@ -577,8 +577,32 @@ def _config_route(machine: Machine) -> list[Check]:
                 )
             ]
         expanded = os.path.expanduser(option)
+        if os.path.isfile(expanded) and os.access(expanded, os.R_OK):
+            # The option names a real config and THIS PROCESS was not given it.
+            # That is what running the binary from a shell looks like: the
+            # option reaches hook processes and nothing else, so a FAIL here
+            # would report a healthy install as broken every time somebody
+            # diagnosed it by hand — the false RED that matches the false green
+            # this whole command exists to prevent.
+            #
+            # What it cannot distinguish is a hook that is not receiving the
+            # option either, which is why it says so and points at the check
+            # that can.
+            return [
+                Check(
+                    "config-route",
+                    INFO,
+                    f'option: "{option}"{where}, which exists and is '
+                    "readable. In use by THIS process: nothing — the option "
+                    "reaches hook processes only, so a run from a shell needs "
+                    "--config",
+                    f"To diagnose the config the hook reads, re-run with "
+                    f"--config {option}. Whether the hook is receiving it is "
+                    "what plugin-enabled and hook-path answer.",
+                )
+            ]
         why = (
-            "exists but cannot be read by this process"
+            "exists and cannot be read by this process"
             if os.path.exists(expanded)
             else "does not exist"
         )
@@ -1163,6 +1187,45 @@ HOOK_PROBE_TIMEOUT = 25
 HOOK_WRAPPER = "bin/memkit-hook"
 
 
+def _payload_roots(machine: Machine) -> list:
+    """Where this install's own payload might be, best first.
+
+    `CLAUDE_PLUGIN_ROOT` when the harness set it, and THIS MODULE'S OWN
+    LOCATION otherwise, on the plugin channel. The second is not a fallback for
+    tidiness: doctor is the command an adopter runs from a shell, and a shell
+    gets none of the plugin's environment — so a derivation that needed one
+    would leave the payload unlocatable in exactly the state somebody reaches
+    for diagnosis.
+    It is the same reason each wrapper derives its tree from `$0` rather than
+    from the variable.
+
+    The root arrives with a TRAILING SLASH from the harness (measured on
+    2.1.238 and still true on 2.1.241), which `os.path.join` absorbs.
+    """
+    roots = []
+    harness = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if harness:
+        roots.append(harness)
+    module = getattr(sys.modules[__name__], "__file__", "") or ""
+    # ONLY on the plugin channel. Off it, a `bin/memkit-hook` sitting beside
+    # this module is a source checkout rather than this machine's
+    # registration — and probing it would report on a hook nothing here has
+    # ever run. `bin/memkit` exports the marker, so a shell invocation through
+    # the wrapper qualifies and a bare import does not.
+    if module and machine.plugin:
+        # <payload>/src/memkit/cli_doctor.py -> <payload>
+        # realpath, not abspath: on a mac `/var` is a symlink to
+        # `/private/var`, so the two spellings of one temp directory are the
+        # same tree and a caller comparing against a resolved path finds
+        # neither.
+        derived = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.realpath(module)
+        )))
+        if derived not in roots:
+            roots.append(derived)
+    return roots
+
+
 def _installed_hook(machine: Machine) -> tuple:
     """The command the harness would run on a prompt, and how it was found.
 
@@ -1177,12 +1240,10 @@ def _installed_hook(machine: Machine) -> tuple:
     a shell fragment out of a settings file would be executing whatever that
     file says on a machine whose configuration is already in doubt.
     """
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
-    if root:
+    for root in _payload_roots(machine):
         path = os.path.join(root, HOOK_WRAPPER)
-        if os.path.isfile(path):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
             return [path], f"the plugin's own wrapper at {_display_path(path)}"
-        return [], f"{_display_path(path)} is not there"
     for scope in machine.settings:
         events = scope.data.get("hooks")
         if not isinstance(events, dict):
@@ -1228,6 +1289,18 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
         }
     )
     started = time.monotonic()
+    env = dict(os.environ, **{DOCTOR_ENV: "1"})
+    if machine.explicit_config:
+        # `--config` says "diagnose THIS config", and the wrapper reads its own
+        # rungs — it deliberately ignores `$MEMKIT_CONFIG` — so the only way to
+        # honour the flag through a real wrapper run is to hand it the option
+        # variable the harness would have set.
+        #
+        # What that costs is stated in the check's own detail rather than
+        # hidden: with the flag, this proves the wrapper, the interpreter and
+        # retrieval, and NOT that the install's own route delivers the config.
+        # Without it, the run tests the delivery too.
+        env["CLAUDE_PLUGIN_OPTION_" + OPTION_KEY.upper()] = machine.explicit_config
     try:
         out = subprocess.run(
             command,
@@ -1235,7 +1308,7 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
             capture_output=True,
             text=True,
             timeout=HOOK_PROBE_TIMEOUT,
-            env=dict(os.environ, **{DOCTOR_ENV: "1"}),
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return "", "", None, int((time.monotonic() - started) * 1000)
@@ -1333,11 +1406,18 @@ def _hook_path(machine: Machine) -> list[Check]:
             )
         ]
     if CANARY_NAME in stdout and FRAME_TAG in stdout:
+        supplied = (
+            "; the config came from --config, so this proves the wrapper and "
+            "retrieval and not that the install's own route delivers it"
+            if machine.explicit_config
+            else ""
+        )
         return [
             Check(
                 "hook-path",
                 PASS,
-                f"{how} emitted a framed pointer to {CANARY_NAME} in {ms}ms",
+                f"{how} emitted a framed pointer to {CANARY_NAME} in "
+                f"{ms}ms{supplied}",
             )
         ]
     return [

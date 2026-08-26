@@ -746,3 +746,277 @@ def test_the_pty_driver_reaches_a_session_the_headless_flag_cannot(
     assert dumps[-1]["env"].get("CLAUDE_CODE_ENTRYPOINT") == "cli", (
         dumps[-1]["env"].get("CLAUDE_CODE_ENTRYPOINT")
     )
+
+
+# --- the two subcommands, through the payload an install actually produced ---
+
+
+def _installed_payload(profile: Profile) -> Path:
+    """The directory the harness cloned the plugin into.
+
+    Read out of `plugin list --json` rather than composed from a layout
+    convention: the path carries a VERSION segment, and a test that guessed it
+    would break on the first release rather than on the change that mattered.
+    """
+    entries = [p for p in profile.installed() if p.get("id") == "memkit@memkit"]
+    assert entries, profile.installed()
+    path = entries[0].get("installPath")
+    assert path, entries[0]
+    return Path(path)
+
+
+def _memkit(profile: Profile, payload: Path, *args: str, timeout: int = 300):
+    """Run the installed `bin/memkit` the way a skill's `allowed-tools` entry
+    does — the payload path, then the exact arguments."""
+    return subprocess.run(
+        [str(payload / "bin" / "memkit"), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=profile.env(),
+        cwd=str(profile.projects),
+        stdin=subprocess.DEVNULL,
+    )
+
+
+@cli_tier
+def test_an_install_registers_both_skills(profile: Profile, staged: Path) -> None:
+    """`Skills (0)` is what a payload that ships them and does not LIST them
+    looks like, and it is indistinguishable from a plugin that has none. The
+    two commands this milestone adds are reachable only through these."""
+    require_claude()
+    profile.marketplace_add(staged)
+    profile.claude("plugin", "install", "memkit@memkit", "--yes")
+    details = profile.details("memkit@memkit")
+    assert details.returncode == 0, details.stderr
+    assert "Skills (2)" in details.stdout, details.stdout
+    for name in ("doctor", "init"):
+        assert name in details.stdout, details.stdout
+
+
+@cli_tier
+def test_every_allowed_tools_entry_is_a_command_the_payload_can_run(
+    profile: Profile, staged: Path
+) -> None:
+    """Half of the `${CLAUDE_PLUGIN_ROOT}`-in-`allowed-tools` assumption, and
+    the half a tier with no model can settle.
+
+    What this proves: each entry, with the variable expanded against the
+    payload the harness really produced, names an executable that exists and
+    accepts exactly those arguments. What it does NOT prove is that the
+    harness's permission matcher accepts the pattern — that needs a model to
+    request the tool, and it belongs to the live tier. Saying which half is
+    covered is the difference between a gate and a green light.
+    """
+    require_claude()
+    profile.marketplace_add(staged)
+    config = fixture_config(profile)
+    profile.install("memkit@memkit", config={"memkitConfig": str(config)})
+    payload = _installed_payload(profile)
+
+    entries = []
+    for name in ("doctor", "init"):
+        front = (payload / "skills" / name / "SKILL.md").read_text()
+        raw = [
+            line for line in front.splitlines() if line.startswith("allowed-tools:")
+        ]
+        assert raw, name
+        for entry in raw[0].split("allowed-tools:", 1)[1].split("), Bash("):
+            entries.append(entry.strip().removeprefix("Bash(").rstrip(")"))
+    assert len(entries) == 3, entries
+
+    for entry in entries:
+        command = entry.replace("${CLAUDE_PLUGIN_ROOT}", str(payload))
+        args = command.split()
+        # The digest pattern is a grant shape, not a runnable argument. Its
+        # executable half is the same binary and the same subcommand; the
+        # digest itself is exercised by the handshake scenario below.
+        if args[-1].endswith("--confirm:*"):
+            args = args[:-1] + ["--confirm", "not-a-real-digest"]
+        assert os.access(args[0], os.X_OK), args[0]
+        out = subprocess.run(
+            args, capture_output=True, text=True, timeout=300,
+            env=profile.env(), cwd=str(profile.projects), stdin=subprocess.DEVNULL,
+        )
+        # Never a usage error: a grant that names arguments the binary does not
+        # accept is a grant for a command nobody can run.
+        assert out.returncode != 2, (command, out.stdout, out.stderr)
+        assert "unrecognized arguments" not in out.stderr, (command, out.stderr)
+
+
+@harness_tier
+def test_the_cold_path_from_install_to_a_doctor_with_no_failures(
+    profile: Profile, staged: Path
+) -> None:
+    """The whole adopter path, minus the model: marketplace add, install, the
+    two-turn init handshake through the INSTALLED payload, then doctor.
+
+    Through the payload rather than through the source tree, because that is
+    the span every other test in this repository leaves out — the wrapper that
+    finds the config, the interpreter it resolves, and the tree it puts on
+    `PYTHONPATH`.
+    """
+    require_claude()
+    profile.marketplace_add(staged)
+    config = profile.home / ".config" / "memkit" / "memkit.json"
+    profile.install("memkit@memkit", config={"memkitConfig": str(config)})
+    payload = _installed_payload(profile)
+
+    dry = _memkit(profile, payload, "init", "--dry-run",
+                  "--store", str(profile.home / "notes"))
+    assert dry.returncode == 0, f"{dry.stdout}\n{dry.stderr}"
+    digest = [
+        line.split()[1] for line in dry.stdout.splitlines()
+        if line.startswith("digest: ")
+    ]
+    assert digest, dry.stdout
+    # Nothing yet: the first turn is a manifest and writes nothing.
+    assert not config.exists(), sorted(p.name for p in profile.home.iterdir())
+
+    stale = _memkit(profile, payload, "init", "--confirm", "0000000000000000",
+                    "--store", str(profile.home / "notes"))
+    assert stale.returncode == 5, f"{stale.stdout}\n{stale.stderr}"
+    assert "stale-digest" in stale.stderr
+    assert not config.exists()
+
+    applied = _memkit(profile, payload, "init", "--confirm", digest[0],
+                      "--store", str(profile.home / "notes"))
+    assert applied.returncode == 0, f"{applied.stdout}\n{applied.stderr}"
+    assert config.is_file(), applied.stdout
+    assert (profile.home / "notes" / "search" / "memkit-canary.md").is_file()
+    # The manifest is in the transcript of the turn that applied it, not only
+    # in the one that proposed it.
+    assert "memkit init — what this would do" in applied.stdout
+
+    # `--config`, because the option reaches hook processes and not a shell —
+    # which is what the report's own `config-route` line says when it is left
+    # off, and is the reason it says it rather than failing.
+    bare = json.loads(_memkit(profile, payload, "doctor", "--json").stdout)
+    route = [c for c in bare["checks"] if c["id"] == "config-route"][0]
+    assert route["status"] == "INFO", route
+    assert "--config" in route["remedy"], route
+
+    report = _memkit(profile, payload, "doctor", "--json", "--config", str(config))
+    envelope = json.loads(report.stdout)
+    failed = [c for c in envelope["checks"] if c["status"] == "FAIL"]
+    assert not failed, [(c["id"], c["detail"]) for c in failed]
+    assert envelope["verdict"] == "OK", envelope["verdict"]
+    assert report.returncode == 0
+    # The two checks that are the point of the whole path.
+    by_id = {c["id"]: c for c in envelope["checks"]}
+    assert by_id["canary-retrieval"]["status"] == "PASS", by_id["canary-retrieval"]
+    assert by_id["hook-path"]["status"] == "PASS", by_id["hook-path"]
+
+    # And a second init converges rather than repeating itself.
+    again = _memkit(profile, payload, "init", "--dry-run",
+                    "--store", str(profile.home / "notes"))
+    assert "already set up" in again.stdout, again.stdout
+
+
+@harness_tier
+def test_doctor_names_a_second_registration_rather_than_only_detecting_one(
+    profile: Profile, staged: Path
+) -> None:
+    """The half of duplicate detection the runtime fingerprint cannot do.
+
+    A plugin entry and a settings entry pointing at one config of one release
+    produce identical version stamps, so the fingerprint is blind to exactly
+    the pair an adopter is most likely to have. Counting registrations is what
+    can name which one to remove.
+    """
+    require_claude()
+    profile.marketplace_add(staged)
+    config = fixture_config(profile)
+    profile.install("memkit@memkit", config={"memkitConfig": str(config)})
+    payload = _installed_payload(profile)
+
+    settings_path = profile.config_dir / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    other = profile.home / "other-install" / "memory_prompt_recall.py"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / "src" / "memkit" / "memory_prompt_recall.py", other)
+    settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
+        {"hooks": [{"type": "command", "command": str(other), "timeout": 15}]}
+    )
+    settings_path.write_text(json.dumps(settings, indent=2))
+
+    report = json.loads(_memkit(profile, payload, "doctor", "--json").stdout)
+    row = [c for c in report["checks"] if c["id"] == "registrations-count"]
+    assert row and row[0]["status"] == "FAIL", row
+    assert str(other) in row[0]["detail"], row[0]["detail"]
+    assert row[0]["actor"] == "user"
+
+
+@live_tier
+def test_a_cold_adopter_reaches_a_pointer_and_a_clean_doctor(
+    profile: Profile, staged: Path
+) -> None:
+    """The Definition of Done, starting one step earlier than the install.
+
+    The try-before-consent step is in here rather than in prose because it is
+    the first thing a careful adopter does and nothing has ever exercised it:
+    `uvx` against the payload, with no install and no config, has to answer
+    `inert` rather than pretending to work.
+
+    Then the real path: install, `/memkit:init`'s two turns through the
+    payload, a REAL TURN whose prompt should surface the canary, and doctor
+    with nothing failing. The turn is the half no other tier can reach — hook
+    dispatch happens before the model call, so every other scenario proves the
+    hook ran and not that a model was handed anything.
+    """
+    payload_search = staged / "bin" / "memkit-recall"
+    trial = subprocess.run(
+        [str(payload_search), "--search", "sprocket backlash gearbox"],
+        capture_output=True, text=True, timeout=300,
+        env={"PATH": os.environ["PATH"], "HOME": str(profile.home)},
+        stdin=subprocess.DEVNULL,
+    )
+    # 3 is inert: nothing configured, nothing read, and it says so rather than
+    # answering as though the store were empty.
+    assert trial.returncode == 3, (trial.returncode, trial.stdout, trial.stderr)
+    assert not (profile.home / ".cache" / "memory-recall").exists()
+
+    profile.marketplace_add(staged)
+    config = profile.home / ".config" / "memkit" / "memkit.json"
+    profile.install("memkit@memkit", config={"memkitConfig": str(config)})
+    payload = _installed_payload(profile)
+    store = profile.home / "notes"
+
+    dry = _memkit(profile, payload, "init", "--dry-run", "--store", str(store))
+    digest = [
+        line.split()[1] for line in dry.stdout.splitlines()
+        if line.startswith("digest: ")
+    ]
+    assert digest, dry.stdout
+    applied = _memkit(
+        profile, payload, "init", "--confirm", digest[0], "--store", str(store)
+    )
+    assert applied.returncode == 0, f"{applied.stdout}\n{applied.stderr}"
+
+    nonce = json.loads(config.read_text())["canary_nonce"]
+    project = profile.project("work")
+    out = profile.claude(
+        "-p",
+        f"memkit canary {nonce} — name the memory file you were given, if any",
+        "--output-format", "json", cwd=str(project), timeout=300,
+    )
+    answer = json.loads(out.stdout)
+    assert answer["is_error"] is False, answer
+
+    injected = [r for r in soak_records(profile) if r["outcome"] == "injected"]
+    assert injected, [r["outcome"] for r in soak_records(profile)]
+    assert "memkit-canary.md" in injected[-1]["injected"]
+    # The model received it, which is the half a soak record cannot say.
+    assert "memkit-canary" in answer["result"], answer["result"]
+
+    report = json.loads(
+        _memkit(profile, payload, "doctor", "--json", "--config", str(config)).stdout
+    )
+    failed = [c for c in report["checks"] if c["status"] == "FAIL"]
+    assert not failed, [(c["id"], c["detail"]) for c in failed]
+    # And the log now says the hook has fired here, which is the question an
+    # adopter asks first and the one nothing else could answer.
+    by_id = {c["id"]: c for c in report["checks"]}
+    assert by_id["hook-ever-fired"]["status"] in ("PASS", "INFO"), by_id[
+        "hook-ever-fired"
+    ]

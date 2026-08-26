@@ -1751,3 +1751,69 @@ def test_doctor_tails_the_log_the_wrappers_write(profile, monkeypatch) -> None:
     assert "2 line(s)" in row.detail
     assert row.actor == doctor.USER
     assert "swallowed" in row.remedy
+
+
+def test_a_healthy_option_this_process_did_not_receive_is_not_a_failure(
+    profile, monkeypatch
+) -> None:
+    """The false RED that matches this command's false green.
+
+    `CLAUDE_PLUGIN_OPTION_MEMKITCONFIG` reaches hook processes and nothing
+    else, so a person or an agent running `memkit doctor` from a shell has the
+    settings value and no resolved config — which is every diagnostic run on
+    every healthy plugin install. Reporting that as FAIL would make the report
+    unreadable exactly where it is read.
+
+    The trap it must still catch is the other case, and it is one character
+    apart: an option naming a path that is not there.
+    """
+    good = _config_file(profile / "real.json")
+    _settings(
+        profile,
+        pluginConfigs={"memkit@memkit": {"options": {"memkitConfig": good}}},
+    )
+    checks = doctor.collect(doctor.Machine())
+    (row,) = _only(checks, "config-route")
+    assert row.status == doctor.INFO, row.detail
+    assert "--config" in row.remedy
+    assert doctor.verdict(checks) == "OK"
+
+    # One character off, and it is a FAIL again.
+    _settings(
+        profile,
+        pluginConfigs={"memkit@memkit": {"options": {"memkitConfig": good + "x"}}},
+    )
+    (row,) = _only(doctor.collect(doctor.Machine()), "config-route")
+    assert row.status == doctor.FAIL
+    assert "does not exist" in row.detail
+
+
+def test_the_payload_is_found_from_this_module_when_the_harness_env_is_absent(
+    profile, monkeypatch
+) -> None:
+    """Doctor is the command somebody runs from a shell, and a shell gets none
+    of the plugin's environment. A derivation that needed `CLAUDE_PLUGIN_ROOT`
+    would leave the payload unlocatable in exactly the state it is reached for
+    — which is the same reason each wrapper derives its tree from `$0`.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_MEMKITCONFIG", path)
+    # This module lives in the repo's own payload, so the derivation finds the
+    # wrapper beside it with no harness variable at all.
+    assert str(REPO) in doctor._payload_roots(doctor.Machine())
+    (row,) = _only(doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
+                   "hook-path")
+    assert row.status == doctor.PASS, row.detail
+
+    # And the harness's value still wins when it is there.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/somewhere/else/")
+    assert doctor._payload_roots(doctor.Machine())[0] == "/somewhere/else/"
+
+    # OFF the plugin channel the derivation says nothing: a wrapper beside this
+    # module is a source checkout, not this machine's registration.
+    monkeypatch.delenv(hook.PLUGIN_ENV, raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    assert doctor._payload_roots(doctor.Machine()) == []
