@@ -2639,6 +2639,21 @@ _SESSION_NAME = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
+# The same rule one directory down, for the same reason and with the same
+# consequence for getting it wrong. A `t-` prefix and a `.json` suffix is a
+# NAME, not evidence of who wrote the file, and an adopter's own `t-notes.json`
+# in this directory was unlinked by the every-prompt hook a week later with
+# nothing recording it.
+#
+# Two id shapes, because there are two populations and both are real: the
+# harness's `tool_use_id`, which is what `_task_state_path` is handed, and the
+# eight-hex generation already sitting in the author's cache from an earlier
+# experiment — 121 of them, in a shape this build does not write, which is why
+# the predicate is still filename plus mtime and never a parse. An id of some
+# FUTURE shape leaks rather than being collected: this tuple is what a naming
+# change extends, the way `_FTS_LEGACY_PREFIXES` is.
+_TASK_NAME = re.compile(r"^(?:toolu_[A-Za-z0-9]{16,}|[0-9a-f]{8})$")
+
 _FTS_PREFIX = "fts5-"
 # Index name generations this build no longer writes. The author's cache holds
 # `fts5-2-<digest>.db` files with LIVE `.root` sidecars naming roots that still
@@ -2775,7 +2790,10 @@ def _collectible(state_dir: str, name: str, now: float) -> str:
         if name.startswith(TASK_STATE_PREFIX):
             # NAME AND MTIME, never a parse. The task states already on disk
             # are in a shape this build does not write, and a predicate that
-            # read them would leave every one of them behind.
+            # read them would leave every one of them behind. The name has to
+            # be one memkit writes, though: a prefix is not ownership.
+            if not _TASK_NAME.match(name[len(TASK_STATE_PREFIX) : -len(".json")]):
+                return ""
             return "task-state" if age > TASK_RETENTION else ""
         if _SESSION_NAME.match(name[: -len(".json")]):
             return "session-state" if age > SESSION_RETENTION else ""
@@ -2905,6 +2923,18 @@ def _sweep_dir(
         # An install nobody configured has no state directory, and the sweep is
         # not the thing that creates one.
         return False
+    if os.path.islink(os.path.normpath(state_dir)) and not _memkit_wrote_here(
+        state_dir
+    ):
+        # `isdir` FOLLOWS A LINK, and what it reaches decides what is unlinked.
+        # `$XDG_CACHE_HOME` is an environment variable a checkout sets through
+        # direnv and `~/.cache/memory-recall` can itself be a link, so neither
+        # is evidence that the directory on the other end is memkit's. A cache
+        # memkit really has been writing to carries its own never-collected
+        # state; before that exists there is nothing here worth collecting
+        # anyway. The rule is ownership rather than a ban on links — an adopter
+        # who symlinks their cache keeps a swept one.
+        return False
     if not _sweep_due(state_dir):
         return False
     if deadline is not None and time.monotonic() >= deadline:
@@ -2974,6 +3004,19 @@ def _sweep_dir(
     if last:
         _stamp_sweep(state_dir, last)
     return True
+
+
+def _memkit_wrote_here(state_dir: str) -> bool:
+    """Whether this directory holds state only memkit writes.
+
+    The never-collected names, which is the strongest evidence available
+    without keeping a marker file whose only job is to be evidence: each of
+    them is written by memkit and by nothing else, and none of them is ever
+    swept, so their presence is not something a sweep can create for itself.
+    """
+    return any(
+        os.path.exists(os.path.join(state_dir, name)) for name in SWEEP_KEEP
+    )
 
 
 def _sweep_due(state_dir: str) -> bool:

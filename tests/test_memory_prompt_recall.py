@@ -6763,14 +6763,22 @@ def test_task_state_is_swept_on_name_and_mtime_and_never_on_a_parse(state):
     """The task states already on disk are in a shape this build does not
     write — a bare JSON list, not the dict the session state uses — so a
     predicate that read them would leave every one of them behind. And an
-    unparseable one is still swept."""
-    legacy = state / f"{hook.TASK_STATE_PREFIX}old-shape.json"
+    unparseable one is still swept.
+
+    The names are ids of both generations memkit has written, because a name
+    is what the predicate keys on: `t-old-shape.json` is not a file this ever
+    wrote, and using one as the fixture would have proved the rule over a name
+    that only a test produces."""
+    legacy = state / f"{hook.TASK_STATE_PREFIX}02a50f4e.json"
     legacy.write_text("[1, 2, 3]", encoding="utf-8")
     _aged(legacy, days=30)
-    torn = state / f"{hook.TASK_STATE_PREFIX}torn.json"
+    torn = state / f"{hook.TASK_STATE_PREFIX}toolu_013zc7VVZYu1RcH29DhM4MEJ.json"
     torn.write_text("{ not json at all", encoding="utf-8")
     _aged(torn, days=30)
-    fresh = _aged(state / f"{hook.TASK_STATE_PREFIX}fresh.json", days=1)
+    fresh = _aged(
+        state / f"{hook.TASK_STATE_PREFIX}toolu_01JffKGgosrQpNMD94TXKWeD.json",
+        days=1,
+    )
     hook._sweep()
     assert not legacy.exists()
     assert not torn.exists()
@@ -7051,7 +7059,10 @@ def test_the_retention_windows_are_pinned_at_their_boundaries(state) -> None:
     assert hook.TASK_RETENTION < hook.SESSION_RETENTION
 
     session = _aged(state / _session_name(2), days=10)
-    task = _aged(state / f"{hook.TASK_STATE_PREFIX}mid.json", days=10)
+    task = _aged(
+        state / f"{hook.TASK_STATE_PREFIX}toolu_01Axew7LbDXGRwj5QoqTgN44.json",
+        days=10,
+    )
     index = _index(state, "fts5-midwindow00", root=None, days=5)
     hook._sweep()
     assert session.is_file(), "a session ledger was collected four days early"
@@ -7239,6 +7250,71 @@ def _aged_session(where, index: int, age: float) -> Path:
     path.write_text("{}", encoding="utf-8")
     os.utime(path, (age, age))
     return path
+
+
+def test_a_task_state_name_is_not_the_same_thing_as_an_id(tmp_path, monkeypatch):
+    """`t-` plus `.json` plus old enough was the whole predicate.
+
+    An adopter's own `t-notes.json` in the documented state directory got
+    unlinked by the every-prompt hook fourteen days later, with nothing
+    recording that it happened — the same defect the session-state predicate
+    was narrowed for in the round before this one, in the one place that
+    narrowing did not reach. The id shape leaks an id of a future generation
+    rather than collecting it, which is the safe direction for a rule whose
+    other outcome is an unlink.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(state))
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", None)
+    old = time.time() - 30 * 86400
+    theirs = []
+    mine = []
+    for name, keep in (
+        ("t-notes.json", True),
+        ("t-todo.json", True),
+        ("t-2026-08.json", True),
+        ("t-t1.json", True),
+        ("t-02a50f4e.json", False),
+        ("t-toolu_013zc7VVZYu1RcH29DhM4MEJ.json", False),
+    ):
+        path = state / name
+        path.write_text("[]", encoding="utf-8")
+        os.utime(path, (old, old))
+        (theirs if keep else mine).append(path)
+    hook._sweep()
+    assert all(p.exists() for p in theirs), [p.name for p in theirs if not p.exists()]
+    assert not any(p.exists() for p in mine), [p.name for p in mine if p.exists()]
+
+
+def test_the_sweep_does_not_follow_a_symlink_into_somebody_elses_directory(
+    tmp_path, monkeypatch
+) -> None:
+    """`isdir` follows a link, and what it reaches decides what is unlinked.
+
+    `$XDG_CACHE_HOME` is an environment variable a checkout can set through
+    direnv, and `~/.cache/memory-recall` can itself be a link. Neither is
+    evidence that the directory on the other end is memkit's — so a link is
+    followed only where memkit's own never-collected state is already there,
+    which is what a cache it really has been writing to looks like.
+    """
+    elsewhere = tmp_path / "their-notes"
+    elsewhere.mkdir()
+    old = time.time() - 30 * 86400
+    theirs = _aged_session(elsewhere, 7, old)
+    linked = tmp_path / "memory-recall"
+    linked.symlink_to(elsewhere)
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(linked))
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", None)
+    assert hook._sweep()["unlink"] == 0
+    assert theirs.exists(), "the sweep followed a link into somebody else's files"
+    assert not (elsewhere / hook.SWEEP_STAMP_NAME).exists(), "stamped it anyway"
+    # A cache memkit really has been writing to carries its own unswept state,
+    # and a symlinked one of those is still swept — the rule is ownership, not
+    # a ban on symlinks.
+    (elsewhere / hook.SOAK_LOG_NAME).write_text("{}\n", encoding="utf-8")
+    hook._sweep()
+    assert not theirs.exists()
 
 
 def test_a_saturated_first_directory_does_not_starve_the_second(

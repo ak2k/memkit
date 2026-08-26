@@ -530,7 +530,12 @@ looked. What the sweep takes, and on what evidence:
 | an index with **no `.root` at all**, older than a week | the sidecar is best-effort and a database whose root is gone is never reopened, so one that failed to write a sidecar can never acquire one. The ENOENT rule alone leaves these forever |
 | an index whose name is from a **superseded generation** | a naming change strands files under both rules above at once: the old names have live sidecars naming roots that still exist |
 | `<session-uuid>.json` older than 14 days, with its `.dup-*` claim | **only** when the name really is a UUID — the shape the harness produces. A `.json` here under any other name is not memkit's and is kept, whatever its age. The claim is named after the state, so whatever sweeps one sweeps the other |
-| `t-<tool_use_id>.json` older than 7 days | on filename and mtime, never on a parse: these exist in more than one shape and a reader would leave the older ones behind |
+| `t-<tool_use_id>.json` older than 7 days | **only** when the id really is one memkit writes, the same rule as the line above; on filename and mtime, never on a parse, since these exist in more than one shape and a reader would leave the older ones behind |
+
+This directory is swept where it is memkit's own. Reached through a symlink —
+`$XDG_CACHE_HOME` set by something in your environment, or `memory-recall`
+itself a link — it is swept only once memkit's own never-collected state is
+already in it, which is what a cache it has been writing to looks like.
 
 **Never collected, whatever their age**: `log.jsonl`, because the soak
 analyzers treat it as their corpus; any config the init journal records having
