@@ -430,6 +430,75 @@ def test_a_relative_store_or_config_is_refused(profile) -> None:
     _refuses(profile, "relative-path", config="memkit.json")
 
 
+def test_init_writes_only_where_the_hook_would_read(profile, monkeypatch) -> None:
+    """The writer and the readers admit exactly the same paths.
+
+    The previous round closed the no-option door on the plugin channel and
+    left the malformed-option door open: `memkitConfig` with a doubled slash —
+    which shell variable concatenation at install time produces on its own —
+    got a store, a green integrity check and exit 0, while
+    `memkit_resolve_config` refused that shape and served every prompt
+    nothing. One doubled character, and the manifest asserted the opposite.
+
+    Table-driven over the shapes the wrapper's own rule names, and each case
+    asserts NOTHING WAS WRITTEN, because a refusal that got halfway is the
+    state this whole command exists to avoid.
+    """
+    from memkit.memory_prompt_recall import path_refusal
+
+    good = str(profile / "cfg" / "memkit.json")
+    for bad in (
+        str(profile) + "//cfg/memkit.json",
+        str(profile) + "/cfg/./memkit.json",
+        str(profile) + "/cfg/../cfg/memkit.json",
+        "/proc/self/cwd/memkit.json",
+        "/dev/fd/3/memkit.json",
+    ):
+        assert path_refusal(bad), bad
+        refusal = _refuses(profile, "non-canonical-path", config=bad)
+        assert bad in refusal.message, refusal.message
+        assert path_refusal(bad) in refusal.message, refusal.message
+    # The store is admitted by the same rule: `/proc/self/cwd/notes` is
+    # absolute and is a different directory in every session.
+    _refuses(profile, "non-canonical-path", store="/proc/self/cwd/notes")
+    # And an unexpanded `~someone` is what `os.path.expanduser` would have
+    # turned into an absolute path the shell leaves alone.
+    _refuses(profile, "relative-path", config="~nobody/memkit.json")
+    # The control: the same rule admits the ordinary case.
+    assert path_refusal(good) == ""
+    _plan(profile, config=good, store=str(profile / "notes"))
+
+
+def test_the_option_rung_is_vetted_the_way_the_wrapper_vets_it(
+    profile, monkeypatch
+) -> None:
+    """The rung init trusts unconditionally is the one the shell vets.
+
+    `--config` is typed at the moment of the run; the `memkitConfig` option was
+    typed once, at install, and is read back out of settings — so it is the
+    rung where a bad shape survives long enough to be written to.
+    """
+    def _option(value: str) -> None:
+        (profile / "claude-config" / "settings.json").write_text(
+            json.dumps(
+                {
+                    "pluginConfigs": {
+                        doctor.PLUGIN_KEY: {"options": {doctor.OPTION_KEY: value}}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    _option(str(profile) + "//cfg/memkit.json")
+    _refuses(profile, "non-canonical-path", store=str(profile / "notes"))
+    # `~someone` is the case that separates the two expansions: the shell
+    # leaves it alone and refuses it as relative, and `os.path.expanduser`
+    # turns it into an absolute path init would have written to.
+    _option("~nobody/memkit.json")
+    _refuses(profile, "relative-path", store=str(profile / "notes"))
+
+
 def test_a_store_inside_the_plugin_data_directory_is_refused(profile, monkeypatch):
     """Plugin data dies with the plugin unless somebody remembers
     `--keep-data`. A memory store must outlive the plugin that reads it."""

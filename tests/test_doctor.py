@@ -2045,6 +2045,58 @@ def test_the_execution_gate_refuses_what_it_is_there_to_refuse(
     assert not doctor._may_execute(str(disguise))
 
 
+def test_an_option_the_wrapper_refuses_by_shape_is_named_as_that(
+    profile, monkeypatch
+) -> None:
+    """The set-but-unreadable option has a second shape, and it looked green.
+
+    `memkitConfig` with a doubled slash is a file the operating system opens
+    happily and `bin/lib/common.sh` refuses by name, so every check that
+    stats the path answers yes while the hook is served nothing. The report
+    said "exists and is readable" and handed the reader a `--config` step.
+    """
+    bad = str(profile) + "//memkit.json"
+    _config_file(profile / "memkit.json")
+    assert os.path.isfile(bad), "the fixture has to be openable, or it proves nothing"
+    _settings(
+        profile,
+        pluginConfigs={doctor.PLUGIN_KEY: {"options": {doctor.OPTION_KEY: bad}}},
+    )
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    rows = doctor._PRODUCERS["config-route"](doctor.Machine())
+    (row,) = _only(rows, "config-route")
+    assert row.status == doctor.FAIL, (row.status, row.detail)
+    assert "canonical" in row.detail, row.detail
+    assert "--config" not in (row.remedy or ""), row.remedy
+
+
+def test_a_recorded_interpreter_the_wrapper_refuses_is_reported_as_refused(
+    profile, monkeypatch
+) -> None:
+    """Doctor and the wrapper answer the same question about the same field.
+
+    The wrapper expands `~` its own way and then applies the path rule; doctor
+    used `os.path.expanduser` and only asked whether the result was an
+    executable file. So a recorded `~someone/python3` was reported as "not an
+    executable file" — true, and the wrong repair — and a `/proc/self/exe`
+    that IS an executable file was reported as honoured while the wrapper
+    refused it.
+    """
+    config = profile / "memkit.json"
+    for recorded, expected in (
+        ("/proc/self/exe", "kernel resolves"),
+        ("~nobody/python3", "absolute"),
+        (str(profile) + "//python3", "canonical"),
+    ):
+        _config_file(config)
+        blob = json.loads(config.read_text())
+        blob["interpreter"] = recorded
+        config.write_text(json.dumps(blob), encoding="utf-8")
+        machine = _machine(profile, monkeypatch, str(config))
+        (row,) = _only(doctor._PRODUCERS["interpreter"](machine), "interpreter")
+        assert expected in row.detail, (recorded, row.detail)
+
+
 def test_a_repository_scoped_memkitconfig_is_reported_and_never_followed(
     profile, monkeypatch
 ) -> None:

@@ -62,6 +62,8 @@ from memkit.memory_prompt_recall import (
     SCHEMA,
     _display_path,
     _plugin_install,
+    expand_home,
+    path_refusal,
 )
 
 SUMMARY = "create a store and wire this machine up to it"
@@ -469,22 +471,38 @@ def _merge_config(
 # it, and an agent given only a token relays a token.
 
 
-def _refuse_relative(what: str, path: str) -> None:
-    """Absolute after `~` expansion, or it does not count.
+def _refuse_path(what: str, path: str) -> None:
+    """The wrapper's own admission rule, applied to what init would WRITE.
 
-    The same rule the wrappers enforce, for the same reason: a relative path
-    resolves against whatever directory the session stands in, so an adopter
-    who typed `--store notes` would get a different store in every repository
-    they open — and a config decides which directories the every-prompt hook
-    reads.
+    `path_refusal` is the one spelling of `memkit_path_refusal`, and this is
+    the whole reason it is one: the shell decides what the hook will read and
+    init decides what to write, so a rule they hold separately is a rule they
+    will hold differently. When that happened, init wrote a config the wrapper
+    refused, and the adopter got a store, a clean integrity check, exit 0 and
+    silence on every prompt — with the manifest saying the config would be
+    read via the option.
+
+    Two names rather than one, because the two repairs differ: a relative path
+    is a path the adopter has to make absolute, and a non-canonical one is a
+    path whose meaning depends on who resolves it.
     """
-    if not os.path.isabs(path):
+    why = path_refusal(path)
+    if not why:
+        return
+    if why == "is not an absolute path":
         raise Refusal(
             "relative-path",
             f"the {what} path {path!r} is not absolute. A relative path names "
             "a different directory in every session, and the one thing a "
             "memory store may not be is a different store per directory.",
         )
+    raise Refusal(
+        "non-canonical-path",
+        f"the {what} path {path!r} {why}. `bin/lib/common.sh` refuses that "
+        "shape before the hook starts, so a config written there is one the "
+        "hook can never read — a store, a clean integrity check, exit 0, and "
+        "silence on every prompt.",
+    )
 
 
 def _inside(path: str, root: str) -> bool:
@@ -603,8 +621,8 @@ def check_refusals(
             "init writes records the python that will read every prompt, and "
             "recording one that cannot run is an install that answers nothing.",
         )
-    _refuse_relative("config", config_path)
-    _refuse_relative("store", store_path)
+    _refuse_path("config", config_path)
+    _refuse_path("store", store_path)
 
     data_dir = os.environ.get(PLUGIN_DATA_ENV, "")
     if data_dir and os.path.isabs(data_dir) and _inside(store_path, data_dir):
@@ -662,7 +680,7 @@ def check_refusals(
     ):
         if not flag:
             continue
-        _refuse_relative(what, target)
+        _refuse_path(what, target)
         if _inside(target, store_path):
             raise Refusal(
                 "store-resident-target",
@@ -762,10 +780,14 @@ def _resolve_config(machine: Machine, named: str | None) -> str:
     journal, which a later undo needs, lives in the state directory instead.
     """
     if named:
-        return os.path.expanduser(named)
+        return expand_home(named)
     option, _scope = machine.settings_option()
     if option:
-        return os.path.expanduser(option)
+        # `expand_home`, not `os.path.expanduser`: the option value is a
+        # string typed into an install command and never expanded by a shell,
+        # and the wrapper expands exactly `~` and `~/`. Expanding `~someone`
+        # here would admit a path the wrapper leaves relative and refuses.
+        return expand_home(option)
     if machine.plugin:
         rung_two = machine.rung_two
         if not rung_two:
@@ -783,7 +805,7 @@ def _resolve_config(machine: Machine, named: str | None) -> str:
                 "it yourself.",
             )
         return rung_two
-    return os.path.expanduser(DEFAULT_CONFIG)
+    return expand_home(DEFAULT_CONFIG)
 
 
 def _config_route_note(machine: Machine, config_path: str) -> str:
@@ -795,7 +817,7 @@ def _config_route_note(machine: Machine, config_path: str) -> str:
     care about is whether it does anything.
     """
     option, _scope = machine.settings_option()
-    if option and os.path.expanduser(option) == config_path:
+    if option and expand_home(option) == config_path:
         return f"Read via the {OPTION_KEY} install option"
     if machine.plugin and config_path == machine.rung_two:
         return f"Read via ${PLUGIN_DATA_ENV}/{GENERATED_CONFIG_NAME}"
@@ -905,7 +927,7 @@ def build_plan(
 ) -> Plan:
     """Everything init would do, computed against the tree as it is now."""
     config_path = _resolve_config(machine, config)
-    store_path = os.path.expanduser(store or DEFAULT_STORE)
+    store_path = expand_home(store or DEFAULT_STORE)
     check_refusals(
         machine,
         config_path=config_path,

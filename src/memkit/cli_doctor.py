@@ -92,6 +92,7 @@ from memkit.memory_prompt_recall import (
     _version,
     expand_home,
     load_config,
+    path_refusal,
     recall,
     sanitize,
 )
@@ -695,7 +696,29 @@ def _resolved_route(machine: Machine) -> list[Check]:
     routes = ", ".join(_rungs(machine))
     where = f", set in {scope.scope} settings" if scope else ""
 
-    if option and machine.resolved_config != os.path.expanduser(option):
+    shape = path_refusal(expand_home(option)) if option else ""
+    if shape:
+        # A SECOND SHAPE OF THE SET-BUT-WRONG OPTION, and the one every check
+        # that stats the path answers yes about: `//x/memkit.json` is a file
+        # the kernel opens happily and one `memkit_resolve_config` refuses
+        # before the hook starts. Reported with the wrapper's own sentence,
+        # because the two are one rule.
+        return [
+            Check(
+                "config-route",
+                FAIL,
+                f'option: "{option}"{where}, which {shape}. The wrapper '
+                "refuses that shape and runs as if no config were given, so "
+                "this install is inert however readable the path looks",
+                f"Reinstall with a canonical absolute path, or edit "
+                f"{OPTION_KEY} in "
+                f"{scope.path if scope else 'your settings'}. The file may be "
+                "fine; the spelling of the path is not.",
+                actor=USER,
+            )
+        ]
+
+    if option and machine.resolved_config != expand_home(option):
         # The option is set and did not answer. Either it names something that
         # is not there, or something else won — and the detail says which,
         # because the two are different repairs.
@@ -714,7 +737,7 @@ def _resolved_route(machine: Machine) -> list[Check]:
                     actor=USER,
                 )
             ]
-        expanded = os.path.expanduser(option)
+        expanded = expand_home(option)
         if os.path.isfile(expanded) and os.access(expanded, os.R_OK):
             # The option names a real config and THIS PROCESS was not given it.
             # That is what running the binary from a shell looks like: the
@@ -2598,8 +2621,21 @@ def _interpreter(machine: Machine) -> list[Check]:
     recorded = _recorded_interpreter(machine)
     honoured = ""
     if recorded:
-        expanded = os.path.expanduser(recorded)
-        if not (os.path.isfile(expanded) and os.access(expanded, os.X_OK)):
+        # `expand_home` and `path_refusal`, in the wrapper's own order: this
+        # field names the binary exec'd on every prompt, and the wrapper vets
+        # its SHAPE before it ever asks whether the file is executable. Asking
+        # only the second question reported `/proc/self/exe` as honoured while
+        # the wrapper refused it, and `~someone/python3` as "not an executable
+        # file" — true, and the wrong repair.
+        expanded = expand_home(recorded)
+        shape = path_refusal(expanded)
+        if shape:
+            honoured = (
+                f'. The config records "interpreter": "{recorded}", which '
+                f"{shape}, so the wrapper refuses it by name and falls back "
+                "to the python3 on PATH"
+            )
+        elif not (os.path.isfile(expanded) and os.access(expanded, os.X_OK)):
             honoured = (
                 f'. The config records "interpreter": "{recorded}", which is '
                 "not an executable file, so the wrapper falls back to the "

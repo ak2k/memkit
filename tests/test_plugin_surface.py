@@ -4121,3 +4121,161 @@ def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
     # and this document's whole claim is that a reader can check it.
     counts = {int(n) for n in re.findall(r"\b(\d+) files\b", note)}
     assert counts == {len(listed)}, counts
+
+
+# --- the one path-admission rule, proved over the PAIR ------------------------
+
+
+def _shell_answers(function: str, corpus: list) -> list:
+    """`function` run over `corpus` inside ONE shell, one answer per line.
+
+    One process rather than one per path: the point of a differential test is
+    a corpus wide enough to find the case a reading would miss, and a fork per
+    case puts a ceiling on how wide that can be.
+    """
+    driver = (
+        f'. "{COMMON_SH}"\n'
+        "while IFS= read -r line; do\n"
+        f"  {function}\n"
+        "done\n"
+    )
+    out = subprocess.run(
+        ["sh", "-c", driver],
+        input="\n".join(corpus) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    answers = out.stdout.split("\n")[: len(corpus)]
+    assert len(answers) == len(corpus), (len(answers), len(corpus))
+    return answers
+
+
+def _path_corpus() -> list:
+    """Every short arrangement of the tokens the rule turns on, plus the
+    literals the field produced.
+
+    Generated rather than listed: the failures this exists to catch are the
+    ones a person reading both implementations agrees with themselves about.
+    Newline-free by construction — the driver is line-oriented, and a path
+    with a newline in it is a case neither implementation was written for.
+    """
+    tokens = ("", "/", "a", ".", "..", "~", "proc", "dev", "fd", " ")
+    corpus = [
+        "",
+        "~",
+        "~/",
+        "~/x",
+        "~root/x",
+        "~/../x",
+        "/proc",
+        "/proc/",
+        "/proc/self/cwd/memkit.json",
+        "/procx/a",
+        "/dev/fd",
+        "/dev/fd/",
+        "/dev/fd/3",
+        "/dev/fdx/a",
+        "/a/b",
+        "//",
+        "/.",
+        "/..",
+        "a//b",
+        "/a/./b",
+        "/a/../b",
+        "/a/.b",
+        "/a/..b",
+        "/a/b/.",
+        "/a/b/..",
+        "relative/path",
+        "./relative",
+        "../relative",
+    ]
+    for one in tokens:
+        for two in tokens:
+            for three in tokens:
+                corpus.append(one + two + three)
+                corpus.append("/" + one + two + three)
+    seen = set()
+    unique = []
+    for path in corpus:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def test_the_shell_and_the_python_admit_exactly_the_same_paths() -> None:
+    """ONE admission rule, proved over the pair rather than read twice.
+
+    `bin/lib/common.sh` decides what the hook will READ and what it will EXEC;
+    `memkit init` decides what to WRITE. When those disagree, init writes a
+    config the wrapper then refuses, and the adopter gets a store, a clean
+    integrity check, exit 0 and silence on every prompt — which is exactly the
+    state the previous round's fix left reachable through the option rung.
+
+    The rule exists twice because the shell cannot import Python and the hook
+    path may not fork a shell. What makes it one rule is this: the same corpus
+    through both, with the same verdict AND the same sentence, or the sweep is
+    red.
+    """
+    from memkit.memory_prompt_recall import path_refusal
+
+    corpus = _path_corpus()
+    answers = _shell_answers(
+        'if _why=$(memkit_path_refusal "$line"); then '
+        "printf 'R\\t%s\\n' \"$_why\"; else printf 'A\\t\\n'; fi",
+        corpus,
+    )
+    disagreements = []
+    for path, answer in zip(corpus, answers):
+        verdict, _, why = answer.partition("\t")
+        mine = path_refusal(path)
+        theirs = why if verdict == "R" else ""
+        if mine != theirs:
+            disagreements.append((path, theirs, mine))
+    assert not disagreements, disagreements[:10]
+    # Non-vacuous in both directions: the corpus really does contain paths the
+    # rule admits and paths it refuses for each of its three reasons.
+    refusals = {path_refusal(p) for p in corpus}
+    assert "" in refusals
+    # One admission plus each of the rule's four refusals.
+    assert len(refusals) == 5, refusals
+
+
+def test_the_shell_and_the_python_expand_home_the_same_way(monkeypatch) -> None:
+    """`os.path.expanduser` is not this rule.
+
+    It expands `~someone/x`, which the shell leaves alone — so the two would
+    admit different paths, and the one that admits more is the one that writes
+    the config.
+    """
+    from memkit.memory_prompt_recall import expand_home
+
+    corpus = [p for p in _path_corpus() if p]
+    home = "/tmp/memkit-home-fixture"
+    env = dict(os.environ, HOME=home)
+    driver = (
+        f'. "{COMMON_SH}"\n'
+        "while IFS= read -r line; do memkit_expand_home \"$line\"; done\n"
+    )
+    out = subprocess.run(
+        ["sh", "-c", driver],
+        input="\n".join(corpus) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+        env=env,
+    )
+    answers = out.stdout.split("\n")[: len(corpus)]
+    monkeypatch.setenv("HOME", home)
+    disagreements = [
+        (path, theirs, expand_home(path))
+        for path, theirs in zip(corpus, answers)
+        if expand_home(path) != theirs
+    ]
+    assert not disagreements, disagreements[:10]
+    assert expand_home("~/x") == home + "/x"
+    assert expand_home("~root/x") == "~root/x"
