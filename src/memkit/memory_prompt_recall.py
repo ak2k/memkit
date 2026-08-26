@@ -346,7 +346,12 @@ class Config:
         ev = _optional_mapping(raw, "eval")
         self.eval_root = ev.get("root")
         self.eval_snapshot = ev.get("snapshot")
-        self.eval_gating = frozenset(
+        # Annotated because the default makes the inferred element type
+        # `Literal['suite']`, and a consumer that then subtracts a `set[str]`
+        # from it is an operator error pyright refuses — in a file pyright
+        # gates. The type this carries is "slice names", not "the one name the
+        # default happens to hold".
+        self.eval_gating: frozenset[str] = frozenset(
             _require_str_tuple(ev, "gating_slices", "eval") or ("suite",)
         )
         self.eval_cases = _optional_mapping(ev, "cases", where="eval")

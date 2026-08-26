@@ -883,7 +883,7 @@ def main() -> None:
     # made lenient there: `compared.get(s, 0)` would stop the crash by counting
     # a typo as a satisfied gate, which is the failure the vacuity check exists
     # to prevent.
-    unknown = sorted(set(gating) - set(seen_cases))
+    unknown = sorted(gating - set(seen_cases))
     if unknown:
         sys.exit(
             f"{cfg.path}: eval.gating_slices names {', '.join(unknown)} — "

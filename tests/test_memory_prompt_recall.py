@@ -9153,8 +9153,10 @@ def test_the_prompt_path_tells_an_unanswerable_index_from_an_empty_corpus(
     record = json.loads(log.read_text().splitlines()[-1])
     assert record["outcome"] == "nomatch", record
 
-    # The consumer contract is the published table, not this test.
-    readme = Path(hook.__file__).resolve().parents[2] / "README.md"
+    # The consumer contract is the published table, not this test. Located
+    # from THIS file rather than from the module's: the packaged build imports
+    # memkit out of the store, where there is no README beside it.
+    readme = Path(__file__).resolve().parent.parent / "README.md"
     assert "| `index-unavailable` |" in readme.read_text(encoding="utf-8")
 
 
