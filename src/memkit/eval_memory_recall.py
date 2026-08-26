@@ -778,7 +778,10 @@ def main() -> None:
     # Whether this run can attribute anything to the tool. No snapshot at all
     # reads as "cannot": --update-snapshot is then the only legal next move.
     corpus_matches = prior is not None and prior["corpus"] == corpus
-    gating = cfg.eval_gating
+    # Annotated, because the long-brief slice narrows it below and the
+    # inferred type is a frozenset of whatever literals the default happened to
+    # carry.
+    gating: frozenset[str] = cfg.eval_gating
     # Say what this run measured. Four of these lines are the difference
     # between "the hook missed" and "you ran the suite from somewhere the hook
     # does not look" or "you scored a corpus nobody baselined".
@@ -1038,7 +1041,7 @@ def main() -> None:
             # documented `--hook` workflow into an error on the exact class of
             # copy it exists for. The SHIPPED hook took the `sys.exit` above
             # and never reaches this.
-            gating = gating - {LONG_BRIEF_SLICE}
+            gating = frozenset(s for s in gating if s != LONG_BRIEF_SLICE)
         else:
             try:
                 briefs = long_brief_set(brief_root)
