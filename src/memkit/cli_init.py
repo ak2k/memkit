@@ -43,14 +43,17 @@ from memkit.cli_doctor import (
     CANARY_NAME,
     CONFIG_DIR_ENV,
     EXCLUDE_STRAY,
+    OPTION_KEY,
     Machine,
     _checker_route,
     authored_configs,
     canary_query,
 )
 from memkit.memory_prompt_recall import (
+    CONFIG_ENV,
     DEFAULT_SEARCH_CLI,
     EXCLUDE_BASENAMES,
+    GENERATED_CONFIG_NAME,
     INIT_JOURNAL_NAME,
     PLUGIN_DATA_ENV,
     PLUGIN_SEARCH_CLI,
@@ -71,9 +74,14 @@ MANIFEST_SCHEMA = 1
 # it once should find init converging on the same directory rather than
 # creating a second store beside it.
 DEFAULT_STORE = "~/notes"
-# The config, when neither `--config` nor the install option names one. The
-# same default the plugin manifest declares, so an install that took the
-# default and an install that skipped the option land in one place.
+# The config, when neither `--config` nor the install option names one, OFF the
+# plugin channel. `--config` and `$MEMKIT_CONFIG` are the two routes pip and
+# nix read and both take a path the adopter names, so a file under `~/.config`
+# is one they can point either route at.
+#
+# It is NOT the plugin channel's answer. The wrapper reads exactly two rungs
+# and this is neither, so a config written here on that channel is a config the
+# hook can never read — see `_resolve_config`.
 DEFAULT_CONFIG = "~/.config/memkit/memkit.json"
 
 # The operations a plan can hold. Each is one filesystem effect, journalled at
@@ -635,20 +643,74 @@ def check_refusals(
 
 
 def _resolve_config(machine: Machine, named: str | None) -> str:
-    """Where the config goes, in the order that makes an install converge.
+    """Where the config goes — which has to be a path this install will READ.
 
-    The INSTALL OPTION wins over the default, because an adopter who passed
+    The INSTALL OPTION wins over any default, because an adopter who passed
     `--config memkitConfig=<path>` has already said where they want it and a
     config written anywhere else would leave the option pointing at nothing —
-    which is the highest-cost silent state in the whole field log, created by
-    the command that exists to prevent it.
+    the highest-cost silent state in the whole field log, created by the
+    command that exists to prevent it.
+
+    ON THE PLUGIN CHANNEL WITH NO OPTION, the answer is rung 2 and not a
+    tidy-looking path under `~/.config`. The wrapper reads two rungs and
+    nothing else; a config anywhere else is one the hook can never see, so an
+    adopter would get a store, a green integrity check, an exit 0 and silence
+    on every prompt — with doctor telling them to run the command that just
+    ran. `bin/lib/common.sh` already names init as the one thing that will
+    ever legitimately write that path, and the journal entry init makes is
+    what `config-authorship` reads to tell memkit's own file from a planted
+    one.
+
+    Its lifetime is the trade, and it is the right one for this file: plugin
+    data dies with `claude plugin uninstall` unless `--keep-data`, and a
+    config init can regenerate is exactly the kind of thing that should. The
+    journal, which a later undo needs, lives in the state directory instead.
     """
     if named:
         return os.path.expanduser(named)
     option, _scope = machine.settings_option()
     if option:
         return os.path.expanduser(option)
+    if machine.plugin:
+        rung_two = machine.rung_two
+        if not rung_two:
+            raise Refusal(
+                "no-config-route",
+                "this is a plugin install with no `memkitConfig` option set "
+                f"and no usable ${PLUGIN_DATA_ENV}, so there is nowhere to "
+                "put a config that the hook would read. Writing one anyway "
+                "would leave you with a store, a clean integrity check and a "
+                "hook that says nothing forever.\n"
+                "Set the option — `claude plugin install memkit@memkit --yes "
+                "--config memkitConfig=<absolute path>`, or `/plugin "
+                "configure memkit@memkit` — and run init again. Or pass "
+                "`--config <absolute path>` here and point $MEMKIT_CONFIG at "
+                "it yourself.",
+            )
+        return rung_two
     return os.path.expanduser(DEFAULT_CONFIG)
+
+
+def _config_route_note(machine: Machine, config_path: str) -> str:
+    """Which route will read the config this plan writes.
+
+    In the manifest because "a config was written" and "the hook can read it"
+    are two facts, and conflating them is how an install ends up configured
+    and inert. The reader is being asked to consent to a write; what they
+    care about is whether it does anything.
+    """
+    option, _scope = machine.settings_option()
+    if option and os.path.expanduser(option) == config_path:
+        return f"Read via the {OPTION_KEY} install option"
+    if machine.plugin and config_path == machine.rung_two:
+        return f"Read via ${PLUGIN_DATA_ENV}/{GENERATED_CONFIG_NAME}"
+    if machine.plugin:
+        return (
+            "WARNING: this path is on neither rung a plugin install reads "
+            f"(the {OPTION_KEY} option, ${PLUGIN_DATA_ENV}/"
+            f"{GENERATED_CONFIG_NAME}), so the hook will not see it"
+        )
+    return f"Read via --config or ${CONFIG_ENV}"
 
 
 def _interpreter() -> str:
@@ -748,7 +810,8 @@ def build_plan(
             ),
             note=f"adds root and store {store_id!r}; records interpreter "
             f"{_display_path(_interpreter())} and canary nonce {nonce}. "
-            "Existing stores are kept",
+            "Existing stores are kept. "
+            + _config_route_note(machine, config_path),
             authored_config=True,
             payload={
                 "nonce": nonce,

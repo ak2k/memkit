@@ -265,6 +265,11 @@ def test_the_config_names_a_search_command_this_channel_ships(profile, monkeypat
     assert plain["search_cli"] == hook.DEFAULT_SEARCH_CLI
 
     monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    # A plugin install needs a route the wrapper reads, or init refuses before
+    # it gets as far as choosing a command to advertise.
+    data = profile / "plugin-data"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
     plugin = json.loads(
         [a for a in _plan(profile).actions if a.path.endswith("memkit.json")][0].content
     )
@@ -992,3 +997,77 @@ def test_the_generated_config_advertises_a_command_the_agent_can_run(profile):
     assert advertised.startswith(f"{hook.PLUGIN_SEARCH_BINARY} --config ")
     assert advertised.endswith("--search")
     assert config in advertised
+
+
+# --- the config has to land somewhere the hook will read ---------------------
+
+
+def test_a_plugin_install_with_no_option_writes_where_the_wrapper_looks(
+    profile, monkeypatch
+) -> None:
+    """The flagship cold path, and it ended configured-but-inert.
+
+    `required: false` lets an install skip `--config`, and the harness then
+    writes no `pluginConfigs` entry at all — measured. The wrapper reads
+    exactly two rungs, and `~/.config/memkit/memkit.json` is neither, so init
+    wrote a config, seeded a store, passed its own integrity check, exited 0,
+    and the hook could never read any of it. Doctor then said to run init,
+    which converges to "nothing to write" on every retry: a closed loop between
+    the two commands this milestone adds.
+
+    Rung 2 is where it goes. `bin/lib/common.sh` already names init as the one
+    thing that will ever legitimately write that path, and the journal entry
+    init makes is what `config-authorship` reads to tell memkit's own file from
+    a planted one.
+    """
+    data = profile / "plugin-data"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    plan = _plan(profile, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(data / "memkit.json"), action.path
+    assert action.authored_config is True
+    # And the manifest says which route will read it, because "a config was
+    # written" and "the hook can read it" were the two facts this conflated.
+    assert hook.PLUGIN_DATA_ENV in plan.render()
+
+
+def test_the_option_still_wins_over_the_plugin_data_rung(profile, monkeypatch):
+    """An adopter who passed `--config memkitConfig=<path>` has said where they
+    want it, and that is the rung the wrapper tries first."""
+    data = profile / "plugin-data"
+    data.mkdir()
+    named = profile / "chosen" / "memkit.json"
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    (profile / "claude-config" / "settings.json").write_text(
+        json.dumps(
+            {"pluginConfigs": {"memkit@memkit": {"options": {"memkitConfig": str(named)}}}}
+        ),
+        encoding="utf-8",
+    )
+    plan = _plan(profile, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(named)
+
+
+def test_a_plugin_install_with_no_route_at_all_is_refused_by_name(
+    profile, monkeypatch
+) -> None:
+    """Writing a config nothing can read is worse than refusing: the adopter
+    gets a store, a green integrity check and an exit 0, and a hook that says
+    nothing on every prompt forever."""
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.delenv(hook.PLUGIN_DATA_ENV, raising=False)
+    refusal = _refuses(profile, "no-config-route", store=str(profile / "notes"))
+    assert "plugin configure" in refusal.message or "--config" in refusal.message
+
+
+def test_off_the_plugin_channel_the_default_path_is_still_right(profile):
+    """`$MEMKIT_CONFIG` and `--config` are the routes pip and nix read, and
+    both take a path the adopter names — so a default under `~/.config` is a
+    file they can point either route at."""
+    plan = _plan(profile, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(profile / "home" / ".config" / "memkit" / "memkit.json")

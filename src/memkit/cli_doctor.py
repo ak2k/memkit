@@ -643,8 +643,9 @@ def _config_route(machine: Machine) -> list[Check]:
                     "no config on either rung this install reads "
                     f"({routes}), so it is inert: no stores, no pointers, "
                     "exit 0 on every prompt",
-                    "Run /memkit:init, which writes a config and points this "
-                    "install at it.",
+                    "Run /memkit:init. On this channel it writes the config "
+                    f"to ${PLUGIN_DATA_ENV}/{GENERATED_CONFIG_NAME}, which is "
+                    "a rung the hook reads without any option being set.",
                     actor=USER,
                 )
             ]
@@ -730,9 +731,10 @@ def _config_authorship(machine: Machine) -> list[Check]:
     escalation over "a malicious payload already runs code" is persistence and
     laundering, and it is real.
 
-    Init never writes that file. What it writes is the journal entry claiming
-    the configs it did author, which is what makes an UNCLAIMED one detectable
-    at all.
+    Init is the one thing that legitimately writes that file — on a plugin
+    install with no `memkitConfig` option, it is the only rung the wrapper
+    reads — and it journals every config it authors. That journal is what
+    makes an UNCLAIMED one detectable at all.
     """
     path = machine.rung_two
     if not path:
@@ -2448,16 +2450,32 @@ def _uninstall_story(machine: Machine) -> list[Check]:
                     _display_path(os.path.join(_search_root(live), CANARY_NAME))
                 )
     survives = [f"your stores{' (' + ', '.join(canaries) + ')' if canaries else ''}"]
+    goes = []
     if machine.resolved_config:
-        survives.append(_display_path(machine.resolved_config))
+        # A config on rung 2 lives IN the plugin data directory, so it is one
+        # of the things `uninstall` takes. That is the right lifetime for a
+        # file init can regenerate, and it is exactly the sort of thing an
+        # adopter should be told before they run the command rather than
+        # after.
+        where = survives
+        if machine.rung_two and machine.resolved_config == machine.rung_two:
+            where = goes
+        where.append(_display_path(machine.resolved_config))
     survives.append(f"{_display_path(machine.state_dir)} (index, log, journal)")
+    taken = (
+        "; ".join(goes) + " goes with the plugin data directory unless you "
+        "pass --keep-data — init regenerates it. "
+        if goes
+        else ""
+    )
     return [
         Check(
             "uninstall-story",
             INFO,
             "`claude plugin uninstall memkit@memkit` removes the payload and "
             "the plugin data directory; `--keep-data` keeps the second. "
-            "Neither touches: " + "; ".join(survives),
+            + taken
+            + "Neither touches: " + "; ".join(survives),
             "The canary memories above are memkit's own and are safe to "
             "delete by hand; everything else in your stores is yours. Nothing "
             "removes them for you, because the store is deliberately outside "

@@ -130,11 +130,16 @@ it.**
   payload** — memkit's own hook writes `trust.json` there, beside the
   `memkit.json` that rung 2 reads. So a release could write that file on one
   prompt and be honoured by every later, clean release. What makes it
-  tolerable rather than theoretical: nothing in this build writes it, and
-  `memkit doctor`'s `config-authorship` check reports one that exists and that
-  no `memkit init` journal entry claims. Init never writes that path; what it
-  records is the list of configs it *did* author, which is what makes an
-  unclaimed one detectable at all.
+  tolerable rather than theoretical: `memkit init` is the ONE thing that
+  writes it, it journals every config it authors, and `memkit doctor`'s
+  `config-authorship` check reports a file there that no journal entry claims.
+  A payload that planted one would be naming itself in a ledger it does not
+  control, or be caught by the check that reads it.
+
+  init writes there only on a plugin install with no `memkitConfig` option set
+  — the option wins whenever it is present, because that is the rung the
+  wrapper tries first and the path the adopter named. With neither, init
+  refuses rather than writing a config no rung reads.
 - Both routes are environment variables, so both **trust Claude Code's
   environment contract**. Anything that can put `CLAUDE_PLUGIN_DATA` into the
   launching environment — a wrapper script, a nested invocation, another

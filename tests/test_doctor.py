@@ -1941,3 +1941,39 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
     command, how, _remedy = doctor._installed_hook(doctor.Machine())
     assert command == [], (command, how)
     assert "inside this directory" in how, how
+
+
+def test_the_uninstall_story_says_when_the_config_goes_with_the_plugin(
+    profile, monkeypatch
+) -> None:
+    """A config on rung 2 lives IN the plugin data directory, so `uninstall`
+    takes it. That is the right lifetime for a file init regenerates, and it
+    is exactly the sort of thing to be told before running the command."""
+    data = profile / "plugin-data"
+    data.mkdir()
+    config = data / "memkit.json"
+    _config_file(config)
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    monkeypatch.setenv(hook.CONFIG_ENV, str(config))
+    (row,) = _only(
+        doctor._PRODUCERS["uninstall-story"](doctor.Machine()), "uninstall-story"
+    )
+    assert "goes with the plugin data directory" in row.detail, row.detail
+    assert "--keep-data" in row.detail
+    # And it is not also listed among the things nothing touches.
+    survives = row.detail.split("Neither touches:", 1)[1]
+    assert str(config) not in survives, survives
+
+
+def test_a_config_outside_plugin_data_is_still_named_as_surviving(
+    profile, monkeypatch
+) -> None:
+    path = _config_file(profile / "elsewhere.json")
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    (row,) = _only(
+        doctor._PRODUCERS["uninstall-story"](doctor.Machine()), "uninstall-story"
+    )
+    survives = row.detail.split("Neither touches:", 1)[1]
+    assert "elsewhere.json" in survives, row.detail
+    assert "goes with the plugin data directory" not in row.detail
