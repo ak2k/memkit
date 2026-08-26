@@ -7660,3 +7660,40 @@ def test_the_hook_and_the_eval_read_the_task_floor_from_one_place() -> None:
         assert hook._task_floor()["min_matched"] == 99
     finally:
         hook.TASK_MIN_MATCHED = before
+
+
+def test_both_query_builders_share_one_sanitizer(tmp_path) -> None:
+    """`build_task_query` had a verbatim copy of `build_query`'s body, and the
+    copied part is the load-bearing part: a leading `-` is a flag to the search
+    CLI, apostrophes and parens hard-error it, a bare quote terminates the
+    phrase each term is wrapped in. The next character class added there
+    because a query blew up the CLI has to reach both populations.
+
+    Asserted as behaviour rather than as source, over the characters the
+    sanitizer exists for: at equal caps the two builders must agree exactly.
+    """
+    hostile = (
+        "what's the --force flag (really) doing to node1 & \"quoted\" text "
+        "with apostrophes, parens and a trailing dash- in it please"
+    )
+    assert hook.build_query(hostile) == hook.build_query(
+        hostile, max_words=hook.QUERY_MAX_WORDS, max_terms=hook.QUERY_MAX_TERMS
+    )
+    at_task_caps = hook.build_query(
+        hostile, max_words=hook.TASK_QUERY_MAX_WORDS,
+        max_terms=hook.TASK_QUERY_MAX_TERMS,
+    )
+    assert hook.build_task_query(hostile) == at_task_caps
+    # Short enough that the caps do not bind, so the two answers are the same
+    # text and any divergence is the sanitizer.
+    assert hook.build_query(hostile) == at_task_caps
+    for bad in ("'", '"', "(", ")", "-", "&"):
+        assert bad not in at_task_caps, (bad, at_task_caps)
+
+
+def test_the_prompt_paths_caps_stay_where_they_were() -> None:
+    """The collapse must not widen the prompt path. Its two literals are named
+    now, and the consumer's committed eval snapshot was measured at them."""
+    assert (hook.QUERY_MAX_WORDS, hook.QUERY_MAX_TERMS) == (80, 40)
+    brief = _brief("served/backlash-rig.md")
+    assert len(_terms(hook.build_query(brief))) < 40

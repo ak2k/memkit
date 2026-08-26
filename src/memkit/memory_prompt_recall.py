@@ -2914,15 +2914,42 @@ def _soak_log(record: dict) -> None:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
-def build_query(stripped: str) -> str | None:
+# The prompt path's caps, named rather than spelled inline, because the task
+# path passes its own and a literal in a signature is a number nobody can find.
+# 80 words and 40 terms are the paste-resistant window: past that a prompt is a
+# log excerpt and its vocabulary is not what anybody is asking about.
+QUERY_MAX_WORDS = 80
+QUERY_MAX_TERMS = 40
+
+
+def build_query(
+    stripped: str,
+    *,
+    max_words: int | None = None,
+    max_terms: int | None = None,
+) -> str | None:
     """Prompt -> sanitized search query (None if nothing content-bearing).
 
     Shared by main() and the eval harness so evals exercise the real query
     construction.
+
+    The caps are arguments so the task path can widen them WITHOUT a second
+    copy of this body. That matters more than the six lines it saves: the
+    per-word sanitization below is not cosmetic — a leading `-` is a flag to
+    ck, apostrophes and parens hard-error a ck search, a bare quote terminates
+    the phrase `_fts_search` wraps each term in — so the next character class
+    added here because a query blew up the search CLI has to reach both
+    populations, and a copy is a copy that will not.
+
+    Resolved at CALL time, per the convention `_bounded_block` states: a
+    default bound at definition is a second copy of the constant that an A/B
+    moving it cannot reach.
     """
+    max_words = QUERY_MAX_WORDS if max_words is None else max_words
+    max_terms = QUERY_MAX_TERMS if max_terms is None else max_terms
     words = [
         w
-        for w in stripped.split()[:80]
+        for w in stripped.split()[:max_words]
         if w.lower().strip(".,!?;:'\"()") not in _STOPWORDS
     ]
     if len(words) < 2:
@@ -2934,7 +2961,7 @@ def build_query(stripped: str) -> str | None:
     # a ck search ("what's" -> Syntax Error, verified 0.7.11), and a bare
     # quote would terminate the phrase _fts_search wraps each term in. Keep
     # only word chars, then re-check.
-    terms = [t for w in words[:40] if (t := re.sub(r"[^\w]", " ", w).strip())]
+    terms = [t for w in words[:max_terms] if (t := re.sub(r"[^\w]", " ", w).strip())]
 
     # Compound splitting: user shorthand fuses identifiers ("node1" for a host
     # written down as node-4310-1). The corpus tokenizes hyphenated names into
@@ -3437,19 +3464,6 @@ def _sigterm_masked():
 # measured against, so a second population sharing them would silently re-tune
 # them for a corpus nobody re-measured.
 
-# Words of the brief the query builder reads, and terms it keeps. Both are far
-# above the prompt path's 80 and 40, which exist to stop a pasted log becoming
-# the query and which make "search on the whole brief" unreachable — 4.6 KB of
-# brief reduces to 33 terms through the shared builder, i.e. the first paragraph
-# and nothing else.
-#
-# Sized against the EMISSION BOUND rather than against a brief anybody has
-# written, because that bound is what caps the population: the task path echoes
-# the whole brief back inside `updatedInput`, so a brief past PIPE_BUFFER_BOUND
-# can never be emitted at all and a cap above what a 16 KiB brief yields can
-# never be the binding constraint. Measured: a brief at exactly that bound is
-# 3062 words and yields 652 unique terms at these caps, and raising them to
-# 6000/3000 yields the same 652 — saturated, with nothing left to add.
 # The Agent tool's name as the harness matches it, and the key in its input
 # that carries the brief. Both are read off the pinned build (2.1.238) rather
 # than assumed: `tool_name` on the wire is `Agent`, and `Task` survives only as
@@ -3481,6 +3495,38 @@ TASK_PROMPT_KEY = "prompt"
 TASK_HARNESS_TIMEOUT = 10
 TASK_BUDGET_SECONDS = 7
 
+# Words of the brief the query builder reads, and terms it keeps. Both are far
+# above the prompt path's 80 and 40, which exist to stop a pasted log becoming
+# the query and which make "search on the whole brief" unreachable — 4.6 KB of
+# brief reduces to 33 terms through the shared builder, i.e. the first
+# paragraph and nothing else.
+#
+# Sized against the EMISSION BOUND rather than against a brief anybody has
+# written, because that bound is what caps the population: the task path echoes
+# the whole brief back inside `updatedInput`, so a brief past PIPE_BUFFER_BOUND
+# can never be emitted at all and a cap above what a 16 KiB brief yields can
+# never be the binding constraint. Measured: a brief at exactly that bound is
+# 3062 words and yields 652 unique terms at these caps, and raising them to
+# 6000/3000 yields the same 652 — saturated, with nothing left to add.
+#
+# THE COST OF THAT CHOICE, since sizing a cap against one column is how a cap
+# gets set wrong. Retrieval is linear in term count, and `_record_matched`
+# issues one corpus-wide MATCH per term, so the caps buy latency on a path that
+# runs before every spawn. Measured warm, one 6.2 KB brief:
+#
+#   corpus      terms 203 (cap 300)   terms 340 (cap 2000)
+#   278 files              28 ms                 33 ms
+#   2800 files            318 ms                528 ms
+#
+# The narrower cap is real money on a large store and it is not affordable,
+# because the floor's per-hit minimum is counted in MATCHED TERMS: truncate the
+# query and the count falls with it. Measured on the slice, at TASK_MIN_MATCHED
+# = 10 — cap 100: 0 of 8 served; 150: 2; 200: 4; 300: 7; 400 and above: 7,
+# saturated. So 300 is not a cheaper operating point, it is the exact cliff
+# edge, and a brief slightly longer than the fixtures falls off it.
+#
+# The latency this leaves is bounded by the deadline rather than by the cap —
+# see TASK_BUDGET_SECONDS, which is threaded into the sync that spends it.
 TASK_QUERY_MAX_WORDS = 4000
 TASK_QUERY_MAX_TERMS = 2000
 
@@ -3576,33 +3622,16 @@ TASK_SHAPE_GATES = frozenset(
 
 
 def build_task_query(stripped: str) -> str | None:
-    """Brief -> sanitized search query (None if nothing content-bearing).
+    """Brief -> sanitized search query, at this path's caps.
 
-    `build_query`'s sanitization, verbatim and for the same reasons — both
-    stages read the query as SYNTAX before they read it as words — with the two
-    caps raised to the numbers above. A separate function rather than a
-    parameter on the shared one so that no prompt-path caller can reach these
-    caps by accident, and so the consumer's eval snapshot has nothing new in
-    the path it scores.
+    A named entry point rather than a call site with two keyword arguments,
+    because the eval harness and the tests both need to score exactly what a
+    spawn is scored against, and a second spelling of the caps is the drift
+    this collapse exists to remove.
     """
-    words = [
-        w
-        for w in stripped.split()[:TASK_QUERY_MAX_WORDS]
-        if w.lower().strip(".,!?;:'\"()") not in _STOPWORDS
-    ]
-    if len(words) < 2:
-        return None
-    terms = [
-        t
-        for w in words[:TASK_QUERY_MAX_TERMS]
-        if (t := re.sub(r"[^\w]", " ", w).strip())
-    ]
-    extra = []
-    for w in terms:
-        parts = re.split(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])", w, flags=re.I)
-        if len(parts) > 1:
-            extra.extend(p for p in parts if len(p) > 1 and not p.isdigit())
-    return " ".join(terms + extra) or None
+    return build_query(
+        stripped, max_words=TASK_QUERY_MAX_WORDS, max_terms=TASK_QUERY_MAX_TERMS
+    )
 
 
 def task_gate(stripped: str) -> str | None:
