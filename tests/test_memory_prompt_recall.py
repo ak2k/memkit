@@ -6944,27 +6944,26 @@ def test_a_feedback_memory_is_reachable_on_a_brief_and_is_not_on_prompt_bars(
     feedback bar is checked BEFORE the distinctive short-circuit and is what
     rejects.
     """
-    matched, total = ["sprocket", "backlash"], 300
+    # THE SHIPPED BARS, not two of them spliced into the prompt path's. Passing
+    # only the two feedback keys left `min_matched` at the prompt path's 1 — a
+    # combination `_task_floor()` never produces — so the case measured a floor
+    # nothing runs and could not see that one of the bars it named was inert.
+    total = 300
+    matched = ["sprocket", "backlash", "shim", "gearbox", "flange", "torque",
+               "spindle", "pulley", "gasket", "bracket", "coupling", "bearing"]
+    assert len(matched) >= hook.TASK_MIN_MATCHED
     assert not hook._passes_floor(matched, total, "feedback")
-    assert hook._passes_floor(
-        matched,
-        total,
-        "feedback",
-        feedback_min_terms=hook.TASK_FEEDBACK_MIN_TERMS,
-        feedback_min_ratio=hook.TASK_FEEDBACK_MIN_RATIO,
-    )
+    assert hook._passes_floor(matched, total, "feedback", **hook._task_floor())
     # The same evidence on a non-feedback memory was never in doubt, which is
     # what makes the pair above about the feedback bar and not about the floor.
     assert hook._passes_floor(matched, total, "reference")
-    # The share bar is off for this path and the COUNT bar is not: two matched
-    # terms is what a feedback memory still has to show.
-    assert not hook._passes_floor(
-        ["sprocket"],
-        total,
-        "feedback",
-        feedback_min_terms=hook.TASK_FEEDBACK_MIN_TERMS,
-        feedback_min_ratio=hook.TASK_FEEDBACK_MIN_RATIO,
-    )
+    # And the count bar is NOT stricter than the general one here: what a
+    # feedback memory has to show on a brief is what any memory has to show.
+    bars = hook._task_floor()
+    assert bars["feedback_min_terms"] == bars["min_matched"]
+    thin = matched[: hook.TASK_MIN_MATCHED - 1]
+    assert not hook._passes_floor(thin, total, "reference", **bars)
+    assert not hook._passes_floor(thin, total, "feedback", **bars)
 
 
 # --- the task path: the output-shape allowlist and the frame ------------------
@@ -8125,7 +8124,15 @@ def test_every_task_floor_bar_is_the_deciding_one_for_some_input() -> None:
     """Two of these bars are 0.0 and one is numerically the prompt path's, so
     a reader cannot tell an intentional value from a forgotten one and no
     other test moved them. Each is pinned by an input it alone decides.
+
+    FOUR bars, and the fifth is here as the statement that it is not one:
+    `feedback_min_terms` is set to `min_matched`, which `_passes_floor` checks
+    above the feedback branch, so no input exists that it alone decides. It was
+    2 and unreachable for the same reason — an inert bar reading as a policy —
+    and the assertion below is what stops it drifting back into one silently.
     """
+    bars = _bars()
+    assert bars["feedback_min_terms"] == bars["min_matched"], bars
     # min_matched: below it, distinctive evidence does not save the hit.
     below = ["sprocket"] * (hook.TASK_MIN_MATCHED - 1)
     assert not hook._passes_floor(below, 300, "reference", **_bars())

@@ -3842,12 +3842,18 @@ TASK_QUERY_MAX_TERMS = 2000
 # 8).
 TASK_MIN_MATCHED_TERMS = 14
 TASK_ALL_COMMON_MIN_RATIO = 0.0
-# `type: feedback` keeps its count bar and loses its share bar for the reason
-# above, and here the share bar is not merely inert but silencing: 0.12 of a
-# 300-term brief is 36 matched terms, so on the prompt path's numbers no
-# feedback memory is ever served to a subagent — an entire memory type reading
-# as a corpus with nothing to say.
-TASK_FEEDBACK_MIN_TERMS = 2
+# `type: feedback` loses its SHARE bar for the reason above, and here that bar
+# is not merely inert but silencing: 0.12 of a 300-term brief is 36 matched
+# terms, so on the prompt path's numbers no feedback memory is ever served to a
+# subagent — an entire memory type reading as a corpus with nothing to say.
+#
+# Its COUNT bar goes too, and did not survive being asked what it decided. It
+# was 2, and `_passes_floor` rejects on `min_matched` — 10 here — ABOVE the
+# feedback branch, so nothing that reached the branch had fewer than ten
+# matched terms and the bar could not change an answer. `_task_floor` passes
+# TASK_MIN_MATCHED in its place rather than dropping the key, so the prompt
+# path's own value is not inherited by omission. What is left is the honest
+# statement: on briefs, a feedback memory clears the same bar as any other.
 TASK_FEEDBACK_MIN_RATIO = 0.0
 # The bar that applies to every hit whether or not it has distinctive evidence,
 # and the one that decides most of what this path serves.
@@ -3909,7 +3915,18 @@ def _task_floor() -> dict:
         "min_matched": TASK_MIN_MATCHED,
         "min_terms": TASK_MIN_MATCHED_TERMS,
         "min_ratio": TASK_ALL_COMMON_MIN_RATIO,
-        "feedback_min_terms": TASK_FEEDBACK_MIN_TERMS,
+        # NO EXTRA COUNT BAR FOR `type: feedback` ON THIS PATH, said by
+        # setting it to the bar every hit already clears rather than by
+        # omitting the key — omitted, `_passes_floor` falls back to the prompt
+        # path's FEEDBACK_MIN_TERMS, which is a prompt-path calibration
+        # inherited silently. It was 2, which `min_matched` at 10 made
+        # unreachable: `_passes_floor` rejects on the general bar ABOVE the
+        # feedback branch, so nothing that reached it had fewer than ten
+        # matched terms. Verified exhaustively over n_matched 0-59 by n_total
+        # {10, 50, 100, 300, 1000}: no input's verdict changed when it moved
+        # between 2 and 0. A maintainer tightening feedback memories by raising
+        # it would have moved a unit test and no production behaviour.
+        "feedback_min_terms": TASK_MIN_MATCHED,
         "feedback_min_ratio": TASK_FEEDBACK_MIN_RATIO,
     }
 
