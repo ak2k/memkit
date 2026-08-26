@@ -423,6 +423,58 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     )
 
 
+def test_the_admission_notes_recipe_returns_the_number_it_states() -> None:
+    """This page's whole claim on a reader is checkability: "every number here
+    is read out of the tree" plus a command to run.
+
+    The command resolved `marketplace.json` while the number described this
+    tree, so an adopter doing exactly what the trust document asks — in order
+    to decide whether to trust it — got a different number back from the
+    document's own recipe. The two describe two different trees, and both are
+    worth stating; what they cannot do is share one sentence.
+
+    Self-retiring, like the release markers: the moment the pin names this
+    tree, the two counts agree and the marked sentence about the pinned tree
+    is asserted to be gone.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    here = len(_git("ls-files").stdout.split())
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    pinned = len(_git("ls-tree", "-r", "--name-only", sha).stdout.split())
+
+    def mib(ref: str) -> str:
+        rows = _git("ls-tree", "-r", "-l", ref).stdout.splitlines()
+        total = sum(int(row.split()[3]) for row in rows)
+        return f"{total / 1048576:.1f} MiB"
+
+    # The size is a number of the same kind and had drifted the same way: the
+    # tree was 1.67 MiB while the page said 1.5, and nothing looked.
+    assert mib("HEAD") in note, (mib("HEAD"), "not the size the note states")
+
+    # The recipe that reproduces the headline runs against this tree, which is
+    # what the headline is about.
+    recipe = note.split("## Reproducing these numbers", 1)[1]
+    reproduces_here = recipe.split("```", 2)[1]
+    assert "ls-files" in reproduces_here or "HEAD" in reproduces_here, reproduces_here
+    assert "marketplace.json" not in reproduces_here, reproduces_here
+
+    assert mib(sha) in note, (mib(sha), "not the size the note states for the pin")
+    if here == pinned:
+        # The pin has caught up: one tree, one number, and the paragraph that
+        # existed to explain the gap has to go with it.
+        assert "still names" not in note, note
+        return
+    # While it has not: both numbers stated, the pinned one marked as what an
+    # install gives you today, and the recipe for it kept.
+    assert f"**{here} files" in note, here
+    assert f"{pinned} files" in note, pinned
+    assert "from the next release" in note, "the gap between the two trees is unmarked"
+    assert "marketplace.json" in recipe, "no recipe for the tree an install gets"
+
+
+
+
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:
     """`claude plugin tag` refuses to tag a release when they disagree, which
     is late: by then the version in the entry is what adopters resolve."""

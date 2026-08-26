@@ -2,14 +2,18 @@
 
 Written because memkit's payload is a hook that runs before every prompt you
 type, and "it's on the marketplace" is not an answer to what that means. Every
-number here is read out of the tree at the pinned sha rather than remembered.
+number here is read out of a tree rather than remembered — this file's own,
+which is the tree the next release pins and installs. Where that differs from
+what the marketplace pin names today, both numbers are stated and the recipe
+for each is below.
 
 ## What arrives
 
 `/plugin install memkit@memkit` clones **the whole tracked tree** at the sha
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
-subset chosen for the hook. At the sha this release pins that is **89 files,
-about 1.5 MiB**:
+subset chosen for the hook. In this file's own tree that is **89 files, about
+1.7 MiB** *(from the next release — the pin in `.claude-plugin/marketplace.json`
+still names 0.2.1, whose tree is 63 files and about 1.3 MiB)*:
 
 | what | files | why it is there |
 |---|---|---|
@@ -123,7 +127,17 @@ between them — mostly comment — and run no command that is not a shell built
 
 ## Reproducing these numbers
 
-In the repository, against the sha the marketplace entry names:
+In the repository, against this file's own tree — which is the table above, and
+what the next release will pin:
+
+```
+git ls-files | wc -l
+git ls-files -s | awk '{print $4}' | xargs -r wc -c | tail -1 | awk '{printf "%.0f KiB\n", $1/1024}'
+git ls-files -s | awk '$1=="100755"{print $4}'
+```
+
+And against the sha the marketplace entry names today, which is the tree
+`/plugin install` gives you until the pin moves:
 
 ```
 sha=$(python3 -c 'import json;print(json.load(open(".claude-plugin/marketplace.json"))["plugins"][0]["source"]["sha"])')
