@@ -7277,3 +7277,91 @@ def test_a_feedback_memory_reaches_a_subagent_through_the_real_hook_file(
     assert out.stdout, "a feedback memory must be reachable from a brief"
     updated = json.loads(out.stdout)["hookSpecificOutput"]["updatedInput"]
     assert "stand_signoff.md" in updated["prompt"]
+
+
+def _drive_task(monkeypatch, tmp_path, hits: list[str], tool_use_id: str) -> dict:
+    """Run `_task_main` in-process with retrieval stubbed, and return the soak
+    record it wrote.
+
+    Stubbed for the same reason `_drive_main` stubs it: the property under test
+    is about STATE, and the scenario that exercises it — a cache directory
+    nobody can write to — also stops the index being usable, so a real
+    retrieval would answer `task:nomatch` and the record under test would never
+    be written at all.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+
+    def _recall(prompt, stats=None, dirs=None, deadline=None, query=None):
+        hook._LEX_MATCHED.clear()
+        hook._LEX_SECTIONS.clear()
+        hook._LEX_SCORES.clear()
+        terms = (query or "").split()
+        for i, path in enumerate(hits):
+            tokens = set(re.split(r"[^0-9a-z]+", Path(path).read_text().lower()))
+            hook._LEX_MATCHED[path] = [t for t in terms if t in tokens]
+            hook._LEX_SCORES[path] = round(1.0 - i * 0.05, 3)
+        return hits
+
+    monkeypatch.setattr(hook, "recall", _recall)
+    hook._task_main(
+        {
+            "session_id": "tsk9",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_use_id": tool_use_id,
+            "tool_input": {
+                "prompt": _brief("served/backlash-rig.md"),
+                "description": "a short description",
+            },
+        },
+        time.monotonic(),
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    return json.loads(log.read_text().splitlines()[-1])
+
+
+def test_a_ledger_the_run_could_not_write_says_so_in_its_record(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """A cache directory nobody can write to must not cost a spawn its
+    pointers — so the write is swallowed. What it costs instead is dedup, and
+    that has to be visible: the ledger does not advance, so a retry of the same
+    tool call is served the same block again, and the record for the run that
+    caused it would otherwise read as an ordinary injection.
+
+    The soak log appends to an EXISTING file, which needs write permission on
+    the file rather than on its directory; the ledger write creates a temp file
+    beside itself, which needs the directory. A read-only directory therefore
+    fails exactly the write under test and still leaves the record that has to
+    report it.
+    """
+    memo = tmp_path / "corpus" / "sprocket_alignment.md"
+    memo.parent.mkdir(parents=True)
+    memo.write_text(
+        "---\nname: sprocket_alignment\n"
+        "description: Sprocket backlash after a gearbox rebuild comes from the "
+        "shim stack and not from chain tension.\ntype: reference\n---\n\n"
+        "# Sprocket alignment\n\nbacklash sprocket gearbox shim stack.\n"
+    )
+    state = tmp_path / ".cache" / "memory-recall"
+
+    # The first run is also the control: it creates the directory and the log,
+    # and it must record no `state` key at all.
+    record = _drive_task(monkeypatch, tmp_path, [str(memo)], "toolu_rw")
+    assert record["outcome"] == "task:injected", record
+    assert "state" not in record, record
+    assert (state / "t-toolu_rw.json").is_file()
+    assert capsys.readouterr().out, "the control delivered nothing to compare against"
+
+    state.chmod(0o500)
+    try:
+        record = _drive_task(monkeypatch, tmp_path, [str(memo)], "toolu_ro")
+    finally:
+        state.chmod(0o700)
+    assert capsys.readouterr().out, (
+        "a read-only cache dir must not cost the spawn its pointers"
+    )
+    assert record["outcome"] == "task:injected", record
+    assert record["state"] == "unwritten", record
+    assert not (state / "t-toolu_ro.json").exists()

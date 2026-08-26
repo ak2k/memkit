@@ -3809,15 +3809,20 @@ def _task_main(payload: dict, t0: float) -> None:
             # fact about the brief. Named apart from the size refusal below so
             # the log can say which — one of them is a bug report.
             return done("task:unsafe", picks=len(picks))
-        if _nbytes(text) > PIPE_BUFFER_BOUND:
+        size = _nbytes(text)
+        if size > PIPE_BUFFER_BOUND:
             # The brief is echoed back inside the emission, so this is the one
             # surface that can reach the bound the SIGTERM mask rests on. It
             # refuses whole rather than shedding pointers: what would have to
             # go to make room is the brief, and that may not be touched.
-            return done("task:oversize", bytes=_nbytes(text), picks=len(picks))
+            return done("task:oversize", bytes=size, picks=len(picks))
 
         fresh = [p for p, _, _ in picks]
         delivered = True
+        persisted = False
+        # Deliver, spend, record, in that order and under one mask, for the
+        # reason `main` gives at length: each of the three is a claim about the
+        # others and a kill between any two makes the surviving pair a lie.
         with _sigterm_masked():
             try:
                 sys.stdout.write(text)
@@ -3825,6 +3830,17 @@ def _task_main(payload: dict, t0: float) -> None:
             except (BrokenPipeError, OSError):
                 delivered = False
             if delivered:
+                # Written beside and renamed over, as the session ledger is:
+                # `open(path, "w")` destroys the old file before writing the
+                # new one, and a torn write here reads back as a tool call
+                # that was shown nothing.
+                #
+                # `spent` is written empty rather than omitted, and the empty
+                # dict is the accurate statement: this ledger has a dedup set
+                # and no budget. Omitted, `_load_session` infers one from
+                # `shown` with every entry's evidence None, which is the shape
+                # it uses for a pre-ledger file and which any budget reading it
+                # is required to treat as terminal.
                 tmp_path = f"{state_path}.{os.getpid()}.tmp"
                 try:
                     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -3832,7 +3848,16 @@ def _task_main(payload: dict, t0: float) -> None:
                             {"shown": sorted(shown | set(fresh)), "spent": {}}, f
                         )
                     os.replace(tmp_path, state_path)
+                    persisted = True
                 except OSError:
+                    # Swallowed, because a cache directory nobody can write to
+                    # must not cost a spawn its pointers. What it costs instead
+                    # is dedup: this tool call's ledger does not advance, so a
+                    # retry of the same call is served the same block again.
+                    # Smaller than the prompt path's version of this — there is
+                    # no session budget here to stop bounding — and still a run
+                    # whose record would otherwise read as an ordinary
+                    # injection.
                     with contextlib.suppress(OSError):
                         os.unlink(tmp_path)
             done(
@@ -3841,6 +3866,7 @@ def _task_main(payload: dict, t0: float) -> None:
                 overlap=[len(m) for _, m, _ in picks],
                 scores=_scores(fresh),
                 **_floored_stat(floored),
+                **({} if persisted or not delivered else {"state": "unwritten"}),
             )
     except Exception as exc:
         if not logged:
