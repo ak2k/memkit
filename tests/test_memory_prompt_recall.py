@@ -7206,9 +7206,10 @@ def test_both_state_directories_are_swept_when_both_exist(tmp_path, monkeypatch)
     A fallback taken once in a process does not mean the preferred directory
     holds nothing — it may be full of state from every run that could write it,
     which is the ordinary case on a machine where one session hit a transient
-    failure. The nix sandbox found this: with no writable home, the fallback is
-    taken on the first call and stayed sticky for the whole process, so every
-    sweep looked past the directory it was given.
+    failure. The module global recording the fallback is sticky for the life of
+    the process, so treating it as an alternative rather than an addition makes
+    a single unwritable-home moment hide the real directory from every later
+    sweep.
     """
     preferred = tmp_path / "preferred"
     fallback = tmp_path / "fallback"
