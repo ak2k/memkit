@@ -6790,6 +6790,95 @@ def test_the_task_shape_gates_are_the_prompt_shape_gates_minus_the_ceiling(
     }, sorted(renamed)
     assert "task:long" not in returned
 
+    # AND THE DISPATCH READS THE WHOLE SET. The prompt path still dispatches on
+    # membership (`if gate in PROMPT_SHAPE_GATES:`); this one is five hardcoded
+    # equality branches, because `done()` needs the outcome to be a literal at
+    # its call site. That bought the collector what it needed and deleted the
+    # only coupling between the vocabulary and the dispatch — verified by
+    # stubbing a sixth name in: the brief fell through all five branches, past
+    # the store check, into retrieval, and was recorded as `task:nomatch`. A
+    # refusal nothing records.
+    #
+    # So the coupling is asserted here instead: every `gate == "..."` compare
+    # in `_task_main`, against the set plus the one member that sits outside
+    # it. The case above walks an author right up to this trap — it makes them
+    # add the new name to `TASK_SHAPE_GATES` and to a prompt-path twin — so
+    # being caught by it is the whole point.
+    task_main = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_task_main"
+    )
+    dispatched = {
+        cmp.value for node in ast.walk(task_main)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Name)
+        and node.left.id == "gate"
+        for cmp in node.comparators
+        if isinstance(cmp, ast.Constant) and isinstance(cmp.value, str)
+    }
+    assert dispatched == hook.TASK_SHAPE_GATES | {"task:stopwords"}, sorted(dispatched)
+
+
+# The prompt-path names the task path is allowed to read, and why each is not
+# a calibration: a pipe's capacity, and the frame's identity, which the defang
+# has to cover on both paths or a description carrying a bare
+# `</memkit-pointers>` is neutralised on neither.
+TASK_PATH_MAY_READ = {
+    "PIPE_BUFFER_BOUND",
+    "FRAME_TAG",
+    "FRAME_NONCE_BYTES",
+    # Not a constant at all: the module global holding why a config could not
+    # be honoured, so `task:nodirs` can say which of the two silences it is.
+    "_CONFIG_ERROR",
+    # A cap on the LENGTH of a log field, shared on purpose: `truncated_files`
+    # means the same thing in both populations, and a consumer reading the two
+    # should not find them cut at different lengths for no reason.
+    "FLOORED_LOG_MAX",
+}
+
+
+def test_the_task_path_reads_no_calibrated_prompt_path_constant() -> None:
+    """The section opens with this as an invariant and it was false.
+
+    `_task_main` read `MAX_HITS` — a constant whose own comment justifies it
+    entirely from a prompt-path A/B — and `task_gate` read `MIN_PROMPT_WORDS`.
+    Verified by A/B rather than by reading: setting `hook.MAX_HITS = 1` took
+    the task path's emission from three pointer lines to one. So the exact
+    re-tune the comment says cannot happen was one assignment away, in both
+    directions, and the eval slice that is the only automated gate over this
+    path scored at the same constant — it would have moved with it and
+    reported nothing.
+
+    Walked over the task path's own functions rather than a line range, so
+    moving one does not quietly drop it out of the check.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    fns = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and (n.name.startswith(("task_", "_task_")) or n.name == "build_task_query")
+    ]
+    assert len(fns) >= 6, [f.name for f in fns]
+    read: dict[str, str] = {}
+    for fn in fns:
+        for node in ast.walk(fn):
+            if (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id.isupper()
+                and not node.id.startswith("TASK_")
+            ):
+                read.setdefault(node.id, fn.name)
+    assert set(read) <= TASK_PATH_MAY_READ, read
+    # Non-vacuity: the walk really does see module constants, or an invariant
+    # about what it does not see says nothing.
+    assert "PIPE_BUFFER_BOUND" in read, read
+    # And the two that were shared are declared on this side now, at the
+    # prompt path's values — equal, and separately assignable, which is the
+    # whole of the fix.
+    assert hook.TASK_MAX_HITS == hook.MAX_HITS
+    assert hook.TASK_MIN_WORDS == hook.MIN_PROMPT_WORDS
+
 
 def test_the_task_gate_still_refuses_the_shapes_that_are_not_briefs() -> None:
     """Dropping the ceiling is the only thing this path drops. An envelope
@@ -7231,6 +7320,7 @@ def _spawn(
     tool_use_id: str = "tu1",
     tool: str = "Agent",
     extra: dict | None = None,
+    event: str = "PreToolUse",
 ) -> subprocess.CompletedProcess:
     """One PreToolUse invocation, driven the way the harness drives it.
 
@@ -7241,7 +7331,7 @@ def _spawn(
     """
     payload = {
         "session_id": "tsk1",
-        "hook_event_name": "PreToolUse",
+        "hook_event_name": event,
         "tool_name": tool,
         "tool_use_id": tool_use_id,
         "tool_input": {
@@ -7276,6 +7366,81 @@ def _seed_brief_corpus(tmp_path: Path) -> dict:
         # writable checkout — and only there.
         target.chmod(target.stat().st_mode | stat.S_IWUSR)
     return env
+
+
+def test_a_brief_told_the_list_is_short_is_told_how_short(tmp_path) -> None:
+    """A context-parity break, in the direction of the agent that can least
+    recover from it.
+
+    On the prompt path a cap that binds adds a `memkit:` notice naming the
+    count and a runnable search, and the record gains `truncated` /
+    `truncated_files` / `truncated_scores` — which that path's own comment
+    calls the evidence the next cap decision is argued from. On this path
+    neither existed: the surplus was dropped silently, under a frame whose
+    closing guidance reads "ignore the rest", to an unattended agent that gets
+    no further injection for the rest of its run and has no advertised route to
+    the store. And nothing in the log could say whether the cap binds on
+    briefs, so the pointer budget for this surface could never be argued from
+    data the way the prompt path's was.
+
+    The count, not a recipe: it goes in memkit's own closing sentence, which is
+    already outside the retrieved body, rather than in a `memkit:` line — this
+    frame has no carve-out sentence to make that prefix unforgeable, and
+    `_task_framed` rules out a runnable command in front of an unattended agent
+    for a stated reason.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    # More eligible memories than the cap admits, all on the brief's subject.
+    dst = tmp_path / PROJECT_DIR / "search"
+    for i in range(4):
+        (dst / f"shim_stack_{i}.md").write_text(
+            f"---\nname: shim_stack_{i}\ndescription: shim stack {i} — sprocket "
+            "backlash after a gearbox rebuild traces to the shim stack rather "
+            "than to chain tension\ntype: reference\n---\n\n"
+            f"# Shim stack {i}\n\nSprocket backlash measured after a gearbox "
+            "rebuild is a shim stack fault. Chain tension is the tempting "
+            "answer and the wrong one. Measure the backlash at the sprocket, "
+            "check the shim stack, and re-shim before touching the chain.\n"
+        )
+    out = _spawn(env, _brief("served/backlash-rig.md"), tool_use_id="tu_trunc")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout, "the fixture must reach delivery or this asserts nothing"
+    body = json.loads(out.stdout)["hookSpecificOutput"]["updatedInput"]["prompt"]
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:injected", record
+    assert record["truncated"] >= 1, record
+    assert len(record["injected"]) == hook.TASK_MAX_HITS, record
+    # The identities, not only the count: a count says the cap bound, not what
+    # it cost, and the join that answers "should the cap move" is on filenames.
+    assert record["truncated_files"], record
+    assert not set(record["truncated_files"]) & set(record["injected"]), record
+    assert len(record["truncated_scores"]) == len(record["truncated_files"]), record
+
+    # And the agent is told, inside memkit's own closing sentence rather than
+    # in a line a store could imitate.
+    tail = body[body.rindex("End of retrieved references") :]
+    assert f"{record['truncated']} further match" in tail, tail
+    assert hook._search_cli() not in tail, tail
+    assert not any(ln.startswith(hook.NOTICE_PREFIX) for ln in body.splitlines())
+
+
+def test_a_brief_shown_everything_is_told_nothing_about_a_cap(tmp_path) -> None:
+    """The other half, or the sentence above is just decoration: when the cap
+    does not bind, the closing sentence says nothing about further matches and
+    the record carries no `truncated` key."""
+    env = _seed_brief_corpus(tmp_path)
+    out = _spawn(env, _brief("served/gearbox-acceptance.md"), tool_use_id="tu_full")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout, "the fixture must reach delivery or this asserts nothing"
+    body = json.loads(out.stdout)["hookSpecificOutput"]["updatedInput"]["prompt"]
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:injected", record
+    assert "truncated" not in record, record
+    assert "further match" not in body, body
 
 
 def test_a_long_brief_is_served_through_the_real_hook_file(tmp_path) -> None:
@@ -7488,6 +7653,54 @@ def test_an_event_for_another_tool_says_so_instead_of_going_quiet(
     )
     assert record["outcome"] == "task:notool"
     assert record["tool"] == "Subagent"
+
+
+def test_an_agent_call_under_another_event_is_recorded_and_not_rewritten(
+    tmp_path,
+) -> None:
+    """`main()` routes a tool-shaped payload here whatever the event was
+    called, so that a harness renaming the event is visible instead of silent.
+    What it must not do is EMIT under that name.
+
+    The replacement carries `hookEventName`, and this path stamped the module's
+    own `PreToolUse` literal into it — so in the one scenario the fallback
+    exists for, a renamed event, the answer names the wrong event. A
+    replacement the harness rejects CANCELS the tool call, so the branch turned
+    "subagent delivery quietly stopped" into "the spawn was cancelled".
+    Measured before this: a `PostToolUse` payload naming the Agent tool
+    produced a 6094-byte `updatedInput` stamped `PreToolUse`.
+
+    Echoing the payload's own event name instead would keep the emission alive
+    on a renamed event — and would also emit `updatedInput` on events where it
+    means nothing, which is the same cancellation with a different label. The
+    record is what this branch is worth; the rewrite is not.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    out = _spawn(
+        env,
+        _brief("served/backlash-rig.md"),
+        tool_use_id="tu_event",
+        event="PostToolUse",
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "", out.stdout
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:event", record
+    assert record["event"] == "PostToolUse", record
+
+    # A payload for another tool under another event stays `task:notool`: the
+    # tool is checked first, because a call this hook has nothing to say about
+    # is not our business whatever the event was called.
+    out = _spawn(
+        env, "x" * 200, tool="Read", tool_use_id="tu_event2", event="PostToolUse"
+    )
+    assert out.returncode == 0 and out.stdout == ""
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:notool", record
 
 
 def test_a_brief_the_corpus_has_nothing_to_say_about_writes_nothing(

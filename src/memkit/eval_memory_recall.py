@@ -481,7 +481,7 @@ TASK_SURFACE = (
     "_task_framed",
     "_pointer_line",
     "_task_emission",
-    "MAX_HITS",
+    "TASK_MAX_HITS",
 )
 
 
@@ -533,7 +533,7 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     # relevance, so a second spelling of the floor here is a gate that can
     # silently score a retriever no subagent meets.
     eligible, _floored = hook._eligible(hits, terms, **hook._task_floor())
-    picks = eligible[: hook.MAX_HITS]
+    picks = eligible[: hook.TASK_MAX_HITS]
     if not picks:
         return []
     block = hook._task_framed(

@@ -274,6 +274,7 @@ is on your own `PATH`.
 | **The brief plus its pointers exceeded 16 KiB** | `task:oversize` | the brief is echoed back inside the replacement, so there is nothing memkit may shed to make room; the pointers are dropped whole rather than the brief being trimmed |
 | **The hook was called for another tool** | `task:notool`, naming the tool | the registration and the harness disagree — what a tool rename looks like from inside. Reinstall; if it persists, the entry needs its matcher changed |
 | **The tool call carried no brief** | `task:nobrief` | there was no `prompt` string in the tool's input to read |
+| **The event was renamed** | `task:event`, naming the event | the hook still records the call and deliberately does not rewrite it: the replacement names the event it answers, and one the harness rejects cancels the spawn. Reinstall; if it persists, this build is older than the harness |
 
 The prompt-shape gates — the three-word floor, the slash prefix, the paste
 ceiling, the all-stopword case and the envelope prefix — are the reason the hook
@@ -315,8 +316,9 @@ every rate you compute a rate over an unknown mixture.
 | `task:oversize` | the brief plus its pointers would exceed the 16 KiB write bound. The brief is echoed back inside the emission, so nothing can be shed to make room and the pointers are dropped whole |
 | `task:unsafe` | the emission did not match the one permitted output shape, so nothing was written. This one is a defect report: the shape is built in one place and the check is over that place's output |
 | `state: "unkeyed"` on a `task:injected` record | the tool call carried no id to key a ledger on, so this spawn was served without one. Not an outcome — a field, and the fail-open direction: a shared ledger would serve the first spawn on the machine and dedup every one after it |
-| `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside |
-| `task:nobrief` | the tool call carried no `prompt` string to read, or was for a tool this hook does not serve under an event name it does not recognise |
+| `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside. Also what a payload routed here by the event-name fallback records when it is for a tool this hook does not serve |
+| `task:event` | an `Agent` call arrived under an event name this build does not recognise — a renamed event, reaching the fallback dispatch. Recorded and NOT served: the replacement names the event it answers, and one the harness rejects cancels the tool call |
+| `task:nobrief` | the tool call carried no `prompt` string to read |
 | `task:unencodable` | the brief carried a lone surrogate, so the emission cannot be written as UTF-8 at all. Refused before the write rather than around it: a partial JSON object on this event is worse than none |
 | `task:killed` · `task:output-lost` · `task:error` | as the unprefixed three |
 | `trust:unconfigured` | **`trust.json`, not the soak log** — the install has no config on any route it reads, so the hook refused before it would have created the shared state directory |
