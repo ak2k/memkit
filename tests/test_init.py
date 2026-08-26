@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -157,11 +158,9 @@ def test_the_digest_is_stable_across_runs_on_an_unchanged_tree(profile) -> None:
 def test_the_digest_moves_when_the_target_state_moves(profile) -> None:
     """It binds the TREE, not the request. A file that appeared between the two
     turns is a world the human did not approve."""
-    before = _plan(profile).digest
-    config = profile / "home" / ".config" / "memkit" / "memkit.json"
-    config.parent.mkdir(parents=True)
-    config.write_text("{}", encoding="utf-8")
-    assert _plan(profile).digest != before
+    before = _plan(profile, store=str(profile / "notes")).digest
+    (profile / "notes" / "search").mkdir(parents=True)
+    assert _plan(profile, store=str(profile / "notes")).digest != before
 
 
 def test_the_digest_moves_when_the_request_moves(profile) -> None:
@@ -185,6 +184,18 @@ def test_a_converged_install_manifests_nothing(profile) -> None:
             os.makedirs(os.path.dirname(action.path), exist_ok=True)
             with open(action.path, "w", encoding="utf-8") as f:
                 f.write(action.content)
+    # The journal claim the real apply writes, without which the second run
+    # meets its own config as a foreign one.
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    config = [a.path for a in plan.actions if a.path.endswith("memkit.json")][0]
+    (state / hook.INIT_JOURNAL_NAME).write_text(
+        json.dumps(
+            {"v": 1, "op": "create-file", "path": config, "authored_config": True}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     converged = _plan(profile, store=str(profile / "notes"))
     assert converged.writes == []
     assert "already set up" in converged.render()
@@ -356,3 +367,248 @@ def test_the_help_names_both_turns_and_every_exit_code(profile) -> None:
     for code in (init.EXIT_OK, init.EXIT_USAGE, init.EXIT_REFUSED):
         assert f"{code} " in collapsed, code
     assert "binds the state of the tree" in collapsed
+
+
+# --- the refusals ------------------------------------------------------------
+#
+# Each one asserts over the WHOLE profile rather than over the file it is
+# about: "it did not write the config" and "it wrote nothing" are different
+# claims, and a refusal that created the state directory before deciding to
+# refuse would satisfy the first.
+
+
+def _refuses(profile, name: str, **kw) -> init.Refusal:
+    before = _snapshot(profile)
+    with pytest.raises(init.Refusal) as caught:
+        _plan(profile, **kw)
+    assert caught.value.name == name, caught.value.name
+    assert _snapshot(profile) == before, "a refusal wrote something"
+    return caught.value
+
+
+def test_windows_is_refused_by_name_rather_than_met_as_a_failure(profile, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    refusal = _refuses(profile, "windows")
+    assert "POSIX" in refusal.message
+
+
+def test_a_relative_store_or_config_is_refused(profile) -> None:
+    """The same rule the wrappers enforce: a relative path names a different
+    directory in every session, and the one thing a memory store may not be is
+    a different store per directory."""
+    _refuses(profile, "relative-path", store="notes")
+    _refuses(profile, "relative-path", config="memkit.json")
+
+
+def test_a_store_inside_the_plugin_data_directory_is_refused(profile, monkeypatch):
+    """Plugin data dies with the plugin unless somebody remembers
+    `--keep-data`. A memory store must outlive the plugin that reads it."""
+    data = profile / "plugin-data"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    refusal = _refuses(profile, "store-in-plugin-data", store=str(data / "notes"))
+    assert "--keep-data" in refusal.message
+
+
+def test_a_store_reached_by_symlink_into_plugin_data_is_refused(profile, monkeypatch):
+    """The case a prefix test misses. The store is `~/notes`; `~/notes` is a
+    symlink into plugin data."""
+    data = profile / "plugin-data"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    link = profile / "home" / "notes"
+    link.symlink_to(data)
+    _refuses(profile, "store-in-plugin-data", store=str(link))
+
+
+def test_a_store_inside_the_plugin_payload_is_refused(profile, monkeypatch) -> None:
+    """The payload is a clone of a pinned commit: a store there is a store the
+    repository can ship, and it is replaced wholesale on the next update."""
+    payload = profile / "payload"
+    payload.mkdir()
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload) + "/")
+    _refuses(profile, "store-in-plugin-root", store=str(payload / "store"))
+
+
+def test_an_unwritable_target_is_refused_before_the_first_byte(profile) -> None:
+    locked = profile / "locked"
+    locked.mkdir(mode=0o500)
+    try:
+        _refuses(profile, "not-writable", store=str(locked / "notes"))
+    finally:
+        locked.chmod(0o700)
+
+
+def test_a_claude_md_that_resolves_inside_the_store_is_refused(profile, monkeypatch):
+    """A file the harness reads as configuration must not also be a file an
+    agent is told to write memories into."""
+    store = profile / "notes"
+    store.mkdir()
+    target = profile / "claude-config" / "CLAUDE.md"
+    real = store / "CLAUDE.md"
+    real.write_text("# mine\n", encoding="utf-8")
+    target.symlink_to(real)
+    _refuses(
+        profile, "store-resident-target", store=str(store), wire_claude_md=True
+    )
+
+
+def test_a_settings_file_that_resolves_inside_the_store_is_refused(profile):
+    store = profile / "notes"
+    store.mkdir()
+    real = store / "settings.json"
+    real.write_text("{}", encoding="utf-8")
+    (profile / "claude-config" / "settings.json").symlink_to(real)
+    _refuses(
+        profile, "store-resident-target", store=str(store), auto_dream_off=True
+    )
+
+
+def test_an_unparseable_settings_file_is_refused_rather_than_replaced(profile):
+    """The field anti-pattern the prior-art survey names: a tool that meets a
+    parse error and replaces the file with a stub takes the whole
+    configuration with it."""
+    (profile / "claude-config" / "settings.json").write_text(
+        "{ not json", encoding="utf-8"
+    )
+    refusal = _refuses(profile, "unparseable-settings", auto_dream_off=True)
+    assert "will not replace" in refusal.message
+
+
+def test_no_checker_route_is_refused_rather_than_half_completed(profile, monkeypatch):
+    """A seeded memory whose ledger nobody checked is a store the checker calls
+    broken. Half-completing is worse than not starting."""
+    monkeypatch.setenv(doctor.ROUTE_ENV, "none")
+    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "")
+    refusal = _refuses(profile, "no-checker-route")
+    assert "uvx" in refusal.message
+
+
+def test_adopting_a_flat_store_is_refused_and_the_refusal_names_the_migration(
+    profile,
+) -> None:
+    """The trap, met from the other side. Creating `search/` in a store that
+    already holds memories at its root un-retrieves every one of them in a
+    single step, silently, with every diagnostic green."""
+    store = profile / "notes"
+    store.mkdir()
+    (store / "postgres-pooling.md").write_text("---\nname: x\n---\nbody\n")
+    (store / "README.md").write_text("# not a memory\n")
+    refusal = _refuses(profile, "flat-store-adoption", store=str(store))
+    assert "postgres-pooling.md" in refusal.message
+    # A README at a store root is not a memory and is not named as one.
+    assert "README.md" not in refusal.message
+    # The one-step migration, spelled out.
+    assert "mkdir" in refusal.message and "mv" in refusal.message
+
+
+def test_a_store_that_already_has_search_is_not_a_flat_store(profile) -> None:
+    """The refusal is about the TRANSITION, not the layout: a store already in
+    the tiered shape has nothing to strand."""
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "README.md").write_text("# fine\n")
+    plan = _plan(profile, store=str(store))
+    assert plan.writes
+
+
+def test_a_config_no_journal_claims_is_never_overwritten(profile) -> None:
+    """init converges on its own work. That file decides which directories the
+    every-prompt hook reads, and a setup command that silently replaced a
+    hand-written one would be the memory-poisoning surface of the design."""
+    config = profile / "mine.json"
+    config.write_text('{"schema": 1}', encoding="utf-8")
+    refusal = _refuses(profile, "foreign-config", config=str(config))
+    assert "memkit did not write it" in refusal.message
+
+
+def test_a_config_the_journal_claims_is_converged_on(profile) -> None:
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    config = profile / "mine.json"
+    config.write_text('{"schema": 1}', encoding="utf-8")
+    (state / hook.INIT_JOURNAL_NAME).write_text(
+        json.dumps(
+            {"v": 1, "op": "create-file", "path": str(config), "authored_config": True}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    plan = _plan(profile, config=str(config))
+    assert any(a.path == str(config) for a in plan.writes)
+
+
+def test_init_never_writes_enabled_plugins(profile) -> None:
+    """The plugin never enables itself. Enforced over the whole settings diff
+    rather than over that one key, because the next key with the same power has
+    not been named yet."""
+    (profile / "claude-config" / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"memkit@memkit": False}, "theme": "dark"}),
+        encoding="utf-8",
+    )
+    plan = _plan(profile, auto_dream_off=True)
+    (action,) = [a for a in plan.actions if a.op == init.SETTINGS_WRITE]
+    written = json.loads(action.content)
+    assert written["enabledPlugins"] == {"memkit@memkit": False}
+    assert written["theme"] == "dark"
+    assert written["autoDreamEnabled"] is False
+
+
+def test_an_interpreter_that_cannot_run_is_refused(profile, monkeypatch) -> None:
+    """The config init writes records the python that will read every prompt,
+    and recording one that cannot run is an install that answers nothing."""
+    monkeypatch.setattr(init, "_interpreter", lambda: str(profile / "no-python"))
+    refusal = _refuses(profile, "no-interpreter")
+    assert "read every prompt" in refusal.message
+
+
+def test_the_only_settings_key_init_may_write_is_an_allowlist(profile) -> None:
+    """The rule is "the plugin never enables itself", and `enabledPlugins` is
+    the key that would do it — but the guard is an allowlist, because the next
+    key with the same power has not been named yet and a denylist only catches
+    the ones somebody thought of."""
+    target = str(profile / "claude-config" / "settings.json")
+    assert frozenset({"autoDreamEnabled"}) == init.SETTINGS_KEYS_INIT_MAY_WRITE
+    with pytest.raises(init.Refusal) as caught:
+        init._settings_with(target, {"enabledPlugins": {"memkit@memkit": True}})
+    assert caught.value.name == "enabled-plugins"
+    assert "deciding its own access" in caught.value.message
+    # And a key nobody has thought of yet is refused by the same rule.
+    with pytest.raises(init.Refusal) as caught:
+        init._settings_with(target, {"someFutureTrustKey": True})
+    assert caught.value.name == "enabled-plugins"
+
+
+def test_the_refusal_reaches_the_caller_named_and_with_a_reason(profile) -> None:
+    """The name is the half a caller branches on and the sentence is the half a
+    person acts on. An agent given only prose parses it; one given only a token
+    relays a token."""
+    out = _run(
+        "--dry-run", "--store", "notes",
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert out.returncode == init.EXIT_REFUSED
+    assert out.stdout == ""
+    assert "refused (relative-path)" in out.stderr
+    assert "not absolute" in out.stderr
+
+
+def test_every_refusal_in_the_inventory_is_reachable() -> None:
+    """A named refusal nothing can produce is a name in a docstring.
+
+    Scraped from the module rather than listed here, so a refusal added
+    without a case that reaches it fails this rather than passing quietly.
+    """
+    import re as _re
+
+    source = pathlib.Path(init.__file__).read_text(encoding="utf-8")
+    raised = set(_re.findall(r'Refusal\(\s*"([a-z-]+)"', source))
+    covered = set(_re.findall(
+        r'_refuses\(\s*profile,\s*"([a-z-]+)"',
+        pathlib.Path(__file__).read_text(encoding="utf-8"),
+    ))
+    # `enabled-plugins` is reached through its own function rather than
+    # through `build_plan`, and `stale-digest` needs the confirm turn.
+    covered |= {"enabled-plugins"}
+    assert raised - covered <= {"stale-digest"}, sorted(raised - covered)
+    assert len(raised) >= 12, sorted(raised)

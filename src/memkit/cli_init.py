@@ -40,11 +40,16 @@ import sys
 from memkit.cli_doctor import (
     CANARY_NAME,
     CONFIG_DIR_ENV,
+    EXCLUDE_STRAY,
     Machine,
+    _checker_route,
+    authored_configs,
     canary_query,
 )
 from memkit.memory_prompt_recall import (
     DEFAULT_SEARCH_CLI,
+    EXCLUDE_BASENAMES,
+    PLUGIN_DATA_ENV,
     PLUGIN_SEARCH_CLI,
     SCHEMA,
     _display_path,
@@ -372,6 +377,215 @@ def _config_body(
     return json.dumps(blob, indent=2) + "\n"
 
 
+# --- the refusals ------------------------------------------------------------
+#
+# Every one of these is checked BEFORE the first byte is written, and that is
+# the whole design rather than an implementation detail. "Clean up on failure"
+# leaves a window where a crash between two mutations produces a half-made
+# store, and a half-made store is worse than none: a seeded memory with no
+# ledger row is a store the checker calls broken, and an adopter who just ran a
+# setup command has no reason to go looking for one.
+#
+# Each refusal is NAMED. The name is the half a caller can branch on and the
+# sentence is the half a person can act on — an agent given only prose parses
+# it, and an agent given only a token relays a token.
+
+
+def _refuse_relative(what: str, path: str) -> None:
+    """Absolute after `~` expansion, or it does not count.
+
+    The same rule the wrappers enforce, for the same reason: a relative path
+    resolves against whatever directory the session stands in, so an adopter
+    who typed `--store notes` would get a different store in every repository
+    they open — and a config decides which directories the every-prompt hook
+    reads.
+    """
+    if not os.path.isabs(path):
+        raise Refusal(
+            "relative-path",
+            f"the {what} path {path!r} is not absolute. A relative path names "
+            "a different directory in every session, and the one thing a "
+            "memory store may not be is a different store per directory.",
+        )
+
+
+def _inside(path: str, root: str) -> bool:
+    """Whether `path` lands inside `root`, following symlinks on both.
+
+    Terminal realpath on both sides, because the interesting cases are the
+    ones a prefix test misses: a store that IS a symlink into plugin data, and
+    a `CLAUDE.md` symlinked into a store.
+    """
+    if not root:
+        return False
+    real_root = os.path.realpath(root)
+    real_path = os.path.realpath(path)
+    return real_path == real_root or real_path.startswith(real_root + os.sep)
+
+
+def _writable_ancestor(path: str) -> str:
+    """The nearest existing directory above `path`, or "" if none is found."""
+    current = os.path.dirname(os.path.abspath(path))
+    seen = set()
+    while current and current not in seen:
+        if os.path.isdir(current):
+            return current
+        seen.add(current)
+        current = os.path.dirname(current)
+    return ""
+
+
+def _refuse_unwritable(what: str, path: str) -> None:
+    """Fail before the first byte, not halfway through.
+
+    The check is on the terminal realpath's nearest existing ancestor, because
+    that is what the write will actually go through — a symlink into a
+    read-only tree is writable by every test that looks at the link.
+    """
+    target = os.path.realpath(path)
+    if os.path.exists(target):
+        if not os.access(target, os.W_OK):
+            raise Refusal(
+                "not-writable",
+                f"the {what} {_display_path(path)} exists and this process "
+                "cannot write to it.",
+            )
+        return
+    parent = _writable_ancestor(target)
+    if not parent or not os.access(parent, os.W_OK):
+        raise Refusal(
+            "not-writable",
+            f"the {what} {_display_path(path)} cannot be created: "
+            f"{_display_path(parent or os.path.dirname(target))} is not "
+            "writable by this process.",
+        )
+
+
+def _stray_markdown(store: str) -> list:
+    """Markdown at a store's root that a `search/` would strand."""
+    out = []
+    try:
+        names = sorted(os.listdir(store))
+    except OSError:
+        return out
+    for name in names:
+        if not name.endswith(".md"):
+            continue
+        if name in EXCLUDE_BASENAMES or name in EXCLUDE_STRAY:
+            continue
+        if os.path.isfile(os.path.join(store, name)):
+            out.append(name)
+    return out
+
+
+def check_refusals(
+    machine: Machine,
+    *,
+    config_path: str,
+    store_path: str,
+    wire_claude_md: bool,
+    auto_dream_off: bool,
+) -> None:
+    """Every reason init will not proceed, in the order they are cheapest to
+    answer and most terminal to meet."""
+    if sys.platform.startswith("win") or sys.platform == "cygwin":
+        raise Refusal(
+            "windows",
+            "memkit is not supported on Windows. The wrappers are POSIX sh "
+            "and the paths are POSIX paths; there is no configuration that "
+            "makes this work, and an obscure failure later would be worse "
+            "than this sentence now.",
+        )
+    interpreter = _interpreter()
+    if not (os.path.isfile(interpreter) and os.access(interpreter, os.X_OK)):
+        raise Refusal(
+            "no-interpreter",
+            f"no usable interpreter resolved ({interpreter!r}). The config "
+            "init writes records the python that will read every prompt, and "
+            "recording one that cannot run is an install that answers nothing.",
+        )
+    _refuse_relative("config", config_path)
+    _refuse_relative("store", store_path)
+
+    data_dir = os.environ.get(PLUGIN_DATA_ENV, "")
+    if data_dir and os.path.isabs(data_dir) and _inside(store_path, data_dir):
+        raise Refusal(
+            "store-in-plugin-data",
+            f"{_display_path(store_path)} is inside the plugin's data "
+            "directory, which `claude plugin uninstall` removes unless you "
+            "remember `--keep-data`. A memory store must outlive the plugin "
+            "that reads it.",
+        )
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if plugin_root and _inside(store_path, plugin_root):
+        raise Refusal(
+            "store-in-plugin-root",
+            f"{_display_path(store_path)} is inside the plugin payload, which "
+            "is a clone of a pinned commit. A store there is a store the "
+            "repository can ship, and it is replaced wholesale on the next "
+            "update.",
+        )
+
+    for what, path in (("config", config_path), ("store", store_path)):
+        _refuse_unwritable(what, path)
+
+    # The two writes that land OUTSIDE memkit's own paths, and the rule is the
+    # same for both: a target that resolves inside a memory store is a memory
+    # file that edits the harness's configuration. Nothing in this build writes
+    # a memory, but the store is a directory an agent is told to write into.
+    for flag, target, what in (
+        (wire_claude_md, _claude_md(machine), "CLAUDE.md"),
+        (auto_dream_off, _settings_path(machine), "settings.json"),
+    ):
+        if not flag:
+            continue
+        _refuse_relative(what, target)
+        if _inside(target, store_path):
+            raise Refusal(
+                "store-resident-target",
+                f"{_display_path(target)} resolves inside the memory store. A "
+                "file the harness reads as configuration must not also be a "
+                "file an agent is told to write memories into.",
+            )
+        _refuse_unwritable(what, target)
+
+    route, _command = _checker_route(machine)
+    if route == "none":
+        raise Refusal(
+            "no-checker-route",
+            "no python meets the integrity checker's floor and there is no "
+            "uvx to provision one, so init cannot verify the store it would "
+            "seed. A seeded memory whose ledger nobody checked is a store the "
+            "checker calls broken, and half-completing is worse than not "
+            "starting.",
+        )
+
+    if os.path.isdir(store_path):
+        stray = _stray_markdown(store_path)
+        if stray and not os.path.isdir(os.path.join(store_path, "search")):
+            raise Refusal(
+                "flat-store-adoption",
+                f"{_display_path(store_path)} already holds markdown at its "
+                f"root ({', '.join(stray)}) and has no search/. Creating one "
+                "would un-retrieve every one of those files in a single step, "
+                "silently, with every diagnostic still green. Migrate first: "
+                f"mkdir {_display_path(store_path)}/search && mv "
+                f"{_display_path(store_path)}/*.md "
+                f"{_display_path(store_path)}/search/ — then re-run init.",
+            )
+
+    if os.path.exists(config_path) and config_path not in authored_configs(
+        machine.state_dir
+    ):
+        raise Refusal(
+            "foreign-config",
+            f"{_display_path(config_path)} exists and no init journal entry "
+            "claims it, so memkit did not write it. init converges on its own "
+            "work and never overwrites a config somebody else wrote — that "
+            "file decides which directories the every-prompt hook reads.",
+        )
+
+
 # --- the plan ----------------------------------------------------------------
 
 
@@ -460,6 +674,13 @@ def build_plan(
     """Everything init would do, computed against the tree as it is now."""
     config_path = _resolve_config(machine, config)
     store_path = os.path.expanduser(store or DEFAULT_STORE)
+    check_refusals(
+        machine,
+        config_path=config_path,
+        store_path=store_path,
+        wire_claude_md=wire_claude_md,
+        auto_dream_off=auto_dream_off,
+    )
     nonce = _canary_nonce(config_path, store_path)
     store_id = _store_id(store_path)
     actions = [
@@ -576,15 +797,34 @@ def build_plan(
     return Plan(actions, notes)
 
 
-def _settings_with_auto_dream_off(path: str) -> str:
-    """The settings file with ONE key changed and everything else byte-stable
-    where json can keep it.
+# The complete set of settings keys init may write, as data.
+#
+# The rule this enforces is "the plugin never enables itself", and
+# `enabledPlugins` is the key that would do it — but the guard is an ALLOWLIST
+# rather than a check on that name, because the next key with the same power
+# has not been named yet and a denylist only ever catches the ones somebody
+# thought of.
+SETTINGS_KEYS_INIT_MAY_WRITE = frozenset({"autoDreamEnabled"})
+
+
+def _settings_with(path: str, changes: dict) -> str:
+    """The settings file with `changes` applied and everything else left alone.
 
     Read-modify-write over a file the adopter owns, so a parse failure is a
     refusal rather than a rewrite: the field anti-pattern the prior-art survey
     names is a tool that meets a parse error and replaces the file with a stub,
     taking the whole configuration with it.
     """
+    disallowed = sorted(set(changes) - SETTINGS_KEYS_INIT_MAY_WRITE)
+    if disallowed:
+        raise Refusal(
+            "enabled-plugins",
+            "init would write " + ", ".join(disallowed) + " into your "
+            "settings. The only key it may write is "
+            + ", ".join(sorted(SETTINGS_KEYS_INIT_MAY_WRITE))
+            + " — a plugin that enabled itself would be a plugin deciding its "
+            "own access.",
+        )
     blob: dict = {}
     try:
         with open(path, encoding="utf-8") as f:
@@ -607,8 +847,12 @@ def _settings_with_auto_dream_off(path: str) -> str:
             f"({exc}). init will not replace a settings file it cannot "
             "understand — that is how a whole configuration gets lost.",
         ) from exc
-    blob["autoDreamEnabled"] = False
+    blob.update(changes)
     return json.dumps(blob, indent=2) + "\n"
+
+
+def _settings_with_auto_dream_off(path: str) -> str:
+    return _settings_with(path, {"autoDreamEnabled": False})
 
 
 # --- the command -------------------------------------------------------------
