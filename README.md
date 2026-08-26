@@ -545,12 +545,16 @@ directory it also sweeps, and "the sweep would probably keep it" is not a
 property to hang a config on.
 
 The sweep is bounded per run — 3000 stats and 1000 unlinks, and the unlink cap
-is the one that binds, since an index and its four sidecars are five unlinks
-for one stat — and it carries its position forward, so a very large directory
-converges over about fifteen runs rather than spending one prompt's budget. A
-run that arrives with its budget already gone does not consume the hour. It runs after the pointers have been
-written and flushed, and it never creates the directory: an install nobody has
-configured has none, and this is not the thing that makes one.
+is the one that binds, being the smaller of the two on a cache where the counts
+run at about 1:1 — and it carries its position forward, so a very large
+directory converges over about fifteen runs rather than spending one prompt's
+budget. Where a degraded temporary state directory was also written to during
+the process, each directory gets its own share of that budget, its own hour and
+its own position, so neither can starve the other. A run that arrives with its
+budget already gone does not consume the hour, and neither does a directory
+that got no turn. It runs after the pointers have been written and flushed, and
+it never creates the directory: an install nobody has configured has none, and
+this is not the thing that makes one.
 
 An index and its sidecars go **together**, whichever of them the sweep sees
 first: an orphaned `.build` outliving its index reads as a real record of a

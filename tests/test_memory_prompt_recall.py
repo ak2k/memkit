@@ -7233,6 +7233,115 @@ def test_both_state_directories_are_swept_when_both_exist(tmp_path, monkeypatch)
         assert (where / hook.SWEEP_STAMP_NAME).is_file(), where
 
 
+def _aged_session(where, index: int, age: float) -> Path:
+    """One collectible session ledger, named in the shape the sweep admits."""
+    path = where / f"{index:08x}-1111-4222-8333-{index:012x}.json"
+    path.write_text("{}", encoding="utf-8")
+    os.utime(path, (age, age))
+    return path
+
+
+def test_a_saturated_first_directory_does_not_starve_the_second(
+    tmp_path, monkeypatch
+) -> None:
+    """The budget is shared; the SHARE is not.
+
+    One pool and one cursor across two directories means the second pass can
+    start already spent — examining nothing, collecting nothing, and stamping
+    itself as swept anyway, so it reads as "just swept" for the next hour on
+    every run that follows. That is the failure this whole sweep exists to end
+    (16 MiB and 4,693 index databases that nothing ever collected),
+    reintroduced in the directory nobody looks at.
+
+    The caps are lowered rather than the fixture enlarged: what is under test
+    is which directory gets a turn, and five thousand files would prove the
+    same thing a hundred times slower.
+    """
+    monkeypatch.setattr(hook, "SWEEP_MAX_STATS", 8)
+    monkeypatch.setattr(hook, "SWEEP_MAX_UNLINKS", 4)
+    preferred = tmp_path / "preferred"
+    fallback = tmp_path / "fallback"
+    preferred.mkdir()
+    fallback.mkdir()
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(preferred))
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", str(fallback))
+    old = time.time() - 30 * 86400
+    # Enough in the preferred directory to spend the whole run's budget twice
+    # over, and its names sort BEFORE the fallback's so it is walked first.
+    for index in range(12):
+        _aged_session(preferred, index, old)
+    theirs = [_aged_session(fallback, 0xF00 + n, old) for n in range(2)]
+    hook._sweep()
+    assert not any(p.exists() for p in theirs), [p for p in theirs if p.exists()]
+
+
+def test_a_directory_that_got_no_turn_is_not_stamped_as_swept(
+    tmp_path, monkeypatch
+) -> None:
+    """`_sweep_dir` promises False when "the budget was already gone", and the
+    stamp write sat above the only check that could say so.
+
+    A directory stamped without being examined reads as just-swept to
+    `_sweep_due` for the next hour, so a real backlog in it never shrinks and
+    looks healthy to anything that trusts the stamp.
+    """
+    where = tmp_path / "state"
+    where.mkdir()
+    old = time.time() - 30 * 86400
+    doomed = _aged_session(where, 1, old)
+    stats = {"stat": 0, "unlink": 0, "skipped": False, "cursor": ""}
+    assert hook._sweep_dir(str(where), stats, None, (0, 0)) is False
+    assert not (where / hook.SWEEP_STAMP_NAME).exists(), "stamped without a turn"
+    assert doomed.exists()
+    # And with a share, the same directory really is swept — so the assertion
+    # above is about the budget and not about a directory nothing would collect
+    # from.
+    assert hook._sweep_dir(str(where), stats, None, (8, 4)) is True
+    assert not doomed.exists()
+
+
+def test_each_state_directory_stamps_its_own_cursor(tmp_path, monkeypatch) -> None:
+    """A cursor is a position in ONE directory's listing.
+
+    Shared, the second directory resumed from a name that exists only in the
+    first — skipping every name sorting at or below it for that cycle. The
+    wrap clause covers them eventually, so this delays convergence rather than
+    losing data, and it defeats the per-directory independence the sweep's own
+    comment promises.
+    """
+    monkeypatch.setattr(hook, "SWEEP_MAX_STATS", 4)
+    monkeypatch.setattr(hook, "SWEEP_MAX_UNLINKS", 2)
+    preferred = tmp_path / "preferred"
+    fallback = tmp_path / "fallback"
+    preferred.mkdir()
+    fallback.mkdir()
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(preferred))
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", str(fallback))
+    old = time.time() - 30 * 86400
+    mine = [_aged_session(preferred, n, old).name for n in range(6)]
+    theirs = [_aged_session(fallback, 0xF00 + n, old).name for n in range(2)]
+    hook._sweep()
+    for where, own in ((preferred, mine), (fallback, theirs)):
+        cursor = hook._sweep_cursor(str(where))
+        assert cursor == "" or cursor in own, (where.name, cursor)
+
+    # And the case that isolates the cursor from every other rule: the deadline
+    # expiring between the check above the loop and the loop's first turn. The
+    # directory examines no name at all, so it has no position to record —
+    # and recording the run's shared one would send its next pass past every
+    # name sorting at or below a name it has never held.
+    theirs_dir = tmp_path / "late"
+    theirs_dir.mkdir()
+    _aged_session(theirs_dir, 0xABC, old)
+    clock = iter([0.0, 100.0, 100.0, 100.0, 100.0])
+    monkeypatch.setattr(hook.time, "monotonic", lambda: next(clock, 100.0))
+    stats = {"stat": 0, "unlink": 0, "skipped": False, "cursor": mine[-1]}
+    assert hook._sweep_dir(str(theirs_dir), stats, 50.0, (8, 4)) is True
+    assert hook._sweep_cursor(str(theirs_dir)) == "", hook._sweep_cursor(
+        str(theirs_dir)
+    )
+
+
 def test_skipped_means_no_directory_was_examined_not_merely_one(
     tmp_path, monkeypatch
 ) -> None:

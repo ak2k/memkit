@@ -2590,13 +2590,14 @@ INDEX_RETENTION = 7 * 86400
 # Per invocation, because a 16,000-file directory cannot be fully walked inside
 # a budget shared with a prompt. The directory converges over several runs
 # instead of blowing one prompt's turn.
-# Which of these BINDS is the thing to know, and the first version of this
-# comment had it wrong: an index family is five unlinks for one stat, and index
-# families dominate a real cache — so every measured run stopped at the unlink
-# cap having spent a fraction of its stats, and the arithmetic that promised
-# convergence in about thirty runs had divided by the other constant. At 500
-# and 100 the author's own 16,319-file cache took 150 runs: days, at one an
-# hour, on the machine the numbers were measured from.
+# Which of these BINDS is the thing to know, and it is the unlink cap: on a
+# cache of index families, a run reaches 1000 unlinks at 996 stats (measured,
+# 400 seeded families). The two counts run at about 1:1 rather than 5:1 — each
+# of a family's five files is its own directory entry and costs its own stat
+# charge, even though only the first of them does the five unlinks — so the
+# unlink cap binds simply because it is the smaller number. At 500 and 100 the
+# author's own 16,319-file cache took 150 runs: days, at one an hour, on the
+# machine the numbers were measured from.
 #
 # Measured on a synthetic copy of that cache at these values: convergence in 15
 # runs, worst run 111 ms and mean 76 ms against a 13-second deadline — 0.85% of
@@ -2851,12 +2852,23 @@ def _sweep(deadline: float | None = None) -> dict:
     # state from every run that could write it. Sweeping one INSTEAD of the
     # other leaves whichever it skipped growing forever.
     #
-    # Each carries its own stamp and cursor, so the interval and the position
-    # are per-directory and neither can starve the other.
+    # Each carries its own stamp, its own cursor and its own SHARE of the run's
+    # budget, so the interval, the position and the turn are per-directory and
+    # neither can starve the other. One pool was the whole failure: the first
+    # directory could spend it, and the second then examined nothing, collected
+    # nothing, and stamped itself swept — so it read as just-swept for the next
+    # hour on every run that followed, which is the never-collected backlog
+    # this sweep exists to end, reproduced in the directory nobody looks at.
     state_dirs = [_state_dir_candidate()]
     if _TMP_STATE_DIR and _TMP_STATE_DIR not in state_dirs:
         state_dirs.append(_TMP_STATE_DIR)
-    passes = [_sweep_dir(state_dir, stats, deadline) for state_dir in state_dirs]
+    passes = []
+    for index, state_dir in enumerate(state_dirs):
+        passes.append(
+            _sweep_dir(
+                state_dir, stats, deadline, _fair_share(stats, len(state_dirs) - index)
+            )
+        )
     # `skipped` means NOTHING WAS EXAMINED — one flag over what may be two
     # directories, so it has to be the conjunction. Setting it per directory
     # made a run that did real work in the first report itself skipped because
@@ -2866,12 +2878,29 @@ def _sweep(deadline: float | None = None) -> dict:
     return stats
 
 
-def _sweep_dir(state_dir: str, stats: dict, deadline: float | None) -> bool:
-    """One directory's pass, accumulating into the caller's budget.
+def _fair_share(stats: dict, remaining: int) -> tuple:
+    """One directory's slice of what is left of the run's budget.
+
+    Divided by how many directories have still to be visited rather than by
+    how many there are, so a first directory that used less than its share
+    leaves the rest to the next one. With one directory this is the whole
+    budget, which is the ordinary case and unchanged by any of it.
+    """
+    return (
+        max(SWEEP_MAX_STATS - stats["stat"], 0) // remaining,
+        max(SWEEP_MAX_UNLINKS - stats["unlink"], 0) // remaining,
+    )
+
+
+def _sweep_dir(
+    state_dir: str, stats: dict, deadline: float | None, share: tuple
+) -> bool:
+    """One directory's pass, within `share` of the run's budget.
 
     True when it really walked; False when there was nothing there, the hour
     had not elapsed, or the budget was already gone.
     """
+    max_stats, max_unlinks = share
     if not os.path.isdir(state_dir):
         # An install nobody configured has no state directory, and the sweep is
         # not the thing that creates one.
@@ -2885,6 +2914,13 @@ def _sweep_dir(state_dir: str, stats: dict, deadline: float | None) -> bool:
         # by construction, since retrieval may run to its own 12-second budget
         # while this deadline is 13. "Stamp before the work" is for runs that
         # can do work.
+        return False
+    if max_stats <= 0 or max_unlinks <= 0:
+        # The docstring's third condition, and it was the one the stamp write
+        # sat above: a directory that gets no turn must not have its hour
+        # reset. `_fair_share` keeps the caller from ever handing out a spent
+        # share, so this stands for any other caller and for a run with more
+        # directories than budget.
         return False
     # The stamp goes down BEFORE the work, not after. A sweep that crashed
     # partway through and left no stamp would run again on the very next
@@ -2907,12 +2943,21 @@ def _sweep_dir(state_dir: str, stats: dict, deadline: float | None) -> bool:
     # And wraps: the tail is swept, then the next run starts again at the top,
     # which is where anything created since will be.
     order = resumed + [n for n in names if not resumed or n <= cursor]
+    # `last` is a LOCAL. A cursor is a position in one directory's listing, so
+    # a shared one stamped the second directory with a name that exists only in
+    # the first, and every name sorting at or below it was skipped for that
+    # cycle. `stats["cursor"]` stays as the run-wide summary its readers want.
+    last = ""
+    walked = 0
+    unlinked = 0
     for name in order:
         if deadline is not None and time.monotonic() >= deadline:
             break
-        if stats["stat"] >= SWEEP_MAX_STATS or stats["unlink"] >= SWEEP_MAX_UNLINKS:
+        if walked >= max_stats or unlinked >= max_unlinks:
             break
+        walked += 1
         stats["stat"] += 1
+        last = name
         stats["cursor"] = name
         why = _collectible(state_dir, name, now)
         if not why:
@@ -2924,9 +2969,10 @@ def _sweep_dir(state_dir: str, stats: dict, deadline: float | None) -> bool:
         for target in targets:
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(state_dir, target))
+                unlinked += 1
                 stats["unlink"] += 1
-    if stats["cursor"]:
-        _stamp_sweep(state_dir, str(stats["cursor"]))
+    if last:
+        _stamp_sweep(state_dir, last)
     return True
 
 
