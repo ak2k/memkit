@@ -3360,6 +3360,36 @@ def _sigterm_masked():
 # never be the binding constraint. Measured: a brief at exactly that bound is
 # 3062 words and yields 652 unique terms at these caps, and raising them to
 # 6000/3000 yields the same 652 — saturated, with nothing left to add.
+# The Agent tool's name as the harness matches it, and the key in its input
+# that carries the brief. Both are read off the pinned build (2.1.238) rather
+# than assumed: `tool_name` on the wire is `Agent`, and `Task` survives only as
+# an alias the matcher canonicalizes, so a registration naming either one is
+# dispatched — `Agent` because that is what the payload says.
+#
+# `description` is here because the Agent tool REQUIRES it alongside `prompt`.
+# A `updatedInput` is a REPLACEMENT and not a patch: the harness validates it
+# against the tool's own input schema and DENIES the call when a required key
+# is missing (measured — a `{"limit": 1}` patch on Read came back "returned
+# updatedInput that failed schema validation"). So an emission that dropped a
+# key would not degrade to no pointers, it would cancel the spawn. The
+# allowlist's key-set equality is what makes that unreachable, and it is a
+# correctness requirement rather than only a safety one.
+TASK_TOOL = "Agent"
+TASK_PROMPT_KEY = "prompt"
+
+# The harness's kill for the task registration, and the budget beneath it —
+# this path's own pair, never the prompt path's. Sharing BUDGET_SECONDS would
+# put an internal deadline of 12 above a declared timeout of 10, i.e. a budget
+# that can never fire and a hook that is killed with nothing written.
+#
+# Ten rather than the prompt path's fifteen because a PreToolUse stall delays
+# every subagent spawn, and the measurements do not need the extra five:
+# retrieval over a 278-file corpus took 30-86 ms per brief warm, 300 ms cold
+# with the index built from nothing, and interpreter start plus import is
+# 20-70 ms. Seven seconds is about twenty times the worst of those.
+TASK_HARNESS_TIMEOUT = 10
+TASK_BUDGET_SECONDS = 7
+
 TASK_QUERY_MAX_WORDS = 4000
 TASK_QUERY_MAX_TERMS = 2000
 

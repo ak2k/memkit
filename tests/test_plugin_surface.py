@@ -792,13 +792,23 @@ def test_every_registered_timeout_matches_the_constant_it_is_paired_with() -> No
     constant pair — sharing the module's single budget would put an internal
     deadline above the harness's kill point.
     """
-    expected = {"UserPromptSubmit": hook.HARNESS_TIMEOUT}
+    expected = {
+        "UserPromptSubmit": (hook.HARNESS_TIMEOUT, hook.BUDGET_SECONDS),
+        "PreToolUse": (hook.TASK_HARNESS_TIMEOUT, hook.TASK_BUDGET_SECONDS),
+    }
     for event, handler in _entries():
         assert event in expected, f"{event} has no declared constant pair"
-        assert handler["timeout"] == expected[event], (event, handler["timeout"])
-    # Both halves of the relation, so this file cannot be edited into agreement
-    # with a budget that no longer sits beneath it.
-    assert hook.BUDGET_SECONDS < hook.HARNESS_TIMEOUT
+        assert handler["timeout"] == expected[event][0], (event, handler["timeout"])
+    # Both halves of the relation, per event, so neither file can be edited into
+    # agreement with a budget that no longer sits beneath it — and so that a
+    # second event cannot be registered against the first event's budget, which
+    # is the failure the pair exists to prevent: an internal deadline above the
+    # harness's kill point never fires, and a killed hook writes no record.
+    for event, (timeout, budget) in expected.items():
+        assert budget < timeout, (event, budget, timeout)
+    assert len({budget for _, budget in expected.values()}) == len(expected), (
+        "two events sharing one budget constant is the sharing this pins against"
+    )
 
 
 def test_the_registration_runs_the_wrapper_and_not_the_hook_directly() -> None:
@@ -3510,3 +3520,34 @@ def test_the_plugin_marker_is_absent_without_the_wrapper(tmp_path) -> None:
     )
     assert out.returncode == hook.EXIT_INERT
     assert "MEMKIT_PLUGIN" not in out.stdout
+
+
+def test_the_task_registration_matches_the_subagent_tool_and_nothing_else() -> None:
+    """One `PreToolUse` entry, matched on the Agent tool by name.
+
+    `"Agent"` rather than `"^Agent$"`, and the difference is not cosmetic. The
+    harness picks its matching strategy from the CHARACTERS in the matcher
+    (measured on 2.1.238): a matcher of word characters, `|`, `,`, spaces and
+    hyphens takes an exact-equality branch that first canonicalizes the token
+    through the tool alias table, while anything carrying a regex metacharacter
+    compiles to a RegExp and is tested unanchored. So the plain form is the
+    exact one AND the one that survives a rename — `Task` still dispatches to
+    `Agent` through that table — whereas the anchored form is a literal string
+    that a rename leaves matching nothing, silently.
+
+    Measured both ways on the pinned binary: `Read` and `^Read$` fire, `Rea`
+    and `ead` do not, `Read.*` fires on NotebookEdit-shaped names too.
+    """
+    entries = [(event, h) for event, h in _entries() if event == "PreToolUse"]
+    assert len(entries) == 1, entries
+    groups = _json(HOOKS_JSON)["hooks"]["PreToolUse"]
+    assert len(groups) == 1, groups
+    assert groups[0]["matcher"] == hook.TASK_TOOL, groups[0]
+    assert hook.TASK_TOOL == "Agent"
+    # No metacharacter, or the harness takes the regex branch and the alias
+    # canonicalization that makes this survive a rename never runs.
+    assert re.fullmatch(r"[A-Za-z0-9_|, -]+", groups[0]["matcher"]), groups[0]
+    # And the prompt path's entry stays unmatched — a matcher there would scope
+    # a hook that must see every prompt.
+    for group in _json(HOOKS_JSON)["hooks"]["UserPromptSubmit"]:
+        assert "matcher" not in group, group
