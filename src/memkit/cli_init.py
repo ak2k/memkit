@@ -35,6 +35,7 @@ import contextlib
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -396,7 +397,9 @@ def _config_entries(*, store: str, store_id: str) -> dict:
     }
 
 
-def _merge_config(existing: str, *, nonce: str, interpreter: str, entries: dict) -> str:
+def _merge_config(
+    existing: str, *, nonce: str, interpreter: str, entries: dict, where: str = ""
+) -> str:
     """`existing` with one store's root and entry added, and nothing removed.
 
     Every field is set only where it is ABSENT. A second init must not
@@ -406,9 +409,24 @@ def _merge_config(existing: str, *, nonce: str, interpreter: str, entries: dict)
     """
     blob: dict = {}
     if existing.strip():
-        loaded = json.loads(existing)
-        if isinstance(loaded, dict):
-            blob = loaded
+        try:
+            loaded = json.loads(existing)
+        except ValueError as exc:
+            raise Refusal(
+                "unparseable-config",
+                f"the config at {_display_path(where)} does not parse as JSON "
+                f"({exc}). init will not replace a file it cannot read, and "
+                "exiting 1 with a traceback would tell a caller memkit cannot "
+                "run at all when one comma is in the wrong place.",
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise Refusal(
+                "unparseable-config",
+                f"the config at {_display_path(where)} parses, and its top "
+                f"level is a {type(loaded).__name__} rather than an object. "
+                "init will not replace it.",
+            )
+        blob = loaded
     blob.setdefault("schema", SCHEMA)
     blob.setdefault("interpreter", interpreter)
     blob.setdefault(
@@ -579,8 +597,32 @@ def check_refusals(
             "update.",
         )
 
+    if os.path.exists(store_path) and not os.path.isdir(store_path):
+        raise Refusal(
+            "not-a-directory",
+            f"{_display_path(store_path)} exists and is not a directory. A "
+            "store is a directory of markdown; init would have created the "
+            "state directory and the config before finding that out, which is "
+            "a half-made setup where the contract promises a refusal.",
+        )
     for what, path in (("config", config_path), ("store", store_path)):
         _refuse_unwritable(what, path)
+
+    # An id already in the config, naming somewhere else. Ids are how a store
+    # is addressed everywhere — the config, `--debug-config`, doctor's
+    # per-store rows — so two stores answering to one id is a store that
+    # exists on disk and is never read. The merge keeps the first, silently.
+    taken = _store_id_conflict(config_path, _store_id(store_path), store_path)
+    if taken:
+        raise Refusal(
+            "store-id-taken",
+            f"{_display_path(config_path)} already has a store called "
+            f"{_store_id(store_path)!r} and it is {_display_path(taken)}, not "
+            f"{_display_path(store_path)}. Ids are derived from the "
+            "directory's own name, so two stores called `notes` in different "
+            "places collide — pass a store path whose last segment differs, or "
+            "rename one.",
+        )
 
     # The two writes that land OUTSIDE memkit's own paths, and the rule is the
     # same for both: a target that resolves inside a memory store is a memory
@@ -747,6 +789,32 @@ def _store_id(store: str) -> str:
     return cleaned.strip("-") or "memories"
 
 
+def _store_id_conflict(config_path: str, store_id: str, store_path: str) -> str:
+    """The directory an existing store of this id already names, or "".
+
+    Read out of the config rather than tracked separately: the config is where
+    the collision would land, and a second source for "which ids are taken"
+    would be a second thing to keep in step with it.
+    """
+    with contextlib.suppress(OSError, ValueError):
+        with open(config_path, encoding="utf-8") as f:
+            blob = json.load(f)
+        if not isinstance(blob, dict):
+            return ""
+        roots = blob.get("roots")
+        for store in blob.get("stores") or []:
+            if not isinstance(store, dict) or store.get("id") != store_id:
+                continue
+            spec = (roots or {}).get(store.get("live_root")) or {}
+            existing = spec.get("path") if isinstance(spec, dict) else None
+            if isinstance(existing, str):
+                existing = os.path.expanduser(existing)
+                if os.path.realpath(existing) != os.path.realpath(store_path):
+                    return existing
+            return ""
+    return ""
+
+
 def _git_tracked(path: str) -> bool:
     """Whether git would consider this file part of a repository.
 
@@ -755,6 +823,10 @@ def _git_tracked(path: str) -> bool:
     file is a commit somebody did not intend to make, and the manifest is the
     place that says so before it happens.
     """
+    # The RESOLVED path, for the same reason the write follows the link: a
+    # `CLAUDE.md` symlinked into a dotfiles repo is tracked there, and asking
+    # git about the link's own directory answers about the wrong tree.
+    path = os.path.realpath(path)
     parent = os.path.dirname(path) or "."
     try:
         out = subprocess.run(
@@ -819,6 +891,7 @@ def build_plan(
                 nonce=nonce,
                 interpreter=_interpreter(),
                 entries=_config_entries(store=store_path, store_id=store_id),
+                where=config_path,
             ),
             note=f"adds root and store {store_id!r}; records interpreter "
             f"{_display_path(_interpreter())} and canary nonce {nonce}. "
@@ -878,12 +951,24 @@ def build_plan(
     notes = []
     if wire_claude_md:
         target = _claude_md(machine)
-        existing = ""
+        # FileNotFoundError is the create case and takes the empty default;
+        # anything else is a file that is there and cannot be seen. The
+        # manifest calls this operation `append-line` and its note says
+        # "appends", so substituting an empty string for a read failure made
+        # the effect a truncation of the adopter's own instructions under a
+        # consent given for an append.
         try:
             with open(target, encoding="utf-8") as f:
                 existing = f.read()
-        except OSError:
+        except FileNotFoundError:
             existing = ""
+        except (OSError, ValueError) as exc:
+            raise Refusal(
+                "unreadable-claude-md",
+                f"{_display_path(target)} exists and could not be read "
+                f"({exc}). init appends to that file and will not replace one "
+                "it cannot see.",
+            ) from exc
         line = _import_line(store_path)
         # CONVERGE, do not duplicate. `redundant` cannot see this: appending
         # the same line twice produces a different file every time, so the
@@ -894,10 +979,9 @@ def build_plan(
                 Action(
                     APPEND_LINE,
                     target,
-                    existing.rstrip("\n") + "\n" + line + "\n"
-                    if existing.strip()
-                    else line + "\n",
+                    _appended(existing, line),
                     note=f"appends {line}",
+                    payload={"line": line},
                 )
             )
         notes.append(
@@ -919,6 +1003,7 @@ def build_plan(
                 target,
                 _settings_with_auto_dream_off(target),
                 note='sets "autoDreamEnabled": false and changes nothing else',
+                payload={"autoDreamEnabled": False},
             )
         )
         notes.append(
@@ -985,6 +1070,15 @@ def _settings_with(path: str, changes: dict) -> str:
 
 def _settings_with_auto_dream_off(path: str) -> str:
     return _settings_with(path, {"autoDreamEnabled": False})
+
+
+def _appended(existing: str, line: str) -> str:
+    """`existing` with `line` at the end, or unchanged if it is already there."""
+    if line in existing.splitlines():
+        return existing
+    if not existing.strip():
+        return line + "\n"
+    return existing.rstrip("\n") + "\n" + line + "\n"
 
 
 # --- the command -------------------------------------------------------------
@@ -1121,11 +1215,29 @@ def _refuse(refusal: Refusal) -> int:
 
 
 def _read_or_empty(path: str) -> str:
+    """The file's text, "" when it is not there — and a REFUSAL when it is
+    there and cannot be read.
+
+    Absence and unreadability were the same answer, so a config this process
+    could write but not read was merged into `{}` and renamed over: every root
+    and store the adopter had accumulated gone, under a manifest line that says
+    "Existing stores are kept". That is the field anti-pattern the settings
+    writer beside it already refuses — a tool that meets a read failure and
+    replaces the file with a stub — and this is the file that decides which
+    directories an every-prompt hook reads.
+    """
     try:
         with open(path, encoding="utf-8") as f:
             return f.read()
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return ""
+    except (OSError, ValueError) as exc:
+        raise Refusal(
+            "unreadable-config",
+            f"{_display_path(path)} exists and could not be read ({exc}). "
+            "init converges on its own work and will not replace a config it "
+            "cannot see — that file names the directories the hook reads.",
+        ) from exc
 
 
 class Journal:
@@ -1221,14 +1333,29 @@ def _write_atomically(path: str, content: str, mode: int = 0o600) -> str:
     stops the write in between leaves a valid prefix of an invalid file — and
     for a config, a valid prefix is a config that names half a store.
     """
+    # THROUGH THE LINK, not over it. An adopter whose `~/.claude/settings.json`
+    # is a symlink into a dotfiles or nix repo is the common case, and the
+    # manifest already advertises that it understands one — it prints where
+    # each path resolves. Replacing the link would leave an untracked regular
+    # file, the repo copy orphaned and unchanged, and the next `home-manager
+    # switch` reaching nothing.
+    path = os.path.realpath(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # An EXISTING file keeps its own permissions. The `mode` argument is for a
+    # file being created; a settings file somebody deliberately chmod'd 600 —
+    # they commonly carry an API key — must not come back 644 from a command
+    # whose stated scope is one key.
+    with contextlib.suppress(OSError):
+        mode = stat.S_IMODE(os.stat(path).st_mode)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        # The mode goes on before the first byte, so the content never exists
+        # at whatever the umask would have given it.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except OSError:
         with contextlib.suppress(OSError):
@@ -1314,7 +1441,18 @@ def _perform(
                 nonce=str(payload.get("nonce", "")),
                 interpreter=str(payload.get("interpreter", "")),
                 entries=payload.get("entries") or {},
+                where=action.path,
             )
+            # WRITE-AHEAD, and it is the config's alone. Between the file
+            # landing and its record being fsynced, every future init — dry-run
+            # included — refused `foreign-config` and told the adopter memkit
+            # did not write the file memkit had just written: no store, no
+            # documented recovery, and the only manual fix deleting a config
+            # the refusal exists to protect. The claim costs a record that may
+            # describe a write that did not happen, which `authored_configs`
+            # already tolerates: it keys on the flag and the path, and a claim
+            # on a file that is not there answers nothing.
+            journal.record(action, "pending")
             after = _write_atomically(action.path, merged)
             journal.record(action, after)
     elif action.op == VERIFY:
@@ -1330,6 +1468,24 @@ def _perform(
             # for a store that is right there.
             return EXIT_INCOMPLETE
         journal.record(action, "verified")
+    elif action.op in (SETTINGS_WRITE, APPEND_LINE):
+        # RE-DERIVED under the lock, exactly as the config merge is. init is
+        # invoked from inside a live session, so the harness owns and actively
+        # writes `settings.json` for the whole run — and these are the LAST
+        # actions, after an integrity-checker subprocess that may take minutes.
+        # A payload frozen at plan time is an edit against a file that has
+        # moved, and the manifest's promise ("changes nothing else") is only
+        # true against the file as it is when the write happens.
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        with _Lock(machine.state_dir):
+            if action.op == SETTINGS_WRITE:
+                content = _settings_with(action.path, payload)
+            else:
+                content = _appended(
+                    _read_or_empty(action.path), str(payload.get("line", ""))
+                )
+            after = _write_atomically(action.path, content, mode=0o644)
+            journal.record(action, after)
     else:
         after = _write_atomically(action.path, action.content, mode=0o644)
         journal.record(action, after)

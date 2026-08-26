@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import pathlib
+import stat
 import subprocess
 import sys
 
@@ -79,8 +80,15 @@ def _snapshot(root) -> dict:
     for dirpath, _dirnames, filenames in os.walk(root):
         for name in filenames:
             path = os.path.join(dirpath, name)
-            with open(path, "rb") as f:
-                out[os.path.relpath(path, root)] = f.read()
+            try:
+                with open(path, "rb") as f:
+                    out[os.path.relpath(path, root)] = f.read()
+            except OSError as exc:
+                # A file this process cannot read is still a file that must be
+                # there, unchanged, afterwards. Recording the failure keeps the
+                # snapshot total — a helper that raised would fail the case
+                # before the code under test ever ran.
+                out[os.path.relpath(path, root)] = f"unreadable:{type(exc).__name__}"
         for name in _dirnames:
             out[os.path.relpath(os.path.join(dirpath, name), root) + "/"] = b"(dir)"
     return out
@@ -374,6 +382,25 @@ def test_the_help_names_both_turns_and_every_exit_code(profile) -> None:
 # about: "it did not write the config" and "it wrote nothing" are different
 # claims, and a refusal that created the state directory before deciding to
 # refuse would satisfy the first.
+
+
+def _claim(profile, config) -> None:
+    """Journal the config as one init authored.
+
+    The read and parse refusals below are only reachable for memkit's OWN
+    file: a config no journal claims is refused earlier, and for a better
+    reason — `foreign-config`, which says memkit did not write it.
+    """
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    with open(state / hook.INIT_JOURNAL_NAME, "a", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {"v": 1, "op": "merge-config", "path": str(config),
+                 "authored_config": True}
+            )
+            + "\n"
+        )
 
 
 def _refuses(profile, name: str, **kw) -> init.Refusal:
@@ -700,7 +727,12 @@ def test_the_journal_names_every_file_the_run_made_and_nothing_it_did_not(profil
     # The config's record claims authorship, which is what makes an unclaimed
     # rung-2 config detectable at all.
     claims = [r for r in records if r.get("authored_config")]
-    assert len(claims) == 1
+    # TWO records for the one config, and the first is the point: a claim
+    # written before the file lands is what stops a crash in that window from
+    # bricking every later init against memkit's own file.
+    assert [r["after"] for r in claims] == ["pending", claims[-1]["after"]]
+    assert claims[-1]["after"].startswith("file:")
+    assert {r["path"] for r in claims} == {claims[0]["path"]}
     assert claims[0]["path"].endswith("memkit.json")
 
 
@@ -1087,3 +1119,203 @@ def test_a_config_inside_the_swept_state_directory_is_refused(profile) -> None:
     refusal = _refuses(profile, "config-in-state-dir", config=str(inside))
     assert "derived state" in refusal.message
     assert "swept" in refusal.message or "collect" in refusal.message
+
+
+# --- what init may do to a file it did not write -----------------------------
+
+
+def test_a_config_this_process_cannot_read_is_refused_not_replaced(profile):
+    """The field anti-pattern init's own settings writer names, on the file
+    that decides which directories an every-prompt hook reads.
+
+    A config that exists, cannot be READ and can be written was merged into
+    `{}` and renamed over — every root and store the adopter had accumulated
+    gone, with the manifest line one screen earlier saying "Existing stores are
+    kept" and no recoverable copy.
+    """
+    config = profile / "locked.json"
+    config.write_text('{"schema": 1, "stores": [{"id": "theirs"}]}', encoding="utf-8")
+    _claim(profile, config)
+    # Write-only: readable-and-unwritable is caught earlier and better by
+    # `not-writable`. The dangerous shape is the one init can act on and
+    # cannot see.
+    config.chmod(0o200)
+    try:
+        refusal = _refuses(profile, "unreadable-config", config=str(config))
+    finally:
+        config.chmod(0o600)
+    assert "could not be read" in refusal.message
+
+
+def test_a_config_that_does_not_parse_is_refused_not_a_traceback(profile):
+    """Exit 1 is spoken for as "memkit could not start at all", so a skill
+    branching on the code learned the machine cannot run memkit when in fact
+    one file has a comma in the wrong place."""
+    config = profile / "typo.json"
+    config.write_text('{"schema": 1,,}', encoding="utf-8")
+    _claim(profile, config)
+    refusal = _refuses(profile, "unparseable-config", config=str(config))
+    assert str(config) in refusal.message or "typo.json" in refusal.message
+
+
+def test_a_config_whose_top_level_is_not_an_object_is_refused(profile):
+    config = profile / "list.json"
+    config.write_text("[1, 2, 3]", encoding="utf-8")
+    _claim(profile, config)
+    _refuses(profile, "unparseable-config", config=str(config))
+
+
+def test_a_write_follows_a_symlink_rather_than_replacing_it(profile) -> None:
+    """An adopter whose `~/.claude/settings.json` is a symlink into a dotfiles
+    or nix repo — the common setup, and the one the manifest's `resolves to`
+    line advertises it understands — silently lost the link, leaving an
+    untracked regular file and the repo copy orphaned."""
+    real = profile / "dotfiles" / "settings.json"
+    real.parent.mkdir(parents=True)
+    real.write_text('{"theme": "dark"}', encoding="utf-8")
+    link = profile / "claude-config" / "settings.json"
+    link.symlink_to(real)
+
+    machine = doctor.Machine()
+    plan = _plan(profile, auto_dream_off=True, store=str(profile / "notes"))
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_OK
+    assert link.is_symlink(), "init replaced the symlink with a regular file"
+    assert json.loads(real.read_text())["autoDreamEnabled"] is False
+    assert json.loads(real.read_text())["theme"] == "dark"
+
+
+def test_an_existing_files_permissions_survive_the_write(profile) -> None:
+    """`~/.claude/settings.json` commonly carries an `env` block with an API
+    key. A command whose stated scope is 'sets autoDreamEnabled and changes
+    nothing else' handed a deliberately 0600 file back at 0644."""
+    settings = profile / "claude-config" / "settings.json"
+    settings.write_text('{"theme": "dark"}', encoding="utf-8")
+    settings.chmod(0o600)
+    machine = doctor.Machine()
+    plan = _plan(profile, auto_dream_off=True, store=str(profile / "notes"))
+    assert init.apply_plan(machine, plan, init._resolve_config(machine, None)) == 0
+    assert stat.S_IMODE(settings.stat().st_mode) == 0o600, oct(
+        settings.stat().st_mode
+    )
+
+
+def test_a_file_init_creates_is_never_world_readable_mid_write(profile):
+    """The mode is set on the temporary file before any byte is written, so
+    the content never exists at whatever the umask would have given it."""
+    machine = doctor.Machine()
+    plan = _plan(profile, store=str(profile / "notes"))
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_OK
+    assert stat.S_IMODE(os.stat(config).st_mode) == 0o600, oct(
+        os.stat(config).st_mode
+    )
+
+
+def test_a_regular_file_at_the_store_path_is_refused_before_any_write(profile):
+    """A writable regular file passed the preflight, so init created the state
+    directory and the config and then died on CREATE_DIR — a broken partial
+    configuration where the contract promises a write-nothing refusal."""
+    store = profile / "notes"
+    store.write_text("i am a file\n", encoding="utf-8")
+    refusal = _refuses(profile, "not-a-directory", store=str(store))
+    assert "notes" in refusal.message
+
+
+def test_two_stores_with_the_same_basename_are_refused(profile) -> None:
+    """`/one/notes` and `/two/notes` produced the same store id, and the merge
+    kept the first: the second store's files and canary exist on disk and the
+    configured reader never looks at them."""
+    machine = doctor.Machine()
+    first = _plan(profile, store=str(profile / "one" / "notes"))
+    config = init._resolve_config(machine, None)
+    assert init.apply_plan(machine, first, config) == init.EXIT_OK
+    refusal = _refuses(profile, "store-id-taken", store=str(profile / "two" / "notes"))
+    assert "notes" in refusal.message
+
+
+def test_a_crash_before_the_journal_record_does_not_brick_init(profile, monkeypatch):
+    """Between the config landing and its journal record being fsynced, every
+    future init — dry-run included — refused `foreign-config` and told the
+    adopter memkit did not write the file memkit had just written. There was no
+    store, no documented recovery, and the only manual fix was deleting a
+    config the refusal exists to protect."""
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(profile, store=str(profile / "notes"))
+    real = init.Journal.record
+    calls = []
+
+    def die(self, action, after):
+        calls.append(action.op)
+        if action.op == init.MERGE_CONFIG and after != "pending":
+            raise OSError("no space left on device")
+        return real(self, action, after)
+
+    monkeypatch.setattr(init.Journal, "record", die)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    assert os.path.isfile(config), "the config did not land, so this is not the case"
+    monkeypatch.setattr(init.Journal, "record", real)
+    # The next run converges instead of refusing about memkit's own file.
+    again = _plan(profile, store=str(profile / "notes"))
+    assert any(a.op == init.MERGE_CONFIG for a in again.actions)
+
+
+def test_an_unreadable_claude_md_is_refused_rather_than_truncated(profile):
+    """The manifest calls the operation `append-line` and its note says
+    'appends @...', so the consent given was for an append. Substituting an
+    empty string for a read failure made the effect a truncation."""
+    target = profile / "claude-config" / "CLAUDE.md"
+    target.write_text("# my instructions\n" * 40, encoding="utf-8")
+    # Write-only: unwritable is caught earlier and better by `not-writable`.
+    # The dangerous shape is the one init can act on and cannot see.
+    target.chmod(0o200)
+    try:
+        refusal = _refuses(
+            profile, "unreadable-claude-md", wire_claude_md=True,
+            store=str(profile / "notes"),
+        )
+    finally:
+        target.chmod(0o600)
+    assert "could not be read" in refusal.message
+
+
+def test_the_settings_write_re_reads_under_the_lock(profile) -> None:
+    """init is invoked from inside a live session, so the harness owns and
+    actively writes that file for the whole run — and the settings write is the
+    LAST action, after an integrity-checker subprocess that may take minutes.
+    Anything the harness wrote in between was silently lost."""
+    machine = doctor.Machine()
+    settings = profile / "claude-config" / "settings.json"
+    settings.write_text('{"theme": "dark"}', encoding="utf-8")
+    plan = _plan(profile, auto_dream_off=True, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.SETTINGS_WRITE]
+    # The harness writes while the plan is in flight.
+    settings.write_text(
+        json.dumps({"theme": "dark", "enabledPlugins": {"other@x": True}}),
+        encoding="utf-8",
+    )
+    journal = init.Journal(str(machine.state_dir), plan.digest)
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    init._perform(machine, journal, action, init._resolve_config(machine, None))
+    blob = json.loads(settings.read_text())
+    assert blob["autoDreamEnabled"] is False
+    assert blob["enabledPlugins"] == {"other@x": True}, blob
+
+
+def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
+    """Same window, same file class: an append computed at plan time and
+    written after a 300-second subprocess is an append against a file that may
+    have moved."""
+    machine = doctor.Machine()
+    target = profile / "claude-config" / "CLAUDE.md"
+    target.write_text("# mine\n", encoding="utf-8")
+    plan = _plan(profile, wire_claude_md=True, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.APPEND_LINE]
+    target.write_text("# mine\nsomething they added meanwhile\n", encoding="utf-8")
+    journal = init.Journal(str(machine.state_dir), plan.digest)
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    init._perform(machine, journal, action, init._resolve_config(machine, None))
+    body = target.read_text()
+    assert "something they added meanwhile" in body, body
+    assert body.rstrip().endswith(init._import_line(str(profile / "notes")))
