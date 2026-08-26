@@ -540,7 +540,14 @@ already in it, which is what a cache it has been writing to looks like.
 **Never collected, whatever their age**: `log.jsonl`, because the soak
 analyzers treat it as their corpus; any config the init journal records having
 authored; a `memkit.json` living here; the init journal itself, which a later
-undo needs; and the sweep's own stamp. The predicate is an allowlist of
+undo needs; and the sweep's own stamp.
+
+`init-journal.jsonl` is one JSON object per mutation `memkit init` made,
+written at the mutation rather than at the end. `path` and `authored_config`
+are what the authorship check reads; `unlocked: true` marks a write that could
+not be serialised against another init, which is the one case where a store can
+go missing from a config two runs wrote. `memkit doctor` reports that key, so
+finding it is not something you have to know to grep for. The predicate is an allowlist of
 collectible name patterns, so anything matching none of them is kept — the
 default is keep, and it has to be, because a file of yours may be in this
 directory.

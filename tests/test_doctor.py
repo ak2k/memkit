@@ -635,6 +635,58 @@ def test_a_write_ahead_claim_does_not_authorize_somebody_elses_file(
     assert doctor.authored_configs(str(state)) == {str(planted)}
 
 
+def test_an_unserialised_config_write_reaches_the_adopter(
+    profile, monkeypatch
+) -> None:
+    """The journal records a write that was not serialised. Something has to
+    read it.
+
+    The lock is best-effort by design — a setup command must not fail because
+    a lock could not be taken — and an unserialised write is the one case where
+    a store can go missing from a config two inits wrote. The record was
+    written and nothing anywhere read it, so the person who hits the failure it
+    exists to explain has no route to it: no check points at the journal, and
+    no document says what to grep for.
+    """
+    state = profile / "home" / ".cache" / "memory-recall"
+    config = profile / "memkit.json"
+    _config_file(config)
+    token = "file:" + hashlib.sha256(
+        config.read_text().encode()
+    ).hexdigest()
+    _journal(state, path=str(config), before=None, after=token, unlocked=True)
+    monkeypatch.setenv(hook.CONFIG_ENV, str(config))
+    hook._use_config(None)
+    rows = doctor._PRODUCERS["config-authorship"](doctor.Machine())
+    said = [r for r in rows if "not serialised" in r.detail or "unlock" in r.detail]
+    assert said, [r.detail for r in rows]
+    (row,) = said
+    assert str(config) in row.detail, row.detail
+    assert row.status in (doctor.INFO, doctor.UNVERIFIED), row.status
+    assert row.actor == doctor.USER, row.actor
+    assert row.remedy, row.detail
+    # And it never blocks green, nor stops an agent: a lock that could not be
+    # taken is a fact about one write, not a broken install and not a state
+    # where trying something else cannot help.
+    assert row.status != doctor.FAIL
+    assert row.terminal is False
+
+    # The ordinary path says nothing, so the row means something when it is
+    # there.
+    other = profile / "other.json"
+    _config_file(other)
+    quiet = profile / "home" / ".cache" / "quiet"
+    _journal(quiet, path=str(other), before=None, after="file:x")
+    monkeypatch.setattr(doctor.Machine, "state_dir", str(quiet), raising=False)
+    machine = doctor.Machine()
+    machine.state_dir = str(quiet)
+    assert not [
+        r
+        for r in doctor._PRODUCERS["config-authorship"](machine)
+        if "not serialised" in r.detail
+    ]
+
+
 def test_a_torn_journal_line_is_skipped_rather_than_read_as_no_claim(
     profile, monkeypatch
 ) -> None:

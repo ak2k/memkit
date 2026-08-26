@@ -171,8 +171,9 @@ it.**
 So the payload is code you can read that acts on decisions you made elsewhere,
 within those two limits.
 The thing worth auditing before installing is not this tree's size; it is
-`bin/memkit-hook` and `bin/lib/common.sh`, which are about 550 lines of POSIX shell
-between them — mostly comment — and run no command that is not a shell builtin.
+`bin/memkit-hook` and `bin/lib/common.sh`, which are **658 lines of POSIX
+shell** between them — mostly comment — and run no command that is not a shell
+builtin.
 
 ## Reproducing these numbers
 
@@ -183,6 +184,7 @@ table above counts:
 git ls-files | wc -l
 git ls-tree -r -l HEAD | awk '{s+=$4} END {printf "%.1f MiB\n", s/1048576}'
 git ls-tree -r HEAD | awk '$1=="100755"{print $4}'
+wc -l bin/memkit-hook bin/lib/common.sh
 ```
 
 And against the sha the marketplace entry names, which is what an adopter

@@ -4122,6 +4122,17 @@ def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
     counts = {int(n) for n in re.findall(r"\b(\d+) files\b", note)}
     assert counts == {len(listed)}, counts
 
+    # The shell line count, which was the one number in this file that was
+    # never re-derived: it said "about 550" while the two files held 658, and
+    # the figure is what somebody decides how much shell to read before
+    # installing. Its recipe is in the same block as the others.
+    shell = sum(
+        len((REPO / rel).read_text(encoding="utf-8").splitlines())
+        for rel in ("bin/memkit-hook", "bin/lib/common.sh")
+    )
+    assert f"**{shell} lines of POSIX" in note, (shell, "not the stated count")
+    assert "wc -l bin/memkit-hook bin/lib/common.sh" in note
+
 
 # --- the one path-admission rule, proved over the PAIR ------------------------
 

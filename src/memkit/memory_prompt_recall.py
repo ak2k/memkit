@@ -2834,12 +2834,14 @@ def state_token(path: str) -> str:
 
 
 def journal_config_claims(state_dir: str) -> dict:
-    """{config path: [claim, …]} out of init's journal.
+    """{config path: [record, …]} out of init's journal, as written.
 
-    A claim is `(after, before, expects)`, exactly as the record carries them.
-    A torn line is skipped rather than read as "nothing is claimed": one
-    interrupted init must not turn into a config the checker calls foreign or
-    the sweep collects.
+    The records themselves rather than a projection of them, because they have
+    more than one reader and each wants a different field: whether the path is
+    authored, and whether any write to it went unserialised. A torn line is
+    skipped rather than read as "nothing is claimed" — one interrupted init
+    must not turn into a config the checker calls foreign or the sweep
+    collects.
     """
     found: dict = {}
     with contextlib.suppress(OSError):
@@ -2856,13 +2858,7 @@ def journal_config_claims(state_dir: str) -> dict:
                         and record.get("authored_config")
                         and isinstance(record.get("path"), str)
                     ):
-                        found.setdefault(record["path"], []).append(
-                            (
-                                record.get("after"),
-                                record.get("before") or "absent",
-                                record.get("expects"),
-                            )
-                        )
+                        found.setdefault(record["path"], []).append(record)
     return found
 
 
@@ -2882,9 +2878,12 @@ def claim_holds(path: str, claims: list) -> bool:
     explain: the file memkit was about to write, or what was there before it.
     """
     now = state_token(path)
-    for after, before, expects in claims:
+    for record in claims:
+        after = record.get("after")
         if after != "pending":
             return True
+        before = record.get("before") or "absent"
+        expects = record.get("expects")
         if now == before or (expects is not None and now == expects):
             return True
     return False

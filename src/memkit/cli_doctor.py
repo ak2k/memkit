@@ -876,6 +876,48 @@ def _config_authorship(machine: Machine) -> list[Check]:
     reads — and it journals every config it authors. That journal is what
     makes an UNCLAIMED one detectable at all.
     """
+    return _rung_two_authorship(machine) + _unserialised_writes(machine)
+
+
+def _unserialised_writes(machine: Machine) -> list[Check]:
+    """Any config the journal records having been written without the lock.
+
+    THE JOURNAL'S ONLY READER FOR THIS. The lock is best-effort by design — a
+    setup command must not fail because a lock could not be taken, and a
+    filesystem with no working `flock` degrades to what every earlier build
+    did — but an unserialised write is the one case where a store can go
+    missing from a config two inits wrote. Without a check that says so, the
+    person who hits exactly that failure has to know to grep a JSONL file
+    nothing documents.
+
+    Never a FAIL: a lock that could not be taken is a fact about one write, not
+    a broken install, and the store it would explain is usually there.
+    """
+    claims = journal_config_claims(machine.state_dir)
+    unserialised = sorted(
+        path
+        for path, records in claims.items()
+        if any(record.get("unlocked") for record in records)
+    )
+    if not unserialised:
+        return []
+    return [
+        Check(
+            "config-authorship",
+            INFO,
+            "written while another init held the lock, or with no working "
+            f"lock at all: {', '.join(_display_path(p) for p in unserialised)}"
+            ". Two inits racing on one config can lose one of their appends, "
+            "and this is the record that a write was not serialised",
+            "Check that the config lists every store you expect. If one is "
+            "missing, run init again for it — the merge is additive, and a "
+            "second run adds what the first lost.",
+            actor=USER,
+        )
+    ]
+
+
+def _rung_two_authorship(machine: Machine) -> list[Check]:
     path = machine.rung_two
     if not path:
         return [
