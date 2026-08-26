@@ -1213,10 +1213,11 @@ def sanitize(text: str) -> str:
 # the number the SIGTERM-mask argument in main() rests on: that write happens
 # with SIGTERM held, so it must not be able to block on a slow reader.
 #
-# It has ONE consumer, `_bounded_block`, which enforces it at emission time.
-# The comment here used to claim a second — "the task path's own emission cap"
-# — and no such path exists in this build; a constant that names consumers it
-# does not have is a constant nobody dares change.
+# Two consumers, and they enforce it differently. `_bounded_block` sheds pointer
+# lines until the prompt path's block fits, because everything in that block is
+# memkit's to shed. `_task_main` refuses outright, because the task path's
+# emission echoes the whole brief back and the brief is the bulk — there is
+# nothing in it this hook may drop to make room.
 #
 # Conservative rather than exact: the real capacity measured on this platform
 # is 65536 bytes, and the floor is what POSIX guarantees. The margin is the
