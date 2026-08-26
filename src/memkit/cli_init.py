@@ -602,6 +602,18 @@ def check_refusals(
             )
         _refuse_unwritable(what, target)
 
+    if _inside(config_path, machine.state_dir):
+        raise Refusal(
+            "config-in-state-dir",
+            f"{_display_path(config_path)} is inside "
+            f"{_display_path(machine.state_dir)}, which holds derived state "
+            "and which the hook sweeps on its own schedule. The sweep keeps "
+            "what init's journal claims and collects nothing whose name it "
+            "does not recognise, so this would probably survive — and 'would "
+            "probably survive' is not a property to hang a config on. Put it "
+            "somewhere nothing collects.",
+        )
+
     route, _command = _checker_route(machine)
     if route == "none":
         raise Refusal(

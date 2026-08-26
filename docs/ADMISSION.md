@@ -84,8 +84,10 @@ config it reads the store directories that config names, and nothing else.
 Once it is serving, the same process also collects its own derived state — at
 most hourly, after the pointers have been written, bounded to 500 stats and 100
 unlinks per run. The predicate is an allowlist of collectible name patterns, so
-the default is keep; `log.jsonl`, a `memkit.json` living there, the init
-journal and the sweep's own stamp are never collected whatever their age.
+the default is keep. Never collected whatever their age: `log.jsonl`, any
+config the init journal records having authored, a `memkit.json` living there,
+the journal itself, and the sweep's own stamp — and a `.json` whose name is not
+one memkit writes is not collected at all.
 README's *Derived state* has the table.
 
 **Two commands, and only if you run them.** Neither is on the prompt path.

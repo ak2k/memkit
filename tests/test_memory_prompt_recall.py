@@ -6746,9 +6746,9 @@ def test_an_unreadable_stat_is_not_deletion_evidence(state, monkeypatch) -> None
 def test_session_state_older_than_the_window_is_collected(state) -> None:
     """484 of these on the author's cache, the oldest a month old, and nothing
     had ever collected one."""
-    old = _aged(state / "sess-old.json", days=30)
-    recent = _aged(state / "sess-recent.json", days=1)
-    claim = _aged(state / "sess-old.dup-pair", days=30)
+    old = _aged(state / _session_name(3), days=30)
+    recent = _aged(state / _session_name(4), days=1)
+    claim = _aged(state / (_session_name(3)[: -len(".json")] + ".dup-pair"), days=30)
     hook._sweep()
     assert not old.exists()
     assert not claim.exists(), "the claim is named after the state and outlives it"
@@ -6815,7 +6815,7 @@ def test_the_sweep_is_bounded_per_invocation(state) -> None:
     """A 16,000-file directory cannot be fully walked inside a budget shared
     with a prompt. It converges over several runs instead."""
     for i in range(hook.SWEEP_MAX_STATS + 50):
-        _aged(state / f"sess-{i:05d}.json", days=30)
+        _aged(state / _session_name(i), days=30)
     stats = hook._sweep()
     assert stats["stat"] <= hook.SWEEP_MAX_STATS
     assert stats["unlink"] <= hook.SWEEP_MAX_UNLINKS
@@ -6910,14 +6910,14 @@ def test_the_sweep_carries_its_position_forward_between_runs(state) -> None:
     # examined would advance past them whether or not it carried a cursor, and
     # the case would pass without the cursor existing.
     for i in range(20):
-        _aged(state / f"sess-{i:03d}.json", days=1)
+        _aged(state / _session_name(i), days=1)
     import memkit.memory_prompt_recall as mod
 
     original = mod.SWEEP_MAX_STATS
     try:
         mod.SWEEP_MAX_STATS = 5
         first = hook._sweep()
-        assert first["cursor"] == "sess-004.json", first
+        assert first["cursor"] == _session_name(4), first
         # The interval would skip the second run, which is the interval doing
         # its job; the cursor is what the run after it resumes from.
         os.unlink(state / hook.SWEEP_STAMP_NAME)
@@ -6926,7 +6926,7 @@ def test_the_sweep_carries_its_position_forward_between_runs(state) -> None:
         os.utime(state / hook.SWEEP_STAMP_NAME, (stale, stale))
         second = hook._sweep()
         assert second["skipped"] is False
-        assert second["cursor"] == "sess-009.json", second
+        assert second["cursor"] == _session_name(9), second
     finally:
         mod.SWEEP_MAX_STATS = original
 
@@ -6955,3 +6955,110 @@ def test_the_tmpdir_fallback_is_private_rather_than_the_shared_root(
     # Cached: a fresh directory per CALL would put the index in one place and
     # the session ledger in another.
     assert hook._state_dir() == got
+
+
+def _session_name(n: int) -> str:
+    """A session-state filename of the shape the harness really produces.
+
+    Built rather than written out: this file may hold no literal that could be
+    mistaken for a real session id (see the pin at the end of the file), and
+    the sweep now keys on the SHAPE, so a fixture named `sess-1.json` would
+    stop exercising the predicate the moment that narrowing landed.
+    """
+    return f"{n:08x}-1111-4222-8333-{n:012x}.json"
+
+
+def test_the_sweep_collects_no_json_it_cannot_recognise(state) -> None:
+    """An adopter's own file in this directory is not derived state.
+
+    The predicate was name-and-mtime over every `*.json`, with one literal
+    basename kept — so a config pointed here under any other name went silently
+    inert exactly fourteen days later, unlinked by the every-prompt hook with
+    nothing recording that it happened. The sweep's stated default is keep, and
+    a `.json` whose name is not a shape memkit writes is not memkit's to
+    collect.
+    """
+    strangers = (
+        "work.json",
+        "notes.json",
+        "memkit-backup.json",
+        "settings.json",
+        # The duplicate-registration claim is named after a session state, so
+        # its stem has to be a session id too — otherwise `notes.dup-anything`
+        # is a file an adopter can lose by naming it unluckily.
+        "notes.dup-whatever",
+    )
+    for name in strangers:
+        _aged(state / name, days=400)
+    real = _aged(state / _session_name(1), days=30)
+    claim = _aged(
+        state / (_session_name(1)[: -len(".json")] + ".dup-abc"), days=30
+    )
+    hook._sweep()
+    for name in strangers:
+        assert (state / name).is_file(), name
+        assert hook._collectible(str(state), name, time.time()) == "", name
+    # Non-vacuity: the shapes it DOES recognise are still collected.
+    assert not real.exists()
+    assert not claim.exists()
+
+
+def test_a_config_the_journal_claims_is_never_collected(state) -> None:
+    """The second line, for a config that happens to be named like one of
+    ours. init records every config it authors, and a file with a claim on it
+    is by definition not derived state."""
+    planted = _aged(state / _session_name(7), days=400)
+    (state / hook.INIT_JOURNAL_NAME).write_text(
+        json.dumps(
+            {"v": 1, "op": "merge-config", "path": str(planted),
+             "authored_config": True}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    hook._sweep()
+    assert planted.is_file(), "the sweep ate a config its own journal claims"
+
+
+def test_the_retention_windows_are_pinned_at_their_boundaries(state) -> None:
+    """The three constants that decide when an every-prompt hook DELETES a
+    file could each move anywhere between one and thirty days with the whole
+    suite green: every fixture was aged to 0, 1, 30 or 400 days, so nothing
+    stood at a boundary.
+
+    A file aged BETWEEN the task and session windows pins both ends at once,
+    and pins the ordering — task shorter than session — which nothing asserted
+    either, so swapping the two constants was invisible.
+    """
+    assert hook.TASK_RETENTION == 7 * 86400
+    assert hook.SESSION_RETENTION == 14 * 86400
+    assert hook.INDEX_RETENTION == 7 * 86400
+    assert hook.TASK_RETENTION < hook.SESSION_RETENTION
+
+    session = _aged(state / _session_name(2), days=10)
+    task = _aged(state / f"{hook.TASK_STATE_PREFIX}mid.json", days=10)
+    index = _index(state, "fts5-midwindow00", root=None, days=5)
+    hook._sweep()
+    assert session.is_file(), "a session ledger was collected four days early"
+    assert not task.exists(), "a task state outlived its window"
+    for path in index:
+        assert path.is_file(), "a sidecar-less index was collected two days early"
+
+
+def test_the_sidecar_less_predicate_ages_the_index_and_not_the_sidecar(state):
+    """`.build` is rewritten on every run and sorts first, so ageing whichever
+    family member the cursor happened to reach would make a LIVE index that
+    merely lost its sidecar collectible on the next pass."""
+    made = _index(state, "fts5-freshbuild0", root=None, days=30)
+    build = state / "fts5-freshbuild0.build"
+    now = time.time()
+    os.utime(build, (now, now))
+    assert hook._collectible(str(state), "fts5-freshbuild0.build", now) == (
+        "no-sidecar"
+    ), "the .build's own young mtime decided it"
+    # The reverse: a young database whose `.build` is old stays.
+    _index(state, "fts5-youngdb00000", root=None, days=30)
+    fresh = state / "fts5-youngdb00000.db"
+    os.utime(fresh, (now, now))
+    assert hook._collectible(str(state), "fts5-youngdb00000.build", now) == ""
+    del made

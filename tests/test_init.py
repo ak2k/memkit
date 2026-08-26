@@ -1071,3 +1071,19 @@ def test_off_the_plugin_channel_the_default_path_is_still_right(profile):
     plan = _plan(profile, store=str(profile / "notes"))
     (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
     assert action.path == str(profile / "home" / ".config" / "memkit" / "memkit.json")
+
+
+def test_a_config_inside_the_swept_state_directory_is_refused(profile) -> None:
+    """The other half of the sweep hazard: init must not create the thing the
+    every-prompt hook garbage-collects.
+
+    The sweep now keeps a config its journal claims and collects no `.json`
+    whose name it does not recognise, so this is belt and braces — but a setup
+    command that put a config into a directory it also sweeps would be one
+    ordinary refactor away from eating it, and the refusal costs an adopter
+    nothing they cannot get by naming another directory.
+    """
+    inside = profile / "home" / ".cache" / "memory-recall" / "mine.json"
+    refusal = _refuses(profile, "config-in-state-dir", config=str(inside))
+    assert "derived state" in refusal.message
+    assert "swept" in refusal.message or "collect" in refusal.message

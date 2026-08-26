@@ -2535,6 +2535,25 @@ SWEEP_RESERVE = 2.0
 # and never a parse.
 TASK_STATE_PREFIX = "t-"
 
+# What a session-state filename looks like, and the sweep will not collect a
+# `.json` that does not match it.
+#
+# The predicate used to be "any `*.json` old enough", with one literal basename
+# kept — so an adopter who pointed `--config` at this directory under any other
+# name lost their config to the every-prompt hook exactly fourteen days later,
+# with nothing recording that it happened. The sweep's default is keep; a file
+# whose name is not a shape memkit writes is not memkit's to collect.
+#
+# Keyed on the HARNESS's id shape because that is what reaches
+# `_session_state_path`: a v4 UUID, whose dashes survive the sanitiser there
+# (`-` is in its allowed class). An id of some future shape therefore leaks
+# rather than being collected, which is the safe direction for a rule whose
+# other outcome is an unlink.
+_SESSION_NAME = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
 _FTS_PREFIX = "fts5-"
 # Index name generations this build no longer writes. The author's cache holds
 # `fts5-2-<digest>.db` files with LIVE `.root` sidecars naming roots that still
@@ -2628,6 +2647,12 @@ def _collectible(state_dir: str, name: str, now: float) -> str:
     """
     if name in SWEEP_KEEP:
         return ""
+    if os.path.join(state_dir, name) in _claimed_configs(state_dir):
+        # A config init authored, wherever it was pointed. The name rules below
+        # should already spare it; this is the line that does not depend on
+        # them being right, because the cost of being wrong is an install that
+        # goes inert with no record of why.
+        return ""
     stem = _fts_stem(name)
     if stem:
         for prefix in _FTS_LEGACY_PREFIXES:
@@ -2642,7 +2667,12 @@ def _collectible(state_dir: str, name: str, now: float) -> str:
             # index without one is a run still in flight rather than an
             # orphan. Older than the retention window by a wide margin, it is
             # an index nothing will ever be able to identify.
-            age = _age(state_dir, name, now)
+            #
+            # The DATABASE's age, not this file's. `.build` is rewritten on
+            # every run and sorts first, so ageing whichever family member the
+            # cursor happened to reach would make a live index that merely
+            # lost its sidecar collectible on the next pass.
+            age = _age(state_dir, stem + ".db", now)
             if age is not None and age > INDEX_RETENTION:
                 return "no-sidecar"
         return ""
@@ -2655,15 +2685,54 @@ def _collectible(state_dir: str, name: str, now: float) -> str:
             # are in a shape this build does not write, and a predicate that
             # read them would leave every one of them behind.
             return "task-state" if age > TASK_RETENTION else ""
-        return "session-state" if age > SESSION_RETENTION else ""
+        if _SESSION_NAME.match(name[: -len(".json")]):
+            return "session-state" if age > SESSION_RETENTION else ""
+        return ""
     if ".dup-" in name:
         # Swept with the session state it is named after, and separately as
         # well: the claim outlives a run that had nothing to deliver, so it can
-        # be the last file of a session left standing.
+        # be the last file of a session left standing. Same shape rule: the
+        # stem is a session id or this is somebody else's file.
+        if not _SESSION_NAME.match(name.split(".dup-")[0]):
+            return ""
         age = _age(state_dir, name, now)
         if age is not None and age > SESSION_RETENTION:
             return "dup-claim"
     return ""
+
+
+def _claimed_configs(state_dir: str) -> frozenset:
+    """The absolute config paths init's journal says it wrote.
+
+    Read once per sweep — the whole point of the cap is that a sweep does not
+    walk this directory freely, and a journal read per file would undo it.
+    A torn line is skipped rather than read as "nothing is claimed", for the
+    reason the doctor-side reader gives: one interrupted init must not turn
+    into a deleted config.
+    """
+    global _CLAIMED_CONFIGS
+    if _CLAIMED_CONFIGS is None:
+        found = set()
+        with contextlib.suppress(OSError):
+            path = os.path.join(state_dir, INIT_JOURNAL_NAME)
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    with contextlib.suppress(ValueError):
+                        record = json.loads(line)
+                        if (
+                            isinstance(record, dict)
+                            and record.get("authored_config")
+                            and isinstance(record.get("path"), str)
+                        ):
+                            found.add(record["path"])
+        _CLAIMED_CONFIGS = frozenset(found)
+    return _CLAIMED_CONFIGS
+
+
+_CLAIMED_CONFIGS: frozenset | None = None
 
 
 def _age(state_dir: str, name: str, now: float) -> float | None:
@@ -2696,6 +2765,8 @@ def _sweep(deadline: float | None = None) -> dict:
     # partway through and left no stamp would run again on the very next
     # prompt, which is the one failure mode an interval exists to prevent.
     cursor = _sweep_cursor(state_dir)
+    global _CLAIMED_CONFIGS
+    _CLAIMED_CONFIGS = None
     _stamp_sweep(state_dir, cursor)
     now = time.time()
     try:

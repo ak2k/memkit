@@ -519,15 +519,20 @@ looked. What the sweep takes, and on what evidence:
 | an index and all four of its sidecars | its `.root` names a corpus that is **gone** (ENOENT). A stat that failed for any other reason is not evidence and the index stays — one EACCES on a mounted volume must not cost you a rebuild |
 | an index with **no `.root` at all**, older than a week | the sidecar is best-effort and a database whose root is gone is never reopened, so one that failed to write a sidecar can never acquire one. The ENOENT rule alone leaves these forever |
 | an index whose name is from a **superseded generation** | a naming change strands files under both rules above at once: the old names have live sidecars naming roots that still exist |
-| `<session-uuid>.json` older than 14 days, with its `.dup-*` claim | the claim is named after the state so whatever sweeps one sweeps the other |
+| `<session-uuid>.json` older than 14 days, with its `.dup-*` claim | **only** when the name really is a UUID — the shape the harness produces. A `.json` here under any other name is not memkit's and is kept, whatever its age. The claim is named after the state, so whatever sweeps one sweeps the other |
 | `t-<tool_use_id>.json` older than 7 days | on filename and mtime, never on a parse: these exist in more than one shape and a reader would leave the older ones behind |
 
 **Never collected, whatever their age**: `log.jsonl`, because the soak
-analyzers treat it as their corpus; a `memkit.json` living here; the init
-journal, which a later undo needs; and the sweep's own stamp. The predicate is
-an allowlist of collectible name patterns, so anything matching none of them is
-kept — the default is keep, and it has to be, because your config may be in
-this directory.
+analyzers treat it as their corpus; any config the init journal records having
+authored; a `memkit.json` living here; the init journal itself, which a later
+undo needs; and the sweep's own stamp. The predicate is an allowlist of
+collectible name patterns, so anything matching none of them is kept — the
+default is keep, and it has to be, because a file of yours may be in this
+directory.
+
+Do not put your config here anyway: `memkit init` refuses to write one into a
+directory it also sweeps, and "the sweep would probably keep it" is not a
+property to hang a config on.
 
 The sweep is bounded per run — 500 stats and 100 unlinks — and carries its
 position forward, so a very large directory converges over about thirty runs
