@@ -8,8 +8,14 @@ number here is read out of the tree at the pinned sha rather than remembered.
 
 `/plugin install memkit@memkit` clones **the whole tracked tree** at the sha
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
-subset chosen for the hook. At the sha this release pins that is **70 files,
-about 1.3 MiB**:
+subset chosen for the hook.
+
+The table below counts **the tree this file ships in**, which is the tree the
+next pin will name: **70 files, about 1.8 MiB**. Between releases `main`
+carries files the pin does not, so a count taken at today's pin is smaller —
+run the recipe at the bottom against either and it reproduces that one exactly.
+The release procedure re-derives the table at the tag, which is when the two
+agree.
 
 | what | files | why it is there |
 |---|---|---|
@@ -158,16 +164,23 @@ between them — mostly comment — and run no command that is not a shell built
 
 ## Reproducing these numbers
 
-In the repository, against the sha the marketplace entry names — which is what
-these numbers COUNT, and it is not `HEAD`: between releases `main` carries files
-the pin does not, so a count taken here and a count taken at the tag differ by
-exactly that. The release procedure re-derives the table at the tag.
+In the repository, against the tree this file ships in — which is what the
+table above counts:
+
+```
+git ls-files | wc -l
+git ls-tree -r -l HEAD | awk '{s+=$4} END {printf "%.1f MiB\n", s/1048576}'
+git ls-tree -r HEAD | awk '$1=="100755"{print $4}'
+```
+
+And against the sha the marketplace entry names, which is what an adopter
+installing today receives. Between releases it is the smaller of the two, by
+exactly the files `main` has added since:
 
 ```
 sha=$(python3 -c 'import json;print(json.load(open(".claude-plugin/marketplace.json"))["plugins"][0]["source"]["sha"])')
 git ls-tree -r --name-only "$sha" | wc -l
-git ls-tree -r -l "$sha" | awk '{s+=$4} END {printf "%.0f KiB\n", s/1024}'
-git ls-tree -r "$sha" | awk '$1=="100755"{print $4}'
+git ls-tree -r -l "$sha" | awk '{s+=$4} END {printf "%.1f MiB\n", s/1048576}'
 ```
 
 On the machine, against what was actually installed. This is the stronger

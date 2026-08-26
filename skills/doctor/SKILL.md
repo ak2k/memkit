@@ -44,6 +44,12 @@ Every check carries `status`, `actor` and `terminal`.
 - `verdict` is `OK`, or `PROBLEMS: <n> FAIL, <m> unverified`. The exit code says
   the same thing: 0 for OK, 1 for problems.
 
+  **Exit 1 has a second meaning on this binary** and the two are worth telling
+  apart: `memkit`'s own table also uses 1 for "could not start at all". A
+  report on stdout means this command ran and found problems; an empty stdout
+  with a `memkit:` line on stderr means it never started, and no argument will
+  change that.
+
 **You may act only on a check whose `actor` is `agent` and whose `terminal` is
 `false`.** For anything else, relay the `remedy` to the person and stop:
 

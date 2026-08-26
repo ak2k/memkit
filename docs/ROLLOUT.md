@@ -218,7 +218,8 @@ do:
 ```
 CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PLUGIN="$CFG/plugins/cache/memkit/memkit"
-"$(ls -d "$PLUGIN"/*/bin/memkit --2>/dev/null | tail -1)" doctor --json
+MEMKIT="$(ls -d "$PLUGIN"/*/bin/memkit 2>/dev/null | sort -V | tail -1)"
+"$MEMKIT" doctor --json
 ```
 
 Zero `FAIL` is the bar; `INFO`, `ASSUMPTIONS-UNVERIFIED` and `UNKNOWN` do not

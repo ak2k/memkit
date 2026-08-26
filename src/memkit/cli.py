@@ -195,12 +195,15 @@ def _parser() -> argparse.ArgumentParser:
             if _PENDING
             else ""
         )
-        + f"Exit codes: 0 ok / {EXIT_NO_RUNTIME} memkit could not start at "
-        f"all (stderr names what is missing) / {EXIT_USAGE} usage error or "
+        + f"Exit codes: 0 ok / {EXIT_NO_RUNTIME} a subcommand ran and "
+        "reported problems (a report is on stdout), OR memkit could not start "
+        "at all (stdout empty, stderr names what is missing) / "
+        f"{EXIT_USAGE} usage error or "
         f"unknown subcommand / {EXIT_NOT_IN_BUILD} the subcommand exists but "
         f"is not in this build / {EXIT_REFUSED} a subcommand refused by name "
         f"and wrote nothing / {EXIT_INCOMPLETE} a subcommand started and did "
-        "not finish; re-running converges."
+        "not finish; recover with a fresh --dry-run and confirm THAT digest, "
+        "since what landed has moved the old one."
         "\nThe search CLI's table is its own and swaps these two: there "
         f"{EXIT_NO_MATCH} means nothing matched and {EXIT_CANNOT_START} "
         f"means it could not start. Its {EXIT_INERT} has no counterpart here "

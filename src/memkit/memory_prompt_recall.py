@@ -2466,14 +2466,19 @@ def _state_dir_candidate() -> str:
 
 
 # The files the state directory holds that are not derived — the ones a sweep
-# must keep and a diagnostic must be able to name. Constants because three
-# things need the same spelling: init writes them, the sweep's keep-list
-# excludes them, and doctor reports on them.
+# must keep and a diagnostic must be able to name.
 #
-# The config and the journal live HERE rather than under `${CLAUDE_PLUGIN_DATA}`
-# because `claude plugin uninstall` removes plugin data unless `--keep-data`,
-# and that would delete the journal a later `--undo` needs and strand the uvx
-# out-of-harness fallback with no config to point MEMKIT_CONFIG at.
+# THE JOURNAL lives here rather than under `${CLAUDE_PLUGIN_DATA}` because
+# `claude plugin uninstall` removes plugin data unless `--keep-data`, and that
+# would delete the record a later `--undo` needs.
+#
+# THE CONFIG does not live here, and this name is a keep-list entry rather than
+# a location. `memkit init` writes it to whichever route this install READS —
+# `--config`, then the `memkitConfig` option, then either
+# `$CLAUDE_PLUGIN_DATA/memkit.json` on the plugin channel or
+# `~/.config/memkit/memkit.json` off it — and refuses to put one in this
+# directory at all. The entry stays because an adopter can still point
+# `$MEMKIT_CONFIG` at a file here by hand, and the sweep must not eat it.
 GENERATED_CONFIG_NAME = "memkit.json"
 INIT_JOURNAL_NAME = "init-journal.jsonl"
 SOAK_LOG_NAME = "log.jsonl"
@@ -3775,6 +3780,11 @@ def main() -> None:
         _marker_append(refusal)
         return
 
+    # Once, before the record is built: `done` reads it too, and a second
+    # environment read there could disagree with this one if something in
+    # between changed it.
+    _doctor_run = bool(os.environ.get(DOCTOR_ENV))
+
     payload = json.load(sys.stdin)
     prompt = payload.get("prompt", "") or ""
 
@@ -3811,6 +3821,14 @@ def main() -> None:
         tripwire is the only thing that fails when a new outcome arrives on an
         automerged bump.
 
+        A record written while DOCTOR is driving carries `"concludes": false`
+        too, whatever the call site asked for: doctor executes this hook
+        against the real state directory, and its record is not a prompt
+        anybody typed. That is the same statement the two cases below make, so
+        it is the same flag — a second discriminator would be a second thing
+        every consumer has to learn, and the log's published contract names
+        this one as the only filter that isolates the per-prompt population.
+
         `concludes` is False for a record that is ABOUT this prompt without
         being its outcome. Two things then differ, and both matter. The record
         is built fresh rather than from `rec`, so its fields cannot ride along
@@ -3829,6 +3847,14 @@ def main() -> None:
         if concludes:
             rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
             record = rec
+            if _doctor_run:
+                # The SAME statement the branch below makes, on a full record:
+                # this run produced an outcome and it was not a prompt anybody
+                # typed. Stamped here rather than by shrinking the record,
+                # because doctor's own reader wants the fields — and `logged`
+                # is left alone, since the SIGTERM guard is about writing one
+                # record per run, which is still what happened.
+                record["concludes"] = False
         else:
             # `concludes: false` is a DISCRIMINATOR, written rather than left
             # to be inferred. The consumer's analyzers separate records by

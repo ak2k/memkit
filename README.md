@@ -567,16 +567,26 @@ rule is a contract rather than an implementation note.
   it from both halves — a silently unclassified outcome is a rate computed over
   a denominator nobody checked.
 - **`"concludes": false` marks a record that is not a prompt outcome**, and it
-  is the ONLY filter that isolates the per-prompt population. Two kinds carry
+  is the ONLY filter that isolates the per-prompt population. Three kinds carry
   it: duplicate-registration detection, which is about the machine and is
-  written beside the record the prompt produces for itself, and every record
-  the search CLI writes, since an agent running a command is not a prompt
-  anyone typed. Exclude both from any per-prompt population.
+  written beside the record the prompt produces for itself; every record the
+  search CLI writes, since an agent running a command is not a prompt anyone
+  typed; and every record written while `memkit doctor` is driving the hook,
+  which additionally carries `"doctor": true` as a label. Exclude all three
+  from any per-prompt population. The rule has not changed and did not need
+  to: a new kind of non-prompt record joins the filter rather than needing a
+  new one.
 - **Do not filter on `prompt_sha` or `ms`.** The CLI's records carry both — it
   hashes the query the same way — so a consumer keying on them pulls a
   command-line search into the denominator of every injection rate. Keying on
   the outcome's NAME instead means learning each new name as it arrives; the
   discriminator is there so you do not have to.
+- **A new top-level key may arrive without a `v` change**, on the same rule as
+  the `outcome` vocabulary: `v` is a hash of the hook's own bytes and moves for
+  any behaviour change, so it cannot mark a schema. `cwd` arrived that way — a
+  12-hex sha256 of the directory the prompt was typed in, which answers "has
+  this ever injected HERE" and is admissible under the bound below. A reader
+  must ignore keys it does not know rather than treating one as malformed.
 - **What a record may contain is bounded**: hashes, counts, basenames, and the
   sanitized query terms. Never raw prompt text, and never file contents.
 
@@ -619,11 +629,11 @@ different job:
 | code | means |
 |---|---|
 | 0 | the subcommand ran |
-| 1 | memkit could not start at all — no interpreter, or an incomplete plugin payload. Only the plugin's `bin/memkit` wrapper emits this; stderr names what is missing |
+| 1 | **two states, and stdout tells them apart.** A subcommand ran and reported problems (`doctor` with any FAIL) — there is a report on stdout naming them. Or memkit could not start at all — no interpreter, or an incomplete plugin payload — in which case stdout is empty and stderr carries a `memkit:` line saying what is missing. Only the plugin's `bin/memkit` wrapper emits the second |
 | 2 | usage error, or a subcommand that does not exist |
 | 4 | the subcommand exists and is not in this build — stderr names the fallback. Nothing returns this today; it is kept because a caller that learned what 4 means must not find it meaning something else when the next subcommand lands. **Not** the 4 in the table above: these are different commands and neither borrows the other's vocabulary |
 | 5 | a subcommand refused by name and **wrote nothing** — `init` meeting a store inside the plugin payload, a stale digest, an unparseable settings file. stderr names which refusal. Retrying the same command cannot help; something has to change first |
-| 6 | a subcommand started and did not finish — a write that failed partway, or a store that was created and then failed its own integrity check. The init journal says how far it got, and re-running converges on the remainder. **This is the one code whose right answer is to run the same command again** |
+| 6 | a subcommand started and did not finish — a write that failed partway, or a store that was created and then failed its own integrity check. The init journal says how far it got. **Recover with the two turns, not by repeating the last one**: the writes that landed change the plan's digest, so the original `--confirm <digest>` now refuses as stale. Run `--dry-run` again, read the new manifest — it will list only what is left — and confirm that |
 
 ## Install (details)
 

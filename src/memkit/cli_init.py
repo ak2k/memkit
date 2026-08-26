@@ -1113,7 +1113,9 @@ flags to both calls: a different request produces a different digest.
 
 Exit codes: 0 done (or the manifest printed) / 2 usage error / 5 refused, and
 nothing was written — stderr names which refusal / 6 started and did not
-finish; the journal says how far, and re-running converges."""
+finish; the journal says how far. Recover with the two turns, not by repeating
+the last one: what landed has changed the digest, so re-run --dry-run and
+confirm the digest THAT prints."""
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1406,8 +1408,10 @@ def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
             print(
                 f"memkit init: {action.op} {_display_path(action.path)} failed "
                 f"({type(exc).__name__}: {exc}). What was done before it is "
-                f"recorded in {_display_path(journal.path)}; re-running init "
-                "converges on the remainder.",
+                f"recorded in {_display_path(journal.path)}. Re-run "
+                "`init --dry-run` for a fresh digest — what landed has changed "
+                "the old one — and confirm that; the new manifest lists only "
+                "what is left.",
                 file=sys.stderr,
             )
             return EXIT_INCOMPLETE

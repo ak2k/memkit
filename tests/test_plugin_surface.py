@@ -4080,3 +4080,29 @@ def test_the_search_cli_marks_its_records_as_not_prompt_outcomes(tmp_path) -> No
     from memkit.cli_doctor import _prompt_records
 
     assert _prompt_records(records) == []
+
+
+def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
+    """The one document written to be checkable has to check out.
+
+    The table said 70 files and 1.3 MiB while its own prose insisted the
+    numbers counted the PIN — where the recipe prints 63 and 1.3 MiB — and
+    `git ls-files` at HEAD prints 70 and 1.8. The headline was right under
+    neither reading, so a reader who did what the document told them to got a
+    different answer from the document.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    listed = _git("ls-files").stdout.split()
+    assert f"**{len(listed)} files" in note, (len(listed), "not the stated count")
+
+    sizes = _git("ls-tree", "-r", "-l", "HEAD").stdout.splitlines()
+    total = sum(int(line.split()[3]) for line in sizes if line.split()[3] != "-")
+    stated = re.search(r"about ([\d.]+) MiB\*\*", note)
+    assert stated, note[:400]
+    assert abs(float(stated.group(1)) - total / 1048576) < 0.1, (
+        stated.group(1), total / 1048576
+    )
+    # And the recipe names the tree the table counts, rather than one that
+    # answers differently.
+    assert "git ls-files | wc -l" in note

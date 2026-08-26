@@ -7062,3 +7062,40 @@ def test_the_sidecar_less_predicate_ages_the_index_and_not_the_sidecar(state):
     os.utime(fresh, (now, now))
     assert hook._collectible(str(state), "fts5-youngdb00000.build", now) == ""
     del made
+
+
+def test_the_doctor_probes_record_carries_the_published_discriminator(tmp_path):
+    """`log.jsonl` is a contract for readers outside this repository, and the
+    README names `"concludes": false` as the ONLY filter that isolates the
+    per-prompt population.
+
+    Doctor's probe runs the real hook and so writes a CONCLUDING record — which
+    every already-deployed analyzer would have folded into its per-prompt
+    denominator, and doctor is run precisely when an install is suspect, so the
+    contamination arrives with the numbers somebody is trying to read. Marking
+    it keeps the published rule true and needs no coordination with any
+    consumer; the `doctor` key stays as a label for one that wants to single it out.
+    """
+    env = _env(tmp_path)
+    subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "docmark", "prompt": "hi"}),
+        capture_output=True, text=True, timeout=30,
+        env={**env, hook.DOCTOR_ENV: "1"},
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    rec = json.loads(log.read_text().splitlines()[-1])
+    assert rec["outcome"] == "gate:short"
+    assert rec.get("doctor") is True, rec
+    assert rec.get("concludes") is False, rec
+
+    # And an ordinary prompt still concludes, or the discriminator would mean
+    # nothing.
+    subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "docmark2", "prompt": "hi"}),
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    ordinary = json.loads(log.read_text().splitlines()[-1])
+    assert "concludes" not in ordinary, ordinary
+    assert "doctor" not in ordinary, ordinary
