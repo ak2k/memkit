@@ -3584,22 +3584,34 @@ def test_the_docs_count_the_hooks_the_registration_actually_declares() -> None:
             assert int(stated) == handlers, (path, stated)
         for stated in re.findall(r"Hooks \((\d+)\)` is a working install", text):
             assert int(stated) == handlers, (path, stated)
-        # Every OTHER count that appears has to be talking about a failure.
-        # `Hooks (0)` is the payload-less install; `Hooks (1)` is now the
-        # half-registered one, and both are named as such where they appear.
+        # Every OTHER count that appears has to be talking about a failure —
+        # or about the RELEASE that is currently pinned, which is the second
+        # legitimate thing `Hooks (1)` can mean. `.claude-plugin/marketplace.json`
+        # pins v0.2.1, whose tree registers one hook, and the pin moves in its
+        # own release PR: for the whole window between that merge and this one,
+        # a healthy install reports `Hooks (1)` and this page used to call that
+        # its own failure, sending a correct install to `Reinstall` at the
+        # reader's first verification step. Both readings are here now, marked
+        # per `## Status`.
+        #
         # Read over a window rather than a line, because the sentence that
-        # names the failure wraps and a line-scoped check is a test of the
-        # line breaks.
+        # names either one wraps and a line-scoped check is a test of the line
+        # breaks.
         for wrong in (f"Hooks ({n})" for n in range(4) if n != handlers):
             start = 0
             while (at := text.find(wrong, start)) != -1:
                 # Tight, because it has to be a claim about THIS mention: the
-                # word has to sit in the same clause, not merely on the same
-                # screen as some other count's explanation. Every real site
-                # measures 18-32 characters away.
-                window = text[max(0, at - 60) : at + 60].lower()
-                assert "failure" in window, (path, wrong, window)
+                # words have to sit in the same clause, not merely on the same
+                # screen as some other count's explanation.
+                window = text[max(0, at - 90) : at + 90].lower()
+                assert "failure" in window or "pinned release" in window, (
+                    path, wrong, window
+                )
                 start = at + 1
+        # And the marker convention is actually used, or "from the next
+        # release" is a rule the page states and does not follow — which is
+        # how the six sites above came to describe a release that has not
+        # shipped as if it had.
 
 
 def test_the_docs_name_every_build_outcome_and_every_state_file() -> None:
@@ -3649,6 +3661,43 @@ def test_the_docs_state_the_frame_sizes_the_frames_actually_are() -> None:
     # Anti-vacuity: the two frames are not the same size, so a check that
     # matched one figure against both would not pass.
     assert prompt_bytes != task_bytes, (prompt_bytes, task_bytes)
+
+
+def test_the_docs_mark_what_the_pinned_release_does_not_carry_yet() -> None:
+    """The window between merging a registration and shipping it.
+
+    `.claude-plugin/marketplace.json` pins the sha `/plugin install` clones,
+    and that pin moves in its own release PR — so for the whole window between
+    this merge and that one, every adopter who runs Quick start against a
+    marketplace install sees one fewer hook than this page describes. The page
+    defines a convention for exactly that (`## Status`: a behaviour that has
+    landed here and not in a release is marked *(from the next release)*) and
+    the subagent docs shipped without it, calling a correct install a failure
+    and sending the reader to `Reinstall`, which reinstalls the same sha.
+
+    Derived from the pin rather than asserted as a state: the pinned tree is in
+    this repo's own history, so its registration can be counted offline. When
+    the release PR moves the pin the counts agree, this case stops requiring
+    markers, and RELEASING.md item 4's sweep is free to remove them.
+    """
+    pinned = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
+    sha = pinned["plugins"][0]["source"]["sha"]
+    shown = subprocess.run(
+        ["git", "-C", str(REPO), "show", f"{sha}:hooks/hooks.json"],
+        capture_output=True, text=True,
+    )
+    if shown.returncode != 0:
+        pytest.skip(f"the pinned sha {sha[:12]} is not in this clone's history")
+    registered = sum(
+        len(group["hooks"])
+        for groups in json.loads(shown.stdout)["hooks"].values()
+        for group in groups
+    )
+    if registered == len(_entries()):
+        return  # the pin carries what this tree registers; nothing to mark
+    for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "from the next release" in text, (path, registered)
 
 
 def test_the_admission_note_names_both_events_it_registers() -> None:

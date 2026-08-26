@@ -1,9 +1,9 @@
 # memkit
 
-Injects pointers to your own memory files into every Claude Code prompt, and
-into every subagent brief: lexical retrieval over a directory of markdown, plus
-a checker and an eval for it. It never injects file contents — the model
-decides what to open.
+Injects pointers to your own memory files into every Claude Code prompt, and —
+on a plugin install — into every subagent brief: lexical retrieval over a
+directory of markdown, plus a checker and an eval for it. It never injects file
+contents — the model decides what to open.
 
 When it fires, this is what lands in the prompt:
 
@@ -73,11 +73,13 @@ which is inert by design and says nothing at runtime, so this is the only place
 it surfaces.
 
 `Hooks (2)` says both hooks are registered — the per-prompt one and the
-subagent one. It does **not** say the plugin is enabled: a disabled plugin
-still reports its hooks, which is why `plugin list` comes first. And `Hooks (1)`
-is its own failure rather than a healthy older install: it means the harness
-took one registration and not the other, so prompts are served and subagent
-briefs are not.
+subagent one *(from the next release)*. It does **not** say the plugin is
+enabled: a disabled plugin still reports its hooks, which is why `plugin list`
+comes first. `Hooks (1)` is what the currently pinned release registers: the
+per-prompt hook alone, and a healthy install of it. Once the pin carries the
+subagent hook, `Hooks (1)` becomes its own failure — the harness took one
+registration and not the other, so prompts are served and subagent briefs are
+not.
 
 **3. Write the config.** Four lines is the whole minimum. Put it somewhere you
 would keep a dotfile — **not** under `~/.cache/`, which this page tells you
@@ -192,8 +194,19 @@ stores — what is searched and what is skipped, how a pointer gets chosen, the
 
 ## Subagents get pointers too
 
-memkit registers a second hook, on the `Agent` tool, and it behaves differently
-enough from the per-prompt one to be worth reading before you meet it.
+memkit registers a second hook *(from the next release)*, on the `Agent` tool,
+and it behaves differently enough from the per-prompt one to be worth reading
+before you meet it. The marker is the whole of this section: until the
+marketplace pin moves, an install has the per-prompt hook and nothing here.
+
+**Which installs have it.** The second registration lives in
+[`hooks/hooks.json`](hooks/hooks.json), which is the plugin channel's manifest,
+so it ships with a plugin install and with nothing else: the nix module writes
+the hook script and its wordlist into `~/.claude/hooks/` and registers whatever
+your own `settings.json` names, and a pip install registers nothing at all. On
+those channels a `PreToolUse` entry matched on `Agent` is yours to write, and
+without one this whole section describes something that never runs — silently,
+because a hook that is not called records nothing.
 
 It fires when Claude Code is about to spawn a subagent, before the subagent
 runs. Rather than printing to the transcript, it **rewrites the tool call's
@@ -257,7 +270,8 @@ is on your own `PATH`.
 |---|---|---|
 | **The plugin was installed mid-session** | `plugin details` says `Hooks (2)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
 | **The plugin is disabled** | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (2)` | re-enable it |
-| **Only one hook registered** | `plugin details` says `Hooks (1)` | a half-registered failure: the harness took one entry and not the other, so prompts are served and subagent briefs are not. Reinstall, and if it recurs, say which event is missing |
+| **Only one hook registered** | `plugin details` says `Hooks (1)` | what the currently pinned release registers — the per-prompt hook alone, and healthy. Once the pin carries the subagent hook it is a half-registered failure instead: the harness took one entry and not the other, and reinstalling is the first thing to try |
+| **The install is not the plugin channel** | no `task:` record at all in `log.jsonl`, whatever the brief | the subagent hook is registered by `hooks/hooks.json`, which only a plugin install reads. A nix or pip install registers what its own `settings.json` names, so the `PreToolUse` entry is yours to add |
 | **No config reached the hook** | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Quick start](#quick-start) step 2 |
 | **The config path is wrong** | `--debug-config` says the path does not exist | fix the path and re-run the install command |
 | **The prompt was under three words** | `gate:short`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
@@ -693,7 +707,8 @@ claude plugin install memkit@memkit --yes \
   --config memkitConfig="$HOME/.config/memkit/memkit.json"
 ```
 
-That registers the `UserPromptSubmit` hook and puts the plugin's `bin/` on the
+That registers the `UserPromptSubmit` and `PreToolUse` hooks *(the second from
+the next release)* and puts the plugin's `bin/` on the
 agent's `PATH`. It reads nothing and says nothing until you give it a config —
 see below.
 
@@ -717,10 +732,12 @@ resolves `git+https://github.com/ak2k/memkit@v0.2.1` — the release tag, not
 subcommand that regenerates a ledger.
 
 **Check that it took.** `claude plugin details memkit@memkit` reports the hooks
-it registered: `Hooks (2)` is a working install. `Hooks (0)` is the failure
-where nothing registered at all, and `Hooks (1)` is the quieter failure in
-between — one of the two entries was taken and the other was not, which serves
-prompts and leaves subagent briefs alone. Worth
+it registered: `Hooks (2)` is a working install *(from the next release)*.
+`Hooks (0)` is the failure where nothing registered at all. `Hooks (1)` is what
+the currently pinned release registers and is healthy today; once the pin
+carries the subagent hook it is the quieter failure in between — one of the two
+entries was taken and the other was not, which serves prompts and leaves
+subagent briefs alone. Worth
 running once, because a memkit that installed correctly and has not been given
 a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.

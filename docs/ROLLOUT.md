@@ -233,12 +233,16 @@ did not land; present-and-disabled means somebody turned it off.
 
     claude plugin details memkit@memkit
 
-`Hooks (2)`: `UserPromptSubmit` and `PreToolUse`. **`Hooks (0)` is the failure
-this check exists for** — it is what an install from a marketplace pin whose
-commit carries no payload looks like, and every other signal on that host says
-success. **`Hooks (1)` is a second, quieter failure**: one entry registered and
-one did not, so the host serves prompts and silently stops serving subagent
-briefs. Record which number each host reported, not just that the command ran.
+`Hooks (2)`: `UserPromptSubmit` and `PreToolUse` *(from the next release —
+until the marketplace pin moves, a healthy host reports `Hooks (1)`)*.
+**`Hooks (0)` is the failure this check exists for** — it is what an install
+from a marketplace pin whose commit carries no payload looks like, and every
+other signal on that host says success. Once the pin carries both entries,
+**`Hooks (1)` is a second, quieter failure**: one registered and one did not,
+so the host serves prompts and silently stops serving subagent briefs. Record
+which number each host reported, not just that the command ran, and record the
+pin the fleet is on beside it — the same number means different things either
+side of that release.
 
 **3. The option reached Claude Code.**
 
