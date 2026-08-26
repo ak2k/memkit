@@ -2777,19 +2777,42 @@ def _sweep(deadline: float | None = None) -> dict:
     report on it, and doctor reads the directory rather than a claim about it.
     """
     stats = {"stat": 0, "unlink": 0, "skipped": False, "cursor": ""}
-    # The directory this process is actually WRITING to when the preferred one
-    # could not be made — otherwise the degraded path accumulates forever,
-    # since the sweep only ever looked at the candidate. `_TMP_STATE_DIR` is
-    # set only after the fallback has been taken, so reading it here neither
-    # creates anything nor changes the ordinary case.
-    state_dir = _TMP_STATE_DIR or _state_dir_candidate()
+    # EVERY directory this process may have written to, not one of them. The
+    # preferred location is the ordinary case; `_TMP_STATE_DIR` is set only
+    # after the fallback has been taken, and a fallback taken once in a process
+    # does not mean the preferred directory holds nothing — it may be full of
+    # state from every run that could write it. Sweeping one INSTEAD of the
+    # other leaves whichever it skipped growing forever.
+    #
+    # Each carries its own stamp and cursor, so the interval and the position
+    # are per-directory and neither can starve the other.
+    passes = [
+        _sweep_dir(state_dir, stats, deadline)
+        for state_dir in dict.fromkeys(
+            [_state_dir_candidate(), *([_TMP_STATE_DIR] if _TMP_STATE_DIR else [])]
+        )
+    ]
+    # `skipped` means NOTHING WAS EXAMINED — one flag over what may be two
+    # directories, so it has to be the conjunction. Setting it per directory
+    # made a run that did real work in the first report itself skipped because
+    # the second was not due, which is the answer a caller reads as "the
+    # interval held".
+    stats["skipped"] = not any(passes)
+    return stats
+
+
+def _sweep_dir(state_dir: str, stats: dict, deadline: float | None) -> bool:
+    """One directory's pass, accumulating into the caller's budget.
+
+    True when it really walked; False when there was nothing there, the hour
+    had not elapsed, or the budget was already gone.
+    """
     if not os.path.isdir(state_dir):
         # An install nobody configured has no state directory, and the sweep is
         # not the thing that creates one.
-        return stats
+        return False
     if not _sweep_due(state_dir):
-        stats["skipped"] = True
-        return stats
+        return False
     if deadline is not None and time.monotonic() >= deadline:
         # BEFORE the stamp. A run whose budget is already spent would otherwise
         # reset the hour and collect nothing, so the directory stops converging
@@ -2797,8 +2820,7 @@ def _sweep(deadline: float | None = None) -> dict:
         # by construction, since retrieval may run to its own 12-second budget
         # while this deadline is 13. "Stamp before the work" is for runs that
         # can do work.
-        stats["skipped"] = True
-        return stats
+        return False
     # The stamp goes down BEFORE the work, not after. A sweep that crashed
     # partway through and left no stamp would run again on the very next
     # prompt, which is the one failure mode an interval exists to prevent.
@@ -2810,7 +2832,7 @@ def _sweep(deadline: float | None = None) -> dict:
     try:
         names = sorted(os.listdir(state_dir))
     except OSError:
-        return stats
+        return True
     # CARRY THE POSITION FORWARD. Capped at 500 stats, a run that always
     # started at the beginning would examine the same first 500 names forever
     # and never reach the rest — on a directory sorted by digest, that is a
@@ -2840,7 +2862,7 @@ def _sweep(deadline: float | None = None) -> dict:
                 stats["unlink"] += 1
     if stats["cursor"]:
         _stamp_sweep(state_dir, str(stats["cursor"]))
-    return stats
+    return True
 
 
 def _sweep_due(state_dir: str) -> bool:

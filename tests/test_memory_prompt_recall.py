@@ -6618,6 +6618,10 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(d))
     monkeypatch.setattr(hook, "_state_dir", lambda: str(d))
+    # ONE directory, and no leftover fallback from a run whose home was not
+    # writable — the sweep visits every directory this process may have
+    # written, so a sticky module global would make these cases speak about two.
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", None)
     return d
 
 
@@ -7194,3 +7198,66 @@ def test_a_relative_recorded_root_is_not_deletion_evidence(state) -> None:
     assert hook._collectible(str(state), "fts5-relativeroot.db", time.time()) == ""
     hook._sweep()
     assert (state / "fts5-relativeroot.db").is_file()
+
+
+def test_both_state_directories_are_swept_when_both_exist(tmp_path, monkeypatch):
+    """One INSTEAD of the other leaves whichever it skipped growing forever.
+
+    A fallback taken once in a process does not mean the preferred directory
+    holds nothing — it may be full of state from every run that could write it,
+    which is the ordinary case on a machine where one session hit a transient
+    failure. The nix sandbox found this: with no writable home, the fallback is
+    taken on the first call and stayed sticky for the whole process, so every
+    sweep looked past the directory it was given.
+    """
+    preferred = tmp_path / "preferred"
+    fallback = tmp_path / "fallback"
+    preferred.mkdir()
+    fallback.mkdir()
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(preferred))
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", str(fallback))
+    old = time.time() - 30 * 86400
+    made = []
+    for where in (preferred, fallback):
+        stale = where / f"{0xdef:08x}-1111-4222-8333-{0xdef:012x}.json"
+        stale.write_text("{}", encoding="utf-8")
+        os.utime(stale, (old, old))
+        made.append(stale)
+    stats = hook._sweep()
+    assert stats["unlink"] == 2, stats
+    for path in made:
+        assert not path.exists(), path
+    # And each keeps its own stamp, so neither can starve the other.
+    for where in (preferred, fallback):
+        assert (where / hook.SWEEP_STAMP_NAME).is_file(), where
+
+
+def test_skipped_means_no_directory_was_examined_not_merely_one(
+    tmp_path, monkeypatch
+) -> None:
+    """`skipped` is one flag over what may be two directories.
+
+    A run that walked the preferred directory but found the fallback's hour
+    still running has not skipped: reporting it as skipped is the answer a
+    caller reads as "the interval held", when in fact state was collected.
+    """
+    preferred = tmp_path / "preferred"
+    fallback = tmp_path / "fallback"
+    preferred.mkdir()
+    fallback.mkdir()
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(preferred))
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", str(fallback))
+    # The fallback's hour is running; the preferred directory has never swept.
+    (fallback / hook.SWEEP_STAMP_NAME).write_text("", encoding="utf-8")
+    stale = preferred / f"{0xfed:08x}-1111-4222-8333-{0xfed:012x}.json"
+    stale.write_text("{}", encoding="utf-8")
+    old = time.time() - 30 * 86400
+    os.utime(stale, (old, old))
+
+    stats = hook._sweep()
+
+    assert stats["skipped"] is False, stats
+    assert stats["unlink"] == 1, stats
+    assert not stale.exists()
+    # And when NEITHER is due, it is skipped — the flag still means something.
+    assert hook._sweep()["skipped"] is True
