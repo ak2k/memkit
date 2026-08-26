@@ -7399,7 +7399,7 @@ def _spawn(
     tool_use_id: str = "tu1",
     tool: str = "Agent",
     extra: dict | None = None,
-    event: str = "PreToolUse",
+    event: object = "PreToolUse",
 ) -> subprocess.CompletedProcess:
     """One PreToolUse invocation, driven the way the harness drives it.
 
@@ -7410,7 +7410,6 @@ def _spawn(
     """
     payload = {
         "session_id": "tsk1",
-        "hook_event_name": event,
         "tool_name": tool,
         "tool_use_id": tool_use_id,
         "tool_input": {
@@ -7420,6 +7419,11 @@ def _spawn(
             **(extra or {}),
         },
     }
+    # `event=None` OMITS the key, which is the half of "renames the event or
+    # moves the key" a payload carrying a null cannot express any differently:
+    # `payload.get` answers None to both.
+    if event is not None:
+        payload["hook_event_name"] = event
     return subprocess.run(
         ["python3", HOOK],
         input=json.dumps(payload),
@@ -7780,6 +7784,47 @@ def test_an_agent_call_under_another_event_is_recorded_and_not_rewritten(
         (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
     )
     assert record["outcome"] == "task:notool", record
+
+
+
+@pytest.mark.parametrize(
+    ("event", "recorded"),
+    [(None, "None"), ("", ""), (7, "7")],
+    ids=["key-moved", "empty", "not-a-string"],
+)
+def test_an_agent_call_whose_event_key_moved_is_recorded_and_not_rewritten(
+    tmp_path, event: object, recorded: str
+) -> None:
+    """The other half of the failure the fallback exists to catch.
+
+    Its own comment names two — "a harness that renames the event or moves the
+    key" — and only the rename was caught: `isinstance(event, str) and event
+    and event != TASK_EVENT` is False for a MISSING key, for an empty one and
+    for a non-string, so a payload whose event key moved while `tool_name` and
+    `tool_input` kept their shape fell through the guard, was served in full,
+    and stamped `"hookEventName": "PreToolUse"` — this module's own guess —
+    into the replacement. A replacement the harness rejects cancels the tool
+    call, which is the failure the comment says the branch exists to prevent.
+
+    Fails closed instead: `main()` has already dispatched every payload whose
+    event IS `PreToolUse`, so anything arriving here through the fallback is by
+    construction not that, whatever it is.
+    """
+    env = _seed_brief_corpus(tmp_path)
+    out = _spawn(
+        env,
+        _brief("served/backlash-rig.md"),
+        tool_use_id=f"tu_moved_{recorded or 'blank'}",
+        event=event,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "", out.stdout
+    record = json.loads(
+        (tmp_path / ".cache" / "memory-recall" / "log.jsonl").read_text().splitlines()[-1]
+    )
+    assert record["outcome"] == "task:event", record
+    assert record["event"] == recorded, record
+
 
 
 def test_a_brief_the_corpus_has_nothing_to_say_about_writes_nothing(

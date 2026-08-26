@@ -4582,9 +4582,18 @@ def _task_main(payload: dict, t0: float) -> None:
         # emission alive under a rename and would also write `updatedInput` on
         # events where it means nothing, which is the same cancellation wearing
         # a different label. The RECORD is what this branch is worth.
+        #
+        # Fails CLOSED on anything that is not the event this hook registered
+        # for, which is what "moves the key" means here: a guard reading
+        # `isinstance(event, str) and event and event != TASK_EVENT` answers
+        # False to a missing, empty or non-string name, and every one of those
+        # is a payload `main()` routed here through the fallback — served in
+        # full, stamped with this module's own guess. `main()` has already
+        # dispatched every payload whose event IS `TASK_EVENT`, so anything
+        # arriving here through that fallback is by construction not it.
         event = payload.get("hook_event_name")
-        if isinstance(event, str) and event and event != TASK_EVENT:
-            return done("task:event", event=event[:40])
+        if event != TASK_EVENT:
+            return done("task:event", event=str(event)[:40])
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
             return done("task:nobrief")
