@@ -1741,6 +1741,35 @@ class RowLost(unittest.TestCase):
         errors, _ = mi.check(self.store, False, set())
         assert not [e for e in errors if e.startswith("ROW-LOST")], errors
 
+    def test_a_row_that_moved_into_a_sub_index_is_not_lost(self) -> None:
+        # The workflow the consuming store's own MEMORY.md documents as
+        # "hand-seed one row, then --write": a memory's row moves from
+        # SEARCH.md into a domain sub-index while the file stays put. Reading
+        # only SEARCH.md on both sides made that read as a row a machine took
+        # away — and `--write` deliberately will not settle it, so the pre-push
+        # hook blocks until the sub-index change is reverted. There is no move
+        # at all.
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+
+        # The FILE STAYS PUT and only the row moves, which is the shape the
+        # carve-out for a deleted memory does not cover: sub-index links
+        # resolve against the sub-index's own directory, so `../widget.md`
+        # names the same file `search/widget.md` did.
+        index = self.store["search"] / "domain" / "INDEX.md"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text(
+            SEARCH_HEAD + "\n- [widget](../widget.md) — a memory about widgets\n"
+        )
+        self._ledger()
+        store = mi._store(
+            self.repo, STORE_DIR, sub_indexes=("search/domain/INDEX.md",),
+            blame_base="HEAD",
+        )
+        errors, _ = mi.check(store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
     def test_a_row_that_is_still_there_is_not_lost(self) -> None:
         self._memory("widget.md")
         self._ledger("- [widget](search/widget.md) — a memory about widgets")

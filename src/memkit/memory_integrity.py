@@ -843,11 +843,20 @@ def _row_lost(store: dict, write: bool) -> list:
     at_base = _rows_at(ledger, store["dir"], store["root"], base)
     if at_base is None:
         return []
-    # The ledger AS FOUND, re-read here rather than taken from the caller's
-    # earlier scan. That is what makes the call's POSITION load-bearing: after
-    # the rewrite below, the row is back and this finding would report nothing
-    # — which is precisely the erasure it exists to describe.
-    current = _rows(ledger, store["dir"])
+    # EVERY ledger a search-tier memory may legitimately be rowed in, as
+    # found. Reading only `SEARCH.md` on both sides made the documented
+    # "start a new domain" move — hand-seed one row in a sub-index, then
+    # `--write` — read as a row a machine took away; and since `--write`
+    # deliberately does not settle this finding, the operator was left with no
+    # move at all, the push blocked until the sub-index change was reverted.
+    #
+    # As FOUND rather than from the caller's earlier scan, which is what makes
+    # the call's POSITION load-bearing: after the rewrite below the row is
+    # back, and this finding would report nothing — precisely the erasure it
+    # exists to describe.
+    current: dict = {}
+    for owner in (ledger, *store["sub_indexes"]):
+        current.update(_rows(owner, store["dir"]))
     lost = []
     for rel in sorted(at_base):
         if rel in current:

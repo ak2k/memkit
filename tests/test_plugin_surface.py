@@ -4014,3 +4014,69 @@ def test_the_init_remedy_names_a_command_each_channel_has(root) -> None:
     # And it is a command this channel ships: `memkit` is a console script the
     # pip and nix installs both put on the adopter's own PATH.
     assert rendered.split("`")[1].split()[0] == "memkit"
+
+
+def test_every_outcome_the_hook_emits_has_a_reason_and_a_row() -> None:
+    """The EMITTER, pinned to the two readers that were only pinned to each
+    other.
+
+    The README table and doctor's `OUTCOME_REASONS` agree by an equality
+    assertion, and nothing tied either to the code that writes the names. A new
+    outcome could therefore ship and reach an adopter's histogram as `(an
+    outcome this build does not know)` with both readers green — which is the
+    drift the vocabulary's own growth rule says to expect.
+
+    Scraped as literals, which the log's contract already requires of them:
+    "the outcome arrives as a string LITERAL at each call site, because that is
+    what lets the consumer enumerate the vocabulary statically".
+    """
+    from memkit.cli_doctor import OUTCOME_REASONS
+
+    source = (REPO / "src" / "memkit" / "memory_prompt_recall.py").read_text()
+    emitted = set(re.findall(r'done\(\s*"([a-z:-]+)"', source))
+    emitted |= set(re.findall(r'return "(gate:[a-z]+)"', source))
+    # The one conditional call site, whose two names are the delivery split.
+    emitted |= {"injected", "output-lost"}
+    assert len(emitted) >= 12, sorted(emitted)
+
+    # The CLI's own records are not prompt outcomes — they carry
+    # `"concludes": false`, which is the log's published discriminator and what
+    # `_prompt_records` filters on — so they need no histogram row.
+    prompt_outcomes = {name for name in emitted if not name.startswith("cli")}
+    assert prompt_outcomes <= set(OUTCOME_REASONS), sorted(
+        prompt_outcomes - set(OUTCOME_REASONS)
+    )
+
+
+def test_the_search_cli_marks_its_records_as_not_prompt_outcomes(tmp_path) -> None:
+    """The discriminator, measured rather than read.
+
+    `gate-outcomes` counts the per-prompt population, and an adopter who
+    followed the README's own instruction to run the search command would
+    otherwise see their command-line runs inflating a line labelled
+    "last N prompts".
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "MEMKIT_CONFIG": str(REPO / "tests" / "fixtures" / "memkit.json"),
+    }
+    for query in ("flange torque sequence", "zzz nothing matches zzz"):
+        subprocess.run(
+            ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+             "--search", query],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+    log = home / ".cache" / "memory-recall" / "log.jsonl"
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    assert records, "the search wrote no record, so this proves nothing"
+    for record in records:
+        assert str(record.get("outcome", "")).startswith("cli"), record
+        assert record.get("concludes") is False, record
+
+    from memkit.cli_doctor import _prompt_records
+
+    assert _prompt_records(records) == []

@@ -105,7 +105,7 @@ out = subprocess.run(
     [sys.executable, os.path.join(REPO, "src", "memkit", "memory_prompt_recall.py")],
     input=json.dumps({"session_id": "floor39", "prompt":
                       "why does pgbouncer transaction pooling break prepared statements"}),
-    capture_output=True, text=True,
+    capture_output=True, text=True, timeout=300,
     env=dict(os.environ, MEMKIT_CONFIG=config),
 )
 check("the hook exits 0", out.returncode, 0)

@@ -2204,11 +2204,17 @@ def build_facts() -> tuple:
     command anywhere answered it: a critic filed the absence of `--version` as
     a defect against all four binaries.
     """
-    package = None
-    with contextlib.suppress(Exception):
-        from importlib.metadata import version
-
-        package = version("memkit")
+    package = _installed_version()
+    if package is None:
+        # THE PAYLOAD'S OWN MANIFEST, which is the channel the skills run from
+        # and the one where `importlib.metadata` can never answer: a plugin
+        # install does not pip-install the package, and the marketplace pins by
+        # url+sha rather than cloning, so the sha below is empty too. Without
+        # this, two of the three facts were unknown on exactly the channel that
+        # needs them, with the release number sitting unread in the payload.
+        for root in (os.environ.get("CLAUDE_PLUGIN_ROOT", ""),):
+            if root:
+                package = _manifest_version(root)
     hook_version = None
     with contextlib.suppress(Exception):
         hook_version = _version()
@@ -2227,14 +2233,42 @@ def build_facts() -> tuple:
     return package, hook_version, payload
 
 
+def _installed_version():
+    """The distribution's version, or None where there is no distribution."""
+    with contextlib.suppress(Exception):
+        from importlib.metadata import version
+
+        return version("memkit")
+    return None
+
+
+def _manifest_version(root: str):
+    """The version the plugin manifest declares, or None."""
+    with contextlib.suppress(OSError, ValueError):
+        path = os.path.join(root, ".claude-plugin", "plugin.json")
+        with open(path, encoding="utf-8") as f:
+            blob = json.load(f)
+        if isinstance(blob, dict):
+            found = blob.get("version")
+            if isinstance(found, str) and found:
+                return found
+    return None
+
+
 def version_line() -> str:
     """What `memkit --version` prints. One line, three facts, and the ones
     this install cannot derive are named as unknown rather than omitted — a
     missing field reads as a field that does not exist."""
     package, hook_version, payload = build_facts()
+    # ONE TOKEN per fact, so the line survives being read by a shell. It used
+    # to interpolate `(no installed distribution)` into the version position,
+    # which makes `awk '{print $2}'` yield `(no` — a fragment of prose where a
+    # caller reads a version. Where a fact is genuinely unknown the token says
+    # so, and the provenance goes in a trailing parenthetical.
     return (
-        f"memkit {package or '(no installed distribution)'} "
-        f"hook:{hook_version or '?'} payload:{payload or '(not a clone)'}"
+        f"memkit {package or 'unknown'} hook:{hook_version or 'unknown'} "
+        f"payload:{payload or 'unknown'}"
+        + ("" if payload else " (installed from a pinned archive, not a clone)")
     )
 
 

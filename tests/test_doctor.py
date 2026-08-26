@@ -2195,3 +2195,41 @@ def test_a_tilde_rendered_pointer_still_resolves(profile, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(profile / "home"))
     ok, why = doctor._delivered_canary(stdout, 0, cfg)
     assert ok, why
+
+
+def test_the_version_is_answerable_on_the_channel_the_skills_run_from(
+    profile, monkeypatch
+) -> None:
+    """A plugin install never pip-installs the package — `bin/memkit` says so
+    in its own header — so `importlib.metadata` raises for every plugin
+    adopter, and the marketplace pins by url+sha rather than cloning, so the
+    payload sha is empty too. Two of the three facts the README promises were
+    unknown on the one channel the skills run from, and the release number was
+    sitting unread in the payload's own manifest.
+
+    The line also has to stay parseable: `memkit --version | awk '{print $2}'`
+    yielded `(no` — a fragment of prose where a caller reads a version.
+    """
+    payload = profile / "payload"
+    (payload / ".claude-plugin").mkdir(parents=True)
+    (payload / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "memkit", "version": "9.9.9"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload) + "/")
+    monkeypatch.setattr(doctor, "_installed_version", lambda: None)
+    package, _hookv, _payloadsha = doctor.build_facts()
+    assert package == "9.9.9", package
+    line = doctor.version_line()
+    assert line.split()[1] == "9.9.9", line
+    # And when nothing at all can answer, the token is still one token.
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT")
+    assert doctor.version_line().split()[1] == "unknown", doctor.version_line()
+
+
+def test_the_payload_manifest_version_is_the_one_version_reports() -> None:
+    """The fallback reads the manifest the marketplace pins, so the two cannot
+    drift into disagreeing about which release an adopter is running."""
+    manifest = json.loads(
+        (REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    assert doctor._manifest_version(str(REPO)) == manifest["version"]

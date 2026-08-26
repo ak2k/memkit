@@ -328,7 +328,13 @@ one surface that reads the settings value directly, which is what lets it tell
   `memkit-recall`; see [Both names, once](#both-names-once).
 - **`memory-integrity`** — the store's checker. Layout, ledgers, frontmatter,
   dead links, dangling wikilinks, and prose path citations. `--write`
-  regenerates the search ledgers from frontmatter. Optional — retrieval needs
+  regenerates the search ledgers from frontmatter — with one finding it
+  deliberately does not settle: `ROW-LOST` names a memory that had a ledger
+  row at the blame base, still exists, and has none now in any ledger. A
+  generated file is rewritten wholesale, so a memory that stops producing a
+  row goes on existing with nothing pointing at it; regenerating would erase
+  the evidence rather than the cause. A row that merely moved into a
+  sub-index, or whose memory was deleted, is not lost. Optional — retrieval needs
   none of it, and a plugin install does not ship it
   ([docs/STORE.md](docs/STORE.md#the-ledgers-and-whether-you-need-them)).
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
