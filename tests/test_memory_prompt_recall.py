@@ -4640,31 +4640,44 @@ def test_the_budget_ends_before_the_harness_kills_the_hook() -> None:
     assert hook.BUDGET_SECONDS < hook.HARNESS_TIMEOUT
 
 
-def _import_cost_ms(code: str) -> float:
-    """Total self time of every import a fresh interpreter does for `code`.
+def _import_cost_ms() -> tuple[float, float]:
+    """(what this module's own body costs to import, what everything else it
+    imports costs), from ONE fresh interpreter.
 
-    The best of three, because the number this bounds is a floor — a loaded
-    machine only ever adds to it, and the comparison below is between two
-    measurements taken the same way on the same machine.
+    Both numbers out of the same process on purpose: an absolute millisecond
+    bar is a flake on a loaded machine and vacuous on a fast one, and two
+    numbers measured in two processes can be paid different amounts of load.
+    Self time rather than cumulative, because the subject is this file's
+    module-level work — the cost of everything it imports is the stdlib's, and
+    it is the yardstick rather than the measurement.
+
+    The best of three: the number this bounds is a floor, and load only ever
+    adds to it.
     """
-    best = None
+    best: tuple[float, float] | None = None
     for _ in range(3):
         out = subprocess.run(
-            [sys.executable, "-X", "importtime", "-c", code],
+            [sys.executable, "-X", "importtime", "-c", "import memkit.memory_prompt_recall"],
             capture_output=True,
             text=True,
         ).stderr
-        total = 0
+        mine = other = 0
         for line in out.splitlines():
             # `import time: self [us] | cumulative | imported package` heads
-            # the table; every row after it carries the two numbers.
+            # the table; every row after it carries the two numbers and a name.
             head, _, rest = line.partition("|")
             self_us = head.partition(":")[2].strip()
-            if rest and self_us.isdigit():
-                total += int(self_us)
-        best = total if best is None else min(best, total)
-    assert best, "no importtime rows were parsed"
-    return best / 1000.0
+            if not rest or not self_us.isdigit():
+                continue
+            if rest.rpartition("|")[2].strip() == "memkit.memory_prompt_recall":
+                mine += int(self_us)
+            else:
+                other += int(self_us)
+        assert mine and other, out
+        if best is None or mine < best[0]:
+            best = (mine / 1000.0, other / 1000.0)
+    assert best is not None
+    return best
 
 
 def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
@@ -4675,17 +4688,10 @@ def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
     One module-level `re.compile` — fifteen character classes each spanning
     U+0080 to U+10FFFF, under IGNORECASE — cost 38 ms of it, more than every
     stdlib import this file does put together, and was paid whether or not any
-    text reached the branch that used it. Self-calibrating rather than pinned
-    to milliseconds: a machine-speed constant is a flake on one machine and
-    vacuous on another, so the bar is this module's own dependencies measured
-    the same way in the same run.
+    text reached the branch that used it.
     """
-    stdlib = _import_cost_ms(
-        "import bisect, contextlib, functools, hashlib, json, os, re, secrets, "
-        "signal, sqlite3, subprocess, sys, tempfile, time, unicodedata"
-    )
-    module = _import_cost_ms("import memkit.memory_prompt_recall")
-    assert module < 2 * stdlib, (module, stdlib)
+    mine, stdlib = _import_cost_ms()
+    assert mine < stdlib, (mine, stdlib)
 
 
 def test_a_dir_past_the_deadline_is_skipped_not_started(monkeypatch) -> None:
