@@ -1045,8 +1045,8 @@ _PROMPT_FRAME_TAG = f"{FRAME_TAG}-{secrets.token_hex(FRAME_NONCE_BYTES)}"
 # and `</\memkit-pointers>` went through unchanged, each of which a model
 # resolves to a closing tag as readily as the tight form.
 _FRAME_LITERAL = re.compile(r"<[\s/\\]*" + FRAME_TAG, re.IGNORECASE)
-# The same shape again, with every tag character allowed to be spelled by ANY
-# non-ASCII codepoint.
+# The same shape again, for the spellings ASCII cannot express — and the reason
+# it is not a second pattern.
 #
 # A table of confusables is the obvious way to write this and it is the wrong
 # one, because such a table is never finished: `</memkit‑pointers>` with
@@ -1056,39 +1056,75 @@ _FRAME_LITERAL = re.compile(r"<[\s/\\]*" + FRAME_TAG, re.IGNORECASE)
 # supply more of the same for every letter. Enumerating them is a race with
 # Unicode.
 #
-# So the rule is the complement: a position that should hold an ASCII letter
-# and holds something outside ASCII instead is treated as a forgery of that
-# letter, whatever it is. The cost of a miss is an imperative sitting outside
-# the data region at the end of a brief an unattended agent is about to act
-# on.
+# The rule is the ASCII allowlist INVERTED, and it is the same rule at all
+# three positions of the pattern — the opening bracket, the run between it and
+# the tag, and the fifteen characters of the tag. Each position spells itself
+# in ASCII exactly one way; a character there that is not the ASCII one is a
+# forgery of it, whatever it is.
 #
-# THE OPENING BRACKET IS A POSITION LIKE ANY OTHER. Reading it as a literal
-# ASCII `<` while every character after it was a class walked around the whole
-# rule above: `＜/memkit-pointers＞` reaches a reader as the closing tag and
-# reached this pattern as ordinary prose, on the path that fires on every
-# prompt. Enumerated rather than derived, because "codepoint a reader resolves
-# as an angle bracket" is not a Unicode property anything can be asked for —
-# but the enumeration covers one character rather than fifteen, and it is not
-# what the boundary rests on any more (see the nonce below `FRAME_TAG`).
-_FRAME_OPENERS = "<\u00ab\u02c2\u1438\u2039\u2329\u276e\u2770\u27e8\u3008\ufe64\uff1c"
-# One scan in C rather than twelve in Python: this runs on every non-ASCII
-# description on the every-prompt path.
-_FRAME_OPENER = re.compile(f"[{re.escape(_FRAME_OPENERS)}]")
-# The tag is a GROUP because the complement rule needs a post-filter
-# (`_forges_tag`) and the filter is about the tag, not about the bracket in
-# front of it — which is ASCII in ordinary prose and would answer the question
-# for it.
-_FRAME_CONFUSABLE = re.compile(
-    f"[{re.escape(_FRAME_OPENERS)}]"
-    + r"[\s/\\]*("
-    + "".join(f"[{re.escape(c)}\u0080-\U0010ffff]" for c in FRAME_TAG)
-    + ")",
-    re.IGNORECASE,
-)
+# Applying that rule to two of the three positions and enumerating the third
+# lost the race twice, one position at a time. First the bracket was a literal
+# `<` while the tag was a class, and `＜/memkit-pointers＞` walked around the
+# whole rule. Then the bracket became a twelve-codepoint list — which shipped
+# without U+276C, the MEDIUM ornament sitting between the two HEAVY ornaments
+# it did list — while the run between bracket and tag stayed `[\s/\\]`, and
+# `<／memkit-pointers>` walked around it again with U+FF0F. An inverted
+# allowlist has no members to be missing.
+#
+# What the rule cannot do alone is tell a forgery from a sentence: fifteen
+# characters of Japanese after a bracket are non-ASCII in every position, and
+# the rule answers "forgery" to all of them. `_forges_tag` is the other half —
+# see there — and the nonce below `FRAME_TAG` is why neither half has to be
+# perfect.
+#
+# The ASCII characters each position admits. A structural position holds one of
+# these, or it holds something that is not ASCII at all.
+_FRAME_BRACKET = "<"
+# The run between the bracket and the tag: what a reader skips over on the way
+# to reading the tag, in the only spellings ASCII has for it.
+_FRAME_SKIPPED = "/\\"
+
+
+def _is_skipped(char: str) -> bool:
+    """Could a reader pass over this character between the bracket and the tag
+    without it stopping them?"""
+    return char in _FRAME_SKIPPED or char.isspace() or not char.isascii()
+
+
+# How many of the fifteen positions have to be spelled before a span is called
+# a forgery rather than somebody's prose. Measured rather than chosen, over the
+# two populations: the forgeries this suite knows score 7 to 15 (the floor is
+# `</мемкит-роinters>`, Cyrillic everywhere the script has a lookalike), and
+# 20,000 sampled fifteen-character spans of Japanese, Chinese, Korean, Thai and
+# Cyrillic prose carrying one ASCII character scored at most 1. Anything from 2
+# to 7 separates them; 5 sits in the middle with daylight either side.
+FRAME_TAG_MIN_MATCH = 5
+_FRAME_POSITIONS: dict[str, int] = {}
+
+
+def _tag_positions(char: str) -> int:
+    """Which positions of `FRAME_TAG` this one character SPELLS, as a bitmask.
+
+    Cached because a description reuses its characters and `unicodedata`
+    normalisation is the expensive part; bounded because the keys come from
+    text a store wrote.
+    """
+    bits = _FRAME_POSITIONS.get(char)
+    if bits is None:
+        lowered = char.lower()
+        folded = unicodedata.normalize("NFKD", char)[:1].lower()
+        bits = 0
+        for index, want in enumerate(FRAME_TAG):
+            if lowered == want or folded == want:
+                bits |= 1 << index
+        if len(_FRAME_POSITIONS) >= 4096:
+            _FRAME_POSITIONS.clear()
+        _FRAME_POSITIONS[char] = bits
+    return bits
 
 
 def _forges_tag(span: str) -> bool:
-    """Is this matched span a forgery of `FRAME_TAG`, or fifteen characters of
+    """Is this span a forgery of `FRAME_TAG`, or fifteen characters of
     somebody's prose?
 
     The complement rule on its own answers "forgery" to any bracket followed
@@ -1101,25 +1137,109 @@ def _forges_tag(span: str) -> bool:
     on both populations, so the over-match is a non-English store watching its
     own memories corrupted inside the pointer block.
 
-    The discriminator: a forgery has to be READ as the tag, and a character
-    that renders as an ASCII letter without being one is either that letter's
-    compatibility variant — fullwidth, mathematical alphanumeric, enclosed,
-    which NFKD folds back to it — or a letter borrowed from another script,
-    which it does not. ONE position of either kind is enough to convict, and
-    prose in a single non-Latin script supplies neither: its characters render
-    as themselves.
+    Two rules, and the round that convicted on either one alone convicted
+    honest prose with it:
+
+    An ASCII character that is not the letter its position holds ACQUITS the
+    span outright. `memory-pointers` is a word, not a forgery of
+    `memkit-pointers`, and no reader resolves it as one.
+
+    A character that renders as an ASCII letter without being one — a
+    fullwidth or mathematical variant that NFKD folds back to it, or a letter
+    borrowed from another script — SPELLS that position. Prose in a single
+    non-Latin script spells none of them: its characters render as themselves.
+    But it does contain the odd ASCII character, and position 6 of the tag is
+    `-`, which CJK and Cyrillic technical prose routinely contains — so one
+    spelled position cannot be the bar. `FRAME_TAG_MIN_MATCH` of the fifteen
+    is, with the two populations measured either side of it.
 
     What this deliberately does not do is decide the boundary alone. A span
     drawn entirely from the borrowed-letter class still passes here, and the
     nonce is what makes that survivable on both paths: the delimiter a store
     would have to spell is generated after the store was written.
     """
-    for char, want in zip(span, FRAME_TAG):
-        if char.lower() == want:
-            return True
-        if unicodedata.normalize("NFKD", char)[:1].lower() == want:
-            return True
-    return False
+    if len(span) != len(FRAME_TAG):
+        return False
+    matched = 0
+    for index, char in enumerate(span):
+        if (_tag_positions(char) >> index) & 1:
+            matched += 1
+        elif char.isascii():
+            return False
+    return matched >= FRAME_TAG_MIN_MATCH
+
+
+def _forged_spans(skeleton: str) -> list[tuple[int, int]]:
+    """Every `<`-and-tag the reader of this text would resolve as a delimiter,
+    as (start, stop) pairs over `skeleton`, left to right and disjoint.
+
+    A scan rather than a regular expression, for two reasons that are the same
+    reason. The pattern the expression would have to spell — three positions
+    whose classes all contain "any non-ASCII codepoint" — is ambiguous about
+    where the run between the bracket and the tag ends, and a greedy or a lazy
+    quantifier each answers that wrongly for one of the two directions: greedy
+    reads the LAST fifteen characters of a non-ASCII run, so five junk
+    codepoints after a forged tag hide it, and lazy reads the first fifteen, so
+    five before it do. The scan asks the question the pattern cannot: which
+    window, if any, is the forgery.
+
+    And it costs less. The expression that spelled fifteen full-range classes
+    under IGNORECASE took 38 ms to COMPILE, paid at import in every one of
+    these processes whether or not any text reached the branch that used it —
+    against a warm path the rest of this file sizes in single milliseconds.
+    Nothing here compiles.
+
+    The cheap filter is the count of characters that spell ANY position: prose
+    in one script has none, so an honest description leaves after one pass.
+    """
+    width = len(FRAME_TAG)
+    if len(skeleton) <= width:
+        return []
+    # A prefix sum, so a window's count is a subtraction rather than a walk.
+    relevant = [0] * (len(skeleton) + 1)
+    for index, char in enumerate(skeleton):
+        relevant[index + 1] = relevant[index] + (1 if _tag_positions(char) else 0)
+    if relevant[-1] < FRAME_TAG_MIN_MATCH:
+        return []
+    spans: list[tuple[int, int]] = []
+    # A tag with nothing in front of it is not a delimiter, so the first
+    # window a bracket could precede starts at 1.
+    start = 1
+    guard = 0
+    while start + width <= len(skeleton):
+        if relevant[start + width] - relevant[start] < FRAME_TAG_MIN_MATCH:
+            start += 1
+            continue
+        if not _forges_tag(skeleton[start : start + width]):
+            start += 1
+            continue
+        bracket = _bracket_before(skeleton, start, guard)
+        if bracket is None:
+            start += 1
+            continue
+        spans.append((bracket, start + width))
+        guard = start + width
+        start += width
+    return spans
+
+
+def _bracket_before(skeleton: str, start: int, guard: int) -> int | None:
+    """Where the delimiter a reader sees BEGINS, or None if nothing opens it.
+
+    Everything structural in front of the tag collapses into the one `(` the
+    defang leaves, so a respelled bracket defangs to the same shape an ASCII
+    one does and a reader of the transcript sees one rule rather than two.
+    """
+    index = start - 1
+    while index >= guard and _is_skipped(skeleton[index]) and skeleton[index].isascii():
+        index -= 1
+    if index < guard:
+        return None
+    if skeleton[index] != _FRAME_BRACKET and skeleton[index].isascii():
+        return None
+    while index > guard and skeleton[index - 1] in _FRAME_BRACKET + _FRAME_SKIPPED:
+        index -= 1
+    return index
 
 
 # Grapheme-cluster continuation: Unicode's `Extend` and `SpacingMark`, from
@@ -1255,33 +1375,30 @@ def _defang_frame(text: str) -> str:
 
     CONFUSABLES, where `</memkit‑pointers>` spells the hyphen U+2011 or the
     `e` Cyrillic and renders identically. Six such spellings passed this
-    function unchanged before `_FRAME_CONFUSABLE` existed, on both paths; see
-    the comment there for why the rule is "any non-ASCII character in a
-    position that should be ASCII" rather than a table of lookalikes.
+    function unchanged before the complement rule existed, on both paths; see
+    `_forged_spans` and `_forges_tag` for why the rule is "a structural
+    position holds its ASCII character or a forgery of it" rather than a table
+    of lookalikes.
 
     The two are matched over the same skeleton copy in one pass, so a forgery
     that uses both — a Cyrillic `е` wearing a combining acute — is caught as
     well.
     """
     text = _FRAME_LITERAL.sub("(" + FRAME_TAG, text)
-    # A forged tag needs an opening bracket, and almost no description has one
-    # — which is what keeps the second pass off the every-prompt budget. ASCII
-    # text is done first and by the cheapest test: the literal pass above is
-    # exhaustive over ASCII spellings, and neither a mark nor a confusable can
-    # be ASCII. The bracket test is over the opener CLASS rather than over
-    # `<`, or the early return discards the text before the widened pattern
-    # ever runs — which is how the literal `<` in the old guard kept the
-    # bypass alive on its own.
-    if text.isascii() or not _FRAME_OPENER.search(text):
+    # ASCII text is done, by the cheapest test there is: the literal pass above
+    # is exhaustive over ASCII spellings, and neither a mark nor a confusable
+    # can be ASCII. Every non-ASCII description pays the scan below, which is
+    # what it costs to have no enumeration standing between a respelled
+    # codepoint and the delimiter — the guard that used to keep the second pass
+    # off this budget was a list of twelve brackets, and the two spellings that
+    # reached a reader through it both reached it because they were not on the
+    # list.
+    if text.isascii():
         return text
     skeleton, offsets = _skeleton(text)
-    # From the end, so an earlier match's offsets are still the ones measured.
-    for match in reversed(list(_FRAME_CONFUSABLE.finditer(skeleton))):
-        if not _forges_tag(match.group(1)):
-            continue
-        start = offsets[match.start()]
-        stop = offsets[match.end() - 1] + 1
-        text = text[:start] + "(" + FRAME_TAG + text[stop:]
+    # From the end, so an earlier span's offsets are still the ones measured.
+    for start, stop in reversed(_forged_spans(skeleton)):
+        text = text[: offsets[start]] + "(" + FRAME_TAG + text[offsets[stop - 1] + 1 :]
     return text
 
 
