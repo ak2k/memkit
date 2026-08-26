@@ -14,6 +14,8 @@ overwritten by a confirm the human approved for a different world.
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import json
 import os
 import pathlib
@@ -1248,11 +1250,11 @@ def test_a_crash_before_the_journal_record_does_not_brick_init(profile, monkeypa
     real = init.Journal.record
     calls = []
 
-    def die(self, action, after):
+    def die(self, action, after, locked=None):
         calls.append(action.op)
         if action.op == init.MERGE_CONFIG and after != "pending":
             raise OSError("no space left on device")
-        return real(self, action, after)
+        return real(self, action, after, locked)
 
     monkeypatch.setattr(init.Journal, "record", die)
     assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
@@ -1412,3 +1414,60 @@ def test_the_lock_gives_up_rather_than_waiting_forever(profile, monkeypatch):
         held.__exit__()
     assert waited < 5, waited
     assert waited >= 0.2, waited
+
+
+def test_an_unserialised_write_says_so_in_the_journal(profile):
+    """A caller cannot tell a lost append from a write that never raced.
+
+    The lock is best-effort by design: a filesystem with no working `flock`,
+    or one still held when the bounded wait runs out, proceeds anyway. That is
+    the right call for a setup command, and it is also the one case where a
+    store can go missing from a config two inits wrote — so the record that
+    survives has to say which kind of write it was.
+    """
+
+    def contended(fd, flags):
+        raise OSError(errno.EWOULDBLOCK, "locked")
+
+    machine = doctor.Machine()
+    # The real `_Lock.__enter__`, against a lock it can never take. Bounding
+    # the wait at zero is what keeps this from being a ten-second test.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(init, "LOCK_WAIT_SECONDS", 0.0)
+        mp.setattr(fcntl, "flock", contended)
+        assert (
+            init.apply_plan(
+                machine,
+                _plan(profile, store=str(profile / "notes")),
+                init._resolve_config(machine, None),
+            )
+            == init.EXIT_OK
+        )
+    merges = [r for r in _journal(machine) if r["op"] == init.MERGE_CONFIG]
+    assert merges, "no config write to describe"
+    assert all(r.get("unlocked") is True for r in merges), merges
+
+    # And the ordinary path, through the same code with a working `flock`: the
+    # key is ABSENT, so a reader that never learnt it keeps reading every
+    # record it could read before.
+    second = doctor.Machine()
+    assert (
+        init.apply_plan(
+            second,
+            _plan(profile, store=str(profile / "other")),
+            init._resolve_config(second, None),
+        )
+        == init.EXIT_OK
+    )
+    fresh = [r for r in _journal(second) if r["run"] != merges[0]["run"]]
+    assert fresh, "the second run wrote nothing"
+    assert all("unlocked" not in r for r in fresh), fresh
+
+
+def _journal(machine) -> list:
+    path = pathlib.Path(machine.state_dir) / init.INIT_JOURNAL_NAME
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]

@@ -1310,19 +1310,26 @@ class Journal:
         self.manifest = manifest
         self.run = _sha(f"{manifest}{time.time()}{os.getpid()}")[:12]
 
-    def record(self, action: Action, after: str) -> None:
+    def record(self, action: Action, after: str, locked: bool | None = None) -> None:
+        record = {
+            "v": 1,
+            "run": self.run,
+            "manifest": self.manifest,
+            "ts": int(time.time()),
+            "op": action.op,
+            "path": action.path,
+            "before": None if action.before == "absent" else action.before,
+            "after": after,
+            "authored_config": action.authored_config,
+        }
+        if locked is False:
+            # Only on the unserialised write. Its absence means the ordinary
+            # case, so an existing reader does not have to learn a key to keep
+            # reading; its presence is the one thing worth going back for when
+            # a store turns out to be missing from a config two inits wrote.
+            record["unlocked"] = True
         line = json.dumps(
-            {
-                "v": 1,
-                "run": self.run,
-                "manifest": self.manifest,
-                "ts": int(time.time()),
-                "op": action.op,
-                "path": action.path,
-                "before": None if action.before == "absent" else action.before,
-                "after": after,
-                "authored_config": action.authored_config,
-            },
+            record,
             separators=(",", ":"),
         )
         # Line-buffered append and an explicit flush: the next mutation must
@@ -1350,6 +1357,10 @@ class _Lock:
     def __init__(self, state_dir: str) -> None:
         self.path = os.path.join(state_dir, "init.lock")
         self._fd = None
+        # Whether serialisation was actually obtained. A caller that cannot
+        # tell a serialised write from an unserialised one cannot tell a lost
+        # append from a write that never raced, so the journal records it.
+        self.held = False
 
     def __enter__(self):
         try:
@@ -1372,6 +1383,7 @@ class _Lock:
                     if time.monotonic() >= deadline:
                         raise
                     time.sleep(0.05)
+            self.held = True
         except (ImportError, OSError):
             if self._fd is not None:
                 with contextlib.suppress(OSError):
@@ -1520,7 +1532,7 @@ def _perform(
         os.makedirs(action.path, mode=mode, exist_ok=True)
         journal.record(action, "dir")
     elif action.op == MERGE_CONFIG:
-        with _Lock(machine.state_dir):
+        with _Lock(machine.state_dir) as lock:
             payload = action.payload if isinstance(action.payload, dict) else {}
             merged = _merge_config(
                 _read_or_empty(action.path),
@@ -1538,9 +1550,9 @@ def _perform(
             # describe a write that did not happen, which `authored_configs`
             # already tolerates: it keys on the flag and the path, and a claim
             # on a file that is not there answers nothing.
-            journal.record(action, "pending")
+            journal.record(action, "pending", locked=lock.held)
             after = _write_atomically(action.path, merged)
-            journal.record(action, after)
+            journal.record(action, after, locked=lock.held)
     elif action.op == VERIFY:
         code, output = _run_checker(machine, config_path)
         if code != 0:
@@ -1563,7 +1575,7 @@ def _perform(
         # moved, and the manifest's promise ("changes nothing else") is only
         # true against the file as it is when the write happens.
         payload = action.payload if isinstance(action.payload, dict) else {}
-        with _Lock(machine.state_dir):
+        with _Lock(machine.state_dir) as lock:
             if action.op == SETTINGS_WRITE:
                 content = _settings_with(action.path, payload)
             else:
@@ -1571,7 +1583,7 @@ def _perform(
                     _read_or_empty(action.path), str(payload.get("line", ""))
                 )
             after = _write_atomically(action.path, content, mode=0o644)
-            journal.record(action, after)
+            journal.record(action, after, locked=lock.held)
     else:
         after = _write_atomically(action.path, action.content, mode=0o644)
         journal.record(action, after)

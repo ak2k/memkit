@@ -3141,10 +3141,11 @@ def test_the_verification_block_checks_the_installed_path() -> None:
 def test_the_config_location_is_not_a_cache_directory() -> None:
     """The config is the one file in this design that nothing regenerates.
 
-    `memkit init` is not in this build, so a purged cache directory returns the
-    install to inert permanently — and the README tells the reader, two
-    sections from where it used to put the file, that everything under
-    `~/.cache/memory-recall/` is disposable.
+    `memkit init` can write one again, but only where the adopter consents to
+    it a second time — and the README tells the reader, two sections from where
+    the file used to live, that everything under `~/.cache/memory-recall/` is
+    disposable. A config under a purged cache directory is an install that goes
+    inert on a cache clear with nothing on screen to say why.
     """
     default = _json(PLUGIN_MANIFEST)["userConfig"]["memkitConfig"]["default"]
     assert "/.cache/" not in default, default
