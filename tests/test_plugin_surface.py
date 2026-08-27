@@ -2050,8 +2050,8 @@ def test_the_sourced_library_can_end_no_wrapper() -> None:
     Measured: a top-level `[ … ] && exit 1` planted in the library made
     `bin/memkit-hook` return 1 — the non-zero `UserPromptSubmit` exit the hook
     wrapper's whole contract is about, which blocks the turn — and the entire
-    suite stayed green. The library is also where this round put new refusal
-    paths, so it is exactly the file gaining reasons to want one.
+    suite stayed green. The library is also where the refusal paths live, so
+    it is exactly the file that keeps gaining reasons to want an exit.
 
     A NEGATIVE pin rather than `_exit_literals`, which asserts a non-empty set:
     the right number of exits here is none.
@@ -3632,8 +3632,8 @@ def test_the_help_epilog_carries_every_exit_code_this_binary_can_produce(
     real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
     rendered = _run(root / "bin" / "memkit-recall", "--help", env=real).stdout
     # OVER the constants, which is what the epilog's own comment claims of
-    # itself — a hand-written list of five is the drift it says it prevents,
-    # and it is what let the code this round added go unlisted.
+    # itself. A hand-written list is the drift it says it prevents, and it is
+    # how a code an agent branches on comes to have no row to look up.
     codes = {
         value
         for name, value in vars(hook).items()

@@ -29,6 +29,7 @@ A path being ABSOLUTE settles none of them. Trust is decided by origin.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import os
 import subprocess
@@ -490,6 +491,61 @@ def _paths(holes: dict) -> list:
     return [_str({"p": p}, "p") for p in value]
 
 
+# The adopter's `safe.directory`, read once per process.
+#
+# `GIT_CONFIG_GLOBAL=/dev/null` closes a config-discovery level and takes this
+# key with it, and without it git refuses a repository it considers to have
+# dubious ownership — a shared machine, a container bind-mount, a store owned
+# by another uid. Measured: two values in `~/.gitconfig` come back from `git
+# config --get-all safe.directory` and rc=1 under the neutralisation.
+#
+# So it is read BEFORE the global config is switched off and re-supplied as
+# `-c` entries. Reading configuration starts no program, and every key that
+# names one is overridden on this invocation too — the read is the same
+# hardened git as every other route, minus the one variable whose absence is
+# the thing being repaired.
+#
+# THE RESIDUAL, stated where the code is: `$HOME` decides which file this
+# reads, and `$HOME` is forwarded from the session. What a session that
+# controls it can add is permission for git to operate on a repository owned
+# by another user — never a program, because no `-c` here survives the
+# overrides. That is narrower than what controlling `$HOME` already buys
+# elsewhere in this package, and it is not closed by anything here.
+_SAFE_DIRECTORIES: list = []
+
+
+def _safe_directory_flags() -> list:
+    if _SAFE_DIRECTORIES:
+        return _SAFE_DIRECTORIES[0]
+    flags: list = []
+    with contextlib.suppress(OSError, subprocess.SubprocessError, Untrusted):
+        out = _execute(
+            [
+                resolve("git"),
+                "--no-optional-locks",
+                *[word for setting in _GIT_NEUTRAL_CONFIG for word in ("-c", setting)],
+                "config",
+                "--get-all",
+                "safe.directory",
+            ],
+            timeout=15,
+            # Every neutral variable EXCEPT the one that hides this key.
+            env_extra={
+                name: value
+                for name, value in _GIT_NEUTRAL_ENV.items()
+                if name != "GIT_CONFIG_GLOBAL"
+            },
+        )
+        if out.returncode == 0:
+            for value in out.stdout.splitlines():
+                value = value.strip()
+                # No leading `-`, or the re-supplied `-c` would be an option.
+                if value and not value.startswith("-"):
+                    flags += ["-c", f"safe.directory={value}"]
+    _SAFE_DIRECTORIES.append(flags)
+    return flags
+
+
 def run_git(
     route: GitRoute, *, repo: str, timeout: int = 30, **holes
 ) -> subprocess.CompletedProcess:
@@ -507,6 +563,7 @@ def run_git(
     flags = ["--no-optional-locks"]
     for setting in _GIT_NEUTRAL_CONFIG:
         flags += ["-c", setting]
+    flags += _safe_directory_flags()
     return _execute(
         [resolve("git"), *flags, *argv],
         cwd=repo,

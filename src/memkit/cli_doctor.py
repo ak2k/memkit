@@ -58,6 +58,7 @@ import time
 from collections.abc import Callable
 
 from memkit._exec import (
+    CHILD_ENV_KEEP,
     CheckerRoute,
     GitRoute,
     Untrusted,
@@ -1604,6 +1605,46 @@ HOOK_PROBE_FORWARD = (
 )
 
 
+# The variables the HOOK ITSELF reads, so a probe can say which of them this
+# session has and it did not pass on. The child's environment is built rather
+# than inherited, which is the property that makes it safe; the cost is that a
+# probe is not a real invocation, and the difference has to be reported rather
+# than left for an adopter to discover by disbelieving a FAIL.
+# NOT `MEMKIT_CONFIG` and not `MEMKIT_PLUGIN`: the wrapper sets both itself,
+# hard and in both directions, so forwarding them would make the probe test a
+# delivery the install does not perform. What is listed is what a SESSION
+# supplies and the wrapper reads.
+HOOK_READS_ENV = (
+    PLUGIN_DATA_ENV,
+    CONFIG_DIR_ENV,
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PLUGIN_OPTION_" + OPTION_KEY.upper(),
+    "XDG_CACHE_HOME",
+    "HOME",
+)
+
+
+def _probe_env_gap() -> list:
+    """Names this session carries that the hook reads and the probe drops.
+
+    Non-empty means the probe and a real invocation differ in a way that could
+    explain a failure, which is the difference between "your install is broken"
+    and "this measurement does not settle it".
+
+    On the shipped lists this is always empty, and that is the point: it is the
+    allow-list's own incompleteness made visible. A name added to what the
+    wrapper reads, without being added to what the probe forwards, turns every
+    hook-path failure into an UNKNOWN that says which name — rather than into a
+    FAIL that sends an adopter to repair a store that works.
+    """
+    carried = set(CHILD_ENV_KEEP) | set(HOOK_PROBE_FORWARD)
+    return sorted(
+        name
+        for name in HOOK_READS_ENV
+        if name not in carried and os.environ.get(name)
+    )
+
+
 def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
     """One real run of the installed hook. Returns (stdout, stderr, code, ms).
 
@@ -1821,12 +1862,37 @@ def _hook_path(machine: Machine) -> list[Check]:
                 f"{ms}ms{supplied}",
             )
         ]
+    gap = _probe_env_gap()
+    detail = (
+        f"{how} exited {code} in {ms}ms and delivered no pointer to "
+        f"{CANARY_NAME}: {why}. The probe ran under a built environment "
+        f"({', '.join(CHILD_ENV_KEEP)} plus "
+        f"{', '.join(HOOK_PROBE_FORWARD)}) and a PATH rebuilt from the entries "
+        f"no checkout can steer. stderr: {stderr[:200] or '(empty)'}"
+    )
+    if gap:
+        # UNKNOWN, because this run is not the thing it claims to measure. A
+        # variable the hook reads, that this session has and the probe did not
+        # pass on, is a difference between the probe and a real invocation —
+        # and reporting that as a failure sends an adopter to repair a store
+        # that is working.
+        return [
+            Check(
+                "hook-path",
+                UNKNOWN,
+                f"{detail} This session also carries {', '.join(gap)}, which "
+                "the hook reads and the probe does not forward, so a real "
+                "invocation and this one did not see the same environment",
+                "Re-run without those set, or set them the way your install "
+                "does, to get a result that describes the installed path.",
+                actor=USER,
+            )
+        ]
     return [
         Check(
             "hook-path",
             FAIL,
-            f"{how} exited {code} in {ms}ms and delivered no pointer to "
-            f"{CANARY_NAME}: {why}. stderr: {stderr[:200] or '(empty)'}",
+            detail,
             "The store answers and the installed path does not, so the break "
             "is between them: the wrapper's config resolution, the "
             "interpreter it picked, or the registration itself. The "
@@ -2353,12 +2419,18 @@ def _harness_stamp(machine: Machine) -> list[Check]:
     try:
         out = _execute([binary, "--version"], timeout=30)
     except (OSError, subprocess.SubprocessError, Untrusted) as exc:
+        # The MESSAGE, not just the class. `Untrusted` names which rule refused
+        # and what it refused; `OSError` names the errno. A reader told only
+        # the type has to reproduce the failure to learn anything from it, and
+        # a refusal that reports the same observable as an ordinary negative
+        # result is not a refusal.
         return [
             Check(
                 "harness-stamp",
                 UNKNOWN,
-                f"`claude --version` could not be run ({type(exc).__name__}); "
-                f"memkit's claims were measured against {MEASURED_HARNESS}",
+                f"`claude --version` could not be run "
+                f"({type(exc).__name__}: {exc}); memkit's claims were "
+                f"measured against {MEASURED_HARNESS}",
             )
         ]
     running = (out.stdout.split() or [""])[0]

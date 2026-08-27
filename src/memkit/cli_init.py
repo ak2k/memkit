@@ -73,7 +73,9 @@ from memkit.memory_prompt_recall import (
     _display_path,
     _plugin_install,
     append_record,
+    claim_holds,
     expand_home,
+    journal_config_claims,
     path_refusal,
     state_token,
 )
@@ -759,6 +761,15 @@ def check_refusals(
                     f"({exc}). init would create that file, and it will not "
                     "replace one it cannot first see.",
                 ) from exc
+            except UnicodeDecodeError:
+                # A file that is not UTF-8 is not the file init generates, and
+                # saying so is the whole answer. It used to reach the caller as
+                # a traceback from `read()`, which is the one shape this
+                # command promises never to produce: `--dry-run` is
+                # pre-approved and an adopter meets it with no refusal name to
+                # act on. Not byte-identical is a state the branch below
+                # already handles.
+                held = None
             if held != _memory_ledger(store_path):
                 raise Refusal(
                     "adopted-memory-index",
@@ -1104,7 +1115,6 @@ def build_plan(
             "then report success.",
         ),
     ]
-    _refuse_incompatible_types(actions)
     notes = []
     if wire_claude_md:
         target = _claude_md(machine)
@@ -1177,6 +1187,11 @@ def build_plan(
             "consolidating its own memories beside memkit's. It is the only "
             "settings key init will ever write."
         )
+    # AFTER the plan is complete and before anything acts on it. Run where the
+    # list was still being built, it checked eight of the ten actions — the two
+    # the flags add were appended below it — so the one preflight whose job is
+    # to see the whole plan saw the part that never varies.
+    _refuse_incompatible_types(actions)
     return Plan(actions, notes)
 
 
@@ -1758,6 +1773,34 @@ def _perform(
         journal.record(action, "dir")
     elif action.op == MERGE_CONFIG:
         with _Lock(machine.state_dir) as lock:
+            # WHOSE content is being merged in. The re-read is deliberate and
+            # is what lets a concurrent init's store survive this one's write —
+            # but the digest an adopter approved describes the file as it was
+            # at the dry-run, so a file that changed since is content they were
+            # never shown, and merging it forward publishes it under their
+            # consent.
+            #
+            # The two cases are distinguishable and only one of them is fine.
+            # A peer init's write is CLAIMED in the journal both processes
+            # append to; anything else is not. So a change memkit can account
+            # for merges, and a change it cannot is the `changed-underfoot`
+            # refusal the sibling write paths make with `expect`.
+            now = state_token(action.path)
+            if now != action.before and not claim_holds(
+                action.path, journal_config_claims(machine.state_dir).get(
+                    action.path, []
+                )
+            ):
+                raise Refusal(
+                    "changed-underfoot",
+                    f"{_display_path(action.path)} is not what the manifest "
+                    f"you approved described ({action.before}), and no init "
+                    "journal claims what is there now. Something outside "
+                    "memkit wrote it between the dry-run and now, and merging "
+                    "that forward would publish content nobody read under the "
+                    "digest you approved. Re-run `init --dry-run` for a "
+                    "manifest of what is left.",
+                )
             payload = action.payload if isinstance(action.payload, dict) else {}
             merged = _merge_config(
                 _read_or_empty(action.path),

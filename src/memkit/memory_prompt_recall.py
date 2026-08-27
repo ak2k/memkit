@@ -4656,12 +4656,37 @@ def main() -> None:
             persisted = False
             if delivered:
                 tmp_path = f"{state_path}.{os.getpid()}.tmp"
+                # RE-READ IMMEDIATELY BEFORE THE WRITE. Two hooks can serve one
+                # session — a resumed session, a second registration, the
+                # doctor probe alongside a live prompt — and each one loaded the
+                # ledger at the top of its own run. Writing what it loaded
+                # discards whatever the other committed in between: the
+                # dedup set is the loss that shows, because a path dropped out
+                # of `shown` is injected a second time and the session sees the
+                # same pointer twice.
+                #
+                # A merge rather than a lock, and the difference is stated
+                # rather than glossed: this narrows the window from the whole
+                # hook run to the microseconds between this read and the
+                # rename, and does not close it. A lock would, and an
+                # every-prompt path that can BLOCK is a worse trade than a rare
+                # lost update — the hook has fifteen seconds before the harness
+                # kills it, and nothing here is worth spending them on.
+                peer_shown, peer_spent = _load_session(state_path)
+                merged_spent = dict(ledger)
+                for peer_path, peer_evidence in peer_spent.items():
+                    if len(merged_spent) >= POINTER_BUDGET:
+                        break
+                    # `setdefault`: this run's own evidence for a path it also
+                    # spent on is the newer measurement, and the budget must
+                    # not grow past its cap to accommodate a peer.
+                    merged_spent.setdefault(peer_path, peer_evidence)
                 try:
                     with open(tmp_path, "w", encoding="utf-8") as f:
                         json.dump(
                             {
-                                "shown": sorted(shown | set(fresh)),
-                                "spent": ledger,
+                                "shown": sorted(peer_shown | shown | set(fresh)),
+                                "spent": merged_spent,
                                 # Which registration wrote this. The next
                                 # process to read the file compares it against
                                 # its own and records the duplicate; before

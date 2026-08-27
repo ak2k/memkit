@@ -720,8 +720,8 @@ def test_an_interior_store_conflict_refuses_before_the_first_write(
 def test_a_config_dir_inside_the_session_is_refused_for_both_targets(
     profile, monkeypatch
 ) -> None:
-    """Round 2's P0 was a repository choosing where a config got READ from.
-    This is the same shape on the WRITER.
+    """A repository choosing where a config is READ from is one shape of the
+    defect; this is the same shape on the WRITER.
 
     `$CLAUDE_CONFIG_DIR` decides where `CLAUDE.md` and `settings.json` go, and
     a checkout that exports one through direnv gets the `@-import` appended to
@@ -1217,10 +1217,48 @@ def test_the_config_write_re_reads_under_the_lock(profile, monkeypatch) -> None:
 
     journal = init.Journal(str(machine.state_dir), plan.digest)
     os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    # A PEER INIT, which means a journal record — the two processes append to
+    # one journal, and a claim is how this one can tell "another init wrote it"
+    # from "something else did". Without the record the fixture models an
+    # unaccountable writer, which is the case the refusal below is for.
+    peer_action = init.Action(
+        init.MERGE_CONFIG, config, peer, authored_config=True
+    )
+    init.Journal(str(machine.state_dir), "peer-digest").record(
+        peer_action, hook.state_token(config)
+    )
     init._perform(machine, journal, action, config)
     with open(config, encoding="utf-8") as f:
         blob = json.loads(f.read())
     assert {s["id"] for s in blob["stores"]} == {"theirs", "mine"}
+
+
+def test_a_config_no_init_journal_claims_is_not_merged_forward(
+    profile, monkeypatch
+) -> None:
+    """The digest an adopter approved describes the config as it was at the
+    dry-run. Merging whatever is there at apply time publishes content they
+    were never shown, under their consent.
+
+    A concurrent init is the case the re-read exists for and it stays working —
+    its write is claimed in the journal both processes append to. Anything
+    else is a writer memkit cannot account for, and it is refused rather than
+    carried forward.
+    """
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(profile, store=str(profile / "mine"))
+    os.makedirs(os.path.dirname(config), exist_ok=True)
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.before == "absent", action.before
+    with open(config, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"schema": hook.SCHEMA, "roots": {}, "stores": []}))
+    journal = init.Journal(str(machine.state_dir), plan.digest)
+    with pytest.raises(init.Refusal) as caught:
+        init._perform(machine, journal, action, config)
+    assert caught.value.name == "changed-underfoot"
+    assert "no init journal claims" in caught.value.message
 
 
 def test_a_second_init_does_not_renumber_the_first_ones_nonce(profile) -> None:

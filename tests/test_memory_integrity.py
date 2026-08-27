@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shutil
 import stat
@@ -2005,4 +2006,84 @@ class GitRouteTableTest(unittest.TestCase):
         assert not marker.exists(), marker.read_text()
         assert mi._row_touch(repo, repo / "SEARCH.md") == {}
         assert not marker.exists(), marker.read_text()
+
+    def test_the_adopters_safe_directory_survives_the_neutralisation(self) -> None:
+        """`GIT_CONFIG_GLOBAL=/dev/null` closes a config-discovery level and
+        takes `safe.directory` with it. Without that key git refuses a
+        repository it considers to have dubious ownership — a shared machine, a
+        container bind-mount, a store owned by another uid — and the checker's
+        every git route then answers nothing for a store that is fine.
+
+        Driven with a control, because a case whose fixture cannot lose the key
+        proves nothing: the same read under the full neutralisation returns
+        rc=1 and no values.
+        """
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("no git")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        home = root / "home"
+        home.mkdir()
+        (home / ".gitconfig").write_text(
+            "[safe]\n\tdirectory = /some/other/path\n\tdirectory = /another\n",
+            encoding="utf-8",
+        )
+        base = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+
+        def read(**extra: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [git, "config", "--get-all", "safe.directory"],
+                capture_output=True, text=True, timeout=60,
+                env={**base, **extra},
+            )
+
+        assert read().returncode == 0, "the fixture never had the key"
+        control = read(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
+        assert control.returncode != 0, control.stdout
+
+        old_home = os.environ.get("HOME")
+        _exec._SAFE_DIRECTORIES.clear()
+        os.environ["HOME"] = str(home)
+        try:
+            flags = _exec._safe_directory_flags()
+        finally:
+            _exec._SAFE_DIRECTORIES.clear()
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+        assert flags == [
+            "-c", "safe.directory=/some/other/path",
+            "-c", "safe.directory=/another",
+        ], flags
+
+    def test_an_option_shaped_safe_directory_is_not_re_supplied(self) -> None:
+        """A value beginning with `-` would be re-supplied as an option, not as
+        a value: `-c safe.directory=--output=x` is one word, but a config that
+        can write `~/.gitconfig` can write the key however it likes, and the
+        rule that refuses an option-shaped revision has to hold here too.
+        """
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("no git")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        home = root / "home"
+        home.mkdir()
+        (home / ".gitconfig").write_text(
+            "[safe]\n\tdirectory = -x\n\tdirectory = /ok\n", encoding="utf-8"
+        )
+        old_home = os.environ.get("HOME")
+        _exec._SAFE_DIRECTORIES.clear()
+        os.environ["HOME"] = str(home)
+        try:
+            flags = _exec._safe_directory_flags()
+        finally:
+            _exec._SAFE_DIRECTORIES.clear()
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+        assert flags == ["-c", "safe.directory=/ok"], flags
 
