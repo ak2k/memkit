@@ -80,6 +80,45 @@ import time
 import unicodedata
 from collections.abc import Callable
 
+
+def _utf8(text: str) -> bytes:
+    """UTF-8 bytes for text that came from OUTSIDE this process.
+
+    THE ONE SPELLING, and the reason it is one. A lone surrogate is an
+    ordinary input on every path this hook has, from three unrelated sources:
+    `json.load` produces one from an escaped `\\udXXX` anywhere in the
+    harness's payload, so a prompt, a brief, a `session_id` and a
+    `tool_use_id` can each hold one; `os.fsdecode` produces one for a filename
+    the filesystem holds as undecodable bytes, so a store root and a config
+    path can; and the CLI's argv can carry one on any platform whose locale
+    disagrees with its filenames. A plain `.encode()` raises on all of them.
+
+    Where that raise lands is what makes this a hook-wide rule rather than six
+    local fixes. The prompt path builds its soak record BEFORE `done()` and
+    the SIGTERM handler exist, so a raise there propagates past `main()` into
+    `cli()`'s fail-open `contextlib.suppress(Exception)` and the run ends with
+    no pointers AND NO RECORD — the one outcome the `killed` machinery exists
+    to make impossible. Two review rounds each found a different one of these
+    sites; four of them were live, and three had been named by nobody. So the
+    decision is taken once, here, about the input CLASS: text from outside is
+    encodable, always, and `surrogatepass` is what makes that true.
+
+    Lossless and reversible, which is why it is safe for the two things this
+    is used for. Every caller either DIGESTS the result or MEASURES it, and a
+    digest over `surrogatepass` bytes separates exactly the keys a strict one
+    would have separated — it simply also answers for the keys a strict one
+    kills the process over.
+
+    Not for text this module is about to WRITE as UTF-8 to somebody else's
+    parser: `_task_emission` deliberately uses a strict `encode` to REFUSE a
+    brief holding a surrogate, because a JSON object with an unpaired
+    surrogate in it is not something a consumer can be handed. That refusal is
+    a decision about the emission, and it happens before the write rather than
+    inside it.
+    """
+    return text.encode("utf-8", "surrogatepass")
+
+
 # --- configuration -----------------------------------------------------------
 #
 # ONE json file names every tree this tool reads, and all three tools —
@@ -1586,7 +1625,7 @@ def _fts_db(root: str) -> str:
     would sweep the gated store. Scoping the DB to a root makes "not walked" and
     "no longer exists" the same statement.
     """
-    digest = hashlib.sha256(root.encode()).hexdigest()[:12]
+    digest = hashlib.sha256(_utf8(root)).hexdigest()[:12]
     return os.path.join(_state_dir(), f"fts5-{digest}.db")
 
 
@@ -2868,7 +2907,7 @@ def _state_name(key: str, prefix: str = "") -> str:
         # first's and is told it was deduped, which reads in the log as the
         # system working. The digest is over the WHOLE key, so what the cut
         # discards still separates them, and 71 + 1 + 8 keeps the bound.
-        safe = f"{safe[:71]}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
+        safe = f"{safe[:71]}-{hashlib.sha256(_utf8(key)).hexdigest()[:8]}"
     return os.path.join(_state_dir(), f"{prefix}{safe}.json")
 
 
@@ -2944,7 +2983,7 @@ def _cwd_digest() -> str:
     directories somebody works in.
     """
     try:
-        return hashlib.sha256(os.getcwd().encode()).hexdigest()[:12]
+        return hashlib.sha256(_utf8(os.getcwd())).hexdigest()[:12]
     except OSError:
         return "?"
 
@@ -3063,7 +3102,7 @@ def _registration() -> dict:
 
 def _registration_digest(reg: dict) -> str:
     return hashlib.sha256(
-        f"{reg.get('file', '')}\0{reg.get('config', '')}".encode()
+        _utf8(f"{reg.get('file', '')}\0{reg.get('config', '')}")
     ).hexdigest()[:12]
 
 
@@ -3178,14 +3217,19 @@ def _load_session(path: str) -> tuple[set[str], dict[str, float | None]]:
     as "worthless evidence" and let the first hit of any strength evict them,
     which would make precisely the oldest sessions unbounded.
 
-    Nothing here trusts the file's VALUES either. This hook writes only floats,
-    but the file is on disk under a name a person can guess, survives across
-    sessions, and has already carried one other schema; a `spent` whose values
-    are strings would send _replace's sort into a TypeError, and because the
-    file persists, every prompt of that session for the rest of its life. So a
-    value that is not a real number loads as None — the same "not comparable"
-    bucket the legacy schema uses — which degrades that session to a terminal
-    budget instead of killing it.
+    NOTHING HERE TRUSTS THE FILE AT ANY LEVEL — not its top-level type, not
+    the type of a key's value, not the type of an element inside one. The file
+    is on disk under a name a person can guess, survives across sessions, and
+    has already carried one other schema, so every shape json can hold has to
+    load as SOMETHING. Three rounds of this were written one level at a time
+    and each left the next level raising: a `spent` whose values are strings
+    sends `_replace`'s sort into a TypeError, a non-dict top level dies on an
+    attribute access, and a `shown` that is a number dies on iteration. The
+    rule is now the whole rule, and the direction is the same everywhere: a
+    value that is not the shape this hook writes loads as the empty or
+    not-comparable version of itself, never as an exception. Because the file
+    persists, an exception here is not one lost prompt — it is every prompt of
+    that session, or every retry of that spawn, for the rest of its life.
     """
     try:
         with open(path, encoding="utf-8") as f:
@@ -3193,17 +3237,35 @@ def _load_session(path: str) -> tuple[set[str], dict[str, float | None]]:
     except (OSError, ValueError):
         return set(), {}
     if isinstance(state, list):
-        return set(state), dict.fromkeys(state)
+        return {p for p in state if isinstance(p, str)}, {
+            p: None for p in state if isinstance(p, str)
+        }
     if not isinstance(state, dict):
         # Valid JSON that is neither schema — a bare `null`, a number, a
         # string. `json.load` returns it without raising, so the ValueError arm
         # above never sees it and the attribute access below dies on an
         # AttributeError this does not catch. The file persists under a name
         # derived from the call, so on the task path that is every retry for
-        # that spawn losing its pointers, forever. Nothing here trusts the
-        # file's values; this is the same posture extended to its type.
+        # that spawn losing its pointers, forever.
         return set(), {}
-    shown = {p for p in (state.get("shown") or []) if isinstance(p, str)}
+    # EVERY LEVEL, not the top one. The guard above was added a round ago and
+    # stopped at the file's outermost type, so `{"shown": 5}` — a dict, which
+    # it admits — reached this comprehension and raised TypeError on an int
+    # that is not iterable. That escapes to `_task_main`'s `except Exception`
+    # as `task:error` and `_prompt_main`'s as `gate:error`, and the file
+    # persists, so it is the same permanent loss the top-level guard was
+    # written to prevent, one level in, for a twelve-byte file.
+    #
+    # A list is the only shape this hook writes. Anything else degrades to an
+    # empty dedup set — serve the pointer again — which is the direction the
+    # concurrent-replay comment in `_task_main` already chose: serving twice
+    # is a cost, refusing forever is a loss.
+    raw_shown = state.get("shown")
+    shown = (
+        {p for p in raw_shown if isinstance(p, str)}
+        if isinstance(raw_shown, list)
+        else set()
+    )
     spent = state.get("spent")
     if not isinstance(spent, dict):
         return shown, dict.fromkeys(shown)
@@ -3825,7 +3887,7 @@ def _bounded_block(
         if match is None:
             break
         terms = match.group(1)
-        raw = terms.encode("utf-8", "surrogatepass")
+        raw = _utf8(terms)
         room = len(raw) - over
         trimmed = raw[:room].decode(errors="ignore").rstrip() if room > 0 else ""
         if not trimmed:
@@ -3856,14 +3918,46 @@ def _has_notice(lines: list[str]) -> bool:
 
 
 def _nbytes(text: str) -> int:
-    """Encoded length that cannot raise.
+    """Encoded length that cannot raise — `_utf8`'s length, and its reasons.
 
-    A filename the filesystem holds as undecodable bytes reaches here through
-    `os.fsdecode` as lone surrogates, and plain `.encode()` raises on those —
-    inside the SIGTERM-masked window, from the function whose whole job is to
-    keep that write safe.
+    Named separately because the CALLERS are counting bytes against a budget
+    rather than hashing, and because this one runs inside the SIGTERM-masked
+    window: the function whose whole job is to keep that write safe may not be
+    the function that raises.
     """
-    return len(text.encode("utf-8", "surrogatepass"))
+    return len(_utf8(text))
+
+
+def _write_out(text: str) -> None:
+    """The block, emitted as the BYTES its budget was measured in.
+
+    `sys.stdout.write` encodes with the encoding the STREAM was configured
+    with, which is the environment's choice and not memkit's. Every size
+    decision on both paths is taken in UTF-8 bytes — `_nbytes` for the prompt
+    path's shed loop, `text.encode("utf-8")` for the task path's refusal — so
+    a write that encodes some other way measures one string and emits another.
+
+    What that cost, measured: with `PYTHONIOENCODING=ascii` and an ordinary
+    Japanese description in the store, both channels raised UnicodeEncodeError
+    from inside the SIGTERM-masked window. That is not an `OSError`, so the
+    narrow catch beside the write did not see it; the run delivered nothing,
+    exited 0, and recorded `error` / `task:error` — a defect report about
+    memkit for a corpus that is merely not in English.
+
+    Writing the bytes removes the second encoding rather than configuring it.
+    `sys.stdout` is flushed first so this cannot overtake anything already
+    buffered above it, and the text fallback is for a replaced stdout with no
+    binary buffer underneath — a shape the harness does not produce and a test
+    double might.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        return
+    sys.stdout.flush()
+    buffer.write(_utf8(text))
+    buffer.flush()
 
 
 @contextlib.contextmanager
@@ -4603,14 +4697,12 @@ def _task_main(payload: dict, t0: float) -> None:
             return done("task:nobrief")
 
         stripped = brief.strip()
-        # `surrogatepass`, for the reason `_nbytes` uses it: a brief can hold a
-        # lone surrogate — `json.load` produces one from an escaped `\udXXX` —
-        # and a plain `.encode()` raises here, before the path has a name for
-        # what is wrong with it. The refusal belongs at the emission, where the
-        # fact is "these bytes cannot be written"; a digest is just a digest.
-        rec["brief_sha"] = hashlib.sha256(
-            stripped.encode("utf-8", "surrogatepass")
-        ).hexdigest()[:12]
+        # `_utf8`, for the reason that function gives: a brief can hold a lone
+        # surrogate and a digest that raises on one costs the run its record
+        # before the path has a name for what is wrong with it. The refusal
+        # belongs at the emission, where the fact is "these bytes cannot be
+        # written"; a digest is just a digest.
+        rec["brief_sha"] = hashlib.sha256(_utf8(stripped)).hexdigest()[:12]
         rec["words"] = len(stripped.split())
         # EVERY OUTCOME AS A LITERAL AT ITS OWN CALL SITE, which is what
         # `done`'s contract asks for and what a relayed `done(gate)` breaks
@@ -4759,8 +4851,7 @@ def _task_main(payload: dict, t0: float) -> None:
         # others and a kill between any two makes the surviving pair a lie.
         with _sigterm_masked():
             try:
-                sys.stdout.write(text)
-                sys.stdout.flush()
+                _write_out(text)
             except (BrokenPipeError, OSError):
                 delivered = False
             if delivered and state_path is not None:
@@ -4898,7 +4989,7 @@ def _prompt_main(payload: dict, t0: float) -> None:
 
     stripped = prompt.strip()
     rec: dict = {
-        "prompt_sha": hashlib.sha256(stripped.encode()).hexdigest()[:12],
+        "prompt_sha": hashlib.sha256(_utf8(stripped)).hexdigest()[:12],
         "words": len(stripped.split()),
         "session": _log_session(payload.get("session_id", "")),
     }
@@ -5242,8 +5333,7 @@ def _prompt_main(payload: dict, t0: float) -> None:
         delivered = True
         with _sigterm_masked():
             try:
-                sys.stdout.write(block)
-                sys.stdout.flush()
+                _write_out(block)
             except (BrokenPipeError, OSError):
                 delivered = False
 
@@ -5609,7 +5699,7 @@ def search_cli(argv: list[str]) -> int:
     # record one. Empty and unused on the branches that never search.
     stripped = (args.search or "").strip()
     rec: dict = {
-        "prompt_sha": hashlib.sha256(stripped.encode()).hexdigest()[:12],
+        "prompt_sha": hashlib.sha256(_utf8(stripped)).hexdigest()[:12],
         "words": len(stripped.split()),
         "session": "cli",
         # NOT a prompt outcome: nobody typed a prompt, an agent ran a command.

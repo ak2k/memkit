@@ -2423,6 +2423,53 @@ def test_two_tool_calls_sharing_an_eighty_character_prefix_get_two_ledgers(
     )
 
 
+def test_no_digest_in_this_module_dies_on_a_lone_surrogate() -> None:
+    """A lone surrogate is an ORDINARY input here, and nothing may raise on one.
+
+    Three separate sources produce them and none is exotic. `json.load` turns
+    an escaped `\\udXXX` in the harness's payload into one, so a `tool_use_id`,
+    a `session_id`, a prompt and a brief can all carry one. `os.fsdecode` turns
+    a filename the filesystem holds as undecodable bytes into one, so a store
+    root and a config path can. `str.encode` with no error handler raises on
+    every one of them.
+
+    The rule, pinned by the scan below rather than by a list of call sites: in
+    this module every `.encode()` NAMES its handler. There is no such thing
+    here as text whose encodability the module gets to assume — this is a hook
+    on the every-prompt path, its inputs are the harness's and the
+    filesystem's, and a raise on that path is a silent death (see
+    `test_a_lone_surrogate_in_the_prompt_still_records_an_outcome`).
+
+    A list of sites is what this had before: two lenses each found a different
+    crash and three of the four sites below were named by neither.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    bare = [
+        n.lineno
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "encode"
+        and not n.args
+        and not n.keywords
+    ]
+    assert bare == [], f"`.encode()` with no error handler at lines {bare}"
+
+    # And the behaviour the scan is a proxy for, at every function that takes
+    # a key from outside this process. Each of these raised UnicodeEncodeError.
+    surrogate = json.loads('"\\ud800"')
+    long_key = "toolu_" + surrogate + "A" * 90
+    assert hook._task_state_path(long_key).endswith(".json")
+    assert hook._session_state_path(surrogate + "A" * 90).endswith(".json")
+    assert hook._fts_db(f"/tmp/store{surrogate}").endswith(".db")
+    assert len(hook._registration_digest({"file": f"/x{surrogate}", "config": ""})) == 12
+    # Non-vacuity: the digests still SEPARATE, which is the whole reason they
+    # are taken over the raw key rather than over the sanitized one.
+    assert hook._task_state_path("toolu_" + surrogate + "A" * 90) != hook._task_state_path(
+        "toolu_" + surrogate + "B" * 90
+    )
+
+
 @pytest.mark.parametrize("body", ("null", "5", '"toolu_x"', "true", "1.5"))
 def test_a_ledger_holding_valid_json_of_the_wrong_shape_loads_empty(
     tmp_path, body: str
@@ -2447,6 +2494,49 @@ def test_a_ledger_holding_valid_json_of_the_wrong_shape_loads_empty(
     assert hook._load_session(str(path))[0] == {"/a.md"}
     path.write_text('{"shown": ["/b.md"], "spent": {}}')
     assert hook._load_session(str(path))[0] == {"/b.md"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        '{"shown": 5}',
+        '{"shown": true}',
+        '{"shown": 1.5}',
+        '{"shown": "abc"}',
+        '{"shown": {"a": 1}}',
+        '{"shown": ["/a.md", 5, null], "spent": 7}',
+        '{"shown": null, "spent": {"/a.md": "not a number"}}',
+        '{"spent": []}',
+    ),
+)
+def test_a_ledger_whose_json_parses_and_whose_values_are_hostile_loads_empty(
+    tmp_path, body: str
+) -> None:
+    """The type guard stopped at the file's TOP LEVEL, one level short.
+
+    A dict was accepted and then `state.get("shown")` was iterated unguarded,
+    so `{"shown": 5}` raised TypeError — which escapes to `_task_main`'s
+    `except Exception` as `task:error` and `_prompt_main`'s as `gate:error`.
+    The file persists under a name derived from the id, so on the task path
+    that is every retry for that spawn losing its pointers, forever, for a
+    twelve-byte file anyone can write.
+
+    The direction is deliberate and is the one the neighbouring
+    concurrent-replay comment already chose: an unreadable ledger degrades to
+    "nothing was shown yet", which serves a pointer a second time. Serving
+    twice is a cost; a permanent refusal is a loss.
+    """
+    path = tmp_path / f"{hook.TASK_STATE_PREFIX}toolu_hostile.json"
+    path.write_text(body)
+    shown, spent = hook._load_session(str(path))
+    assert isinstance(shown, set) and all(isinstance(p, str) for p in shown)
+    assert isinstance(spent, dict)
+    assert all(isinstance(p, str) for p in spent)
+    assert all(e is None or isinstance(e, float) for e in spent.values())
+    # Non-vacuity: the well-formed file still loads everything it holds, so an
+    # unconditional empty answer would not pass here.
+    path.write_text('{"shown": ["/b.md"], "spent": {"/b.md": 0.5}}')
+    assert hook._load_session(str(path)) == ({"/b.md"}, {"/b.md": 0.5})
 
 
 # --- end-to-end gates (subprocess: gates fire before any search) -------------
@@ -6238,11 +6328,11 @@ def test_the_bound_is_measured_in_bytes_rather_than_argued_from_characters(
     source = Path(hook.__file__).read_text(encoding="utf-8")
     # The write goes through the BOUNDED block, never through `_framed`
     # directly. Read off the source because the property is about which value
-    # reaches `sys.stdout.write`, and both spellings emit the same bytes on
-    # every payload small enough to fit.
+    # reaches the write, and both spellings emit the same bytes on every
+    # payload small enough to fit.
     assert "block, kept = _bounded_block(lines)" in source
-    assert "sys.stdout.write(block)" in source
-    assert "sys.stdout.write(_framed(" not in source
+    assert "_write_out(block)" in source
+    assert "_write_out(_framed(" not in source
 
     assert len(hook._framed(lines).encode()) > hook.PIPE_BUFFER_BOUND
     payload, _kept = hook._bounded_block(lines)
@@ -7592,6 +7682,108 @@ def _seed_brief_corpus(tmp_path: Path) -> dict:
         # writable checkout — and only there.
         target.chmod(target.stat().st_mode | stat.S_IWUSR)
     return env
+
+
+def _cjk_store(tmp_path: Path) -> dict:
+    """A store whose descriptions are ordinary CJK prose.
+
+    Ordinary is the word that matters: this is not a hostile corpus, it is
+    what a Japanese-language memory store looks like, and the cases below are
+    about a hook that cannot deliver one.
+    """
+    env = _env(tmp_path)
+    subject = (
+        "sprocket backlash gearbox rebuild shim stack chain tension measured "
+        "cold repeatability vendor argument torque thermal"
+    )
+    corpus = tmp_path / PROJECT_DIR / "search"
+    corpus.mkdir(parents=True, exist_ok=True)
+    (corpus / "memo.md").write_text(
+        "---\nname: memo\ndescription: データベース接続の再試行回数上限値設定\n"
+        f"type: reference\n---\n\n# データベース設定\n\n{subject}\n{subject}\n"
+    )
+    return env
+
+
+_SUBJECT = (
+    "sprocket backlash gearbox rebuild shim stack chain tension measured cold "
+    "repeatability vendor argument torque thermal"
+)
+
+
+def test_a_lone_surrogate_in_the_prompt_still_records_an_outcome(tmp_path) -> None:
+    """The one outcome the `killed` machinery exists to make impossible.
+
+    `rec` is built before `logged`, `done()` and the SIGTERM handler exist, so
+    a `.encode()` that raises while building it propagates past `main()` and is
+    swallowed by `cli()`'s fail-open `contextlib.suppress(Exception)`. The run
+    then produces no pointers AND no record: not a refusal, not an error, an
+    absence. Every other failure on this path leaves a line in the log saying
+    which one it was, and the whole soak analysis is built on that being true.
+
+    A lone surrogate in a prompt is not exotic — `json.load` produces one from
+    an escaped `\\udXXX` in the harness's own payload.
+    """
+    env = _cjk_store(tmp_path)
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+
+    def drive(prompt: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps({"session_id": "sur1", "prompt": prompt}),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+
+    # Non-vacuity first: the same prompt without the surrogate injects.
+    clean = drive(_SUBJECT)
+    assert clean.returncode == 0 and clean.stdout, clean.stderr
+    assert log.is_file() and log.read_text().splitlines()
+
+    before = len(log.read_text().splitlines())
+    out = drive(_SUBJECT + json.loads('"\\ud800"'))
+    assert out.returncode == 0, out.stderr
+    after = log.read_text().splitlines()
+    assert len(after) > before, "the run left NO record at all"
+    assert json.loads(after[-1]).get("outcome"), after[-1]
+
+
+def test_delivery_survives_a_stdout_that_is_not_utf8(tmp_path) -> None:
+    """The size check and the write have to agree about what a byte is.
+
+    `_task_emission` measures `text.encode("utf-8")` and refuses anything past
+    `PIPE_BUFFER_BOUND`; `sys.stdout.write` then encoded with whatever the
+    STREAM was configured with, which is the environment's choice and not
+    memkit's. Under `PYTHONIOENCODING=ascii` an ordinary CJK description raises
+    UnicodeEncodeError from inside the SIGTERM-masked window, past the narrow
+    `(BrokenPipeError, OSError)` catch — so the subagent receives no rewrite,
+    the CLI still exits 0, and the record blames the hook (`task:error`)
+    instead of naming a cause. Both channels, because both write the same way.
+    """
+    env = dict(_cjk_store(tmp_path), PYTHONIOENCODING="ascii")
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+
+    # Bytes out, deliberately: the question is what reached the pipe, and
+    # decoding it here would ask this test's encoding rather than the hook's.
+    prompt = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "enc1", "prompt": _SUBJECT}).encode(),
+        capture_output=True,
+        timeout=60,
+        env=env,
+    )
+    assert prompt.returncode == 0, prompt.stderr
+    assert "データベース".encode() in prompt.stdout, prompt.stdout[:200]
+
+    task = _spawn(env, _SUBJECT + " " + "Investigate every measurement. " * 12)
+    assert task.returncode == 0, task.stderr
+    assert task.stdout.strip(), "no updatedInput reached the subagent"
+    delivered = json.loads(task.stdout)["hookSpecificOutput"]["updatedInput"]["prompt"]
+    assert "データベース" in delivered, delivered[-300:]
+    outcomes = [json.loads(ln).get("outcome") for ln in log.read_text().splitlines()]
+    assert "error" not in outcomes and "task:error" not in outcomes, outcomes
 
 
 def test_a_brief_told_the_list_is_short_is_told_how_short(tmp_path) -> None:
