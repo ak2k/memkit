@@ -47,6 +47,7 @@ import stat
 import string
 import subprocess
 import sys
+import textwrap
 import time
 import unicodedata
 from pathlib import Path
@@ -5769,7 +5770,13 @@ def _hook_outcomes() -> set[str]:
     it is written. A record emitted some other way is one the gate cannot see,
     and the gate passing is then a statement about nothing.
     """
-    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    return _outcomes_in(Path(hook.__file__).read_text(encoding="utf-8"))
+
+
+def _outcomes_in(source: str) -> set[str]:
+    """`_hook_outcomes` over arbitrary source, so the reader itself can be
+    driven on a module carrying a shape the hook does not."""
+    tree = ast.parse(source)
     # BOTH hook entry points. `_prompt_main` serves the prompt, `_task_main`
     # serves a subagent brief, and each has its own `done`. Reading only one was
     # exactly the blindness this function exists to prevent, one function
@@ -5963,6 +5970,61 @@ def test_the_readme_lists_every_outcome_the_hook_can_write(tmp_path) -> None:
     )
     for gate in returned:
         assert f"`{gate}`" in table, gate
+
+def test_the_outcome_reader_fails_on_an_emitter_it_cannot_attribute() -> None:
+    """The negative control the vocabulary reader did not have.
+
+    It only ever LOOKED at a call whose `func` was a plain `ast.Name` equal to
+    `done`; anything reached through an alias (`emit = done; emit("task:x")`)
+    or an attribute was `continue`d past rather than raised on. No call site
+    aliases it today, so this was not a live miss — it is the "a guard that
+    cannot see what it guards" shape this file has been caught by repeatedly,
+    and a future outcome added through a trivial refactor would ship without
+    failing this test, the README enumeration, or the downstream collector
+    that mirrors this logic. Three supposedly independent checks, one blind
+    spot.
+
+    Driven on a synthetic module rather than on the hook, because the point is
+    what the READER does with a shape the hook does not currently contain.
+    """
+    aliased = textwrap.dedent(
+        '''
+        def _prompt_main(payload, t0):
+            def done(outcome, concludes=True, /, **kw):
+                _soak_log(dict(kw, outcome=outcome))
+            emit = done
+            emit("smuggled")
+
+        def _task_main(payload, t0):
+            def done(outcome, /, **kw):
+                _soak_log(dict(kw, outcome=outcome))
+            done("task:ordinary")
+
+        def prompt_gate(text):
+            return None
+
+        def task_gate(text):
+            return None
+
+        def main():
+            def done(outcome, /, **kw):
+                _soak_log(dict(kw, outcome=outcome))
+            done("main:ordinary")
+
+        def search_cli(argv):
+            _soak_log({"outcome": "cli:searched"})
+        '''
+    )
+    with pytest.raises(AssertionError, match="bound to a name"):
+        _outcomes_in(aliased)
+
+    # Non-vacuity: the same module without the alias reads cleanly, so the
+    # refusal above is the alias's and not the shape of the fixture.
+    plain = aliased.replace("    emit = done\n", "").replace(
+        '    emit("smuggled")\n', ""
+    )
+    assert _outcomes_in(plain) == {"task:ordinary", "main:ordinary"}
+
 
 def test_every_outcome_the_hook_writes_is_named_where_it_is_written() -> None:
     """`dup-registration` was written by a bare `_soak_log` dict literal, so
