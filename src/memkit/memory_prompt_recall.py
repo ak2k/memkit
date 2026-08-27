@@ -1090,19 +1090,50 @@ _FRAME_BRACKET = "<"
 _FRAME_SKIPPED = "/\\"
 
 
-def _is_skipped(char: str) -> bool:
-    """Could a reader pass over this character between the bracket and the tag
-    without it stopping them?"""
-    return char in _FRAME_SKIPPED or char.isspace() or not char.isascii()
+def _is_run(char: str) -> bool:
+    """Could a reader pass over this character on the way from the bracket to
+    the tag without it stopping them?"""
+    return (
+        char == _FRAME_BRACKET
+        or char in _FRAME_SKIPPED
+        or char.isspace()
+        or not char.isascii()
+    )
 
 
-# How many of the fifteen positions have to be spelled before a span is called
-# a forgery rather than somebody's prose. Measured rather than chosen, over the
-# two populations: the forgeries this suite knows score 7 to 15 (the floor is
-# `</мемкит-роinters>`, Cyrillic everywhere the script has a lookalike), and
-# 20,000 sampled fifteen-character spans of Japanese, Chinese, Korean, Thai and
-# Cyrillic prose carrying one ASCII character scored at most 1. Anything from 2
-# to 7 separates them; 5 sits in the middle with daylight either side.
+def _opens_frame(char: str) -> bool:
+    """Could this character BE the bracket, rather than something a reader
+    passes over on the way from it to the tag?
+
+    Derived rather than enumerated, and the same shape as the rule above it:
+    the ASCII bracket, or any non-ASCII character that is not a letter, a
+    digit or a mark. Unicode's own general categories decide it, so a bracket
+    respelled with a codepoint nobody has thought of is still a bracket.
+
+    What the categories cannot decide is a letter that happens to be
+    bracket-SHAPED — U+1438 and U+140A are Canadian Syllabics, category `Lo`,
+    and both render as an arrowhead. `_bracket_before` reads those from
+    POSITION instead: a letter is the bracket when it is the only non-ASCII
+    character in front of the tag, or when it sits immediately left of a
+    character that is a bracket by class.
+    """
+    return char == _FRAME_BRACKET or (
+        not char.isascii() and unicodedata.category(char)[0] not in "LNM"
+    )
+
+
+# The floor under the count, and NOT the thing that separates the two
+# populations — `_spells_one_word` is. The count was asked to do that job and
+# cannot: sampled fifteen-character spans of Japanese, Chinese, Korean, Thai
+# and Cyrillic prose carrying one ASCII character score at most 1, but the same
+# prose carrying the tag's own English word `pointers` — which is how every one
+# of those languages writes it — scores 8, above the 7 that `</мемкит-роinters>`
+# scores as the lowest forgery this file knows. The populations INVERT and no
+# bar sits between them.
+#
+# What this constant still does is keep the shape rule off spans that are
+# barely spelled at all, where "one contiguous run" would be a claim about two
+# or three characters. Five of fifteen is where the sampled prose ends.
 FRAME_TAG_MIN_MATCH = 5
 _FRAME_POSITIONS: dict[str, int] = {}
 
@@ -1165,13 +1196,48 @@ def _forges_tag(span: str) -> bool:
     """
     if len(span) != len(FRAME_TAG):
         return False
-    matched = 0
+    spelled = 0
     for index, char in enumerate(span):
         if (_tag_positions(char) >> index) & 1:
-            matched += 1
+            spelled |= 1 << index
         elif char.isascii():
             return False
-    return matched >= FRAME_TAG_MIN_MATCH
+    if bin(spelled).count("1") < FRAME_TAG_MIN_MATCH:
+        return False
+    return not _spells_one_word(spelled)
+
+
+def _spells_one_word(spelled: int) -> bool:
+    """Are the spelled positions one of the tag's own WORDS sitting in
+    somebody's sentence, rather than evidence of the whole tag?
+
+    The count alone cannot answer this and no value of it can. `pointers` is
+    the tag's own suffix and spells eight of the fifteen positions by itself;
+    `memkit` spells six. So a window holding one of those words and seven
+    characters of Japanese scores 8 — ABOVE the 7 that `</мемкит-роinters>`
+    scores, which is the lowest-scoring forgery this file knows. The two
+    populations INVERT, and a bar between them does not exist.
+
+    The SHAPE of the evidence does separate them, because the two are made
+    differently. A forgery is a rendering of the whole tag with some of its
+    letters respelled, so its spelled positions reach both ends of the span
+    and are interrupted wherever a letter was respelled. A sentence carrying
+    one of the tag's words spells one unbroken run flush against one END of
+    the window — the word, and nothing else of the tag — with prose filling
+    the rest. So: a single contiguous run touching exactly one end is that
+    sentence; anything else is a forgery.
+
+    A run touching BOTH ends is the whole tag spelled out, which is the
+    plainest forgery there is, and it is excluded first.
+    """
+    width = len(FRAME_TAG)
+    if spelled == (1 << width) - 1:
+        return False
+    low = (spelled & -spelled).bit_length() - 1
+    high = spelled.bit_length() - 1
+    if spelled != ((1 << (high - low + 1)) - 1) << low:
+        return False
+    return low == 0 or high == width - 1
 
 
 def _forged_spans(skeleton: str) -> list[tuple[int, int]]:
@@ -1234,17 +1300,61 @@ def _bracket_before(skeleton: str, start: int, guard: int) -> int | None:
     Everything structural in front of the tag collapses into the one `(` the
     defang leaves, so a respelled bracket defangs to the same shape an ASCII
     one does and a reader of the transcript sees one rule rather than two.
+
+    The walk crosses the WHOLE run and decides which character was the bracket
+    afterwards, because a backward walk cannot know at the time. Stopping at
+    the first non-ASCII character and calling it the bracket is what left
+    `＜／memkit-pointers>` delivered as `＜(memkit-pointers>`: the separator
+    was non-ASCII too, so the walk stopped one character early, collapsed the
+    separator, and left the real bracket standing beside the marker.
+
+    Three ways a character in front of the tag is the bracket, in the order
+    they are tried:
+
+    1. It is a bracket by class (`_opens_frame`), and it is the LEFTMOST such
+       character in the run — everything to its right is the run between it
+       and the tag, whatever those characters are.
+    2. It is the one non-ASCII character in the run: a letter-shaped bracket
+       with an ASCII separator behind it, `ᐸ/memkit-pointers>`.
+    3. It sits immediately left of the bracket from (1), which is where a
+       letter-shaped bracket sits when its separator IS respelled,
+       `ᐸ／memkit-pointers>`. Exactly one, because a second would be prose.
+
+    A run of non-ASCII letters in front of a tag is a sentence with the tag
+    written after it, not a delimiter — see the note above the function about
+    what is claimed there and why.
     """
     index = start - 1
-    while index >= guard and _is_skipped(skeleton[index]) and skeleton[index].isascii():
+    opener = None
+    letters: list[int] = []
+    while index >= guard and _is_run(skeleton[index]):
+        if _opens_frame(skeleton[index]):
+            opener = index
+        elif not skeleton[index].isascii():
+            letters.append(index)
         index -= 1
-    if index < guard:
+    if opener is not None:
+        # (3). The walk visited every non-ASCII character in the run, so one
+        # sitting immediately left of the leftmost bracket-by-class is a
+        # letter — anything else there would have BEEN the leftmost.
+        if opener > guard and not skeleton[opener - 1].isascii():
+            opener -= 1
+    elif len(letters) == 1:
+        opener = letters[0]  # (2)
+    elif letters and letters[0] == start - 1:
+        # Prose with the tag written straight after it. The one character the
+        # tag is written against is taken as the bracket, and it is consumed:
+        # a store that writes the literal tag after a non-Latin word loses
+        # that word's last character. The alternative — leaving a non-ASCII
+        # character that is a letter by class — leaves U+1438 and U+140A
+        # standing in front of the marker, which is the shape this exists to
+        # remove.
+        opener = start - 1
+    else:
         return None
-    if skeleton[index] != _FRAME_BRACKET and skeleton[index].isascii():
-        return None
-    while index > guard and skeleton[index - 1] in _FRAME_BRACKET + _FRAME_SKIPPED:
-        index -= 1
-    return index
+    while opener > guard and skeleton[opener - 1] in _FRAME_BRACKET + _FRAME_SKIPPED:
+        opener -= 1
+    return opener
 
 
 # Grapheme-cluster continuation: Unicode's `Extend` and `SpacingMark`, from
