@@ -426,7 +426,10 @@ def test_nothing_that_can_refuse_runs_before_the_guard(profile, monkeypatch) -> 
         for node in ast.walk(statement)
         if isinstance(node, ast.Call)
     ]
-    assert calls == ["Machine"], calls
+    # NOTHING, not even `Machine()`. The allowance for that one call is what
+    # left the line that reads the session directory outside the guard, and
+    # the session directory can be removed under this process.
+    assert calls == [], calls
 
     # And behaviourally, at both sites, so the shape above is not the only
     # thing standing.
@@ -800,6 +803,31 @@ def test_the_refusal_reaches_the_caller_named_and_with_a_reason(profile) -> None
     assert "not absolute" in out.stderr
 
 
+def test_a_session_directory_removed_underfoot_is_an_exit_code_not_a_traceback(
+    profile, monkeypatch
+) -> None:
+    """`machine = Machine()` sat ABOVE the try that was widened to hold
+    everything that can refuse.
+
+    The directory a process stands in can be removed under it — an agent's
+    session workdir cleaned up by something else, a torn-down worktree — and
+    `Machine.__init__` reads it. Both commands promise a closed set of exit
+    codes on every path, and neither `bin/memkit` nor `cli.main` adds a
+    handler, so the traceback reached the caller verbatim.
+
+    `os.getcwd` is faked rather than the directory really removed: on macOS
+    the real syscall takes about 38 seconds to fail, which would make this
+    case a timeout rather than a test.
+    """
+    def gone():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "getcwd", gone)
+    assert init.run(_args(dry_run=True)) in (init.EXIT_OK, init.EXIT_REFUSED)
+    # And doctor answers rather than raising, from the same construction.
+    assert doctor.Machine() is not None
+
+
 def test_every_refusal_in_the_inventory_is_reachable() -> None:
     """A named refusal nothing can produce is a name in a docstring.
 
@@ -826,6 +854,12 @@ def test_every_refusal_in_the_inventory_is_reachable() -> None:
         "stale-digest": "test_a_stale_digest_refuses_and_writes_nothing",
         "changed-underfoot": (
             "test_a_file_that_arrived_after_the_plan_is_not_written_over"
+        ),
+        # Raised by `run()` AROUND `build_plan`, so it is reached by running
+        # the command rather than by building a plan.
+        "unreadable-machine": (
+            "test_a_session_directory_removed_underfoot_is_an_exit_code_"
+            "not_a_traceback"
         ),
     }
     for name, case in apply_time.items():

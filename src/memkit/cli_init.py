@@ -1259,13 +1259,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    machine = Machine()
-    # EVERYTHING that can refuse is inside this, not the two call sites that
-    # were known to. A refusal raised one line above it printed a traceback
-    # and exited 1 — the code the published table reads as "memkit could not
-    # start at all" — so an agent that met a decision went off to reinstall a
-    # working install.
+    # EVERYTHING that can refuse is inside this, INCLUDING the line that reads
+    # the machine. A refusal raised one line above it printed a traceback and
+    # exited 1 — the code the published table reads as "memkit could not start
+    # at all" — so an agent that met a decision went off to reinstall a
+    # working install. `Machine()` was that line: it reads the session
+    # directory, which can be removed under this process.
     try:
+        machine = Machine()
         config_path = _resolve_config(machine, getattr(args, "config", None))
         plan = build_plan(
             machine,
@@ -1276,6 +1277,20 @@ def run(args: argparse.Namespace) -> int:
         )
     except Refusal as refusal:
         return _refuse(refusal)
+    except OSError as exc:
+        # The class the filesystem raises when it moves under a process — a
+        # removed session directory is the reproduced one. NOT `Exception`:
+        # exit 5 says "memkit decided not to", and mapping an unexpected
+        # failure to it would file a defect under a decision. Nothing has been
+        # written at this point, so refusing is honest for what this catches.
+        return _refuse(
+            Refusal(
+                "unreadable-machine",
+                f"nothing could be read about this machine ({exc}). The "
+                "directory this session stands in may have been removed under "
+                "it — `cd` somewhere that exists and run this again.",
+            )
+        )
     if getattr(args, "dry_run", False):
         print(plan.render())
         return EXIT_OK

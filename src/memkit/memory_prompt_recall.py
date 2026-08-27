@@ -310,7 +310,14 @@ def _trusted_path_entries() -> list:
     clone of a pinned commit: it may supply memkit's wrappers, not the
     harness binary memkit asks questions of.
     """
-    cwd = os.path.realpath(os.getcwd())
+    try:
+        cwd = os.path.realpath(os.getcwd())
+    except OSError:
+        # The session directory can be removed under this process. Nothing
+        # can then be said about which entries are inside it, and the safe
+        # direction for a rule about what may be EXECUTED is to admit
+        # nothing rather than to admit everything.
+        return []
     payload = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     payload_real = os.path.realpath(payload) if payload else ""
     entries = []

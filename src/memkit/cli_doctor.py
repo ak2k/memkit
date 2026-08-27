@@ -354,7 +354,17 @@ def _option_in(scope: Settings) -> str:
 def settings_scopes() -> list[Settings]:
     """Every scope, most authoritative first."""
     user = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    cwd = os.getcwd()
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        # THE DIRECTORY THIS PROCESS STANDS IN CAN BE REMOVED UNDER IT — an
+        # agent's session workdir cleaned up by something else, a torn-down
+        # worktree. `os.getcwd()` then raises, and this function runs from
+        # `Machine.__init__`, so an unguarded call turns both commands into a
+        # traceback where their published tables promise a closed set of exit
+        # codes. A scope whose path cannot be spelled is a scope with no file
+        # in it, which is the same answer as an install that has none.
+        cwd = ""
     # THE TRUSTED SCOPE'S LOCATION IS AN ENVIRONMENT VARIABLE. Whatever can set
     # `$CLAUDE_CONFIG_DIR` — direnv in a checkout, a wrapper script — decides
     # where the `user` scope is read from, so pointed inside the session's own
@@ -367,11 +377,12 @@ def settings_scopes() -> list[Settings]:
         Settings("user", os.path.join(user, SETTINGS_NAME),
                  adopter_owned=user_owned),
         Settings(
-            "project", os.path.join(cwd, ".claude", SETTINGS_NAME),
+            "project", os.path.join(cwd, ".claude", SETTINGS_NAME) if cwd else "",
             adopter_owned=False,
         ),
         Settings(
-            "local", os.path.join(cwd, ".claude", LOCAL_SETTINGS_NAME),
+            "local",
+            os.path.join(cwd, ".claude", LOCAL_SETTINGS_NAME) if cwd else "",
             adopter_owned=False,
         ),
     ]
@@ -3113,7 +3124,31 @@ def run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return EXIT_USAGE
-    machine = Machine(getattr(args, "config", None))
+    try:
+        machine = Machine(getattr(args, "config", None))
+    except Exception as exc:  # noqa: BLE001 - the alternative is a traceback
+        # `collect()` wraps every producer, and this line sat above it. The
+        # docstring there says a traceback in place of the other twenty
+        # answers is the worst thing this command can do, and a `Machine`
+        # that cannot be built is exactly when that was still reachable.
+        print(
+            envelope(
+                [
+                    Check(
+                        "install",
+                        UNKNOWN,
+                        f"nothing could be read about this machine: "
+                        f"{type(exc).__name__}: {exc}",
+                        "Run this from a directory that exists — the one this "
+                        "session stands in may have been removed under it — "
+                        "and if it does exist, report this with the message "
+                        "above.",
+                        actor=USER,
+                    )
+                ]
+            )["report"]
+        )
+        return EXIT_PROBLEMS
     checks = collect(machine, wanted)
     blob = envelope(checks)
     if getattr(args, "as_json", False):
