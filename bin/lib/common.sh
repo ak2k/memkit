@@ -317,11 +317,12 @@ memkit_resolve_config() {
 
 # The interpreter, preferring the one the config recorded.
 #
-# PATH probing alone hands the process that reads every prompt to whatever
-# direnv/mise/venv shim the launching shell happened to carry, and the nix
-# channel pins its interpreter absolutely — the plugin channel must not
-# silently drop that guarantee. So init records what it resolved, and this
-# prefers it.
+# A lookup over the session's PATH hands the process that reads every prompt to
+# whatever direnv/mise/venv shim the launching shell happened to carry, and the
+# nix channel pins its interpreter absolutely — the plugin channel must not
+# silently drop that guarantee. So init records what it resolved, this prefers
+# it, and what it falls back to is a fixed list of absolute paths rather than a
+# search.
 #
 # "Unusable" is `not an executable file`, deliberately not `fails to run`:
 # establishing the second costs a fork on every prompt, and the failure it
@@ -355,8 +356,31 @@ memkit_resolve_config() {
 memkit_interpreter_refused() {
     memkit_stderr \
         "the config records \"interpreter\": \"$1\", which $2." \
-        "Falling back to the python3 on PATH; retrieval is unaffected."
+        "Falling back to a pinned system python; retrieval is unaffected."
 }
+
+# The pinned fallback, for an install whose config records no interpreter — a
+# fresh one, before `memkit init` has written the field it writes.
+#
+# ABSOLUTE PATHS, NOT A LOOKUP. `command -v python3` reads the session's own
+# PATH, which a checkout steers through direnv, a checked-in venv or a
+# `node_modules/.bin`; what came back was exec'd on every prompt, before any
+# rule in this package existed to have an opinion about it. There is no way to
+# filter that lookup correctly here: POSIX sh under this project's own
+# zero-external-command rule has no `realpath`, so a filter is a string prefix
+# test against a logical `$PWD`, and its success path — every entry rejected —
+# prints the empty string, which POSIX reads as the current directory.
+#
+# So this is an ALLOW-LIST, and its incompleteness is a support ticket rather
+# than a vulnerability: an install it does not cover REFUSES, visibly, and the
+# refusal names the repair — record an absolute `interpreter` in the config,
+# which is what `memkit init` does unprompted. The alternative failure is
+# silence plus somebody else's python.
+MEMKIT_SYSTEM_PYTHONS="/usr/bin/python3
+/opt/homebrew/bin/python3
+/usr/local/bin/python3
+/run/current-system/sw/bin/python3
+/nix/var/nix/profiles/default/bin/python3"
 
 # ABSOLUTE, or it does not count. A slashless or relative value is two
 # different files depending on who resolves it: `[ -x ]` below tests it against
@@ -457,12 +481,11 @@ memkit_resolve_interpreter() {
         fi
         memkit_interpreter_refused "$_recorded" "is not an executable file"
     fi
-    for _candidate in python3 python; do
-        _path=$(command -v "$_candidate" 2>/dev/null) || continue
-        [ -x "$_path" ] && {
-            printf '%s\n' "$_path"
+    for _candidate in $MEMKIT_SYSTEM_PYTHONS; do
+        if [ -f "$_candidate" ] && [ -x "$_candidate" ]; then
+            printf '%s\n' "$_candidate"
             return 0
-        }
+        fi
     done
     return 1
 }
@@ -481,8 +504,12 @@ memkit_resolve_interpreter() {
 # exits 0 whatever happens — see the exit contract in `memkit-hook`.
 memkit_no_interpreter_message() {
     memkit_stderr \
-        "no python3 on PATH and none recorded in the config, so the" \
-        "recall hook cannot run. Install python 3.9 or newer, or record an" \
-        "absolute interpreter path as \"interpreter\" in the memkit config." \
+        "no interpreter is recorded in the config and none of the pinned" \
+        "system paths exists, so the recall hook cannot run. Record an" \
+        "absolute python 3.9-or-newer path as \"interpreter\" in the memkit" \
+        "config — \`memkit init\` writes that field for you. A python found" \
+        "only through this session's PATH is deliberately not used: that" \
+        "lookup is one a checkout steers, and what it returns would run on" \
+        "every prompt. Pinned paths tried: $MEMKIT_SYSTEM_PYTHONS." \
         "Config in use: ${1:-<none resolved>}"
 }

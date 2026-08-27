@@ -111,12 +111,17 @@ README's *Derived state* has the table.
   is ever found by a PATH lookup the session's own `PATH` could steer — so a
   checked-in `node_modules/.bin`, a direnv-exported venv or an empty `PATH`
   entry cannot supply the `claude`, the `git` or the `python3` it asks
-  questions of, and git runs with every configuration key that names a program
-  overridden, because a repository's own `.git/config` is a way to choose one
-  too. **One program is exempt, and it is the first one**: `bin/memkit` finds
-  the python that runs memkit with the shell's own lookup, since an install
-  whose only python3 is a project venv would otherwise not start at all. Every
-  program found after that point is resolved against the filtered entries.
+  questions of. The commands themselves are built rather than assembled: git
+  runs one of a closed set of templates with every configuration key that
+  names a program overridden, and the checker's command is an interpreter this
+  process resolved plus a constant, so no input contributes a word to either.
+  The child's environment is built from a short list of what a program needs
+  rather than scrubbed of what it must not have.
+  **No program is exempt any more.** The python that runs memkit used to be
+  found by the shell's own lookup, which is the one place a session's `PATH`
+  still chose a program; the wrappers now take it from the `interpreter` the
+  config records, or from a fixed list of absolute system paths, or they
+  refuse and say which paths they tried.
   A `memkitConfig` recorded by `.claude/settings.json` in the
   session's directory is reported and never followed, and `--config` naming a
   config no route on this install reads makes the hook probe report `UNKNOWN`
@@ -147,7 +152,16 @@ those come from the config, and the config comes from you:
 - The `interpreter` field — the binary exec'd on every prompt — is read from
   that config and refused unless it is an absolute, canonical path to an
   executable file. Relative paths and the process-relative namespaces
-  (`/proc/self/...`, `/dev/fd/...`) are refused by name.
+  (`/proc/self/...`, `/dev/fd/...`) are refused by name. With no such field,
+  the wrappers take the first that exists from a fixed list of absolute system
+  paths and refuse if none does; they never search `PATH` for it.
+- **The every-prompt path starts no process at all** except that one `exec`.
+  Where the repository is, and which worktrees share it, are filesystem facts
+  and are read as filesystem facts — so the whole class of routes that reach a
+  program through git's configuration is absent from the path that serves
+  prompts rather than enumerated and refused there. `memory_prompt_recall.py`
+  does not import `subprocess`, which is a thing you can check by reading its
+  first thirty lines.
 
 **Two residuals, because the claim above has a ceiling and the source names
 it.**
@@ -177,7 +191,7 @@ it.**
 So the payload is code you can read that acts on decisions you made elsewhere,
 within those two limits.
 The thing worth auditing before installing is not this tree's size; it is
-`bin/memkit-hook` and `bin/lib/common.sh`, which are **591 lines of POSIX
+`bin/memkit-hook` and `bin/lib/common.sh`, which are **618 lines of POSIX
 shell** between them — mostly comment — and run no command that is not a shell
 builtin.
 

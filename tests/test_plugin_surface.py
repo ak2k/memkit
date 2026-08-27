@@ -917,6 +917,36 @@ def root(tmp_path: Path) -> Path:
     return plugin
 
 
+def _repinned(root: Path, pythons: list) -> Path:
+    """`root` with the wrapper's pinned interpreter list replaced.
+
+    A REAL EDIT to a copy of `bin/lib/common.sh`, not an environment override,
+    because the list is deliberately not readable from the environment: it is
+    assigned unconditionally when the library is sourced, so an exported value
+    of the same name is overwritten before anything reads it. That is the
+    property the whole change rests on, and a test knob that punched through it
+    would be the ambient channel back under another name.
+
+    What this buys is the two states a machine with `/usr/bin/python3` on it
+    cannot otherwise be put into: no interpreter anywhere, and an interpreter
+    that is the case's own.
+    """
+    real = (root / "bin" / "lib" / "common.sh").resolve()
+    text = real.read_text(encoding="utf-8")
+    body = "\n".join(str(p) for p in pythons)
+    swapped = re.sub(
+        r'MEMKIT_SYSTEM_PYTHONS="[^"]+"',
+        f'MEMKIT_SYSTEM_PYTHONS="{body}"',
+        text,
+        count=1,
+    )
+    assert swapped != text, "the pinned list was not found to replace"
+    copy = root / "bin" / "lib" / "common.sh"
+    copy.unlink()
+    copy.write_text(swapped, encoding="utf-8")
+    return root
+
+
 def _shim(directory: Path, name: str, body: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
@@ -953,7 +983,17 @@ def _run(
 
 
 class Shim:
-    """A PATH holding one fake `python3`, and a reader for what it saw.
+    """One fake `python3`, and a reader for what it saw.
+
+    Reached the way a real install reaches its own interpreter — recorded in
+    the config, which is what `memkit init` writes — because the wrappers no
+    longer search the session's PATH for one. `_config_file` puts the record
+    in for every case that has a shim beside it. A case with no config
+    therefore cannot observe through this at all, and reads the wrapper's own
+    decision off `sh -x` instead (`_decided_config`).
+
+    Its directory is still the whole of PATH in every case, which keeps the
+    other claim honest: the wrappers need no external command.
 
     A class rather than attributes bolted onto a returned function: the shim's
     directory and its output file are things a case reaches for, and hanging
@@ -998,9 +1038,103 @@ def shimmed(tmp_path: Path) -> Shim:
     return Shim(tmp_path)
 
 
+def _pinned_pythons() -> list[str]:
+    """The wrapper's fallback list, read out of the wrapper rather than typed
+    a second time here."""
+    text = COMMON_SH.read_text(encoding="utf-8")
+    body = re.search(r'MEMKIT_SYSTEM_PYTHONS="([^"]+)"', text)
+    assert body, "the pinned interpreter list is not assigned a literal"
+    found = [line.strip() for line in body.group(1).splitlines() if line.strip()]
+    assert all(p.startswith("/") for p in found), found
+    return found
+
+
+class Decided:
+    """What a wrapper DECIDED, read off `sh -x`.
+
+    `config` is the value it settled `MEMKIT_CONFIG` to (or `<unset>`),
+    `interpreter` the path it settled on, `handoff` the argv it exec'd.
+    """
+
+    __slots__ = ("config", "interpreter", "handoff", "returncode", "stderr")
+
+    def __init__(self, out) -> None:
+        self.returncode = out.returncode
+        self.stderr = out.stderr
+        self.config = "<unset>"
+        self.interpreter = ""
+        self.handoff: list = []
+        for line in out.stderr.splitlines():
+            stripped = line.lstrip("+ ")
+            if stripped == "unset MEMKIT_CONFIG":
+                self.config = "<unset>"
+            elif stripped.startswith("MEMKIT_CONFIG="):
+                self.config = stripped.split("=", 1)[1]
+            elif stripped.startswith("PY="):
+                self.interpreter = stripped[3:]
+            elif stripped.startswith("exec "):
+                # `sh -x` quotes a word containing a space, so the trace is
+                # read with the shell's own splitting rather than on " ".
+                self.handoff = shlex.split(stripped[5:])
+
+
+def _decide(
+    root: Path, wrapper: str, env: dict, *args, cwd=None, expect_rc: int | None = 0
+) -> Decided:
+    """Run one wrapper under `sh -x` and read the decisions it made.
+
+    The shim cannot answer this question any more when NO config resolves. The
+    wrappers stopped searching the session's PATH for an interpreter — a lookup
+    a checkout steers, whose answer was exec'd on every prompt — and a config
+    is what records one, so a case with no config has no way to put its own
+    python in front of the wrapper. That is the point of the change, not a gap
+    in it.
+
+    So the decision is read where it is MADE. `sh -x` traces every command the
+    shell evaluated, `export` and `unset` alike, which is a stronger reading
+    than the shim's: it sees the wrapper's own act rather than the environment
+    a child happened to receive.
+    """
+    out = _run(root / "bin" / wrapper, *args, env=env, shell_trace=True, cwd=cwd)
+    if expect_rc is not None:
+        assert out.returncode == expect_rc, out.stderr
+    assert "MEMKIT_CONFIG" in out.stderr, (
+        "the trace never mentions the variable, so this reads nothing"
+    )
+    return Decided(out)
+
+
+def _decided_config(
+    root: Path, wrapper: str, env: dict, *args, cwd=None, expect_rc: int | None = 0
+) -> str:
+    decided = _decide(
+        root, wrapper, env, *args, cwd=cwd, expect_rc=expect_rc
+    )
+    # The wrapper reached the hand-off, so the decision is the one it acted on
+    # rather than one it made before refusing for another reason.
+    assert decided.handoff, decided.stderr[-600:]
+    return decided.config
+
+
 def _config_file(path: Path, **extra) -> Path:
+    """A config the wrappers can act on, shaped like one `memkit init` wrote.
+
+    That means it RECORDS AN INTERPRETER. The wrappers no longer resolve one
+    over the session's PATH — a lookup a checkout steers, whose answer was
+    exec'd on every prompt — so the shim fixture's python is reachable only
+    the way a real install reaches its own: written into the config. Found by
+    walking up from the config's own directory rather than passed at
+    thirty-odd call sites, because every case that has a shim keeps it in the
+    same place under `tmp_path`.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     blob = {"schema": hook.SCHEMA, "roots": {}, "stores": []}
+    if "interpreter" not in extra:
+        for parent in path.parents:
+            shim = parent / "shimbin" / "python3"
+            if shim.is_file():
+                blob["interpreter"] = str(shim)
+                break
     blob.update(extra)
     path.write_text(json.dumps(blob))
     return path
@@ -1049,15 +1183,16 @@ def test_a_config_inside_the_payload_is_not_a_rung(root, tmp_path, shimmed) -> N
     poisons what is served, and the interpreter half decides what runs at all,
     before anything has parsed a byte of JSON.
     """
-    _config_file(root / "memkit.json", interpreter=str(tmp_path / "evil"))
+    evil = tmp_path / "evil"
+    evil.write_text("#!/bin/sh\ntouch " + str(tmp_path / "EVIL-RAN") + "\n")
+    evil.chmod(0o755)
+    _config_file(root / "memkit.json", interpreter=str(evil))
     env = shimmed()
     assert "CLAUDE_PLUGIN_ROOT" not in env and "CLAUDE_PLUGIN_DATA" not in env
-    assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
-    seen = shimmed.read()
-    assert seen["MEMKIT_CONFIG"] == "<unset>", seen["MEMKIT_CONFIG"]
-    # The shim on PATH answered, i.e. the payload's file named no interpreter
-    # either. A rung reading it would have made this run the other one.
-    assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    assert _decided_config(root, "memkit-hook", env) == "<unset>"
+    # And the interpreter half: the payload's file named one and it did not
+    # run, so the file was not read as a config at all.
+    assert not (tmp_path / "EVIL-RAN").exists()
 
 
 def test_the_rungs_are_tried_in_order(root, tmp_path, shimmed) -> None:
@@ -1106,13 +1241,18 @@ def test_every_wrapper_answers_the_config_question_identically(
         CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
         MEMKIT_CONFIG=str(tmp_path / "ambient.json"),
     )
-    assert _run(root / "bin" / wrapper, *args, env=answered).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == str(config), wrapper
+    # No return code here: two of the three wrappers reach a real subcommand
+    # under a real interpreter now, and `memkit doctor` on a fixture profile
+    # legitimately exits 1. What is asserted is the wrapper's own decision and
+    # that it got as far as making the hand-off.
+    assert _decided_config(
+        root, wrapper, answered, *args, expect_rc=None
+    ) == str(config), wrapper
 
-    shimmed.out.unlink()
     ambient = shimmed(MEMKIT_CONFIG=str(_config_file(tmp_path / "ambient.json")))
-    assert _run(root / "bin" / wrapper, *args, env=ambient).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", wrapper
+    assert _decided_config(
+        root, wrapper, ambient, *args, expect_rc=None
+    ) == "<unset>", wrapper
 
 
 def test_no_rung_leaves_the_config_unset_rather_than_inherited(
@@ -1124,8 +1264,7 @@ def test_no_rung_leaves_the_config_unset_rather_than_inherited(
     inheriting it would make the plugin serve stores nobody pointed it at.
     """
     env = shimmed(MEMKIT_CONFIG=str(_config_file(tmp_path / "ambient.json")))
-    assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+    assert _decided_config(root, "memkit-hook", env) == "<unset>"
 
 
 def test_an_unset_data_dir_never_becomes_a_root_level_path(
@@ -1151,7 +1290,37 @@ def test_an_unset_data_dir_never_becomes_a_root_level_path(
         # builds is prefixed by an absolute directory, so the bare root-level
         # path can only appear through the empty expansion.
         assert not re.search(r"(?<![\w/])/memkit\.json\b", out.stderr), out.stderr
-        assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+        assert _decided_config(root, "memkit-hook", env, cwd=cwd) == "<unset>"
+
+
+def test_the_interpreter_the_hook_runs_is_never_found_by_searching(
+    root, tmp_path, shimmed
+) -> None:
+    """The every-prompt path's LAST process start, and who chooses it.
+
+    With no config, or with one that records no interpreter, the wrapper used
+    to exec whatever `command -v python3` returned over the session's own
+    unfiltered PATH — on every prompt, before any rule in this package existed
+    to have an opinion. A checkout that exports a `.direnv/bin` or ships a
+    `node_modules/.bin` therefore named the program that read every prompt.
+
+    Three claims, and the third is the one that makes the other two hold:
+    a python on PATH is not consulted; a pinned absolute path is; and the
+    pinned list itself is not readable from the environment.
+    """
+    hostile = _shim(tmp_path / "hostile", "python3", "echo pwned")
+    env = shimmed()
+    env["PATH"] = os.pathsep.join([str(hostile.parent), str(shimmed.dir)])
+    decided = _decide(root, "memkit-hook", env)
+    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert str(hostile) != decided.interpreter
+
+    # And the list is not an environment input. Exporting the name is the
+    # obvious way to try to steer it, and the assignment in the library runs
+    # unconditionally when it is sourced, so an inherited value never survives
+    # to be read.
+    steered = dict(env, MEMKIT_SYSTEM_PYTHONS=str(hostile))
+    assert _decide(root, "memkit-hook", steered).interpreter == decided.interpreter
 
 
 def test_a_recorded_interpreter_wins_over_the_path(root, tmp_path, shimmed) -> None:
@@ -1171,18 +1340,28 @@ def test_a_recorded_interpreter_wins_over_the_path(root, tmp_path, shimmed) -> N
     assert marker.is_file(), "the PATH interpreter answered instead of the recorded one"
 
 
-def test_an_unusable_recorded_interpreter_falls_back_to_the_path(
+def test_an_unusable_recorded_interpreter_falls_back_to_a_pinned_python(
     root, tmp_path, shimmed
 ) -> None:
     """An interpreter recorded at init and gone by now — a venv deleted, a
     homebrew python upgraded out from under its path — must not take retrieval
-    down with it."""
+    down with it.
+
+    What it falls back TO is a fixed list of absolute system paths, not a
+    lookup: the fallback used to be `command -v python3` over the session's own
+    PATH, so an install whose recorded interpreter had moved handed the process
+    that reads every prompt to whatever the checkout put in front.
+    """
     config = _config_file(
         tmp_path / "gone.json", interpreter=str(tmp_path / "no" / "such" / "python3")
     )
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-    assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == str(config)
+    decided = _decide(root, "memkit-hook", env)
+    assert decided.config == str(config)
+    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    # The shim is on PATH and is NOT what answered, which is the whole point.
+    assert str(shimmed.dir) not in decided.interpreter, decided.interpreter
+    assert not shimmed.out.exists()
 
 
 def test_a_relative_recorded_interpreter_is_not_a_path_into_the_session_dir(
@@ -1203,12 +1382,12 @@ def test_a_relative_recorded_interpreter_is_not_a_path_into_the_session_dir(
     _shim(session / "interp", "python3", f'echo ran > "{marker}"')
     config = _config_file(tmp_path / "rel.json", interpreter="./interp/python3")
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, out.stderr
+    decided = _decide(root, "memkit-hook", env, cwd=session)
     assert not marker.exists(), "a config named an interpreter inside the cwd"
-    assert shimmed.read()["argv"] == str(
-        root / "src" / "memkit" / "memory_prompt_recall.py"
-    )
+    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert decided.handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], decided.handoff
 
 
 def test_a_recorded_interpreter_the_path_cannot_answer_still_exits_zero(
@@ -1230,16 +1409,23 @@ def test_a_recorded_interpreter_the_path_cannot_answer_still_exits_zero(
         assert found, name
         (tools / name).symlink_to(found)
     session = tmp_path / "session"
-    _shim(session, "python3", "exit 0")
+    marker = tmp_path / "session-python-ran.txt"
+    _shim(session, "python3", f'echo ran > "{marker}"')
     config = _config_file(tmp_path / "bare.json", interpreter="python3")
     env = {
         "PATH": str(tools),
         "HOME": str(tmp_path / "home"),
         "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config),
     }
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, (out.returncode, out.stderr)
-    assert "no python3" in out.stderr
+    decided = _decide(root, "memkit-hook", env, cwd=session)
+    # The field is refused BY SHAPE and the pinned fallback answers, so the
+    # slashless word never reaches `exec` at all — which is where the 127 came
+    # from, and where a `python3` sitting in the session's own directory would
+    # have been found instead.
+    assert not marker.exists(), "the session directory's python3 answered"
+    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert "is not an absolute path" in decided.stderr, decided.stderr[-400:]
+    assert "pinned system python" in decided.stderr, decided.stderr[-400:]
 
 
 def test_a_directory_recorded_as_the_interpreter_is_not_exec_d(
@@ -1260,12 +1446,12 @@ def test_a_directory_recorded_as_the_interpreter_is_not_exec_d(
     a_directory.mkdir()
     config = _config_file(tmp_path / "dir.json", interpreter=str(a_directory))
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-    out = _run(root / "bin" / "memkit-hook", env=env)
-    assert out.returncode == 0, (out.returncode, out.stderr)
-    # The PATH probe answered, which is the fallback the refusal promises.
-    assert shimmed.read()["argv"] == str(
-        root / "src" / "memkit" / "memory_prompt_recall.py"
-    )
+    decided = _decide(root, "memkit-hook", env)
+    # The pinned fallback answered, which is what the refusal promises.
+    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert decided.handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], decided.handoff
     # And every wrapper, because each one has its own exit vocabulary and 126
     # is in none of them.
     for wrapper, args in (
@@ -1295,10 +1481,8 @@ def test_a_relative_config_path_is_not_a_path_into_the_session_dir(
     _shim(session, "python3", f'echo used > "{marker}"')
     _config_file(session / "memkit.json", interpreter=str(session / "python3"))
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG="memkit.json")
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, out.stderr
+    assert _decided_config(root, "memkit-hook", env, cwd=session) == "<unset>"
     assert not marker.exists(), "the session directory named the interpreter"
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
 
 
 # --- the dependency contract -------------------------------------------------
@@ -1545,18 +1729,18 @@ def test_a_config_this_process_cannot_open_says_so_rather_than_going_quiet(
     """
     shut = _config_file(tmp_path / "shut.json")
     shut.chmod(0o000)
+    env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(shut))
     try:
-        out = _run(
-            root / "bin" / "memkit-hook",
-            env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(shut)),
-        )
+        out = _run(root / "bin" / "memkit-hook", env=env)
+        # The hook did not go on to use it — the rung was abandoned, not
+        # retried.
+        decided = _decided_config(root, "memkit-hook", env)
     finally:
         shut.chmod(0o644)
     assert out.returncode == 0, (out.returncode, out.stderr)
     assert "cannot be read" in out.stderr, out.stderr
     assert "does not exist" not in out.stderr, out.stderr
-    # The hook did not go on to use it — the rung was abandoned, not retried.
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+    assert decided == "<unset>"
 
 
 def test_a_relative_plugin_data_dir_is_not_a_path_into_the_session_dir(
@@ -1580,10 +1764,8 @@ def test_a_relative_plugin_data_dir_is_not_a_path_into_the_session_dir(
         session / "reldata" / "memkit.json", interpreter=str(session / "python3")
     )
     env = shimmed(CLAUDE_PLUGIN_DATA="reldata")
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, out.stderr
+    assert _decided_config(root, "memkit-hook", env, cwd=session) == "<unset>"
     assert not marker.exists(), "the session directory named the interpreter"
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
 
     # And a tilde is expanded rather than refused, exactly as rung 1 does it —
     # the value is typed by a person or written by a harness, not expanded by
@@ -1649,26 +1831,19 @@ def test_a_config_rung_admits_only_what_the_interpreter_rule_admits(
         ("option", shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=noncanonical)),
         ("data dir", shimmed(CLAUDE_PLUGIN_DATA=f"{tmp_path}/./data")),
     ):
-        out = _run(root / "bin" / "memkit-hook", env=env)
-        assert out.returncode == 0, (rung, out.stderr)
-        assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", rung
+        assert _decided_config(root, "memkit-hook", env) == "<unset>", rung
 
     # The class itself, one spelling per run, through the option.
-    out = _run(
-        root / "bin" / "memkit-hook",
-        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=value),
-    )
-    assert out.returncode == 0, out.stderr
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", value
+    assert _decided_config(
+        root, "memkit-hook", shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=value)
+    ) == "<unset>", value
 
     # And a canonical absolute path is still served, or this is "refuse
     # everything" wearing a rule's clothes.
     good = _config_file(tmp_path / "good" / "memkit.json")
-    assert _run(
-        root / "bin" / "memkit-hook",
-        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(good)),
-    ).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == str(good)
+    assert _decided_config(
+        root, "memkit-hook", shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(good))
+    ) == str(good)
 
 
 def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> None:
@@ -1700,15 +1875,12 @@ def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> N
     ):
         config = _config_file(tmp_path / "proc.json", interpreter=value)
         env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-        out = _run(root / "bin" / "memkit-hook", env=env)
-        assert out.returncode == 0, out.stderr
-        assert value in out.stderr, (value, out.stderr)
+        decided = _decide(root, "memkit-hook", env)
+        assert value in decided.stderr, (value, decided.stderr)
         assert (
-            "session stands in" in out.stderr or "canonical" in out.stderr
-        ), (value, out.stderr)
-        assert shimmed.read()["argv"] == str(
-            root / "src" / "memkit" / "memory_prompt_recall.py"
-        )
+            "session stands in" in decided.stderr or "canonical" in decided.stderr
+        ), (value, decided.stderr)
+        assert decided.interpreter in _pinned_pythons(), decided.interpreter
     # And a canonical absolute path is still honoured, or the guard above is
     # just "refuse everything".
     honoured = _shim(tmp_path / "real", "python3", "exit 0")
@@ -1767,12 +1939,13 @@ def test_every_shared_message_names_the_wrapper_that_is_running(
     produced by the name in the message rather than by the code.
     """
     empty = {"PATH": str(tmp_path / "nothing"), "HOME": str(tmp_path)}
+    bare = _repinned(root, [tmp_path / "nowhere"])
     for wrapper, args in (
         ("memkit-hook", ()),
         ("memkit-recall", ("--search", "x")),
         ("memkit", ("doctor",)),
     ):
-        out = _run(root / "bin" / wrapper, *args, env=empty)
+        out = _run(bare / "bin" / wrapper, *args, env=empty)
         assert out.stderr.startswith(f"{wrapper}: "), (wrapper, out.stderr)
 
 
@@ -1786,10 +1959,14 @@ def test_no_interpreter_is_a_named_refusal_that_still_exits_zero(
     runs this wrapper directly — reads it.
     """
     env = {"PATH": str(tmp_path / "empty"), "HOME": str(tmp_path)}
-    out = _run(root / "bin" / "memkit-hook", env=env)
+    out = _run(_repinned(root, [tmp_path / "nowhere"]) / "bin" / "memkit-hook", env=env)
     assert out.returncode == 0, out.stderr
     assert out.stdout == ""
-    assert "no python3" in out.stderr and "3.9" in out.stderr
+    assert "no interpreter is recorded" in out.stderr, out.stderr
+    assert "3.9" in out.stderr and "memkit init" in out.stderr, out.stderr
+    # The refusal names the paths it tried, so an adopter can see whether their
+    # python is simply somewhere this list does not reach.
+    assert str(tmp_path / "nowhere") in out.stderr, out.stderr
 
 
 def _code_only(line: str) -> str:
@@ -2125,7 +2302,11 @@ def test_the_search_wrapper_says_it_could_not_start_rather_than_that_you_erred(
     empty = {"PATH": str(tmp_path / "nothing"), "HOME": str(tmp_path)}
     cannot_start = [
         # no interpreter anywhere
-        (root / "bin" / "memkit-recall", empty, ("--search", "x")),
+        (
+            _repinned(root, [tmp_path / "nowhere"]) / "bin" / "memkit-recall",
+            empty,
+            ("--search", "x"),
+        ),
         # cannot locate the tree
         (_half_delivered(tmp_path, "memkit-recall", library=False) / "bin"
          / "memkit-recall", shimmed(), ("--search", "x")),
@@ -2139,7 +2320,14 @@ def test_the_search_wrapper_says_it_could_not_start_rather_than_that_you_erred(
             wrapper, out.returncode, out.stderr
         )
     # And the one branch that really is a wrong invocation keeps saying so.
-    bare = _run(root / "bin" / "memkit-recall", env=shimmed())
+    # A config, because the wrapper reaches the shim through the field an
+    # install records rather than through a lookup — and without one, the real
+    # interpreter would answer and report inertness, which is a third thing.
+    config = _config_file(tmp_path / "recall.json")
+    bare = _run(
+        root / "bin" / "memkit-recall",
+        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config)),
+    )
     assert bare.returncode == hook.EXIT_ERROR, bare.stderr
 
 
@@ -2152,12 +2340,11 @@ def test_arguments_to_the_hook_wrapper_are_ignored_not_forwarded(
     hook into a CLI whose argparse exits 2 — a blocked turn, every turn.
     """
     env = shimmed()
-    out = _run(root / "bin" / "memkit-hook", "--search", "anything", env=env)
-    assert out.returncode == 0
-    assert shimmed.read()["argv"] == str(
-        root / "src" / "memkit" / "memory_prompt_recall.py"
-    )
-    assert "ignoring 2 argument" in out.stderr
+    decided = _decide(root, "memkit-hook", env, "--search", "anything")
+    assert decided.handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], decided.handoff
+    assert "ignoring 2 argument" in decided.stderr
 
 
 def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
@@ -2175,12 +2362,14 @@ def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
     """
     doubled = f"{root}//bin/memkit-hook"
     out = subprocess.run(
-        [doubled], capture_output=True, text=True, timeout=60,
+        [SH, "-x", doubled], capture_output=True, text=True, timeout=60,
         env=shimmed(), stdin=subprocess.DEVNULL,
     )
     assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    handoff = Decided(out).handoff
+    assert handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], handoff
 
 
 def test_what_argv0_a_shebang_script_receives_is_measured_not_assumed(
@@ -2266,20 +2455,22 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
     env = shimmed()
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     out = subprocess.run(
-        [SH, wrapper, *args],
+        [SH, "-x", wrapper, *args],
         capture_output=True, text=True, timeout=60, env=env,
         cwd=str(root / "bin"), stdin=subprocess.DEVNULL,
     )
-    assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
+    # Any code from the wrapper's own vocabulary: the real interpreter now
+    # reaches the real subcommand, and an inert `--search` legitimately exits 3.
+    assert out.returncode in (0, 1, 3), out.stderr
+    handoff = Decided(out).handoff
     if wrapper == "memkit":
         # The dispatcher runs the package rather than the hook file, so the
         # tree shows up as the PYTHONPATH it prepends.
-        assert seen["argv"] == "-m memkit.cli doctor", seen["argv"]
-        assert seen["PYTHONPATH"].split(":")[0] == str(root / "src")
+        assert handoff[1:] == ["-m", "memkit.cli", "doctor"], handoff
+        assert f"PYTHONPATH={root / 'src'}" in out.stderr, out.stderr[-400:]
     else:
         hook_file = root / "src" / "memkit" / "memory_prompt_recall.py"
-        assert seen["argv"] == " ".join((str(hook_file), *args)), seen["argv"]
+        assert handoff[1:] == [str(hook_file), *args], handoff
 
 
 def test_the_search_wrapper_refuses_rather_than_blocking_on_stdin(root, shimmed):
@@ -2307,18 +2498,18 @@ def test_the_dispatcher_runs_the_package_from_this_tree(root, shimmed) -> None:
     with it.
     """
     inherited = "/opt/an/adopters/own/packages"
-    out = _run(root / "bin" / "memkit", "doctor", env=shimmed(PYTHONPATH=inherited))
-    assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["argv"] == "-m memkit.cli doctor"
-    assert seen["PYTHONPATH"] == f"{root / 'src'}:{inherited}"
-    assert seen["MEMKIT_PLUGIN"] == "1"
+    out = _run(
+        root / "bin" / "memkit", "doctor",
+        env=shimmed(PYTHONPATH=inherited), shell_trace=True,
+    )
+    assert Decided(out).handoff[1:] == ["-m", "memkit.cli", "doctor"], out.stderr[-400:]
+    assert f"PYTHONPATH={root / 'src'}:{inherited}" in out.stderr, out.stderr[-400:]
+    assert "MEMKIT_PLUGIN=1" in out.stderr
 
     # And with nothing inherited it is just this tree, or the wrapper is
     # prepending to an empty string and leaving a stray separator.
-    plain = _run(root / "bin" / "memkit", "doctor", env=shimmed())
-    assert plain.returncode == 0, plain.stderr
-    assert shimmed.read()["PYTHONPATH"] == str(root / "src")
+    plain = _run(root / "bin" / "memkit", "doctor", env=shimmed(), shell_trace=True)
+    assert f"\n+ PYTHONPATH={root / 'src'}\n" in plain.stderr, plain.stderr[-400:]
 
 
 def test_the_dispatcher_exports_no_checker_route_for_anything_to_read(
@@ -2334,11 +2525,8 @@ def test_the_dispatcher_exports_no_checker_route_for_anything_to_read(
     it found, over a PATH the session steers, before any python-side rule
     existed to have an opinion.
     """
-    _shim(
-        shimmed.dir, "python3",
-        'case "$*" in *version_info*) exit 1 ;; esac\n' + SHIM_BODY,
-    )
-    out = _run(root / "bin" / "memkit", "doctor", env=shimmed())
+    shim = _shim(shimmed.dir, "python3", SHIM_BODY)
+    out = _run(_repinned(root, [shim]) / "bin" / "memkit", "doctor", env=shimmed())
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
     for gone in ("MEMKIT_CHECKER_ROUTE", "MEMKIT_CHECKER_CMD"):
@@ -2359,9 +2547,10 @@ def test_the_dispatcher_refuses_by_name_when_nothing_can_run_it(
     """
     from memkit.cli import EXIT_NO_RUNTIME, EXIT_NOT_IN_BUILD, EXIT_USAGE
 
-    out = _run(root / "bin" / "memkit", "doctor", env={"PATH": str(tmp_path / "none")})
+    bare = _repinned(root, [tmp_path / "nowhere"])
+    out = _run(bare / "bin" / "memkit", "doctor", env={"PATH": str(tmp_path / "none")})
     assert out.returncode == EXIT_NO_RUNTIME
-    assert "no python3" in out.stderr
+    assert "no interpreter is recorded" in out.stderr, out.stderr
 
     # Every non-zero code this wrapper can produce, against the table an agent
     # reads. A shell script is the one place a new exit code can appear with
