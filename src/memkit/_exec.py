@@ -34,6 +34,8 @@ import os
 import subprocess
 import sys
 
+from memkit.memory_prompt_recall import _is_process_start_event
+
 
 def _under_cwd(path: str) -> bool:
     """Whether `path` lands inside the directory this session stands in."""
@@ -255,15 +257,20 @@ def _execute(
     if not argv:
         raise Untrusted("no program was named")
     require_executable(argv[0])
-    return subprocess.run(  # noqa: S603
-        argv,
-        env=child_env(env_extra, env_forward),
-        timeout=timeout,
-        cwd=cwd,
-        input=input,
-        capture_output=True,
-        text=True,
-    )
+    env = child_env(env_extra, env_forward)
+    _WINDOW.append(_Window([str(word) for word in argv]))
+    try:
+        return subprocess.run(  # noqa: S603
+            argv,
+            env=env,
+            timeout=timeout,
+            cwd=cwd,
+            input=input,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        _WINDOW.pop()
 
 
 # --- git, as a closed table of routes ----------------------------------------
@@ -556,3 +563,83 @@ def checker_argv(route: CheckerRoute, interpreter: str) -> list:
         raise Untrusted("this machine has no interpreter that can run the checker")
     require_executable(interpreter)
     return [interpreter, *CHECKER_TAIL]
+
+
+# --- the chokepoint, enforced by the interpreter -----------------------------
+#
+# The gate above governs argv[0] at the moment a call site asks. This governs
+# the invocation the INTERPRETER is about to make, which is one step further
+# down and is where the difference between "the argv a gate approved" and "the
+# argv that ran" lives. `sys.addaudithook` fires on the runtime event rather
+# than on the syntax, so it sees a call reached through a partial, a dict, a
+# rebound name or a computed attribute — the shapes a static walk cannot
+# resolve and, when it cannot, waves through.
+#
+# Two states and no third: a window is open for exactly one argv, or nothing
+# may start. There is no value here that can be spelled to mean "I could not
+# tell".
+#
+# The window is ONE CALL. A call site that opens it and then runs something
+# else is aborted, which is the case a gate on argv[0] cannot see at all.
+
+_WINDOW: list = []
+
+
+class _Window:
+    """One argv, permitted once."""
+
+    __slots__ = ("argv", "spent")
+
+    def __init__(self, argv: list) -> None:
+        self.argv = list(argv)
+        self.spent = False
+
+
+def _audit(event: str, args: tuple) -> None:
+    if not _is_process_start_event(event):
+        return
+    if not _WINDOW:
+        raise Untrusted(
+            f"this package starts no program outside its own gate ({event})"
+        )
+    window = _WINDOW[-1]
+    if event != "subprocess.Popen":
+        # The low-level events CPython may raise from inside `subprocess`'s own
+        # machinery on some platforms. Permitted only INSIDE a window, and the
+        # argv comparison stays on `subprocess.Popen`, which fires first —
+        # measured on Darwin/3.9.6 and 3.12.12, where it is the only one.
+        return
+    argv = list(args[1]) if isinstance(args[1], (list, tuple)) else [args[1]]
+    if window.spent:
+        raise Untrusted(
+            f"the gate was opened for one program and {argv[:1]} is a second"
+        )
+    if [str(word) for word in argv] != window.argv:
+        raise Untrusted(
+            f"{argv[:1]} is not the program the gate approved "
+            f"({window.argv[:1]})"
+        )
+    window.spent = True
+
+
+_INSTALLED: list = []
+
+
+def enforce_execution_boundary() -> None:
+    """Install the runtime chokepoint for this process.
+
+    Called from the entry points rather than at import, for the reason an
+    audit hook is a guarantee at all: it cannot be removed. Installing one when
+    this module is merely imported would put it in every process that imports
+    it — a test runner included, where starting a program is somebody else's
+    business.
+
+    Idempotent, because two entry points can be reached in one process
+    (`memkit init` runs the checker, which is `memory_integrity`'s entry
+    point in another process, but the eval loads a hook module in this one).
+    """
+    if _INSTALLED:
+        return
+    _INSTALLED.append(True)
+    sys.addaudithook(_audit)
+

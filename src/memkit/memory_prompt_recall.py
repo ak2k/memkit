@@ -5144,6 +5144,78 @@ def search_cli(argv: list[str]) -> int:
     return EXIT_OK
 
 
+# --- the process-start invariant, enforced by the interpreter ----------------
+#
+# THE PREDICATE LIVES HERE, and `memkit._exec` imports it, so the path that
+# starts no processes and the path that starts them all cannot come to disagree
+# about what a process start IS. It is pure string classification with no
+# capability in it, and this is the module with the hardest constraints — the
+# same argument that puts the config reader here.
+#
+# By FAMILY rather than by a list of members: `os.execve`, `os.posix_spawnp`
+# and `os.spawnvpe` are the same primitive as `os.execv`, and a list is what
+# left the first two admitted the last time somebody wrote this rule down.
+
+
+def _is_process_start_event(event: str) -> bool:
+    """Whether an audit event means a program is about to run."""
+    return event.startswith(
+        (
+            "subprocess.",
+            "os.exec",
+            "os.spawn",
+            "os.posix_spawn",
+            "os.fork",
+            "webbrowser.",
+        )
+    ) or event in (
+        "os.system",
+        "os.startfile",
+        "os.forkpty",
+        # The three that make `CDLL(libc).system` reachable. memkit uses no
+        # ctypes at all, so the whole route is refused rather than the
+        # spellings of it that somebody thought of.
+        "ctypes.dlopen",
+        "ctypes.dlsym",
+        "ctypes.dlsym/handle",
+        "ctypes.call_function",
+    )
+
+
+class ProcessStartRefused(RuntimeError):
+    """A program was about to start on a path whose contract is that none do."""
+
+
+def forbid_process_starts() -> None:
+    """Make the every-prompt path's zero-process claim the interpreter's rule.
+
+    `sys.addaudithook` fires on the runtime EVENT, not on the syntax, so it
+    sees what a static walk cannot: a `functools.partial`, a dict dispatch, a
+    name rebound at runtime, an `importlib.import_module`, a `getattr` with a
+    computed attribute. Round 4 measured sixteen such shapes against the AST
+    guard and it caught one.
+
+    An audit hook cannot be removed once installed, which is what makes it a
+    guarantee rather than a setting — and is also why this is called from the
+    entry point rather than at import: a module that installed one would put it
+    in every process that imports the config reader, `memkit doctor` included,
+    where starting a program is the job.
+
+    There is no window here and no allow-list, because the invariant has no
+    enumeration in it: during one hook invocation the number of process starts
+    is ZERO. A count of zero cannot be incomplete.
+    """
+
+    def _audit(event: str, args: tuple) -> None:
+        if _is_process_start_event(event):
+            raise ProcessStartRefused(
+                f"the recall hook may not start a program ({event}); this path "
+                "answers every question it has from the filesystem"
+            )
+
+    sys.addaudithook(_audit)
+
+
 def cli() -> None:
     """Entry point for the `memory-recall` console script AND for running this
     file directly as a hook command.
@@ -5155,6 +5227,10 @@ def cli() -> None:
     payload off stdin.
     """
     started = time.monotonic()
+    # Installed HERE, at the entry point, and before either mode runs: this
+    # process is one of the two that answer without starting anything, and
+    # from this line on the interpreter is what says so.
+    forbid_process_starts()
     if len(sys.argv) > 1:
         try:
             sys.exit(search_cli(sys.argv[1:]))

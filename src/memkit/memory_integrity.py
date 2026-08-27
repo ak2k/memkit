@@ -70,6 +70,7 @@ from memkit._exec import (  # noqa: E402
     GitRoute,
     Rev,
     Untrusted,
+    enforce_execution_boundary,
     run_git,
 )
 from memkit.memory_prompt_recall import (  # noqa: E402
@@ -1343,6 +1344,9 @@ def main() -> int:
 
 
 def cli() -> None:
+    # See `memkit.cli.cli`: the process's own rules go on the process, not on
+    # a function the suite calls in-process.
+    enforce_execution_boundary()
     sys.exit(main())
 
 

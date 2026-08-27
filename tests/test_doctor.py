@@ -2957,6 +2957,117 @@ def test_nothing_in_the_executor_answers_a_question_with_a_falsy_unknown() -> No
     )
 
 
+def test_the_gate_governs_the_invocation_the_interpreter_makes(tmp_path) -> None:
+    """The gate above governs argv[0] when a call site asks. This governs what
+    the INTERPRETER is about to run, which is one step further down and is
+    where the difference between the argv a gate approved and the argv that
+    ran lives.
+
+    In a subprocess, because an audit hook cannot be removed once installed —
+    which is exactly what makes it a guarantee and not a setting, and why the
+    installer is called from a console-script entry rather than from a
+    function this suite calls in-process.
+    """
+    stub = tmp_path / "prog"
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.chmod(0o755)
+    src_dir = str(pathlib.Path(doctor.__file__).parent.parent)
+
+    def probe(body: str) -> subprocess.CompletedProcess:
+        code = (
+            f"import sys; sys.path.insert(0, {src_dir!r})\n"
+            "import subprocess\n"
+            "from memkit import _exec\n"
+            "_exec.enforce_execution_boundary()\n"
+            "try:\n"
+            + "".join(f"    {line}\n" for line in body.strip().split("\n"))
+            + "except Exception as exc:\n"
+            "    sys.stdout.write('REFUSED=' + type(exc).__name__)\n"
+            "else:\n"
+            "    sys.stdout.write('RAN')\n"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        )
+
+    # Outside a window nothing starts, whatever spelling asks for it.
+    for body in (
+        f"subprocess.run([{str(stub)!r}], capture_output=True)",
+        f"__import__('os').system({str(stub)!r})",
+        f"__import__('functools').partial(subprocess.run)([{str(stub)!r}])",
+        f"getattr(subprocess, 'ru' + 'n')([{str(stub)!r}])",
+    ):
+        out = probe(body)
+        assert "REFUSED=Untrusted" in out.stdout, (body, out.stdout, out.stderr[-300:])
+
+    # Inside one, the approved argv runs — or this is "refuse everything".
+    out = probe(f"_exec._execute([{str(stub)!r}], timeout=30)")
+    assert out.stdout == "RAN", (out.stdout, out.stderr[-400:])
+
+    # And a call site that opens the window for one program and runs another
+    # is ABORTED. This is the shape a gate on argv[0] cannot see: the argv the
+    # gate approved and the argv the interpreter ran are different objects.
+    out = probe(
+        "real = subprocess.run\n"
+        "_exec.subprocess.run = lambda argv, **kw: "
+        "real(['/bin/echo', 'x'], capture_output=True)\n"
+        f"_exec._execute([{str(stub)!r}], timeout=30)"
+    )
+    assert "REFUSED=Untrusted" in out.stdout, (out.stdout, out.stderr[-400:])
+
+    # A second start inside one window is a second program, and is refused.
+    out = probe(
+        "real = subprocess.run\n"
+        "_exec.subprocess.run = lambda argv, **kw: ("
+        "real(argv, capture_output=True), real(argv, capture_output=True))\n"
+        f"_exec._execute([{str(stub)!r}], timeout=30)"
+    )
+    assert "REFUSED=Untrusted" in out.stdout, (out.stdout, out.stderr[-400:])
+
+
+def test_the_boundary_is_installed_by_the_entry_point_and_not_by_an_import(
+) -> None:
+    """Where it goes is as load-bearing as what it does.
+
+    An audit hook cannot be removed, so a module that installed one at import
+    would put this process's rules on every later caller in the same
+    interpreter — this suite included, where starting a program is somebody
+    else's business. It belongs to "this process IS a memkit command", which is
+    what a console script and a `-m` invocation are and what a function call is
+    not.
+    """
+    import ast
+
+    for rel, entry in (
+        ("cli.py", "cli"),
+        ("memory_integrity.py", "cli"),
+    ):
+        source = (REPO / "src" / "memkit" / rel).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        module_level = [
+            n.value for n in tree.body
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+        ]
+        assert not any(
+            isinstance(call.func, ast.Name)
+            and call.func.id == "enforce_execution_boundary"
+            for call in module_level
+        ), rel
+        fn = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == entry
+        )
+        assert any(
+            isinstance(node, ast.Name) and node.id == "enforce_execution_boundary"
+            for node in ast.walk(fn)
+        ), rel
+    # The console scripts name those shims, so the boundary really is on the
+    # process every channel starts.
+    pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'memkit = "memkit.cli:cli"' in pyproject
+    assert 'memory-integrity = "memkit.memory_integrity:cli"' in pyproject
+
+
 def test_the_uninstall_story_says_when_the_config_goes_with_the_plugin(
     profile, monkeypatch
 ) -> None:

@@ -23,6 +23,7 @@ import sys
 from collections.abc import Callable
 
 from memkit import cli_doctor, cli_init
+from memkit._exec import enforce_execution_boundary
 from memkit.memory_prompt_recall import (
     EXIT_CANNOT_START,
     EXIT_INERT,
@@ -287,6 +288,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def cli() -> None:
+    """The console script and the `-m` entry, which is where the process's own
+    rules belong.
+
+    Not in `main()`: that is a library call this project's own suite makes
+    in-process, and an audit hook cannot be removed once installed — one
+    in-process `main()` would put this process's rules on every later caller
+    in the same interpreter. The boundary belongs to "this process IS a memkit
+    command", which is what a console script and a `-m` invocation are and
+    what a function call is not.
+    """
+    enforce_execution_boundary()
     sys.exit(main())
 
 

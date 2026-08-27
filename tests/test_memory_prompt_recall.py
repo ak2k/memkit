@@ -4228,6 +4228,222 @@ def test_a_search_cli_that_is_not_a_string_is_a_config_error(tmp_path) -> None:
         assert "search_cli" in out.stderr, args
 
 
+
+# --- the process-start invariant ---------------------------------------------
+#
+# The claim has no enumeration in it: during one every-prompt hook invocation
+# the number of process starts is ZERO. A count of zero cannot be incomplete,
+# so a route nobody imagined is counted the same as one somebody wrote a
+# fixture for.
+
+
+_COUNTER = '''
+import json, runpy, sys
+starts = []
+def _watch(event, args):
+    if event.startswith(("subprocess.", "os.exec", "os.spawn", "os.posix_spawn",
+                         "os.fork", "webbrowser.")) or event in (
+            "os.system", "os.startfile", "os.forkpty", "ctypes.dlopen",
+            "ctypes.dlsym", "ctypes.call_function"):
+        starts.append(event)
+sys.addaudithook(_watch)
+sys.argv = [%(hook)r] + %(argv)r
+try:
+    runpy.run_path(%(hook)r, run_name="__main__")
+except SystemExit:
+    pass
+finally:
+    sys.stderr.write("MEMKIT-STARTS=" + json.dumps(starts) + "\\n")
+'''
+
+
+def _counted(tmp_path: Path, payload: str, *argv: str, env=None, cwd=None):
+    """Run the hook FILE under an audit hook that counts process starts.
+
+    Installed before the hook's own code runs, so it sees every start the
+    invocation makes — including any the hook's own refusal would otherwise
+    turn into silence, and any a route nobody thought of would make.
+    """
+    code = _COUNTER % {"hook": HOOK, "argv": list(argv)}
+    out = subprocess.run(
+        ["python3", "-c", code],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env if env is not None else _env(tmp_path),
+        cwd=cwd,
+    )
+    line = [
+        n for n in out.stderr.splitlines() if n.startswith("MEMKIT-STARTS=")
+    ]
+    assert line, out.stderr[-800:]
+    return out, json.loads(line[-1].split("=", 1)[1])
+
+
+def test_a_full_hook_invocation_starts_zero_processes(tmp_path: Path) -> None:
+    """E3. Measured, not enumerated.
+
+    The counter is an independent audit hook installed by the harness before
+    the hook's own code runs, so this says what the invocation DID rather than
+    which markers a fixture remembered to plant. It runs over a configured
+    store, an empty one, a non-repository, and a repository whose own
+    `.git/config` names programs for every key this package ever silenced.
+    """
+    payload = json.dumps({"session_id": "s-zero", "prompt": INJECT_PROMPT})
+
+    # ANTI-VACUITY: the counter really does see a process start, so a zero
+    # below is an observation.
+    control = subprocess.run(
+        [
+            "python3", "-c",
+            "import sys,json,subprocess\n"
+            "s=[]\n"
+            "sys.addaudithook(lambda e,a: s.append(e) if e=='subprocess.Popen' else None)\n"
+            "subprocess.run(['/bin/echo','x'],capture_output=True)\n"
+            "sys.stderr.write('MEMKIT-STARTS='+json.dumps(s))\n",
+        ],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert "subprocess.Popen" in control.stderr, control.stderr
+
+    # A configured store with a real corpus. ANTI-VACUITY again: this
+    # invocation really did retrieve, so the zero is a count over a run that
+    # did the work rather than over one that bailed out early.
+    _injecting_repo(tmp_path)
+    out, starts = _counted(tmp_path, payload)
+    assert starts == [], starts
+    assert out.returncode == 0, out.stderr[-800:]
+    assert hook.FRAME_TAG in out.stdout, out.stdout[-400:]
+
+    # And the config shape that DID fork: a `git_toplevel` root plus a
+    # `cwd_gate`, which is two `git rev-parse` calls per prompt — one to find
+    # the root a store is relative to and one to decide whether this session is
+    # inside the gate. README recommends `git_toplevel` for `edit_root`, and
+    # nothing stopped a store naming it as `live_root` too.
+    forking = tmp_path / "forking.json"
+    forking.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {
+                    "top": {"kind": "git_toplevel", "fallback": "home"},
+                    "home": {"kind": "path", "path": str(tmp_path)},
+                },
+                "stores": [
+                    {
+                        "id": "p",
+                        "role": "project",
+                        "dir": PROJECT_DIR,
+                        "live_root": "top",
+                        "cwd_gate": {"root": "home"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    out, starts = _counted(
+        tmp_path, payload, env=dict(_env(tmp_path), MEMKIT_CONFIG=str(forking))
+    )
+    assert starts == [], starts
+
+    # An unconfigured install, a directory that is not a repository, and a
+    # HOSTILE repository carrying every key this package ever overrode.
+    hostile = tmp_path / "hostile"
+    hostile.mkdir()
+    marker = tmp_path / "PWNED-hook.txt"
+    named = tmp_path / "evil"
+    named.write_text(f'#!/bin/sh\necho pwned >> "{marker}"\n', encoding="utf-8")
+    named.chmod(0o755)
+    if shutil.which("git"):
+        subprocess.run(["git", "init", "-q"], cwd=hostile, check=True, timeout=60)
+        for key, value in (
+            ("core.fsmonitor", str(named)),
+            ("core.worktree", str(tmp_path / "elsewhere")),
+            ("gpg.format", "ssh"),
+            ("gpg.ssh.program", str(named)),
+            ("log.showSignature", "true"),
+            ("filter.evil.clean", str(named)),
+            ("diff.external", str(named)),
+        ):
+            subprocess.run(
+                ["git", "config", key, value], cwd=hostile, check=True, timeout=60
+            )
+        (hostile / ".gitattributes").write_text("* filter=evil\n", encoding="utf-8")
+    (tmp_path / "elsewhere").mkdir(exist_ok=True)
+
+    for label, env, where in (
+        ("unconfigured", _unconfigured(tmp_path), None),
+        ("hostile repo", _env(tmp_path), str(hostile)),
+        ("not a repo", _env(tmp_path), str(tmp_path / "elsewhere")),
+        ("--search", _env(tmp_path), None),
+    ):
+        argv = ("--search", "flange torque") if label == "--search" else ()
+        out, starts = _counted(tmp_path, payload, *argv, env=env, cwd=where)
+        assert starts == [], (label, starts, out.stderr[-500:])
+    assert not marker.exists(), marker.read_text()
+
+
+def test_the_hook_path_refuses_a_process_start_rather_than_relying_on_nobody_asking(
+    tmp_path: Path,
+) -> None:
+    """E4.1 — the enforcement, not the measurement.
+
+    The count above stays at zero whether or not memkit installs anything,
+    because it measures the truth. This is the half that makes the invariant
+    load-bearing: after the hook's entry point has run its installer, the
+    INTERPRETER refuses a start, so a route added later by somebody who never
+    read this file is refused rather than counted.
+    """
+    code = (
+        "import runpy, subprocess, sys\n"
+        f"sys.path.insert(0, {str(Path(HOOK).parent.parent)!r})\n"
+        "from memkit.memory_prompt_recall import forbid_process_starts\n"
+        "forbid_process_starts()\n"
+        "try:\n"
+        "    subprocess.run(['/bin/echo', 'x'], capture_output=True)\n"
+        "except Exception as exc:\n"
+        "    sys.stderr.write('REFUSED=' + type(exc).__name__ + ':' + str(exc))\n"
+        "else:\n"
+        "    sys.stderr.write('RAN')\n"
+    )
+    out = subprocess.run(
+        ["python3", "-c", code], capture_output=True, text=True, timeout=60
+    )
+    assert "REFUSED=ProcessStartRefused" in out.stderr, out.stderr[-500:]
+    assert "may not start a program" in out.stderr, out.stderr[-500:]
+
+    # And the shapes a static walk cannot resolve, which is the whole reason
+    # this is a runtime rule. Each one is a call the AST guard reports as
+    # unresolvable and therefore waves through.
+    for label, expression in (
+        ("partial", "__import__('functools').partial(subprocess.run)(['/bin/echo'])"),
+        ("dict dispatch", "{'go': subprocess.run}['go'](['/bin/echo'])"),
+        ("computed attr", "getattr(subprocess, 'ru' + 'n')(['/bin/echo'])"),
+        ("import_module", "__import__('importlib').import_module('subprocess').run(['/bin/echo'])"),
+        ("os.system", "__import__('os').system('/bin/echo x')"),
+        ("os.popen", "__import__('os').popen('/bin/echo x').read()"),
+        ("posix_spawn", "__import__('os').posix_spawn('/bin/echo', ['/bin/echo'], {})"),
+    ):
+        probe = (
+            "import subprocess, sys\n"
+            f"sys.path.insert(0, {str(Path(HOOK).parent.parent)!r})\n"
+            "from memkit.memory_prompt_recall import forbid_process_starts\n"
+            "forbid_process_starts()\n"
+            "try:\n"
+            f"    {expression}\n"
+            "except Exception as exc:\n"
+            "    sys.stderr.write('REFUSED=' + type(exc).__name__)\n"
+            "else:\n"
+            "    sys.stderr.write('RAN')\n"
+        )
+        got = subprocess.run(
+            ["python3", "-c", probe], capture_output=True, text=True, timeout=60
+        )
+        assert "REFUSED=ProcessStartRefused" in got.stderr, (label, got.stderr[-300:])
+
+
 # --- where a repository is, decided without asking a program -----------------
 
 
