@@ -4228,6 +4228,146 @@ def test_a_search_cli_that_is_not_a_string_is_a_config_error(tmp_path) -> None:
         assert "search_cli" in out.stderr, args
 
 
+# --- where a repository is, decided without asking a program -----------------
+
+
+def _git_available() -> str:
+    return shutil.which("git") or ""
+
+
+def test_a_repository_may_not_choose_the_root_a_git_toplevel_store_resolves_to(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`core.worktree` is a LOCAL config key, so no environment variable and no
+    `-c` override reaches it, and it decides what git calls the top of the
+    checkout you are standing in.
+
+    A `git_toplevel` root is the directory an every-prompt hook then joins the
+    store's `dir` under and reads memories out of. Asking a program where the
+    repository is means the repository answers; the answer here comes from the
+    filesystem instead, which has no configuration in it.
+    """
+    git = _git_available()
+    if not git:
+        pytest.skip("no git")
+    home = Path(os.path.realpath(tmp_path))
+    checkout = home / "checkout"
+    checkout.mkdir()
+    theirs = home / "ATTACKER-CHOSEN"
+    theirs.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True, timeout=60)
+    subprocess.run(
+        ["git", "config", "core.worktree", str(theirs)],
+        cwd=checkout,
+        check=True,
+        timeout=60,
+    )
+
+    # ANTI-VACUITY. This git must really honour the key, or an assertion that
+    # the root is the checkout would pass against a git that never steered and
+    # would prove nothing about the rule under test.
+    steered = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if os.path.realpath(steered.stdout.strip() or ".") != str(theirs):
+        pytest.skip("this git does not honour core.worktree")
+
+    config = home / "memkit.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema": hook.SCHEMA,
+                "roots": {"top": {"kind": "git_toplevel"}},
+                "stores": [
+                    {
+                        "id": "s",
+                        "role": "project",
+                        "dir": "store",
+                        "live_root": "top",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(checkout)
+    try:
+        cfg = hook.load_config(str(config))
+        assert cfg is not None
+        root, source = cfg.root_with_source("top")
+        assert root == str(checkout), (root, source)
+        assert os.path.realpath(cfg.store_dir(cfg.stores[0])) != str(
+            theirs / "store"
+        )
+    finally:
+        hook._cwd_in_root.cache_clear()
+
+
+def test_a_repository_may_not_choose_which_sessions_a_cwd_gated_store_serves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The gate's own question — is this session standing inside the root —
+    asked of the filesystem rather than of `git rev-parse --git-common-dir`.
+
+    A linked worktree lives outside its root's path prefix and shares the
+    root's git common directory, which is the case the prefix test alone
+    cannot answer and the reason the question was asked of git at all.
+    """
+    git = _git_available()
+    if not git:
+        pytest.skip("no git")
+    home = Path(os.path.realpath(tmp_path))
+    root = home / "main"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=60)
+    (root / "a.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(
+        [
+            "git", "-c", "user.email=t@t", "-c", "user.name=t",
+            "add", "a.md",
+        ],
+        cwd=root, check=True, timeout=60,
+    )
+    subprocess.run(
+        [
+            "git", "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-q", "-m", "x",
+        ],
+        cwd=root, check=True, timeout=60,
+    )
+    linked = home / "linked"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "--detach", str(linked)],
+        cwd=root, check=True, timeout=60,
+    )
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(linked)
+    try:
+        assert hook._cwd_in_root(str(root)) is True
+    finally:
+        hook._cwd_in_root.cache_clear()
+    # And a repository that is not this one is outside the gate, whatever its
+    # own config says about where its worktree is.
+    other = home / "other"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=other, check=True, timeout=60)
+    subprocess.run(
+        ["git", "config", "core.worktree", str(root)],
+        cwd=other, check=True, timeout=60,
+    )
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(other)
+    try:
+        assert hook._cwd_in_root(str(root)) is False
+    finally:
+        hook._cwd_in_root.cache_clear()
+
+
 # --- config shapes: every wrong type is a NAMED error ------------------------
 #
 # The reader used to spell optional fields `raw.get(k) or <empty>`, which reads

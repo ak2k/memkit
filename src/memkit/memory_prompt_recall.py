@@ -678,6 +678,128 @@ class Store:
             )
 
 
+# --- where a repository is, from the filesystem -------------------------------
+#
+# Repository LOCATION is a filesystem fact, so it is read off the filesystem.
+# `git rev-parse --show-toplevel` asks the repository the question, and a
+# repository answers with `core.worktree` — a key that lives only in its own
+# `.git/config`, which no `-c` override and no environment variable reaches,
+# because there is no `GIT_CONFIG_LOCAL`. A checkout carrying one line then
+# names the directory an every-prompt hook joins a store's `dir` under and
+# reads memories out of.
+#
+# The walk is not merely safer, it is the same answer everywhere the answer is
+# defined: measured equal to `--show-toplevel` on plain checkouts, on
+# subdirectories, on submodules and on linked worktrees. It differs on exactly
+# two shapes, and in the safe direction on both — a repository that relocated
+# its own worktree gets the directory holding `.git`, and a BARE repository
+# gets "no repository", which is right, because a bare repository has no
+# worktree for a store to live in.
+#
+# Its second effect is the larger one: the every-prompt path now starts no
+# process at all, so every route that reaches a program through git's
+# configuration — `core.fsmonitor`, `filter.<driver>.clean`,
+# `gpg.<format>.program`, `safe.directory`, `GIT_CONFIG_PARAMETERS` — leaves
+# this path by deletion rather than by being enumerated and refused.
+
+_DOT_GIT = ".git"
+
+
+class _RootUnknown(Exception):
+    """Where this process is standing could not be decided.
+
+    Distinct from "there is no repository here", which is an answer ABOUT THE
+    WORLD that a caller may act on. This one is the decider reporting that it
+    has no answer, and the two may not share a spelling: an unknown that
+    arrives as a falsy value is read as the safe case by whoever gets it next.
+    """
+
+
+def _session_cwd() -> str:
+    """The directory this session stands in, or `_RootUnknown`.
+
+    `os.getcwd()` raises once the directory has been removed underneath the
+    process, which is a real state on a machine where a checkout is deleted
+    mid-session — and "I do not know where I am" is not "I am nowhere".
+    """
+    try:
+        return os.getcwd()
+    except OSError as exc:
+        raise _RootUnknown(f"the session directory is unreadable: {exc}") from exc
+
+
+def _repo_root(start: str):
+    """The directory holding the checkout `start` is in, or None.
+
+    None means there is no repository above `start` — a bare repository
+    included, which has no worktree. `_RootUnknown` means the walk could not
+    begin.
+    """
+    try:
+        current = os.path.realpath(start)
+    except OSError as exc:
+        raise _RootUnknown(f"{start!r} does not resolve: {exc}") from exc
+    while True:
+        entry = os.path.join(current, _DOT_GIT)
+        # A DIRECTORY in an ordinary checkout and a FILE in a linked worktree
+        # or a submodule, where it holds the `gitdir:` line `_repo_git_dir`
+        # reads. Both are the marker; only one is a directory.
+        if os.path.isdir(entry) or os.path.isfile(entry):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def _repo_git_dir(root: str):
+    """Where git keeps `root`'s own state — `<root>/.git`, or what its
+    `gitdir:` line names — or None when neither is readable."""
+    entry = os.path.join(root, _DOT_GIT)
+    if os.path.isdir(entry):
+        return entry
+    try:
+        with open(entry, encoding="utf-8", errors="replace") as f:
+            first = f.readline()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not first.startswith(prefix):
+        return None
+    named = first[len(prefix):].strip()
+    if not named:
+        return None
+    if not os.path.isabs(named):
+        named = os.path.join(root, named)
+    return os.path.normpath(named)
+
+
+def _repo_common_dir(root: str):
+    """The git directory `root` SHARES — its own, or the main checkout's when
+    `root` is a linked worktree.
+
+    A linked worktree's git dir holds a `commondir` file naming the repository
+    every worktree of it has in common, which is what makes "these two
+    directories are the same checkout" answerable across trees that share no
+    path prefix.
+    """
+    gitdir = _repo_git_dir(root)
+    if gitdir is None:
+        return None
+    try:
+        with open(
+            os.path.join(gitdir, "commondir"), encoding="utf-8", errors="replace"
+        ) as f:
+            named = f.readline().strip()
+    except OSError:
+        return gitdir
+    if not named:
+        return gitdir
+    if not os.path.isabs(named):
+        named = os.path.join(gitdir, named)
+    return os.path.normpath(named)
+
+
 class Config:
     """The parsed config file, with roots resolved lazily and once.
 
@@ -842,23 +964,28 @@ class Config:
                 base = os.path.dirname(base)
             return base, f"{up} up from the config file"
         if kind == "git_toplevel":
+            # The two outcomes are kept apart all the way to the label a
+            # reader sees: "there is no repository above the cwd" is a fact,
+            # and "the cwd could not be resolved at all" is a refusal. Both
+            # take the fallback, and `root_source` says which happened, so a
+            # refusal never produces the same observable as an ordinary
+            # negative result.
+            why = "outside a repository"
             try:
-                out = _trusted_git(["rev-parse", "--show-toplevel"], timeout=5)
-                if out.returncode == 0 and out.stdout.strip():
-                    return (
-                        os.path.realpath(out.stdout.strip()),
-                        "git toplevel of cwd",
-                    )
-            except (OSError, subprocess.SubprocessError, _Untrusted):
-                pass
+                found = _repo_root(_session_cwd())
+            except _RootUnknown as exc:
+                found = None
+                why = f"refused: {exc}"
+            if found is not None:
+                return found, "repository root of cwd"
             fallback = spec.get("fallback")
             if not fallback:
                 raise ConfigError(
-                    f"{self.path}: root {name!r} is git_toplevel outside a repo "
+                    f"{self.path}: root {name!r} is git_toplevel {why} "
                     "and declares no fallback"
                 )
             path, _ = self.root_with_source(fallback)
-            return path, f"fallback to {fallback} (git unavailable)"
+            return path, f"fallback to {fallback} ({why})"
         raise ConfigError(f"{self.path}: root {name!r} has unknown kind {kind!r}")
 
     def store_dir(self, store: Store, which: str = "live") -> str:
@@ -968,22 +1095,34 @@ def _cwd_in_root(root: str) -> bool:
     """True when the session cwd is inside `root` — including its git
     worktrees, which live outside the path prefix but share the git common dir.
 
-    Cached: this forks git, and several callers ask. The cwd cannot change
-    inside one hook invocation, so the cache is per-process by construction —
-    but a test that chdirs between calls has to clear it
+    A session whose own directory cannot be resolved is NOT inside anybody's
+    root, and that is an answer rather than a fallback: what hangs off it is
+    whether a gated store's memories reach the prompt, and a store that is
+    served because nothing could be established is a gate that opens on
+    doubt.
+
+    Cached because several callers ask and the cwd cannot change inside one
+    hook invocation — a test that chdirs between calls has to clear it
     (`_cwd_in_root.cache_clear()`).
     """
-    cwd = os.getcwd()
+    try:
+        cwd = _session_cwd()
+    except _RootUnknown:
+        return False
     if cwd == root or cwd.startswith(root + os.sep):
         return True
     try:
-        out = _trusted_git(["rev-parse", "--git-common-dir"], timeout=5)
-        common = out.stdout.strip()
-        return out.returncode == 0 and os.path.realpath(common) == os.path.realpath(
-            os.path.join(root, ".git")
-        )
-    except (OSError, subprocess.SubprocessError, _Untrusted):
+        here = _repo_root(cwd)
+    except _RootUnknown:
         return False
+    if here is None:
+        return False
+    common = _repo_common_dir(here)
+    if common is None:
+        return False
+    return os.path.realpath(common) == os.path.realpath(
+        os.path.join(root, _DOT_GIT)
+    )
 
 
 def load_config(path: str | None = None, honor_env_overrides: bool = False):
@@ -1063,13 +1202,13 @@ def _use_config(path: str | None) -> None:
     Every cache this decision reaches is cleared, because a second call in one
     process — the suite, and a doctor checking two configs in a row — must not
     answer from the first one's parse. That is both of them: the parsed config,
-    and `_cwd_in_root`, which memoizes a `git rev-parse` per gate root and so
-    keeps answering for whatever directory the process was standing in the
-    first time a gated store was resolved. An in-process caller that chdirs
-    between configs otherwise gets a gated store served from outside its own
-    root. The re-forked `git rev-parse` costs the hook nothing — the hook never
-    calls this — and a caller re-pointing its config is exactly the one that
-    wants a fresh gate answer.
+    and `_cwd_in_root`, which memoizes one answer per gate root and so keeps
+    answering for whatever directory the process was standing in the first
+    time a gated store was resolved. An in-process caller that chdirs between
+    configs otherwise gets a gated store served from outside its own root.
+    Re-deciding the gate costs the hook nothing — the hook never calls this —
+    and a caller re-pointing its config is exactly the one that wants a fresh
+    gate answer.
     """
     global _CONFIG_PATH, _CONFIG_ERROR
     _CONFIG_PATH = path
@@ -5170,8 +5309,8 @@ def search_cli(argv: list[str]) -> int:
 
     # One derivation of the config STATE per invocation, taken here and passed
     # down. It was being derived up to three times — each one a parse, and a
-    # `git rev-parse` fork for any git_toplevel root — for a single answer, and
-    # each extra derivation was also a window in which a config edited mid-run
+    # root walk for any git_toplevel root — for a single answer, and each
+    # extra derivation was also a window in which a config edited mid-run
     # could make this command contradict itself.
     #
     # Retrieval's own parse is NOT collapsed into this and is not meant to be:

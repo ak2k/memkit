@@ -418,7 +418,14 @@ point.
   why: it is fail-open and must never block a prompt.
 - **`roots`** — named, each with a resolution `kind`. `path` is `~`-expanded
   when the config is *read*, so redirecting `HOME` redirects the whole tool.
-  `git_toplevel` follows the checkout you are standing in. `config_relative`
+  `git_toplevel` follows the checkout you are standing in — the directory
+  holding its `.git`, found by walking up from the cwd rather than by
+  asking git, so a repository cannot name the tree an every-prompt hook
+  reads. Two consequences worth knowing: a checkout that relocates its own
+  worktree with `core.worktree` resolves to the directory holding `.git`
+  and not to the relocated one, and a **bare** repository resolves to "no
+  repository" — it has no worktree for a store to live in. `--debug-config`
+  prints which route answered. `config_relative`
   walks up from the config file, which is how the same file works inside a
   build sandbox with no `$HOME` and no `.git`. A root may declare an `env`
   override *by name*. The checker, the eval and `memory-recall --debug-config`
