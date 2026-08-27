@@ -2402,6 +2402,53 @@ def test_both_ledgers_sanitize_a_harness_supplied_id_the_same_way() -> None:
     assert len(Path(hook._session_state_path("z" * 500)).name) < 100
 
 
+def test_two_tool_calls_sharing_an_eighty_character_prefix_get_two_ledgers(
+) -> None:
+    """One file is one `shown` set, so two ids collapsing onto one file means
+    the second call is served the first's dedup state — and answers
+    `task:deduped`, which reads in the log as the system working.
+
+    A cut at eighty characters is what collapsed them: harness ids are about
+    thirty today, so this is silent until the day they are not.
+    """
+    stem = "toolu_" + "0" * 84
+    first = hook._task_state_path(stem + "AAAA")
+    second = hook._task_state_path(stem + "BBBB")
+    assert first != second, first
+    # The bound the cut existed for still holds.
+    assert len(Path(first).name) < 100, Path(first).name
+    # And a short id is untouched, so the digest is not in every filename.
+    assert Path(hook._task_state_path("toolu_abc")).name == (
+        f"{hook.TASK_STATE_PREFIX}toolu_abc.json"
+    )
+
+
+@pytest.mark.parametrize("body", ("null", "5", '"toolu_x"', "true", "1.5"))
+def test_a_ledger_holding_valid_json_of_the_wrong_shape_loads_empty(
+    tmp_path, body: str
+) -> None:
+    """`json.load` returns these without raising, so the ValueError arm never
+    sees them and the attribute access below dies on an AttributeError nothing
+    catches.
+
+    On the task path that is not one lost delivery. The file persists under a
+    name derived from the call, so every retry for that spawn dies the same
+    way, and `_task_main` records `task:error` and re-raises — a non-zero exit
+    from the hook, for a four-byte file.
+    """
+    path = tmp_path / f"{hook.TASK_STATE_PREFIX}toolu_bad.json"
+    path.write_text(body)
+    shown, spent = hook._load_session(str(path))
+    assert shown == set(), shown
+    assert not spent, spent
+    # Non-vacuity: the two shapes this DOES understand still load, so an
+    # unconditional empty answer would not pass here.
+    path.write_text('["/a.md"]')
+    assert hook._load_session(str(path))[0] == {"/a.md"}
+    path.write_text('{"shown": ["/b.md"], "spent": {}}')
+    assert hook._load_session(str(path))[0] == {"/b.md"}
+
+
 # --- end-to-end gates (subprocess: gates fire before any search) -------------
 
 
@@ -8941,8 +8988,11 @@ def test_the_file_the_transaction_must_read_is_bounded_in_size(
     assert huge.stat().st_size > hook.INDEX_FILE_MAX_BYTES, huge.stat().st_size
     con = hook._fts_connect(hook._fts_db(str(corpus)))
     try:
-        files, spared, unwalked, truncated = hook._fts_sync(con, str(corpus))
-        assert (files, spared, unwalked, truncated) == (3, 1, 0, 0)
+        files, spared, unwalked, declined = hook._fts_sync(con, str(corpus))
+        # The fourth value counts what memkit's own limits declined — the file
+        # cap here, the budget elsewhere — because `spared` counts both and a
+        # caller comparing the two needs the same pair.
+        assert (files, spared, unwalked, declined) == (3, 1, 0, 1)
         indexed = {
             os.path.basename(row[0])
             for row in con.execute("SELECT DISTINCT path FROM chunks")
@@ -8950,6 +9000,136 @@ def test_the_file_the_transaction_must_read_is_bounded_in_size(
         assert indexed == {"m0000.md", "m0001.md", "m0002.md"}, indexed
     finally:
         con.close()
+
+
+def test_a_corpus_declined_only_for_size_is_not_reported_unreadable(
+    corpus: Path,
+) -> None:
+    """`partial` sends an operator at file permissions, and the one cause that
+    must never send them there is memkit's own file cap: every byte of that
+    corpus was readable and memkit chose not to read it.
+
+    The same cause reported two different outcomes depending on whether any
+    other file happened to index — `truncated` when the oversize file was the
+    only one, because `_fts_sync` decides that case from the budget AND the cap
+    together, and `partial` as soon as one other file was there, because the
+    caller was comparing against the budget alone. Nothing clears it either: an
+    oversize file is spared for good, so the store's owner is told on every
+    prompt, forever.
+    """
+    _many_memos(corpus, 1)
+    huge = corpus / "huge.md"
+    huge.write_text("## H\nsprocket backlash gearbox\n" * 160_000)
+    assert huge.stat().st_size > hook.INDEX_FILE_MAX_BYTES
+    hook._fts_dir("sprocket backlash gearbox", str(corpus))
+    build = Path(hook._fts_db(str(corpus)).removesuffix(".db") + ".build")
+    record = json.loads(build.read_text())
+    assert record["outcome"] == hook.BUILD_TRUNCATED, record
+    # And it is the SAME answer the empty-index case gives, which is the half
+    # that was inconsistent: one cause, one outcome, whatever else indexed.
+    assert record["files"] == 1, record
+
+
+def test_a_file_that_grows_past_the_cap_before_the_read_is_still_declined(
+    corpus: Path, monkeypatch
+) -> None:
+    """The walk's stat is the cap's first reading and cannot be its only one.
+
+    Stores are written by editors and by other sessions, so a file under the
+    cap when it was stat'd can be over it when it is opened — and the cap's
+    stated guarantee is that the bytes are never read, not that they are read
+    and then regretted. A whole file past the cap was read, tokenized into
+    chunks and indexed, with `lex_oversize` never touched.
+
+    Driven by growing the file between the two, which is what a concurrent
+    writer does inside the milliseconds between the walk and the staging read.
+    """
+    _many_memos(corpus, 1)
+    grower = corpus / "grower.md"
+    grower.write_text("## G\nsprocket backlash gearbox\n")
+    real_scan = hook._fts_scan
+
+    def scan_then_grow(root: str):
+        result = real_scan(root)
+        grower.write_text("## G\nsprocket backlash gearbox\n" * 200_000)
+        return result
+
+    monkeypatch.setattr(hook, "_fts_scan", scan_then_grow)
+    hook._LEX_COUNTS["lex_oversize"] = 0
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        hook._fts_sync(con, str(corpus))
+        rows = con.execute(
+            "SELECT count(*) FROM chunks WHERE path = ?", (str(grower),)
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert grower.stat().st_size > hook.INDEX_FILE_MAX_BYTES
+    assert rows == 0, f"{rows} chunks read out of a file past the cap"
+    # And it is COUNTED, so an operator can see the cap firing rather than
+    # infer it from a file count that is quietly one short.
+    assert hook._LEX_COUNTS["lex_oversize"] == 1, hook._LEX_COUNTS
+
+
+def test_one_match_cannot_outlive_the_budget_it_was_admitted_under(
+    corpus: Path, monkeypatch
+) -> None:
+    """A deadline read before a statement says the budget was open when the
+    statement started, which is an admission test rather than a bound.
+
+    The OR'd MATCH is where that gap is a budget rather than a rounding error:
+    it is linear in both the term count and the index, and measured at 6.5 s
+    over a 210,000-chunk index — the whole task budget inside one statement,
+    with nothing able to stop it once `execute` had begun.
+
+    Asserted on the bounded executor rather than through `_fts_search`, because
+    that function has deadline checks on either side of the query and a test
+    driven through it passes on those instead: a first draft of this one did,
+    with the handler deleted. The wiring is pinned separately below, which is
+    the other half of the same claim.
+
+    The callback is consulted every instruction here so that a three-file
+    corpus reaches it at all; in production it is every `FTS_PROGRESS_OPS`.
+    """
+    _many_memos(corpus, 3)
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    sql = "SELECT path FROM chunks WHERE chunks MATCH ? LIMIT ?"
+    try:
+        hook._fts_sync(con, str(corpus))
+        monkeypatch.setattr(hook, "FTS_PROGRESS_OPS", 1)
+        # Admitted, then spent: the statement is running when the budget goes.
+        with pytest.raises(hook._QueryTimeout):
+            hook._fts_bounded(
+                con, sql, ("sprocket", 10), time.monotonic() - 1, "3 terms"
+            )
+        # Non-vacuity: the same call with no deadline is the query, unbounded
+        # and answering — so the case above cannot be failing for want of rows.
+        assert hook._fts_bounded(con, sql, ("sprocket", 10), None, "3 terms")
+        # And the handler is not left behind on a connection the rest of the
+        # stage reuses, which would abort every later statement.
+        assert hook._fts_bounded(
+            con, sql, ("sprocket", 10), time.monotonic() + 3600, "3 terms"
+        )
+    finally:
+        con.close()
+
+    # The wiring: the MATCH goes through the bounded executor carrying the
+    # deadline it was given, not around it.
+    seen: list = []
+    monkeypatch.setattr(
+        hook, "_fts_bounded", lambda c, q, p, d, w: seen.append(d) or []
+    )
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        hook._fts_search(con, "sprocket backlash", deadline=time.monotonic() + 3600)
+    finally:
+        con.close()
+    assert len(seen) == 1 and seen[0] is not None, seen
+
+    # An abort must not be read as a damaged index: a bare OperationalError is
+    # what `_fts_dir` answers by unlinking the DB, so every over-budget query
+    # would rebuild the corpus it had just failed to search.
+    assert not issubclass(hook._QueryTimeout, sqlite3.OperationalError)
 
 
 def test_a_memory_that_grows_past_the_cap_stops_answering_with_its_old_text(
@@ -9928,3 +10108,9 @@ def test_every_task_outcome_is_registered_under_the_task_prefix() -> None:
     assert len(task) >= 17, sorted(task)
     # And the prefix is the one the other side declares.
     assert hook.TASK_OUTCOME_PREFIX == "task:"
+    # Its sibling, for the same reason and one this suite could not see: every
+    # use of `TASK_STATE_PREFIX` reads the symbol, so a rebase that redefines
+    # it adapts silently — and the comment on the constant says it exists to
+    # avoid colliding with `t-*.json` files an earlier experiment already left
+    # on disk. That collision comes back with the suite green.
+    assert hook.TASK_STATE_PREFIX == "t-"

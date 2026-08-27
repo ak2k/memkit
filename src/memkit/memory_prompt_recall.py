@@ -1889,6 +1889,70 @@ def _fts_scan(
     return disk, spared, unwalked, oversize
 
 
+def _read_capped(path: str) -> str | None:
+    """The file's text, or None if it is past `INDEX_FILE_MAX_BYTES`.
+
+    The walk's stat cannot be the cap's only reading. Stores are written by
+    editors and by other sessions, so a file that was under the cap when it
+    was stat'd can be over it by the time it is opened — and a plain `read()`
+    then pulls in and tokenizes the whole of what the cap exists to refuse,
+    with the counter that would have said so never touched. Reading one
+    character past the cap is what makes the refusal a decision taken on this
+    side of the bytes.
+
+    Characters rather than bytes, which is the cheap approximation and the
+    right one here: the expensive half is the tokenize, and that is bounded by
+    characters. Pathological multibyte content can still pull up to four times
+    the cap off the disk before the length test settles it.
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read(INDEX_FILE_MAX_BYTES + 1)
+    return None if len(text) > INDEX_FILE_MAX_BYTES else text
+
+
+# How often SQLite consults an abort callback, in VM instructions. Small enough
+# that the check lands INSIDE a statement rather than after it, large enough
+# that the callback is not itself the cost — measured at under 1% over a
+# 210,000-chunk index.
+FTS_PROGRESS_OPS = 10_000
+
+
+def _fts_bounded(
+    con: sqlite3.Connection,
+    sql: str,
+    params: tuple,
+    deadline: float | None,
+    what: str,
+) -> list:
+    """One statement, abandoned if the budget expires while it RUNS.
+
+    A deadline read before a statement is an admission test, not a bound: it
+    says the budget was open when the statement started and nothing after that
+    can stop it. The OR'd MATCH is where that gap is a budget rather than a
+    rounding error — linear in both the term count and the index, it measures
+    0.6 s over 19,600 chunks and 6.5 s over 210,000, the second of which is the
+    whole task budget inside one statement the check has already admitted.
+
+    The abort surfaces as a plain `OperationalError`, which `_fts_dir` reads as
+    a damaged index and answers by unlinking it — so it is converted here into
+    the timeout the caller already isolates per dir. Converting is the
+    load-bearing half: without it every over-budget query rebuilds the index.
+    """
+    if deadline is None:
+        return con.execute(sql, params).fetchall()
+    con.set_progress_handler(lambda: time.monotonic() >= deadline, FTS_PROGRESS_OPS)
+    try:
+        return con.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        if time.monotonic() >= deadline:
+            raise _QueryTimeout(f"{what}, budget spent mid-query") from None
+        raise
+    finally:
+        # The connection is reused for the rest of the stage, and a handler
+        # closing over a spent deadline would abort every later statement.
+        con.set_progress_handler(None, 0)
+
+
 class _QueryTimeout(Exception):
     """The budget expired inside the QUERY half of a dir's retrieval.
 
@@ -2025,7 +2089,6 @@ def _fts_sync(
     # NOT spared from being SWEPT — see `sweep` below for the difference.
     spared |= oversize
     _LEX_COUNTS["lex_unwalked"] += len(unwalked)
-    _LEX_COUNTS["lex_oversize"] += len(oversize)
     snapshot = _fts_identity(con)
     if unwalked:
         # An incomplete walk cannot tell "deleted" from "in the part I could
@@ -2059,11 +2122,21 @@ def _fts_sync(
             truncated += 1
             continue
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                staged[path] = _md_sections(f.read())
+            text = _read_capped(path)
         except OSError:
             spared.add(path)
             del disk[path]  # unreadable is not indexable; its old rows stand
+            continue
+        if text is None:
+            # It grew past the cap between the walk's stat and this read, so
+            # the walk's classification is stale. Reclassified the way the walk
+            # would have — declined for size, which sweeps its rows rather than
+            # leaving them to answer with text the file no longer holds.
+            oversize.add(path)
+            spared.add(path)
+            del disk[path]
+            continue
+        staged[path] = _md_sections(text)
     # What to sweep is decided HERE, from the walk's own snapshot, and carries
     # each candidate's identity with it. The re-read under the lock is a better
     # picture of the index but a worse one of the corpus: it names rows written
@@ -2118,8 +2191,7 @@ def _fts_sync(
                     # failure here be the race it is; if it turns out to be a
                     # mode rather than a moment, the next scan classifies it.
                     try:
-                        with open(path, encoding="utf-8", errors="replace") as f:
-                            sections = _md_sections(f.read())
+                        sections = _md_sections(_read_capped(path) or "")
                     except OSError:
                         spared.add(path)
                         continue
@@ -2161,6 +2233,9 @@ def _fts_sync(
     # because a truncated sync and a small corpus otherwise produce the same
     # record — a low file count and no error.
     _LEX_COUNTS["lex_spared"] += len(spared)
+    # Counted here rather than at the walk, because the staging read adds to
+    # `oversize` a file that grew past the cap after the walk stat'd it.
+    _LEX_COUNTS["lex_oversize"] += len(oversize)
     _LEX_COUNTS["lex_deadline"] += truncated
     _LEX_COUNTS["lex_unswept"] += unswept
     if (spared or unwalked) and not _fts_answerable(con):
@@ -2181,7 +2256,18 @@ def _fts_sync(
     # so the subtraction happens here instead. Every other spared path was
     # either never in `disk` or already removed by the staging loop, so one
     # difference covers all of them.
-    return len(disk.keys() - spared), len(spared), len(unwalked), truncated
+    # The fourth value is what memkit's own limits DECLINED — the budget and
+    # the file cap together — rather than the budget alone. `spared` counts
+    # both, so a caller comparing the two needs the same pair the guard above
+    # compares; given the budget alone it reads a corpus every byte of which
+    # was readable as one it could not read, and sends its owner at file
+    # permissions.
+    return (
+        len(disk.keys() - spared),
+        len(spared),
+        len(unwalked),
+        truncated + len(oversize),
+    )
 
 
 # MERGE SEAM. Track A's takes `(con, query)`. Without the `deadline` a 12 KB
@@ -2229,11 +2315,14 @@ def _fts_search(
         return []
     if deadline is not None and time.monotonic() >= deadline:
         raise _QueryTimeout(f"{len(terms)} terms, no budget left to ask")
-    rows = con.execute(
+    rows = _fts_bounded(
+        con,
         "SELECT path, min(rank) AS r, text, rowid FROM chunks WHERE chunks MATCH ?"
         " GROUP BY path ORDER BY r LIMIT ?",
         (match, CANDIDATE_LIMIT),
-    ).fetchall()
+        deadline,
+        f"{len(terms)} terms",
+    )
     if not rows:
         return []
     best_rank = rows[0][1]
@@ -2405,19 +2494,23 @@ def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
         try:
             outcome, files = base, None
             try:
-                files, spared, unwalked, truncated = _fts_sync(con, d, deadline)
+                files, spared, unwalked, declined = _fts_sync(con, d, deadline)
                 # A corpus nobody can read walks to zero files without raising,
                 # and `ok` over zero files is the claim that the corpus is
                 # empty — the exact confusion this sidecar exists to break. The
                 # walk's own account of what it could not reach is the only
                 # thing that separates them.
                 if (spared or unwalked) and outcome == BUILD_OK:
-                    # TRUNCATED only when the budget is the WHOLE story: a run
-                    # that also failed to read something is `partial`, which is
-                    # the more alarming of the two and the one worth surfacing.
+                    # TRUNCATED only when memkit's own limits are the WHOLE
+                    # story: a run that also failed to READ something is
+                    # `partial`, which is the more alarming of the two and the
+                    # one worth surfacing. The same arithmetic `_fts_sync`
+                    # applies to decide its own empty-index message, from the
+                    # same pair — otherwise one cause reports two outcomes
+                    # depending on whether any other file happened to index.
                     outcome = (
                         BUILD_TRUNCATED
-                        if truncated == spared and not unwalked
+                        if declined == spared and not unwalked
                         else BUILD_PARTIAL
                     )
             except sqlite3.OperationalError as exc:
@@ -2725,7 +2818,14 @@ def _state_name(key: str, prefix: str = "") -> str:
     copies of it drift in the direction where one of them stops bounding the
     length or stops dropping a separator.
     """
-    safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)[:80]
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)
+    if len(safe) > 80:
+        # Truncation alone makes two ids that differ only past the cut one
+        # file, and one file is one `shown` set: the second call reads the
+        # first's and is told it was deduped, which reads in the log as the
+        # system working. The digest is over the WHOLE key, so what the cut
+        # discards still separates them, and 71 + 1 + 8 keeps the bound.
+        safe = f"{safe[:71]}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
     return os.path.join(_state_dir(), f"{prefix}{safe}.json")
 
 
@@ -3051,6 +3151,15 @@ def _load_session(path: str) -> tuple[set[str], dict[str, float | None]]:
         return set(), {}
     if isinstance(state, list):
         return set(state), dict.fromkeys(state)
+    if not isinstance(state, dict):
+        # Valid JSON that is neither schema — a bare `null`, a number, a
+        # string. `json.load` returns it without raising, so the ValueError arm
+        # above never sees it and the attribute access below dies on an
+        # AttributeError this does not catch. The file persists under a name
+        # derived from the call, so on the task path that is every retry for
+        # that spawn losing its pointers, forever. Nothing here trusts the
+        # file's values; this is the same posture extended to its type.
+        return set(), {}
     shown = {p for p in (state.get("shown") or []) if isinstance(p, str)}
     spent = state.get("spent")
     if not isinstance(spent, dict):
