@@ -500,7 +500,7 @@ def long_brief_set(root: pathlib.Path) -> dict:
     }
 
 
-# What `task_pointers` reaches for on the hook module. Named here rather than
+# What `task_delivery` reaches for on the hook module. Named here rather than
 # probed for with one symbol, which is what the probe used to be: the surface
 # below it grew to nine names and a keyword, so a copy carrying `task_gate` and
 # nothing else — the immediately preceding commit of this branch qualified —
@@ -523,7 +523,7 @@ TASK_SURFACE = (
 
 
 def task_surface_gap(hook) -> str | None:
-    """The first thing `task_pointers` needs and this hook has not got.
+    """The first thing `task_delivery` needs and this hook has not got.
 
     None when the whole surface is there. A keyword is checked as well as a
     name: a copy can carry `_pointer_line` without the `over_brief` argument
@@ -552,12 +552,36 @@ TASK_INPUT_ASSUMED_OVERHEAD = 1024
 
 
 def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
-    """Everything one brief's trip through the task path produced, as a record.
+    """Everything one brief's trip through the task path produced, as a
+    record — which is what a subagent WOULD ACTUALLY RECEIVE for this brief.
 
-    `task_pointers` reads the names out of it and the long-brief slice reads
-    the cap's consequence out of it: the number of hits that cleared the floor,
-    the number the cap kept, and the bytes the emission decided to write. All
-    from ONE trip, because two trips is two populations.
+    Every stage is the task path's own — its gate, its query builder, its floor
+    bars — because that is the whole subject: a slice scored through
+    `build_query` and the prompt path's bars would measure a retriever no
+    subagent ever meets, and would report the shape of the population this
+    exists to prove is served.
+
+    And it runs to the EMISSION rather than stopping at retrieval, which is the
+    difference between "the ranker found it" and "the subagent got it". The
+    task path can retrieve perfectly and deliver nothing: an `updatedInput`
+    that fails the output-shape allowlist is refused whole, and so is a brief
+    whose emission crosses the write bound — and a slice that stopped at the
+    floor would score both as served. Reading the names back OUT of the
+    emitted bytes rather than off the picks is what makes that true rather
+    than merely intended.
+
+    A gated brief returns nothing, which is the same answer as no hits and is
+    correct here: the question this slice asks is what reaches the subagent.
+
+    ONE RECORD RATHER THAN A LIST OF NAMES, and both halves of the slice
+    read it. The names are what was delivered; `unanswerable` is whether
+    the corpus could answer at all, and dropping it is how a broken index
+    came to satisfy the injection ceiling — on the leakage half an index
+    that could not answer and a brief that was correctly quiet produce the
+    same empty list. The cap's consequence is here too: how many hits
+    cleared the floor, how many the cap kept, and the bytes the emission
+    decided to write. All from ONE trip, because two trips is two
+    populations.
     """
     return _task_delivery(hook, brief, dirs)
 
@@ -615,32 +639,8 @@ def over_cap_faults(hook, case: dict, got: dict) -> list[str]:
     return faults
 
 
-def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
-    """What a subagent WOULD ACTUALLY RECEIVE for this brief, best-first.
-
-    Every stage is the task path's own — its gate, its query builder, its floor
-    bars — because that is the whole subject: a slice scored through
-    `build_query` and the prompt path's bars would measure a retriever no
-    subagent ever meets, and would report the shape of the population this
-    exists to prove is served.
-
-    And it runs to the EMISSION rather than stopping at retrieval, which is the
-    difference between "the ranker found it" and "the subagent got it". The
-    task path can retrieve perfectly and deliver nothing: an `updatedInput`
-    that fails the output-shape allowlist is refused whole, and so is a brief
-    whose emission crosses the write bound — and a slice that stopped at the
-    floor would score both as served. Reading the names back OUT of the
-    emitted bytes rather than off the picks is what makes that true rather
-    than merely intended.
-
-    A gated brief returns nothing, which is the same answer as no hits and is
-    correct here: the question this slice asks is what reaches the subagent.
-    """
-    return _task_delivery(hook, brief, dirs)["names"]
-
-
 def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
-    """The one trip. See `task_pointers` above for why each stage is the task
+    """The one trip. See `task_delivery` above for why each stage is the task
     path's own."""
     empty = {
         "names": [],
@@ -650,6 +650,14 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "delivered": "",
         "unanswerable": 0,
     }
+    # WHERE PRODUCTION'S CLOCK STARTS, which is before the gate and the query
+    # builder rather than at the search. `main` stamps `t0` and hands it down,
+    # so what those two stages spend comes out of the budget the search then
+    # runs under; a clock started at the search hands retrieval a budget
+    # production has already spent part of, and reports pointers production
+    # abandons. The measured divergence on the fixture corpus is 1.4-3.2 ms of
+    # 7,000, which is the number this stops depending on.
+    t0 = time.monotonic()
     if hook.task_gate(brief) is not None:
         return empty
     query = hook.build_task_query(brief)
@@ -673,7 +681,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         stats=rec,
         dirs=dirs,
         query=query,
-        deadline=time.monotonic() + hook.TASK_BUDGET_SECONDS,
+        deadline=t0 + hook.TASK_BUDGET_SECONDS,
     )
     unanswerable = int(rec.get("errs_lex") or 0)
     empty = dict(empty, unanswerable=unanswerable)
@@ -700,9 +708,17 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     # budget production measures. See TASK_INPUT_ASSUMED_OVERHEAD.
     tool_input = {
         "prompt": brief,
-        "description": "score this brief".ljust(TASK_INPUT_ASSUMED_OVERHEAD, "."),
+        "description": "score this brief",
         "subagent_type": "general-purpose",
     }
+    # The pad lands on the WHOLE non-brief part rather than on one key's value.
+    # What production weighs is the serialized object, so an assumption spelled
+    # as the length of `description` stops being the assumption the moment this
+    # input grows a key — the two agree today by 55 bytes.
+    spare = TASK_INPUT_ASSUMED_OVERHEAD - len(
+        json.dumps(dict(tool_input, prompt=""), ensure_ascii=False)
+    )
+    tool_input["description"] += "." * max(spare, 0)
     # THE HOOK'S OWN EMISSION DECISION, not a second copy of it. This slice
     # re-derived it — `_task_payload`, then its own size test, and no
     # encodability test at all — so a divergence between the two was invisible
@@ -720,11 +736,19 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     # answers yes to an empty block.
     appended = delivered[len(brief) :] if delivered.startswith(brief) else delivered
     lines = [ln for ln in appended.splitlines() if ln.startswith("- ")]
+    # THE NAMES THE LINES CARRY, matched whole. A basename tested for
+    # containment against a whole pointer line answers yes to any line that
+    # merely spells it somewhere — another memory whose name extends it, or a
+    # description that happens to mention it — so a pick the block dropped
+    # scores as delivered on its neighbour's line, and the readback stops being
+    # a readback. Off the line's own tokens instead, which survives the path
+    # being rendered differently without widening what counts as a match.
+    carried = {pathlib.Path(tok).name for line in lines for tok in line.split()}
     return {
         "names": [
             name
             for name in (pathlib.Path(p).name for p, _, _ in picks)
-            if any(name in line for line in lines)
+            if name in carried
         ],
         "eligible": len(eligible),
         "picks": len(picks),
@@ -1270,15 +1294,32 @@ def main() -> None:
                 if case.get("over_cap"):
                     cap_fail.extend(over_cap_faults(hook, case, got))
             for case in briefs["unserved"]:
-                shown = task_pointers(hook, case["brief"], dirs)
+                got = task_delivery(hook, case["brief"], dirs)
+                shown = got["names"]
                 ok = not shown
                 leaked += not ok
                 mark = "BRIEF-QUIET" if ok else "BRIEF-LEAK"
+                if got["unanswerable"] and ok:
+                    # The same refusal as the served half, on the OPPOSITE
+                    # outcome. An index that could not answer injects nothing,
+                    # and injecting nothing is exactly what a correctly quiet
+                    # brief looks like — so on this half the unattributable
+                    # result is the CLEAN one, and counting it certifies the
+                    # injection ceiling against a corpus that was never
+                    # searched. That ceiling is this suite's only bound on what
+                    # the task path says to an unattended subagent.
+                    unanswered.append(
+                        f"{case['name']} scored against an index that could not "
+                        f"answer ({got['unanswerable']} dir(s) failed to search) "
+                        "— an unanswerable corpus is not a quiet one, and this "
+                        "run cannot say anything about leakage"
+                    )
+                    mark = "BRIEF-NOINDEX"
                 moved = against_snapshot(
                     LONG_BRIEF_SLICE, case["name"], case_record(mark)
                 )
-                got = f"injected {shown}" if shown else "(nothing)"
-                print(f"[{mark:<12}] {case['name'][:58]:<58} -> {got}{moved}")
+                saw = f"injected {shown}" if shown else "(nothing)"
+                print(f"[{mark:<12}] {case['name'][:58]:<58} -> {saw}{moved}")
 
     # A case deleted from a list up there leaves its expectation behind, and a
     # stale expectation is the one kind of drift no case line can report —

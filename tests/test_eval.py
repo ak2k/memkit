@@ -702,6 +702,116 @@ def test_an_index_that_cannot_answer_is_not_scored_as_a_retrieval_miss(
     assert "0/9 served" in _rates(out.stdout), out.stdout
 
 
+def test_an_index_that_cannot_answer_is_not_scored_as_a_quiet_brief(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The same fact the served half already refuses, on the half that
+    certifies the injection ceiling.
+
+    An index that could not answer injects nothing, and injecting nothing is
+    exactly what a correctly quiet brief looks like — so on this half the
+    unattributable result is the CLEAN one. Counted, it certifies the ceiling
+    against a corpus that was never searched, which is this suite's only bound
+    on what the task path says to an unattended subagent. The served half
+    refuses on a MISS and this one has to refuse on a QUIET, which is why one
+    fix did not cover both.
+
+    Same injected condition as the served half's case, for the same reason: a
+    hook copy whose lexical stage cannot answer produces it on every dir, every
+    time, where a real lock race produces it slowly and at random.
+    """
+    unserved = len(
+        json.loads((corpus / BRIEFS / "index.json").read_text())["unserved"]
+    )
+    assert unserved, "the fixture corpus must carry negative cases"
+    src = _copy_hook(
+        tmp_path,
+        '    if not os.path.isdir(d):\n        return []\n    db = _fts_db(d)',
+        '    if not os.path.isdir(d):\n        return []\n'
+        '    raise sqlite3.OperationalError("database is locked")\n'
+        '    db = _fts_db(d)',
+    )
+    out = _eval(corpus, "--hook", str(src))
+    assert out.returncode != 0, out.stdout
+    # Not one negative case reports a clean row it cannot account for.
+    assert "[BRIEF-QUIET " not in out.stdout, out.stdout
+    assert out.stdout.count("[BRIEF-NOINDEX]") == unserved + 9, out.stdout
+    assert out.stderr.count("cannot say anything about leakage") == unserved, (
+        out.stderr
+    )
+    # And a healthy index is unaffected: `unanswerable` is zero there, so the
+    # refusal cannot be firing on the shape of the run rather than the fact.
+    assert "[BRIEF-QUIET " in _eval(corpus).stdout
+
+
+def test_a_neighbours_pointer_line_is_not_this_memory_being_delivered(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The names are read back out of the emitted bytes so that a pick the
+    block dropped scores as a miss. Tested by containment against the whole
+    line, a name another memory's name merely EXTENDS is found on that
+    neighbour's line and scores as delivered — the delivery gate satisfied by
+    a pointer the subagent never received.
+
+    Latent on the shipped fixtures, where no basename is a substring of
+    another; one fixture named `balancing.md` beside `turbine_balancing.md` is
+    all it takes, so it is driven with exactly that.
+    """
+    domain = corpus / "corpus" / "project" / "search" / "domain"
+    twin = corpus / "corpus" / "project" / "search" / "balancing.md"
+    twin.write_text(
+        (domain / "turbine_balancing.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    index = corpus / BRIEFS / "index.json"
+    state = json.loads(index.read_text())
+    for case in state["served"]:
+        if case["brief"] == "served/rotor-swap-programme.md":
+            case["file"] = twin.name
+    index.write_text(json.dumps(state, indent=2))
+    # The stock hook baselines the moved corpus: the divergence under test is
+    # the copy's, and a run against a fingerprint that moved gates nothing.
+    assert _eval(corpus, "--update-snapshot").returncode == 0
+
+    src = _copy_hook(
+        tmp_path,
+        "        [_pointer_line(*pick, over_brief=True) for pick in picks], truncated",
+        "        [_pointer_line(*pick, over_brief=True) for pick in picks[1:]], "
+        "truncated",
+    )
+    out = _eval(corpus, "--hook", str(src))
+    row = next(ln for ln in out.stdout.splitlines() if "rotor-swap-programme" in ln)
+    assert "[BRIEF-MISS" in row, row
+    # The quoted repr, so this assertion is not the containment test it is
+    # about — a first draft of it read `twin.name not in row` and matched
+    # inside `'turbine_balancing.md'`.
+    assert f"'{twin.name}'" not in row.split("(got ")[1], row
+
+
+def test_the_slice_spends_the_budget_the_gate_and_the_query_already_spent(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """Production stamps `t0` in `main` and hands it down, so the brief gate
+    and the query builder are billed to the same budget the search then runs
+    under. The slice started its clock at the search, which hands retrieval a
+    budget production has already spent part of — and a gate with more budget
+    than production reports pointers production abandons.
+
+    Driven by making the query builder cost more than the whole budget, which
+    is honest about what it proves: the structural divergence, not that the
+    1.4-3.2 ms production actually spends there matters.
+    """
+    src = _copy_hook(tmp_path, "TASK_BUDGET_SECONDS = 7", "TASK_BUDGET_SECONDS = 0.25")
+    text = src.read_text()
+    marker = "def build_task_query(stripped: str) -> str | None:\n"
+    assert text.count(marker) == 1, marker
+    src.write_text(text.replace(marker, marker + "    time.sleep(0.5)\n"))
+
+    out = _eval(corpus, "--hook", str(src))
+    assert "0/9 served" in _rates(out.stdout), out.stdout
+    assert out.returncode != 0, out.stdout
+
+
 def test_the_slice_retrieves_under_the_deadline_production_passes(
     corpus: Path, tmp_path: Path
 ) -> None:
