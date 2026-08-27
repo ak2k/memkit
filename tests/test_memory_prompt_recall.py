@@ -9754,9 +9754,11 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     did not see — which is precisely the guarantee an interrupted walk needs,
     since it cannot know which paths it never reached.
     """
-    # Across several directories, because one directory is always walked in
-    # full: a flat store can never be truncated, which is a property worth
-    # having and makes it the wrong shape to drive this with.
+    # In the shape memkit itself ships — everything under one subdirectory,
+    # nothing indexable in the root — because that is where the free pass used
+    # to be spent. Keyed on a DIRECTORY visited it landed on the empty root and
+    # the walk discovered zero files, deterministically, every run: the rate
+    # the free pass exists to guarantee was zero on this exact layout.
     paths = [
         _memo(
             corpus,
@@ -9776,7 +9778,11 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     disk, _spared, unwalked, _oversize = hook._fts_scan(
         str(corpus), deadline=time.monotonic() - 1
     )
-    # It made progress — one directory, always — and then stopped.
+    # It made progress — one FILE, always — and then stopped. The progress is
+    # asserted, not described: this comment used to claim it while the only
+    # assertion was on `unwalked`, and under this test's own corpus `disk` was
+    # empty. A claim a test states and does not check is a claim nobody has.
+    assert len(disk) >= 1, (sorted(disk), "an expired deadline recorded nothing")
     assert unwalked, "an expired deadline did not truncate the walk"
 
     # And the truncated walk deletes nothing: every row it did not get to is
@@ -9796,18 +9802,44 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     assert len(full) == len(paths) and not none_unwalked, (len(full), none_unwalked)
 
 
+    # And the clock is read per FILE, so one large flat directory is bounded
+    # too — it used to be read once per directory, which cannot bound a corpus
+    # that is one directory.
+    flat = corpus / "flat"
+    flat.mkdir()
+    for i in range(40):
+        _memo(flat, f"f{i}.md", f"# F{i}\n\nsprocket backlash {i}.\n")
+    stats = 0
+    real_stat = os.stat
+
+    def slow_stat(path, **kw):
+        nonlocal stats
+        stats += 1
+        return real_stat(path, **kw)
+
+    monkeypatch.setattr(hook.os, "stat", slow_stat)
+    seen, _s, unwalked_flat, _o = hook._fts_scan(
+        str(flat), deadline=time.monotonic() - 1
+    )
+    assert len(seen) == 1, sorted(seen)
+    assert unwalked_flat, "a flat directory outran the clock"
+    # One stat for the file it recorded, and none for the 39 it declined to.
+    assert stats <= 2, stats
+    monkeypatch.undo()
+
+
 def test_the_walk_is_not_where_a_cold_sync_spends_its_budget(
     corpus: Path,
 ) -> None:
-    """The one loop the deadline does not bound, held to the reason it is not
-    bounded.
+    """What the walk costs when nothing bounds it, held to the reason the
+    bound is worth having.
 
-    `_fts_scan` runs to completion before `_fts_sync` reads the clock, so the
-    walk is genuinely unbounded — the argument for leaving it that way is that
-    it is a rounding error against the loop that IS bounded, and an argument
-    from a number nobody re-measures is how this file has been wrong before.
-    A ratio rather than a millisecond bar, so it means the same thing on a
-    slow machine as on a fast one.
+    `_fts_scan` now takes a deadline, and this drives it WITHOUT one — the
+    unbounded shape — because the argument for the bound is that the walk is a
+    rounding error on a local corpus and is not one on a store the operating
+    system is slow about. An argument from a number nobody re-measures is how
+    this file has been wrong before. A ratio rather than a millisecond bar, so
+    it means the same thing on a slow machine as on a fast one.
     """
     _many_memos(corpus, 400)
     walk = min(_elapsed(lambda: hook._fts_scan(str(corpus))) for _ in range(3))

@@ -2157,8 +2157,8 @@ def _fts_scan(
     path exits with no `updatedInput` and no self-heal, which is the failure
     the rest of this machinery exists to end. ONE DIRECTORY IS ALWAYS WALKED,
     for the reason the staging loop always reads one file: a corpus that
-    exhausts the budget before its first directory would otherwise never index
-    anything at all, and a rate of one directory a run is a rate.
+    exhausts the budget before its first FILE would otherwise never index
+    anything at all, and a rate of one file a run is a rate.
 
     `oversize` is the files past INDEX_FILE_MAX_BYTES. Decided HERE, from the
     stat this walk already does, because the point of the cap is that the
@@ -2182,18 +2182,38 @@ def _fts_scan(
         unwalked.add(exc.filename or root)
 
     root_real = os.path.realpath(root)
-    for seen, (dirpath, dirnames, filenames) in enumerate(
-        os.walk(root, onerror=unreadable)
-    ):
-        if seen and deadline is not None and time.monotonic() >= deadline:
-            # Not authoritative past here, and it cannot name what it missed —
-            # so it says so about the root and lets `_fts_sync` spare every
-            # indexed path this walk did not reach. The alternative is a walk
-            # that stopped early being read as a corpus that shrank.
-            unwalked.add(root)
+    stopped = False
+    for dirpath, dirnames, filenames in os.walk(root, onerror=unreadable):
+        if stopped:
             break
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         for name in filenames:
+            if disk and deadline is not None and time.monotonic() >= deadline:
+                # Not authoritative past here, and it cannot name what it
+                # missed — so it says so about the root and lets `_fts_sync`
+                # spare every indexed path this walk did not reach. The
+                # alternative is a walk that stopped early being read as a
+                # corpus that shrank.
+                #
+                # KEYED ON A FILE RECORDED, not on a directory visited, and
+                # checked per FILE rather than per directory. Both spellings
+                # were wrong in opposite directions. A free DIRECTORY is spent
+                # on the root, and this project's own store has nothing
+                # indexable there — `EXCLUDE_BASENAMES` drops MEMORY.md and
+                # SEARCH.md, `EXCLUDE_DIRS` drops hot/ and archive/ — so the
+                # walk discovered ZERO files, deterministically, every run:
+                # the rate the free pass exists to guarantee was zero on the
+                # layout memkit ships. And a per-DIRECTORY clock cannot bound
+                # a flat corpus at all, since one directory is the whole of it.
+                #
+                # The remainder this does not bound: a corpus where no file is
+                # ever recordable leaves the deadline unenforced, because the
+                # free pass never gets spent. That is a smaller failure than
+                # the one above and it is the direction that keeps a slow
+                # store indexing at all.
+                unwalked.add(root)
+                stopped = True
+                break
             path = os.path.join(dirpath, name)
             if not name.endswith(".md") or _excluded(path):
                 continue
