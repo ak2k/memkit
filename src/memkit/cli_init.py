@@ -69,6 +69,7 @@ from memkit.memory_prompt_recall import (
     _trusted_which,
     _under_cwd,
     _Untrusted,
+    append_record,
     expand_home,
     path_refusal,
     state_token,
@@ -1486,10 +1487,12 @@ class Journal:
         # Line-buffered append and an explicit flush: the next mutation must
         # not be able to happen before this record is on disk, because the only
         # thing a crash leaves behind is what got there first.
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        #
+        # `append_record` is what keeps a torn predecessor from swallowing
+        # this record: the corruption is the absence of a separator before a
+        # new one, not the atomicity of the torn write, so it closes at this
+        # level rather than needing a short `write()` to be atomic.
+        append_record(self.path, line, fsync=True)
 
 
 class _Lock:
@@ -1628,7 +1631,14 @@ def _write_atomically(
                 os.unlink(tmp)
         else:
             os.replace(tmp, path)
-    except OSError:
+    except BaseException:
+        # `Refusal` is a plain `Exception`, so an `except OSError` here left
+        # `<target>.<pid>.tmp` beside the target on the one path that raises
+        # one — `changed-underfoot`, holding the content it was about to
+        # write, in the memory store next to `MEMORY.md` or in `~/.claude`.
+        # Nothing collects it: the sweep only reaches the state directory and
+        # `_stray_markdown` only counts `.md`, so it survived every re-run of
+        # the two-turn recovery the refusal itself advertises.
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise

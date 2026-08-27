@@ -1041,6 +1041,78 @@ def test_a_file_that_arrived_after_the_plan_is_not_written_over(
         assert f.read() == theirs, "confirm wrote over a file it planned to create"
 
 
+def test_losing_the_exclusive_create_leaves_nothing_beside_the_target(
+    profile, monkeypatch
+) -> None:
+    """The refusal is right; what it left behind was not.
+
+    The pre-check catches the file that arrived before the write. The one that
+    arrives between that check and `os.link` is caught by the exclusive create
+    itself — and THAT path had already written the temp file. `Refusal` is a
+    plain `Exception`, so the `except OSError` cleanup never ran: a
+    `<target>.<pid>.tmp` stayed beside `MEMORY.md` in the memory store,
+    holding the content the refusal had just declined to write. Nothing
+    collects it — the sweep only reaches the state directory and the stray
+    scan only counts `.md` — so it survived every re-run of the two-turn
+    recovery the refusal itself advertises.
+    """
+    target = profile / "notes" / "MEMORY.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    real_link = os.link
+
+    def lost(src, dst, **kw):
+        # The race, deterministically: the name is taken at the moment of the
+        # link and not a moment before it.
+        raise FileExistsError(errno.EEXIST, "File exists", dst)
+
+    monkeypatch.setattr(init.os, "link", lost)
+    with pytest.raises(init.Refusal) as caught:
+        init._write_atomically(str(target), "# theirs\n", expect="absent")
+    monkeypatch.setattr(init.os, "link", real_link)
+    assert caught.value.name == "changed-underfoot"
+    strays = [p.name for p in target.parent.iterdir() if ".tmp" in p.name]
+    assert strays == [], strays
+
+
+def test_a_torn_record_cannot_swallow_the_next_one(profile) -> None:
+    """The readers tolerate a torn LAST line; what they could not tolerate was
+    the record after it.
+
+    A crash mid-`write()` leaves a fragment with no trailing newline, and the
+    next record appended — by any later run, including one that finishes
+    cleanly — became part of the same LINE. `for line in f` then saw one
+    unparseable line and dropped BOTH: the torn record, which is intended,
+    and a complete one that had nothing wrong with it. The two-phase config
+    write survived it by accident of ordering; a single-record write does not.
+    """
+    state = profile / "home" / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    journal = state / hook.INIT_JOURNAL_NAME
+    good = json.dumps(
+        {
+            "v": 1,
+            "op": "merge-config",
+            "authored_config": True,
+            "path": str(profile / "memkit.json"),
+            "before": None,
+            "after": "file:abc",
+        },
+        separators=(",", ":"),
+    )
+    journal.write_text('{"v":1,"op":"merge-config","authored_conf', encoding="utf-8")
+    hook.append_record(str(journal), good, fsync=True)
+    assert list(hook.journal_config_claims(str(state))) == [
+        str(profile / "memkit.json")
+    ], journal.read_text()
+
+    # And a well-formed file gains no blank lines, so every reader that counts
+    # LINES — the soak log's window is one — keeps counting the same things.
+    log = state / hook.SOAK_LOG_NAME
+    hook.append_record(str(log), good)
+    hook.append_record(str(log), good)
+    assert len(log.read_text().splitlines()) == 2, log.read_text()
+
+
 def test_a_crash_between_two_mutations_leaves_a_journal_that_describes_it(
     profile, monkeypatch
 ) -> None:

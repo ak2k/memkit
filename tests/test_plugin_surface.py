@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import shlex
 import shutil
@@ -4326,6 +4327,37 @@ def test_the_shell_and_the_python_expand_home_the_same_way(monkeypatch) -> None:
     assert not disagreements, disagreements[:10]
     assert expand_home("~/x") == home + "/x"
     assert expand_home("~root/x") == "~root/x"
+
+
+def test_one_home_expansion_reaches_the_reader_the_commands_hand_paths_to(
+    tmp_path, monkeypatch
+) -> None:
+    """"ONE PREDICATE, because the failure it prevents is two of them" — and
+    `load_config`, ~470 lines below where that is written, still had the other
+    one.
+
+    It is the function `Machine.config()` hands `--config` to on both new
+    commands, so the two disagreed on the same flag: `cli_init._resolve_config`
+    routed the value through `expand_home` while doctor handed the raw value
+    to `load_config`, which called `os.path.expanduser` and so accepted a
+    `~someone/x` the wrapper refuses to read. A doctor reporting on a config
+    the install cannot load is the shape this pair exists to prevent.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "memkit.json").write_text(
+        json.dumps({"schema": hook.SCHEMA, "roots": {}, "stores": []}),
+        encoding="utf-8",
+    )
+    assert hook.load_config("~/memkit.json") is not None
+    # `~someone/x` is the case that separates the two rules. `expanduser`
+    # turns it into an absolute path; the shell, and this reader, leave it
+    # alone — so the file is simply not found.
+    with pytest.raises(hook.ConfigError):
+        hook.load_config("~nobody-here/memkit.json")
+    source = pathlib.Path(hook.__file__).read_text(encoding="utf-8")
+    assert "os.path.expanduser(path)" not in source, (
+        "a second home expansion is back in the module that declares it has one"
+    )
 
 
 def test_the_init_skill_says_where_dry_run_goes_in_the_argv() -> None:

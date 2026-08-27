@@ -542,6 +542,35 @@ def _trusted_git(args: list, **kw):
     return _execute(_git_argv(git, list(args)), env_extra=extra, **kw)
 
 
+def append_record(path: str, line: str, fsync: bool = False) -> None:
+    """One JSONL record, which cannot become part of the record before it.
+
+    Both readers of both append-only files here tolerate a TORN LAST LINE — a
+    crash mid-`write()` leaves a fragment that does not parse and is skipped,
+    which is what keeps one interrupted run from reading as "nothing is
+    claimed". What that tolerance does not survive is the fragment having no
+    trailing newline: the next record appended, by any later run including one
+    that finishes cleanly, is then part of the same LINE, and the reader drops
+    both — the torn record, which is intended, and a complete one that had
+    nothing wrong with it.
+
+    The separator is written only when the file does not already end in one,
+    so a well-formed file gains no blank lines and every reader that counts
+    lines keeps counting the same things.
+    """
+    data = (line + "\n").encode("utf-8")
+    with open(path, "ab+") as f:
+        f.seek(0, os.SEEK_END)
+        if f.tell():
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                data = b"\n" + data
+        f.write(data)
+        if fsync:
+            f.flush()
+            os.fsync(f.fileno())
+
+
 def _config_routes() -> str:
     """The routes this caller's channel really does consult, as a phrase."""
     routes = PLUGIN_CONFIG_ROUTES if _plugin_install() else CONFIG_ROUTES
@@ -955,7 +984,13 @@ def load_config(path: str | None = None, honor_env_overrides: bool = False):
         path = os.environ.get(CONFIG_ENV) or None
     if path is None:
         return None
-    path = os.path.expanduser(path)
+    # `expand_home`, not `os.path.expanduser`, and the difference is the case
+    # the pair was written for: `expanduser` also expands `~someone/x`, which
+    # the shell leaves alone. Two rules for turning a typed path into the path
+    # acted on is the failure `expand_home` exists to prevent, and this reader
+    # is the one the two new commands hand `--config` to — so leaving it here
+    # let doctor report on a config the wrapper would refuse to read.
+    path = expand_home(path)
     if not os.path.isfile(path):
         raise ConfigError(f"{path}: no such config file")
     try:
@@ -3893,8 +3928,7 @@ def _soak_log(record: dict) -> None:
         record["ts"] = int(time.time())
         record["v"] = _version()
         path = os.path.join(_state_dir(), SOAK_LOG_NAME)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, separators=(",", ":")) + "\n")
+        append_record(path, json.dumps(record, separators=(",", ":")))
 
 
 def build_query(stripped: str) -> str | None:

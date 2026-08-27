@@ -315,6 +315,26 @@ def test_every_pending_name_is_a_name_the_parser_accepts(monkeypatch) -> None:
         assert cli.main([name]) == cli.EXIT_NOT_IN_BUILD
 
 
+def test_the_package_docstring_does_not_call_a_wired_subcommand_a_skeleton(
+) -> None:
+    """`python -c "import memkit; help(memkit)"` is a surface too.
+
+    The docstring said the dispatcher was "a skeleton until those land" — true
+    when it was written, and turned false by the same branch that wired both
+    subcommands into `_HANDLERS`. The file is byte-identical to the base, so
+    nothing about it changed except what it describes.
+    """
+    import memkit
+
+    assert memkit.__doc__
+    assert "skeleton until those land" not in memkit.__doc__
+    for name in cli._HANDLERS:
+        assert f"memkit {name}" in memkit.__doc__, (name, memkit.__doc__)
+    assert not cli._PENDING or all(
+        f"memkit {name}" not in memkit.__doc__ for name in cli._PENDING
+    )
+
+
 def test_a_handler_takes_over_from_the_pending_message(monkeypatch) -> None:
     """The seam a later unit extends: one entry in _HANDLERS and the pending
     refusal stops being reachable for that name. Asserted here so the routing
