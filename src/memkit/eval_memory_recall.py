@@ -106,9 +106,12 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import os
 import pathlib
 import re
+import subprocess
 import sys
+import tempfile
 import time
 
 from memkit.memory_prompt_recall import CONFIG_ENV, ConfigError, load_config
@@ -552,11 +555,27 @@ def task_surface_gap(hook) -> str | None:
 TASK_INPUT_ASSUMED_OVERHEAD = 1024
 
 
-# A pointer line, up to the separator memkit renders between the path and the
-# description. Non-greedy, so it stops at the FIRST separator: the path field
-# is memkit's own rendering of a filesystem path and the description is file
-# content, so anything past the first em-dash belongs to the store.
+# A pointer line, up to the first field memkit renders AFTER the path.
+# Non-greedy, so it stops at the first of them: the path field is memkit's own
+# rendering of a filesystem path and everything past it is file content.
+#
+# TWO SEPARATORS, because the em-dash one is CONDITIONAL. `_pointer_line`
+# renders ` — {desc}` only when there is a description, and `_description`
+# returns "" for a memory with neither `description:` frontmatter nor a `# `
+# heading, and on OSError. Anchored on the em-dash alone such a line did not
+# parse and its name was dropped from the delivered set — which on the SERVED
+# half undercounts and fails loudly, and on the UNSERVED half, whose test is
+# `ok = not shown`, scored a pointer that really did reach an unattended
+# subagent as BRIEF-QUIET. A leak certified as clean. The ` [` evidence tag is
+# unconditional, so it is the anchor that always exists.
 _POINTER_PATH = re.compile("^- (?P<path>.+?) \u2014 ")
+# The fallback, tried only when the line has no em-dash at all. Separate
+# patterns rather than one alternation because a non-greedy `.+?` stops at
+# whichever alternative appears EARLIEST, so a path that itself contains
+# ` [` — a legal filename — would be cut short on a line that also has a
+# description. Anchored on `[matches `, which `_pointer_line` renders
+# unconditionally, rather than on a bare bracket.
+_POINTER_BARE = re.compile("^- (?P<path>.+?) \\[matches ")
 
 
 def _delivered_names(appended: str) -> set[str]:
@@ -573,13 +592,31 @@ def _delivered_names(appended: str) -> set[str]:
     as a delivery. That is the answer rather than a gap: the reader of such a
     line is handed a filename with somebody's sentence welded to it, and
     scoring it as delivered would be scoring the failure as a success.
+
+    STORE-RELATIVE, not the bare basename. Two configured stores may hold
+    different files under one name, and a basename comparison then lets a
+    pointer to the wrong store's file satisfy a case the target was never
+    delivered for — an incorrect memory selection scored as a correct one.
+    The name is kept alongside it because the expectations are written as
+    basenames; the caller decides which identity it is asking about.
     """
-    names = set()
+    return {pathlib.Path(p).name for p in _delivered_paths(appended)}
+
+
+def _delivered_paths(appended: str) -> set[str]:
+    """The PATH field of every pointer line, as rendered.
+
+    The identity the gate compares on, because a basename is not one: two
+    configured stores may hold different files under the same name, and a
+    pointer to the wrong store's file then satisfies a case whose target was
+    never delivered — an incorrect memory selection scored as a correct one.
+    """
+    paths = set()
     for line in appended.splitlines():
-        match = _POINTER_PATH.match(line)
+        match = _POINTER_PATH.match(line) or _POINTER_BARE.match(line)
         if match is not None:
-            names.add(pathlib.Path(match.group("path")).name)
-    return names
+            paths.add(match.group("path"))
+    return paths
 
 
 def _pad_to_overhead(tool_input: dict) -> dict:
@@ -647,6 +684,67 @@ def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     populations.
     """
     return _task_delivery(hook, brief, dirs)
+
+
+def entrypoint_delivery(
+    hook_file: pathlib.Path, config: pathlib.Path, cwd: pathlib.Path, brief: str
+) -> tuple[set[str], str]:
+    """What the REAL hook PROCESS delivers for one brief: (names, why-not).
+
+    Every other stage this slice drives is the task path's own function, which
+    is right and is not enough — none of them is the registered entry point.
+    `main`'s event dispatch, the tool-name check, the ledger write, the signal
+    handlers and the stdout delivery all sit between a correct `_task_block`
+    and a subagent that actually receives it, and a break in any of them
+    leaves the real hook emitting no `updatedInput` while this slice goes on
+    reporting served coverage.
+
+    ONE brief per run rather than all of them: the question is whether the
+    entry point still reaches the pipeline the rest of the slice measures, and
+    that is answered by one trip. The cost is one subprocess.
+
+    Isolated state and a fresh `tool_use_id`, so the run leaves no ledger
+    behind and cannot be deduped by one.
+    """
+    payload = {
+        "session_id": "memkit-eval-entrypoint",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_use_id": f"toolu_eval{os.getpid()}",
+        "tool_input": {
+            "prompt": brief,
+            "description": "score this brief",
+            "subagent_type": "general-purpose",
+        },
+    }
+    with tempfile.TemporaryDirectory() as state:
+        env = dict(os.environ, XDG_CACHE_HOME=state, PYTHONDONTWRITEBYTECODE="1")
+        env[CONFIG_ENV] = str(config)
+        try:
+            out = subprocess.run(
+                [sys.executable, "-B", str(hook_file)],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=180,
+                cwd=str(cwd),
+                env=env,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return set(), f"the hook process did not run ({type(exc).__name__})"
+    if out.returncode != 0:
+        return set(), f"the hook process exited {out.returncode}"
+    if not out.stdout.strip():
+        return set(), "the hook process emitted nothing"
+    try:
+        updated = json.loads(out.stdout)["hookSpecificOutput"]["updatedInput"]
+        delivered = updated["prompt"]
+    except (ValueError, KeyError, TypeError) as exc:
+        return set(), f"the emission was not an updatedInput ({exc})"
+    appended = (
+        delivered[len(brief) :] if delivered.startswith(brief) else delivered
+    )
+    return _delivered_names(appended), ""
 
 
 def over_cap_faults(hook, case: dict, got: dict) -> list[str]:
@@ -791,12 +889,14 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     # latent rather than wrong, and one edit to a fixture away from a gate that
     # answers yes to an empty block.
     appended = delivered[len(brief) :] if delivered.startswith(brief) else delivered
-    carried = _delivered_names(appended)
+    carried = _delivered_paths(appended)
     return {
+        # Matched on the RENDERED path, which is the identity, and reported as
+        # a basename, which is how the expectations are written.
         "names": [
-            name
-            for name in (pathlib.Path(p).name for p, _, _ in picks)
-            if name in carried
+            pathlib.Path(path).name
+            for path, _, _ in picks
+            if hook._display_path(path) in carried
         ],
         "eligible": len(eligible),
         "picks": len(picks),
@@ -1007,7 +1107,8 @@ def main() -> None:
     # a gating run without this scores only the ungated cases and files the
     # rest as drift — a green earned by not looking.
     every = all_stores(cfg, repo)
-    roots = every if args.all_stores else stores(cfg, repo)
+    permitted = stores(cfg, repo)
+    roots = every if args.all_stores else permitted
     if args.all_stores and len(roots) != len(cfg.stores):
         sys.exit(
             f"--all-stores found {len(roots)} store(s) under {repo}, "
@@ -1015,6 +1116,13 @@ def main() -> None:
         )
     dirs = search_dirs(hook, roots)
     unsearched = [p for p in every if p not in roots]
+    # Stores this run reads that PRODUCTION would refuse from this cwd. The
+    # long-brief slice is the only gate over subagent delivery, and it hands
+    # `dirs` straight to `recall` — so a target sitting in a cwd-gated store
+    # makes the served floor pass on a memory the real `_task_main` would
+    # answer `task:nodirs` for in the same environment. `--all-stores` is a
+    # reporting mode; it may not also be the thing that gates.
+    ungated = [p for p in roots if p not in permitted]
     snap_path = args.snapshot or repo / cfg.eval_snapshot
     corpus = corpus_fingerprint(cfg, repo)
     prior = read_snapshot(snap_path, require_fingerprint=not args.update_snapshot)
@@ -1025,6 +1133,18 @@ def main() -> None:
     # inferred type is a frozenset of whatever literals the default happened to
     # carry.
     gating: frozenset[str] = cfg.eval_gating
+    if ungated and LONG_BRIEF_SLICE in gating:
+        # Said out loud, because every way of not having this gate is
+        # otherwise silent and a green run has to name the gates it ran. The
+        # slice still RUNS and still prints its rates; what it stops doing is
+        # deciding the exit code, since it would be deciding it on a delivery
+        # production refuses from this cwd.
+        print(
+            "long briefs: --all-stores is reading "
+            + ", ".join(str(p) for p in ungated)
+            + ", which this cwd is gated out of — reporting only, not gating"
+        )
+        gating = frozenset(s for s in gating if s != LONG_BRIEF_SLICE)
     # Say what this run measured. Four of these lines are the difference
     # between "the hook missed" and "you ran the suite from somewhere the hook
     # does not look" or "you scored a corpus nobody baselined".
@@ -1310,10 +1430,30 @@ def main() -> None:
                 # malformed fixture index look like a crash in the tool.
                 sys.exit(f"memory-eval: {exc}")
             print()
+            entrypoint_checked = False
             for case in briefs["served"]:
                 got = task_delivery(hook, case["brief"], dirs)
                 shown = got["names"]
                 ok = case["file"] in shown
+                if shown and not entrypoint_checked:
+                    # ONCE, on the first brief this slice actually delivered
+                    # for: everything above is the task path's own functions,
+                    # and none of them is the registered ENTRY POINT. A break
+                    # in the dispatch, the tool-name check or the stdout
+                    # delivery leaves the real hook emitting nothing while
+                    # this slice reports coverage.
+                    entrypoint_checked = True
+                    live, why = entrypoint_delivery(
+                        hook_file, cfg.path, repo, case["brief"]
+                    )
+                    if why or not (live & set(shown)):
+                        unanswered.append(
+                            f"{case['name']}: the hook PROCESS delivered "
+                            f"{sorted(live) or '(nothing)'} where this slice's "
+                            f"own pipeline delivered {sorted(shown)} — "
+                            + (why or "the entry point and the pipeline it "
+                               "measures do not agree")
+                        )
                 if got["unanswerable"] and not ok:
                     # NOT a miss. An index that could not answer says nothing
                     # about the retriever, and scoring it as a miss puts an

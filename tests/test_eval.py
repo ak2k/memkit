@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from memkit import eval_memory_recall as ev
+from memkit import memory_prompt_recall as hook
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -190,6 +191,75 @@ def _unserve(corpus: Path, *names: str) -> None:
             f"# Brief {index}\n\n"
             + f"Sort the mailroom trays for round {index} by postcode. " * 200,
         )
+
+
+def test_the_slice_refuses_when_the_hook_process_delivers_nothing(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """Every stage this slice drives is one of the task path's own functions,
+    and none of them is the REGISTERED ENTRY POINT.
+
+    `main`'s event dispatch, the tool-name check, the ledger write, the signal
+    handlers and the stdout delivery all sit between a correct `_task_block`
+    and a subagent that actually receives it. A break in any of them leaves the
+    real hook emitting no `updatedInput` while this slice, calling the helpers
+    directly, goes on reporting served coverage.
+
+    Driven by renaming the tool the hook answers for, which is one of the five
+    stages the finding names and is what a harness rename actually looks like:
+    the process records `task:notool` and emits nothing, while every helper
+    this slice calls goes on working perfectly and reporting coverage.
+    """
+    broken = _copy_hook(tmp_path, 'TASK_TOOL = "Agent"', 'TASK_TOOL = "Renamed"')
+    out = _eval(corpus, "--hook", str(broken))
+    assert out.returncode != 0, out.stdout
+    assert "the hook PROCESS delivered" in out.stderr, out.stderr
+
+    # Non-vacuity: the same run against the shipped hook is clean, so the
+    # refusal above is the break's and not the check's.
+    ok = _eval(corpus)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def test_the_fixture_note_states_the_counts_it_has(corpus: Path) -> None:
+    """The file a reviewer reads to decide whether this gate discriminates.
+
+    Its `note` and `note_thresholds` are the auditable claim — how many cases,
+    of which classes, at what measured rates — and both had drifted: the served
+    ratio said "7 of 8 served (0.875)" against a nine-entry `served` list and a
+    live run printing 8/9, and the lookalike class was described as four when
+    a later commit had grown it to eight. The gate was stronger than described
+    and the description was wrong on both load-bearing numbers, which is the
+    same defect class as a declared count that is not true of the bytes.
+
+    Derived from the data and from a live run rather than restated, so the next
+    case added here fails loudly instead of drifting silently the way this did.
+    """
+    index = json.loads(
+        (corpus / BRIEFS / "index.json").read_text(encoding="utf-8")
+    )
+    served, unserved = index["served"], index["unserved"]
+    lookalikes = [u for u in unserved if u.get("note")]
+    plain = len(unserved) - len(lookalikes)
+    assert f"{plain} briefs with no distinctive overlap" in index["note"], plain
+    assert (
+        f"and {len(lookalikes)} that carry one or two distinctive corpus tokens"
+        in index["note"]
+    ), len(lookalikes)
+    held = [u for u in lookalikes if u["note"].startswith("held out")]
+    assert (
+        f"{len(lookalikes) - len(held)} written alongside the bar they "
+        f"calibrate, and {len(held)} held out" in index["note"]
+    ), (len(held), index["note"])
+
+    out = _eval(corpus)
+    assert out.returncode == 0, out.stdout + out.stderr
+    rates = _rates(out.stdout)
+    got = re.search(r"(\d+)/(\d+) served \(([\d.]+)", rates)
+    assert got, rates
+    assert int(got.group(2)) == len(served), (rates, len(served))
+    stated = f"{got.group(1)} of {got.group(2)} served ({got.group(3)})"
+    assert stated in index["note_thresholds"], (stated, rates)
 
 
 def test_the_long_brief_slice_reports_both_rates_and_the_thresholds(
@@ -1001,3 +1071,72 @@ def test_a_description_that_mentions_a_file_does_not_prove_it_was_delivered(
     }
     # And a line whose separator was consumed does not parse into a delivery.
     assert ev._delivered_names("- /store/search/eaten.md no separator here") == set()
+
+
+def test_a_memory_with_no_description_still_reads_back_as_delivered(
+    tmp_path,
+) -> None:
+    """`_pointer_line` renders the em-dash separator CONDITIONALLY, and the
+    readback was anchored on it.
+
+    `_description` returns "" for a memory with neither `description:`
+    frontmatter nor a `# ` heading, and on OSError. Such a pointer line has no
+    em-dash anywhere, so it did not parse and its name was dropped from the
+    delivered set. The served half of the long-brief gate then undercounts,
+    which fails loudly; the UNSERVED half's test is `ok = not shown`, so a
+    pointer that really did reach an unattended subagent scored BRIEF-QUIET —
+    a leak certified as clean, on the file's own account of the only bound
+    this suite has on what the task path says to an unattended subagent.
+
+    Latent on the shipped fixtures, where every memory carries a description,
+    and live the moment the gate is pointed at a real store.
+    """
+    bare = tmp_path / "no_description.md"
+    bare.write_text(
+        "---\nname: no_description\ntype: reference\n---\n\nSome body about sprockets.\n"
+    )
+    described = tmp_path / "has_description.md"
+    described.write_text(
+        "---\nname: has_description\ndescription: about sprockets\n"
+        "type: reference\n---\n\nSome body about sprockets.\n"
+    )
+    terms = ["sprocket", "backlash"]
+    for path in (bare, described):
+        hook._LEX_MATCHED[str(path)] = list(terms)
+    assert hook._description(str(bare)) == ""
+    line = hook._pointer_line(str(bare), terms, 5)
+    assert "\u2014" not in line, line
+    assert ev._delivered_names(line) == {"no_description.md"}, line
+    # Non-vacuity: the described sibling parses through the other branch.
+    other = hook._pointer_line(str(described), terms, 5)
+    assert "\u2014" in other, other
+    assert ev._delivered_names(other) == {"has_description.md"}, other
+
+
+def test_a_same_named_file_in_another_store_is_not_the_delivery() -> None:
+    """The gate compared basenames, so a pointer to the wrong store's file
+    satisfied a case whose target was never delivered.
+
+    Two configured stores holding one name is ordinary — `beads.md` in a
+    project store and in the personal one — and the difference is exactly what
+    a retrieval gate exists to measure.
+    """
+    line = (
+        "- ~/personal/search/beads.md \u2014 the other store's copy "
+        "[matches 2 terms from this brief: bd, dolt]"
+    )
+    assert ev._delivered_paths(line) == {"~/personal/search/beads.md"}
+    assert "~/project/search/beads.md" not in ev._delivered_paths(line)
+    # The basename view still agrees with itself; it is simply not an identity.
+    assert ev._delivered_names(line) == {"beads.md"}
+
+
+def test_a_pointer_path_holding_a_bracket_is_not_cut_short() -> None:
+    """The description-less anchor is a second pattern rather than an
+    alternation: a non-greedy match stops at whichever branch appears
+    EARLIEST, so `a [1].md` on a line that also carries a description would
+    have parsed as `a`."""
+    with_desc = "- /store/a [1].md \u2014 notes [matches 1/1 prompt terms: a]"
+    assert ev._delivered_paths(with_desc) == {"/store/a [1].md"}
+    without = "- /store/a [1].md [matches 1/1 prompt terms: a]"
+    assert ev._delivered_paths(without) == {"/store/a [1].md"}
