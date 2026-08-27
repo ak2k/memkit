@@ -9754,11 +9754,8 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     did not see — which is precisely the guarantee an interrupted walk needs,
     since it cannot know which paths it never reached.
     """
-    # In the shape memkit itself ships — everything under one subdirectory,
-    # nothing indexable in the root — because that is where the free pass used
-    # to be spent. Keyed on a DIRECTORY visited it landed on the empty root and
-    # the walk discovered zero files, deterministically, every run: the rate
-    # the free pass exists to guarantee was zero on this exact layout.
+    # Across several directories, because one directory used to be walked in
+    # full whatever the budget.
     paths = [
         _memo(
             corpus,
@@ -9775,15 +9772,16 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     finally:
         con.close()
 
+    # A corpus under WALK_DEADLINE_EVERY is never truncated at the walk: the
+    # walk is the cheap loop and the budget belongs to the staging read, which
+    # is the expensive one. So this shape walks in full and `_fts_sync` does
+    # the truncating — asserted, because the whole convergence property rests
+    # on which loop gives way.
     disk, _spared, unwalked, _oversize = hook._fts_scan(
         str(corpus), deadline=time.monotonic() - 1
     )
-    # It made progress — one FILE, always — and then stopped. The progress is
-    # asserted, not described: this comment used to claim it while the only
-    # assertion was on `unwalked`, and under this test's own corpus `disk` was
-    # empty. A claim a test states and does not check is a claim nobody has.
-    assert len(disk) >= 1, (sorted(disk), "an expired deadline recorded nothing")
-    assert unwalked, "an expired deadline did not truncate the walk"
+    assert len(disk) == len(paths), (sorted(disk), "the small corpus truncated")
+    assert not unwalked, unwalked
 
     # And the truncated walk deletes nothing: every row it did not get to is
     # spared, so a slow store loses no memories to a walk that ran out of time.
@@ -9802,30 +9800,35 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     assert len(full) == len(paths) and not none_unwalked, (len(full), none_unwalked)
 
 
-    # And the clock is read per FILE, so one large flat directory is bounded
-    # too — it used to be read once per directory, which cannot bound a corpus
-    # that is one directory.
+    # THE SHAPE THE PRODUCTION LAYOUT HAS, and the one the free pass used to be
+    # spent on. Keyed on a DIRECTORY visited, the pass landed on the empty root
+    # — `EXCLUDE_BASENAMES` drops MEMORY.md and SEARCH.md and `EXCLUDE_DIRS`
+    # drops hot/ and archive/, so memkit's own stores have nothing indexable
+    # there — and the walk then discovered ZERO files, deterministically, every
+    # run. The rate the free pass exists to guarantee was zero.
+    shipped = corpus / "shipped"
+    (shipped / "search").mkdir(parents=True)
+    for i in range(4):
+        _memo(shipped / "search", f"s{i}.md", f"# S{i}\n\nsprocket shim {i}.\n")
+    (shipped / "MEMORY.md").write_text("# index\n")
+    found, _s, _u, _o = hook._fts_scan(str(shipped), deadline=time.monotonic() - 1)
+    assert len(found) == 4, (sorted(found), "the free pass landed on the root")
+
+    # And a corpus OVER the batch is bounded inside one directory, which a
+    # per-directory clock could not do at all: the flat store is one directory.
     flat = corpus / "flat"
     flat.mkdir()
-    for i in range(40):
-        _memo(flat, f"f{i}.md", f"# F{i}\n\nsprocket backlash {i}.\n")
-    stats = 0
-    real_stat = os.stat
-
-    def slow_stat(path, **kw):
-        nonlocal stats
-        stats += 1
-        return real_stat(path, **kw)
-
-    monkeypatch.setattr(hook.os, "stat", slow_stat)
+    for i in range(hook.WALK_DEADLINE_EVERY * 3):
+        _memo(flat, f"f{i:04d}.md", f"# F{i}\n\nsprocket backlash {i}.\n")
     seen, _s, unwalked_flat, _o = hook._fts_scan(
         str(flat), deadline=time.monotonic() - 1
     )
-    assert len(seen) == 1, sorted(seen)
     assert unwalked_flat, "a flat directory outran the clock"
-    # One stat for the file it recorded, and none for the 39 it declined to.
-    assert stats <= 2, stats
-    monkeypatch.undo()
+    # Bounded by the batch: the check falls on the last file of the first
+    # batch, so the walk records that batch minus itself and stops.
+    assert len(seen) == hook.WALK_DEADLINE_EVERY - 1, len(seen)
+    # Non-vacuity: with budget the same walk sees all of it.
+    assert len(hook._fts_scan(str(flat))[0]) == hook.WALK_DEADLINE_EVERY * 3
 
 
 def test_the_walk_is_not_where_a_cold_sync_spends_its_budget(
@@ -10143,6 +10146,50 @@ def test_a_store_root_the_filesystem_holds_as_undecodable_bytes_still_notes(
     with open(sidecar, "wb"):
         pass
     assert os.path.getsize(hook._fts_note_root(hook._fts_db(root), root)) > 0
+
+
+def test_a_symlinked_subdirectory_is_skipped_and_counted(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The other side of the leaf-only rule, and the one nothing reported.
+
+    `os.walk`'s `followlinks=False` is what makes a single `lstat` on the leaf
+    a sound containment test: nothing under a linked ancestor is ever reached.
+    The cost runs the other way and was silent — a linked subdirectory
+    contributes zero files, increments no counter, lands in neither `spared`
+    nor `unwalked`, and `_corpus_files` applies the same walk, so it agrees.
+    The store owner is told a corpus size that excludes a whole subtree.
+
+    The delta added a counter for the refusal it knew about and none for the
+    silent drop beside it.
+    """
+    _memo(corpus, "plain.md", "## P\nsprocket backlash gearbox shim stack\n")
+    real = corpus / "realsub"
+    real.mkdir()
+    _memo(real, "in.md", "## I\nsprocket backlash chain tension\n")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    _memo(outside, "hot.md", "## H\nsprocket backlash gearbox\n")
+    (corpus / "linkeddir").symlink_to(outside)
+    (corpus / "aliassub").symlink_to(real)
+
+    hook._LEX_COUNTS["lex_linkdir"] = 0
+    disk, spared, unwalked, _oversize = hook._fts_scan(str(corpus))
+    names = sorted(os.path.relpath(p, corpus) for p in disk)
+    assert names == ["plain.md", "realsub/in.md"], names
+    assert not spared and not unwalked, (spared, unwalked)
+    # The subtree is skipped AND said to be skipped, which is the half that
+    # was missing: two links, two counted.
+    assert hook._LEX_COUNTS["lex_linkdir"] == 2, hook._LEX_COUNTS
+
+    # A linked ROOT is a different shape and is not this: its links resolve
+    # before the walk starts, which is what `mkOutOfStoreSymlink` deploys.
+    hook._LEX_COUNTS["lex_linkdir"] = 0
+    linked_root = tmp_path / "linked-store"
+    linked_root.symlink_to(corpus)
+    rooted, _s, _u, _o = hook._fts_scan(str(linked_root))
+    assert str(linked_root / "plain.md") in rooted, sorted(rooted)
+    assert hook._LEX_COUNTS["lex_linkdir"] == 2, hook._LEX_COUNTS
 
 
 def test_a_name_this_hook_cannot_print_is_declined_rather_than_delivered(
@@ -10875,6 +10922,29 @@ def test_the_task_ledger_stem_is_a_shape_track_as_sweep_can_collect() -> None:
     assert Path(hook._task_state_path("toolu_abc")).name == (
         f"{hook.TASK_STATE_PREFIX}toolu_abc.json"
     )
+
+    # AND AGAINST THE COLLECTOR ITSELF, as a literal. Asserting this function
+    # against a restated copy of its own shape is a pin that cannot detect the
+    # thing the seam is about: whether the OTHER side's sweep accepts what this
+    # side writes. Both regexes below are copied text, so this fails on a drift
+    # in the stem even though Track A's tree is not readable from here.
+    sweep_today = re.compile(r"^(?:toolu_[A-Za-z0-9]{16,}|[0-9a-f]{8})$")
+    sweep_needed = re.compile(
+        r"^(?:toolu_[A-Za-z0-9]{16,}|[0-9a-f]{8}|[A-Za-z0-9_-]{71}-[0-9a-f]{8})$"
+    )
+    assert sweep_needed.match(long_stem), (long_stem, "the widening does not admit it")
+    # Stated as a FACT rather than left to be rediscovered at the rebase: the
+    # allowlist as it stands today does not collect this ledger. When Track A
+    # widens, this line is what says the widening was the change that mattered.
+    assert not sweep_today.match(long_stem), (
+        long_stem,
+        "Track A's allowlist already admits the digested stem — if that is "
+        "true, this test and the seam note are stale and both should go",
+    )
+    # And the short-id case, which both accept, so the assertion above is
+    # about the digest branch and not about the regexes disagreeing generally.
+    short = "toolu_" + "A" * 20
+    assert sweep_today.match(short) and sweep_needed.match(short), short
 
 
 def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None:

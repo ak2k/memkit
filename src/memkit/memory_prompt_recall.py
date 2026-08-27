@@ -1103,12 +1103,19 @@ FRAME_NONCE_BYTES = 4
 # draw was what made the budget a claim about the right string could remove
 # the length invariance and keep this, which is the combination that breaks.
 #
-# One tag per transcript is the reason to keep it: a session's blocks read as
-# one frame rather than as a new one each prompt. The task frame draws per
-# call, which it can — it builds its block once, and its reader is a fresh
-# subagent with no earlier block to compare against. Both are generated after
-# every file in the store was written, which is the whole of the property
-# either one needs.
+# MODULE-LEVEL MEANS PER RUN HERE, and that is the reason to keep it. The hook
+# is a fresh process per prompt, so this is drawn once per invocation — after
+# every file in the store was written and before any of them is read, which is
+# the whole of the property the nonce needs. Measured: two prompts in one
+# session produced `memkit-pointers-c9de8389` and `memkit-pointers-13ae75d9`.
+#
+# It must stay that way, and the reason is the direction a "fix" would point.
+# The nonce is defence (2), the one thing left if the line-break invariant
+# ever fails, and its strength is that the writer of a store file cannot see
+# it. A tag that outlived a single injection would be a value the agent has
+# already read in its own transcript before it writes its next memory file —
+# an unguessable closer turned into an observable one. The task frame draws
+# per call for the same reason and has no session to span.
 _PROMPT_FRAME_TAG = f"{FRAME_TAG}-{secrets.token_hex(FRAME_NONCE_BYTES)}"
 
 
@@ -1373,6 +1380,25 @@ def sanitize(text: str) -> str:
 # killed.
 PIPE_BUFFER_BOUND = 16384
 
+# How often the walk reads the clock, in candidate files. Not every file, and
+# not once per directory.
+#
+# Once per DIRECTORY cannot bound a corpus that IS one directory — the walk
+# then runs to completion whatever the budget, measured at 224x a 0.05 s
+# deadline on a store the filesystem was slow about.
+#
+# Every file is worse in the other direction, and the cost is not the clock
+# read (83 ns against a 1-2 us stat): it is that the walk is the CHEAP loop
+# and would then compete for the budget on equal terms with the staging read,
+# which is the expensive one. A corpus larger than the budget then indexes ONE
+# file per run instead of the accelerating slice `_fts_sync` is built to
+# deliver, which is the "does not self-heal" failure the deadline was adopted
+# to prevent.
+#
+# So: a corpus under this many files is never truncated at the walk, and one
+# over it overshoots by at most this many stats.
+WALK_DEADLINE_EVERY = 64
+
 # Ledgers, sub-indexes, and dead memories must not surface as pointers.
 EXCLUDE_BASENAMES = {"MEMORY.md", "SEARCH.md", "INDEX.md"}
 # `hot` is excluded, not because hot memories are irrelevant, but because
@@ -1508,6 +1534,13 @@ def _store_path(
     such path is ever found; one already in the index resolves through the new
     ancestor and this returns it. Closing that needs the walk to carry
     directory handles, which is a different design than a leaf rule.
+
+    THE COST OF THAT, said here because the walk pays it silently: a symlinked
+    SUBDIRECTORY inside the store contributes no files at all. `lex_linkdir`
+    counts them, so a store owner sees a skipped subtree rather than inferring
+    it from a file count. The claim about `mkOutOfStoreSymlink` above covers a
+    linked ROOT, whose links are resolved into `root_real` before the walk
+    starts — not a linked subdirectory, which is refused by `os.walk` itself.
     """
     is_link = statmod.S_ISLNK(st.st_mode) if st is not None else os.path.islink(path)
     if not is_link:
@@ -2073,6 +2106,18 @@ _LEX_COUNTS: dict[str, int] = {
     # decision with a name, the way `lex_outside` and `lex_oversize` are,
     # rather than an index that can never be built.
     "lex_undecodable": 0,
+    # Subdirectories the walk did not descend because they are symlinks.
+    # `os.walk`'s `followlinks=False` is what makes the leaf-only containment
+    # rule sound — nothing under a linked ancestor is ever reached — and the
+    # cost runs the other way: a linked subdirectory contributes zero files,
+    # lands in neither `spared` nor `unwalked`, and `_corpus_files` applies the
+    # same walk, so the store owner is told a corpus size that silently
+    # excludes a whole subtree. Counted for the reason `lex_outside` is.
+    #
+    # A linked ROOT is a different thing and is not counted here: its links are
+    # resolved before the walk starts, which is the shape `mkOutOfStoreSymlink`
+    # deploys and the one both live stores on this machine use.
+    "lex_linkdir": 0,
 }
 
 # Where each hit came from INSIDE its file: path -> the heading of the
@@ -2183,28 +2228,39 @@ def _fts_scan(
 
     root_real = os.path.realpath(root)
     stopped = False
+    examined = 0
     for dirpath, dirnames, filenames in os.walk(root, onerror=unreadable):
         if stopped:
             break
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
+        _LEX_COUNTS["lex_linkdir"] += sum(
+            1 for d in dirnames if os.path.islink(os.path.join(dirpath, d))
+        )
+        # Once per DIRECTORY: a surrogate in the directory's own name makes
+        # every path under it unbindable, and it is the part of the path that
+        # does not change per file.
+        undecodable_dir = _SURROGATE.search(dirpath) is not None
         for name in filenames:
-            if disk and deadline is not None and time.monotonic() >= deadline:
+            examined += 1
+            if (
+                disk
+                and not examined % WALK_DEADLINE_EVERY
+                and deadline is not None
+                and time.monotonic() >= deadline
+            ):
                 # Not authoritative past here, and it cannot name what it
                 # missed — so it says so about the root and lets `_fts_sync`
                 # spare every indexed path this walk did not reach. The
                 # alternative is a walk that stopped early being read as a
                 # corpus that shrank.
                 #
-                # KEYED ON A FILE RECORDED, not on a directory visited, and
-                # checked per FILE rather than per directory. Both spellings
-                # were wrong in opposite directions. A free DIRECTORY is spent
-                # on the root, and this project's own store has nothing
-                # indexable there — `EXCLUDE_BASENAMES` drops MEMORY.md and
-                # SEARCH.md, `EXCLUDE_DIRS` drops hot/ and archive/ — so the
-                # walk discovered ZERO files, deterministically, every run:
-                # the rate the free pass exists to guarantee was zero on the
-                # layout memkit ships. And a per-DIRECTORY clock cannot bound
-                # a flat corpus at all, since one directory is the whole of it.
+                # KEYED ON A FILE RECORDED, not on a directory visited. A
+                # free DIRECTORY is spent on the root, and this project's own
+                # store has nothing indexable there — `EXCLUDE_BASENAMES`
+                # drops MEMORY.md and SEARCH.md, `EXCLUDE_DIRS` drops hot/ and
+                # archive/ — so the walk discovered ZERO files,
+                # deterministically, every run: the rate the free pass exists
+                # to guarantee was zero on the layout memkit ships.
                 #
                 # The remainder this does not bound: a corpus where no file is
                 # ever recordable leaves the deadline unenforced, because the
@@ -2217,22 +2273,29 @@ def _fts_scan(
             path = os.path.join(dirpath, name)
             if not name.endswith(".md") or _excluded(path):
                 continue
-            if _SURROGATE.search(path):
-                # Before the stat, because this is a decision about the NAME:
-                # every use downstream binds it as a sqlite parameter, and
-                # sqlite3 encodes str parameters strictly. Reaching the binder
-                # aborts the transaction, so one such file makes the whole
-                # store permanently unsearchable rather than making itself
-                # unindexed.
-                _LEX_COUNTS["lex_undecodable"] += 1
-                continue
-            if strip_unsafe(name) != name:
-                # After the surrogate test, which is the more specific
-                # diagnosis of the same symptom: an undecodable name is also a
-                # name this cannot print, and the store owner needs to be told
-                # which of the two they have.
-                _LEX_COUNTS["lex_unnameable"] += 1
-                continue
+            # Both decisions are about the NAME and both are taken before the
+            # stat. `str.isprintable()` is a C-level scan and it is EXACT as a
+            # filter here: every character `strip_unsafe` touches — Cc, Cf,
+            # Cs, Zl, Zp — is non-printable, so a printable name is one the
+            # sanitizer is the identity on. That keeps two regex passes and a
+            # per-character category lookup off the walk, which is the cheap
+            # loop and must stay that way.
+            if undecodable_dir or not name.isprintable():
+                if undecodable_dir or _SURROGATE.search(name):
+                    # Every use downstream binds this path as a sqlite
+                    # parameter, and sqlite3 encodes str parameters strictly.
+                    # Reaching the binder aborts the transaction, so one such
+                    # file makes the whole STORE permanently unsearchable
+                    # rather than making itself unindexed.
+                    _LEX_COUNTS["lex_undecodable"] += 1
+                    continue
+                if strip_unsafe(name) != name:
+                    # After the surrogate test, which is the more specific
+                    # diagnosis of the same symptom: an undecodable name is
+                    # also a name this cannot print, and the store owner needs
+                    # to be told which of the two they have.
+                    _LEX_COUNTS["lex_unnameable"] += 1
+                    continue
             try:
                 # NOT following the link, which is what makes the containment
                 # test below reachable at all — and it costs nothing: for the
@@ -2417,7 +2480,7 @@ def _fts_sync(
 ) -> tuple[int, int, int, int]:
     """Bring the index in line with the corpus. The walk is authoritative.
 
-    Returns `(files, spared, unwalked, truncated)` for `_fts_note_build`: how many files
+    Returns `(files, spared, unwalked, declined)` for `_fts_note_build`: how many files
     this walk actually read into the index, and how much of the corpus it could
     not account for. All three, not just the first, because `files` alone
     cannot be trusted without them — a corpus nobody can read walks to zero
@@ -3351,9 +3414,19 @@ def _state_name(key: str, prefix: str = "") -> str:
         sanitized form exceeded 80 characters is exactly 71 of those
         characters, one `-`, and 8 lowercase hex digits.
 
-    Changing either half is a coordinated change with whatever sweeps this
-    directory, and `test_the_task_ledger_stem_is_a_shape_track_as_sweep_can_collect`
-    is what stops it happening by accident.
+    AND THE COLLECTOR THAT SHAPE NEEDS, written out, because publishing the
+    shape was accurate and was not sufficient: Track A's sweep matches
+    `^(?:toolu_[A-Za-z0-9]{16,}|[0-9a-f]{8})$`, which ADMITS a short id and
+    REJECTS the digested stem — that literal `-` at position 71 matches
+    neither alternative. The regex that admits both is
+
+        ^(?:toolu_[A-Za-z0-9]{16,}|[0-9a-f]{8}|[A-Za-z0-9_-]{71}-[0-9a-f]{8})$
+
+    Widening it is Track A's edit; naming it here is what makes the merge item
+    a thing that can be checked rather than a thing that has to be remembered.
+    `test_the_task_ledger_stem_is_a_shape_track_as_sweep_can_collect` asserts
+    the emitted stem against that literal, so a drift on THIS side fails here
+    even though the other side's regex lives in another tree.
     """
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)
     if len(safe) > 80:
