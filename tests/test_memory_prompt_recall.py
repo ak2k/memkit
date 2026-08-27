@@ -2423,6 +2423,113 @@ def test_two_tool_calls_sharing_an_eighty_character_prefix_get_two_ledgers(
     )
 
 
+# The one encode in this module that is strict ON PURPOSE, named so the
+# exception is argued rather than invisible. `_task_emission` measures the
+# emission with a strict encode because the raise IS the refusal — it is
+# caught two lines below and turned into `task:unsafe` — and a JSON object
+# carrying an unpaired surrogate is not something a consumer can be handed.
+_ENCODES_ARGUED = {
+    '_task_emission: text.encode("utf-8")',
+}
+
+
+def _unhandled_encodes(source: str) -> list[str]:
+    """Every place `source` turns text into bytes without saying what happens
+    to a lone surrogate.
+
+    THE RULE, not a shape. The predicate this replaces matched `.encode()`
+    with ZERO arguments, so `text.encode("utf-8")` — which names a CODEC and
+    no handler, and raises on every lone surrogate — passed it. Respelling
+    either `prompt_sha` site that way restored the silent death verbatim with
+    the guard still green.
+
+    FAIL CLOSED. Anything this cannot resolve is REPORTED rather than skipped:
+    a starred argument, a `**kwargs`, an encoder taken as a value
+    (`enc = text.encode`), one reached by name (`getattr(x, "encode")`), and
+    the three spellings that encode without being `.encode()` at all —
+    `codecs.encode`, `bytes(x, enc)` and `os.fsencode`. A guard that admits
+    every shape it does not enumerate is a guard that stops seeing its own
+    subject; every other call-shape scan in this file has failed that way at
+    least once.
+
+    Returns `enclosing function: source segment` strings, which is what an
+    allowlist entry has to match — a line number drifts with every edit above
+    it and would make the exception look like a moving target.
+    """
+    tree = ast.parse(source)
+    scopes = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    found: list[str] = []
+
+    def report(node: ast.AST) -> None:
+        holder = max(
+            (
+                n
+                for n in scopes
+                if n.lineno <= node.lineno <= (n.end_lineno or n.lineno)
+            ),
+            key=lambda n: n.lineno,
+            default=None,
+        )
+        segment = ast.get_source_segment(source, node) or ast.dump(node)
+        found.append(f"{holder.name if holder else '<module>'}: {segment}")
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in ("encode", "fsencode")
+            and id(node) not in called
+        ):
+            report(node)  # the bound method taken as a value, called later
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if (
+            name == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in ("encode", "fsencode")
+        ):
+            report(node)  # reached by name, so no shape rule can see it
+            continue
+        if name not in ("encode", "fsencode", "bytes"):
+            continue
+        if name == "bytes" and len(node.args) < 2:
+            continue  # bytes(n), bytes(b) — no text and no codec
+        if any(isinstance(a, ast.Starred) for a in node.args) or any(
+            k.arg is None for k in node.keywords
+        ):
+            report(node)  # arguments this cannot resolve are not arguments it may pass
+            continue
+        if isinstance(func, ast.Attribute) and (
+            name == "fsencode"
+            or (isinstance(func.value, ast.Name) and func.value.id == "codecs")
+        ):
+            # `os.fsencode` has no handler to name and `codecs.encode` names
+            # one in a third position this deliberately does not learn to read.
+            report(node)
+            continue
+        # The UNBOUND form takes `self` first, so its handler is one position
+        # further along: `str.encode(text, "utf-8")` names a codec and no
+        # handler exactly as `text.encode("utf-8")` does.
+        unbound = isinstance(func, ast.Attribute) and (
+            isinstance(func.value, ast.Name) and func.value.id == "str"
+        )
+        handlers = 2 if name == "bytes" or unbound else 1
+        if not (
+            any(k.arg == "errors" for k in node.keywords)
+            or len(node.args) > handlers
+        ):
+            report(node)
+    return found
+
+
 def test_no_digest_in_this_module_dies_on_a_lone_surrogate() -> None:
     """A lone surrogate is an ORDINARY input here, and nothing may raise on one.
 
@@ -2433,27 +2540,30 @@ def test_no_digest_in_this_module_dies_on_a_lone_surrogate() -> None:
     root and a config path can. `str.encode` with no error handler raises on
     every one of them.
 
-    The rule, pinned by the scan below rather than by a list of call sites: in
-    this module every `.encode()` NAMES its handler. There is no such thing
-    here as text whose encodability the module gets to assume — this is a hook
-    on the every-prompt path, its inputs are the harness's and the
-    filesystem's, and a raise on that path is a silent death (see
+    The rule, pinned by the scan below rather than by a list of call sites:
+    every encode in this module NAMES its handler, or is one of the sites in
+    `_ENCODES_ARGUED`, where the raise is the point and the argument for it is
+    written down. There is no such thing here as text whose encodability the
+    module gets to assume — this is a hook on the every-prompt path, its
+    inputs are the harness's and the filesystem's, and a raise on that path is
+    a silent death (see
     `test_a_lone_surrogate_in_the_prompt_still_records_an_outcome`).
 
     A list of sites is what this had before: two lenses each found a different
-    crash and three of the four sites below were named by neither.
+    crash and three of the four sites below were named by neither. The scan
+    that replaced the list then failed the same way one level up — it matched
+    a SHAPE (zero arguments) rather than the rule, so the argued site was a
+    silent violation of its own docstring and `text.encode("utf-8")` was
+    admitted everywhere. `_unhandled_encodes` matches the rule and reports
+    what it cannot resolve; `test_the_encode_scan_convicts_every_shape_that_
+    can_raise` is the negative control that says it still sees its subject.
     """
-    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
-    bare = [
-        n.lineno
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "encode"
-        and not n.args
-        and not n.keywords
-    ]
-    assert bare == [], f"`.encode()` with no error handler at lines {bare}"
+    source = Path(hook.__file__).read_text(encoding="utf-8")
+    unhandled = set(_unhandled_encodes(source))
+    assert unhandled <= _ENCODES_ARGUED, sorted(unhandled - _ENCODES_ARGUED)
+    # And the allowlist cannot rot into a licence for something that is no
+    # longer there: every entry has to still be a site the scan reports.
+    assert unhandled >= _ENCODES_ARGUED, sorted(_ENCODES_ARGUED - unhandled)
 
     # And the behaviour the scan is a proxy for, at every function that takes
     # a key from outside this process. Each of these raised UnicodeEncodeError.
@@ -2468,6 +2578,53 @@ def test_no_digest_in_this_module_dies_on_a_lone_surrogate() -> None:
     assert hook._task_state_path("toolu_" + surrogate + "A" * 90) != hook._task_state_path(
         "toolu_" + surrogate + "B" * 90
     )
+
+
+@pytest.mark.parametrize(
+    "line",
+    (
+        "    return text.encode()",
+        '    return text.encode("utf-8")',
+        '    return text.encode(encoding="utf-8")',
+        "    return codecs.encode(text, \"utf-8\", \"strict\")",
+        '    return bytes(text, "utf-8")',
+        "    return os.fsencode(text)",
+        '    return str.encode(text, "utf-8")',
+        '    return getattr(text, "encode")("utf-8")',
+        "    enc = text.encode\n    return enc()",
+        "    return text.encode(*args)",
+        "    return text.encode(**kw)",
+    ),
+)
+def test_the_encode_scan_convicts_every_shape_that_can_raise(line: str) -> None:
+    """The NEGATIVE CONTROL the previous predicate never had.
+
+    A guard with no case proving it still fails is a guard that reports green
+    once it has stopped seeing its subject, and that is exactly what happened:
+    the old scan matched zero-argument `.encode()` only, so respelling either
+    `prompt_sha` site as `text.encode("utf-8")` restored the silent death —
+    rc=0, no stdout, no stderr, no `log.jsonl` line — with the guard passing.
+
+    Every line here raises `UnicodeEncodeError` on a lone surrogate, or is a
+    shape whose behaviour this scan cannot determine. Both must be reported.
+    """
+    assert _unhandled_encodes(f"def f(text, *args, **kw):\n{line}\n")
+
+
+@pytest.mark.parametrize(
+    "line",
+    (
+        '    return text.encode("utf-8", "surrogatepass")',
+        '    return text.encode("utf-8", errors="replace")',
+        '    return text.encode(errors="surrogatepass")',
+        '    return bytes(text, "utf-8", "surrogatepass")',
+        "    return bytes(7)",
+    ),
+)
+def test_the_encode_scan_passes_what_names_its_handler(line: str) -> None:
+    """Non-vacuity in the other direction: a scan that reported everything
+    would also pass the test above and would be just as useless."""
+    assert _unhandled_encodes(f"def f(text):\n{line}\n") == []
 
 
 @pytest.mark.parametrize("body", ("null", "5", '"toolu_x"', "true", "1.5"))

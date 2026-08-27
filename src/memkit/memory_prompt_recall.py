@@ -104,11 +104,20 @@ def _utf8(text: str) -> bytes:
     decision is taken once, here, about the input CLASS: text from outside is
     encodable, always, and `surrogatepass` is what makes that true.
 
-    Lossless and reversible, which is why it is safe for the two things this
-    is used for. Every caller either DIGESTS the result or MEASURES it, and a
-    digest over `surrogatepass` bytes separates exactly the keys a strict one
-    would have separated — it simply also answers for the keys a strict one
-    kills the process over.
+    Lossless and reversible, which is why it is safe for what this is used
+    for. Most callers DIGEST the result or MEASURE it, and a digest over
+    `surrogatepass` bytes separates exactly the keys a strict one would have
+    separated — it simply also answers for the keys a strict one kills the
+    process over.
+
+    ONE caller EMITS it: `_write_out` puts these bytes on stdout, and
+    `surrogatepass` bytes are not valid UTF-8. That is safe because of two
+    things this function does not itself guarantee, so they are named here
+    rather than left to be inferred. `strip_unsafe` substitutes U+FFFD for
+    every surrogate in every component of a block, and `_task_emission`
+    refuses a surrogate-bearing brief outright with a strict encode. Anything
+    added beside `_write_out` inherits the guarantee above and NOT those two,
+    which is the reader this sentence exists for.
 
     Not for text this module is about to WRITE as UTF-8 to somebody else's
     parser: `_task_emission` deliberately uses a strict `encode` to REFUSE a
