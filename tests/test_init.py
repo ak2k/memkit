@@ -663,6 +663,56 @@ def test_an_unparseable_settings_file_is_refused_rather_than_replaced(profile):
     assert "will not replace" in refusal.message
 
 
+def test_an_existing_memory_index_is_refused_rather_than_replaced(profile) -> None:
+    """`MEMORY.md` is in `EXCLUDE_BASENAMES`, so the stray scan never saw it.
+
+    A store holding only a hand-written index therefore passed
+    `flat-store-adoption`, the manifest listed `create-file <store>/MEMORY.md`
+    with a bare `(exists: file)` beside it, and `--confirm` exited 0 having
+    replaced the adopter's hot-tier rows with the generated template. Nothing
+    else records those rows.
+    """
+    store = profile / "notes"
+    store.mkdir()
+    mine = store / "MEMORY.md"
+    mine.write_text(
+        "# My index\n\n## Index\n\n- [a](hot/a.md) — must not be lost\n",
+        encoding="utf-8",
+    )
+    refusal = _refuses(profile, "adopted-memory-index", store=str(store))
+    assert "loads into every session" in refusal.message
+    assert mine.read_text().startswith("# My index")
+
+    # And the file init itself generates is not somebody else's, so the
+    # recovery the incomplete exit code advertises still converges.
+    mine.write_text(init._memory_ledger(str(store)), encoding="utf-8")
+    assert _plan(profile, store=str(store)) is not None
+
+
+def test_an_interior_store_conflict_refuses_before_the_first_write(
+    profile,
+) -> None:
+    """The store ROOT had this rule and its descendants did not.
+
+    A regular file at `<store>/search` printed a normal manifest, and
+    `--confirm` then created the 0700 state directory and wrote the config
+    before `os.makedirs` raised `FileExistsError` — exit 6 and a
+    half-configured install, from a command whose contract is that it refuses
+    safely.
+    """
+    store = profile / "notes"
+    store.mkdir()
+    (store / "search").write_text("not a directory\n", encoding="utf-8")
+    refusal = _refuses(profile, "not-a-directory", store=str(store))
+    assert "Nothing has been written" in refusal.message
+
+    # The other direction, on a path init writes a FILE to.
+    (store / "search").unlink()
+    (store / "SEARCH.md").mkdir()
+    refusal = _refuses(profile, "not-a-file", store=str(store))
+    assert "Nothing has been written" in refusal.message
+
+
 def test_a_config_dir_inside_the_session_is_refused_for_both_targets(
     profile, monkeypatch
 ) -> None:

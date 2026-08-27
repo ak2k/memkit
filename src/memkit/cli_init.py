@@ -732,6 +732,39 @@ def check_refusals(
         )
 
     if os.path.isdir(store_path):
+        # THE INDEX THE ADOPTER WROTE. `MEMORY.md` is excluded from the stray
+        # scan above by name, so a store holding nothing else passes
+        # `flat-store-adoption` — and the plan then CREATES a file that is
+        # already there, replacing an index whose rows are what loads into
+        # every session. init converges on its own work and never overwrites
+        # what somebody else wrote; this is that rule on the file where losing
+        # it is least recoverable, since nothing else records those rows.
+        #
+        # Byte-identical is not somebody else's: that is what a re-run after a
+        # partial one looks like, and refusing it would take away the recovery
+        # the incomplete exit code tells the adopter to perform.
+        ledger = os.path.join(store_path, "MEMORY.md")
+        if os.path.exists(ledger):
+            try:
+                with open(ledger, encoding="utf-8") as f:
+                    held = f.read()
+            except OSError as exc:
+                raise Refusal(
+                    "adopted-memory-index",
+                    f"{_display_path(ledger)} exists and cannot be read "
+                    f"({exc}). init would create that file, and it will not "
+                    "replace one it cannot first see.",
+                ) from exc
+            if held != _memory_ledger(store_path):
+                raise Refusal(
+                    "adopted-memory-index",
+                    f"{_display_path(ledger)} already exists and is not the "
+                    "file init generates, so it is an index somebody wrote. "
+                    "Its rows are what loads into every session and nothing "
+                    "else records them, so init will not write over it. Adopt "
+                    "this store by hand, or pass --store with a directory "
+                    "that has no MEMORY.md in it.",
+                )
         stray = _stray_markdown(store_path)
         if stray and not os.path.isdir(os.path.join(store_path, "search")):
             raise Refusal(
@@ -936,6 +969,44 @@ def _settings_path(machine: Machine) -> str:
     return os.path.join(config_dir, "settings.json")
 
 
+# The operations whose target is a FILE. `VERIFY` names the store directory
+# and writes nothing, so it is not one of them.
+_FILE_OPS = (CREATE_FILE, MERGE_CONFIG, SETTINGS_WRITE, APPEND_LINE)
+
+
+def _refuse_incompatible_types(actions: list) -> None:
+    """Every planned path, checked for a type that will not take its write.
+
+    The store ROOT already had this rule, with the reason written beside it:
+    init would otherwise create the state directory and the config before
+    finding out. Its DESCENDANTS did not, so a regular file at
+    `<store>/search` printed a normal manifest, and `--confirm` then made the
+    0700 state directory, wrote the config, and exited 6 at `os.makedirs` —
+    a half-configured install after a command whose contract is that it
+    refuses safely.
+
+    Over the ACTIONS rather than a list of paths, so an action added later is
+    covered by being in the plan.
+    """
+    for action in actions:
+        if not os.path.exists(action.path):
+            continue
+        if action.op == CREATE_DIR and not os.path.isdir(action.path):
+            raise Refusal(
+                "not-a-directory",
+                f"{_display_path(action.path)} exists and is not a directory, "
+                "and init would have to create one there. Nothing has been "
+                "written; move that file aside and run this again.",
+            )
+        if action.op in _FILE_OPS and os.path.isdir(action.path):
+            raise Refusal(
+                "not-a-file",
+                f"{_display_path(action.path)} exists and is a directory, and "
+                "init would have to write a file there. Nothing has been "
+                "written; move that directory aside and run this again.",
+            )
+
+
 def build_plan(
     machine: Machine,
     *,
@@ -1030,6 +1101,7 @@ def build_plan(
             "then report success.",
         ),
     ]
+    _refuse_incompatible_types(actions)
     notes = []
     if wire_claude_md:
         target = _claude_md(machine)
