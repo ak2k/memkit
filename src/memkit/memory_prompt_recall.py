@@ -2722,6 +2722,18 @@ def _fts_sync(
                         # iterates `planned`, a list taken from `disk`, and the
                         # subtraction that removes it happens after the
                         # transaction instead.
+                        #
+                        # AND THE ROWS GO, here rather than next run. `sweep`
+                        # was computed before `BEGIN IMMEDIATE`, from a `disk`
+                        # this path was still in, so nothing else in this
+                        # transaction deletes it — and `_fts_dir` runs the
+                        # search on this same connection immediately
+                        # afterwards, answering a prompt from text the cap says
+                        # must not be indexed. The walk's own oversize path
+                        # already sweeps (`exempt` is `spared` MINUS
+                        # `oversize`, written for exactly this difference);
+                        # this is the same decision arriving one stage later.
+                        con.execute("DELETE FROM chunks WHERE path = ?", (path,))
                         oversize.add(path)
                         spared.add(path)
                         continue

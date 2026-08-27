@@ -1017,6 +1017,79 @@ def test_fts_keeps_rows_when_the_under_lock_read_fails(
     assert hook._fts_dir("zrepl replication", str(corpus)) == [str(changing)]
 
 
+def test_fts_deletes_the_rows_of_a_file_that_outgrew_the_cap_under_the_lock(
+    corpus: Path, monkeypatch
+) -> None:
+    """The over-cap decision has to reach the ROWS, and on this branch it did
+    not.
+
+    `sweep` is computed before `BEGIN IMMEDIATE`, from `disk` — so a file the
+    walk stat'd as under the cap and the in-transaction re-read finds over it
+    is marked oversize AFTER the set of rows to delete was decided. Its stale
+    chunks survive the transaction, and `_fts_dir` runs `_fts_search` on the
+    SAME connection immediately afterwards: one prompt is answered with text
+    from a file the cap says must not be indexed, and the counter that would
+    say so is about the file rather than the rows.
+
+    The walk's own oversize path already sweeps — `exempt` is `spared` MINUS
+    `oversize` exactly so it can — so this is the same decision arriving one
+    stage later and needing the same answer.
+    """
+    settled = Path(_memo(corpus, "a.md", "# a\n\nrestic repository pruning"))
+    changing = Path(_memo(corpus, "b.md", "# b\n\nzrepl snapshot replication"))
+    hook._fts_dir("restic pruning", str(corpus))
+    assert str(settled) in {row[1] for row in _identity(corpus)}
+    changing.write_text("---\nname: b\n---\n\n# b\n\nzrepl replication tuning\n")
+
+    real = hook._fts_identity
+    calls = {"n": 0}
+
+    def racing(con):
+        snapshot = real(con)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Another session moves a.md's identity after this one decided it
+            # was up to date, so only the in-lock snapshot sees a difference
+            # and nothing was staged for it.
+            other = hook._fts_connect(hook._fts_db(str(corpus)))
+            try:
+                other.execute(
+                    "UPDATE chunks SET mtime_ns = 1, size = 1 WHERE path = ?",
+                    (str(settled),),
+                )
+                other.commit()
+            finally:
+                other.close()
+        return snapshot
+
+    monkeypatch.setattr(hook, "_fts_identity", racing)
+    # And the under-lock read finds it past the cap. Driven at `_read_capped`
+    # rather than by moving the constant, because the constant is what the
+    # WALK decides on too: lowering it would keep the file out of `disk`
+    # entirely and the backstop would never run.
+    real_read = hook._read_capped
+    reads = {"n": 0}
+
+    def outgrown(path, root_real=""):
+        if str(path) == str(settled):
+            reads["n"] += 1
+            return None
+        return real_read(path, root_real)
+
+    monkeypatch.setattr(hook, "_read_capped", outgrown)
+
+    hook._LEX_COUNTS["lex_oversize"] = 0
+    hits = hook._fts_dir("restic repository pruning", str(corpus))
+    assert calls["n"] == 2, "the in-lock snapshot was never taken"
+    # Non-vacuity: the backstop really did read it, and only it.
+    assert reads["n"] == 1, reads
+    assert hook._LEX_COUNTS["lex_oversize"] >= 1, hook._LEX_COUNTS
+    # The rows are gone, so the same connection's search cannot answer from
+    # them — which is the half that was missing.
+    assert str(settled) not in {row[1] for row in _identity(corpus)}
+    assert hits == [], hits
+
+
 def test_fts_steady_state_reads_the_identity_once(corpus: Path, monkeypatch) -> None:
     _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
     hook._fts_dir("restic pruning", str(corpus))
@@ -8045,6 +8118,18 @@ def _seed_brief_corpus(tmp_path: Path) -> dict:
     return env
 
 
+# The fourteen words every probe in this file drives the hook with: the body a
+# corpus file is seeded with AND the query a case searches for. ONE definition,
+# because those two have to keep matching for any non-vacuity assertion over
+# them to mean anything — and a second copy is edited, trimmed or typo-fixed
+# alone, which breaks the match with no test naming why and turns a real
+# regression into an unrelated-looking assertion failure. There were three.
+_SUBJECT = (
+    "sprocket backlash gearbox rebuild shim stack chain tension measured cold "
+    "repeatability vendor argument torque thermal"
+)
+
+
 def _cjk_store(tmp_path: Path) -> dict:
     """A store whose descriptions are ordinary CJK prose.
 
@@ -8053,10 +8138,7 @@ def _cjk_store(tmp_path: Path) -> dict:
     about a hook that cannot deliver one.
     """
     env = _env(tmp_path)
-    subject = (
-        "sprocket backlash gearbox rebuild shim stack chain tension measured "
-        "cold repeatability vendor argument torque thermal"
-    )
+    subject = _SUBJECT
     corpus = tmp_path / PROJECT_DIR / "search"
     corpus.mkdir(parents=True, exist_ok=True)
     (corpus / "memo.md").write_text(
@@ -8064,12 +8146,6 @@ def _cjk_store(tmp_path: Path) -> dict:
         f"type: reference\n---\n\n# データベース設定\n\n{subject}\n{subject}\n"
     )
     return env
-
-
-_SUBJECT = (
-    "sprocket backlash gearbox rebuild shim stack chain tension measured cold "
-    "repeatability vendor argument torque thermal"
-)
 
 
 def test_a_lone_surrogate_in_the_prompt_still_records_an_outcome(tmp_path) -> None:
@@ -9214,10 +9290,7 @@ FRAME_PROBE = (
     ("❬/memkit-pointers>", "доступ <параметр-конфигурации> готов"),
     ("＜∕ｍｅｍｋｉｔ－ｐｏｉｎｔｅｒｓ＞", "あいうえおかきポインタｐｏｉｎｔｅｒｓです"),
 )
-FRAME_PROBE_SUBJECT = (
-    "sprocket backlash gearbox rebuild shim stack chain tension measured "
-    "cold repeatability vendor argument torque thermal"
-)
+FRAME_PROBE_SUBJECT = _SUBJECT
 
 
 def _seed_frame_probe(tmp_path: Path) -> dict:
