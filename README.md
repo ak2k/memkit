@@ -320,9 +320,10 @@ every rate you compute a rate over an unknown mixture.
 | `gate:budget:weak` | the session's 30 pointers are spent and nothing beat the weakest |
 | `gate:budget` | the same, on a session ledger written before this build recorded per-pointer evidence — that budget cannot be reasoned about, so it is terminal |
 | `dup-registration` | two installs on one machine registered the same hook. Not a prompt outcome — it carries `"concludes": false` and is written beside the record the prompt makes for itself |
-| `killed` | the hook was stopped — timeout, or the session ended |
+| `killed` | the hook was stopped — timeout, the session ended, or Ctrl-C reached its process group. The record carries `signal`. SIGTERM, SIGHUP and SIGINT are all handled the same way: exit 0, leave a record, never a traceback |
 | `output-lost` | pointers were built and the write did not land |
 | `error` | an unexpected failure; the record names the exception type |
+| `main:badpayload` | stdin held no JSON object — empty, truncated, malformed, or valid JSON that is not an object. Written before the dispatch, so it is neither a prompt outcome nor a task one: the payload never said which it was. It exists because the alternative measured is worse — exit 0, nothing on either stream, and no line here at all, which is what a hook that was never registered looks like |
 | `cli:*` | written by `--search`, not by a prompt. `"concludes": false` marks these |
 | `task:injected` | pointers were appended to a subagent's brief |
 | `task:envelope` · `task:empty` · `task:slash` · `task:short` · `task:stopwords` | the brief's shape. The same five as the prompt path minus its 4000-character paste ceiling, which a brief is expected to exceed |

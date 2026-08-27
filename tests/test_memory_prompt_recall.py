@@ -41,6 +41,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import sqlite3
 import stat
 import string
@@ -5672,6 +5673,15 @@ PROMPTS = (
 )
 
 
+# The one name a soak record on the hook path is written under. `main` has a
+# third `done` of its own, for the deaths that reach neither path — a payload
+# that is not a JSON object, a signal landing before either path has a record
+# — and it shares the name deliberately: the consumer's collector enumerates
+# this vocabulary by reading `done(...)` call sites out of the hook's source,
+# so a second emitter name would be a record it cannot see.
+EMITTERS = {"done"}
+
+
 def _hook_outcomes() -> set[str]:
     """The outcome vocabulary, enumerated the way the consumer enumerates it.
 
@@ -5697,15 +5707,20 @@ def _hook_outcomes() -> set[str]:
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == name
         )
-        for name in ("_prompt_main", "_task_main")
+        # `main` too: the deaths that reach no path's own `done` — a payload
+        # that is not an object, a signal arriving before either path has a
+        # record — are written by `_died` up there, and a reader that walked
+        # only the two paths would enumerate a vocabulary the hook can exceed.
+        for name in ("main", "_prompt_main", "_task_main")
     ]
     inside_emitter: set[int] = set()
     for fn in paths:
-        emitter = next(
-            n for n in ast.walk(fn)
-            if isinstance(n, ast.FunctionDef) and n.name == "done"
-        )
-        inside_emitter |= set(map(id, ast.walk(emitter)))
+        for emitter in (
+            n
+            for n in ast.walk(fn)
+            if isinstance(n, ast.FunctionDef) and n.name in EMITTERS
+        ):
+            inside_emitter |= set(map(id, ast.walk(emitter)))
 
     # WHOLE MODULE, not `main`'s body. Walking only `main` meant one hop hid a
     # record again: a module-level helper called from `main` could write an
@@ -5730,10 +5745,10 @@ def _hook_outcomes() -> set[str]:
             attribute(child, enclosing)
 
     attribute(tree, "<module>")
-    # `done` is the hook path's one emitter; `search_cli` writes the CLI
+    # `done` is the hook path's one emitter name; `search_cli` writes the CLI
     # path's own `cli:*` records, which are a separate vocabulary the
     # consumer's collector does not read and does not count.
-    assert writers == {"done", "search_cli"}, sorted(writers)
+    assert writers == EMITTERS | {"search_cli"}, sorted(writers)
     gates = set()
     for name in ("prompt_gate", "task_gate"):
         gate = next(
@@ -5748,16 +5763,41 @@ def _hook_outcomes() -> set[str]:
         }
 
     outcomes = set(gates)
+    # An emitter reached through anything but its own name is a call site this
+    # reader — and the consumer's mirrored one — would SKIP rather than fail
+    # on, which is the shape every other call-shape guard in this file has been
+    # caught by. Both indirections are made loud before the enumeration runs.
+    called = {
+        id(n.func)
+        for n in itertools.chain.from_iterable(ast.walk(fn) for fn in paths)
+        if isinstance(n, ast.Call)
+    }
     for node in itertools.chain.from_iterable(ast.walk(fn) for fn in paths):
-        if id(node) in inside_emitter or not isinstance(node, ast.Call):
+        if id(node) in inside_emitter:
+            continue
+        if (
+            isinstance(node, ast.Name)
+            and node.id in EMITTERS
+            and isinstance(node.ctx, ast.Load)
+            and id(node) not in called
+        ):
+            raise AssertionError(
+                f"an emitter is bound to a name at line {node.lineno} — a call "
+                "through the alias is one this enumeration cannot see"
+            )
+        if not isinstance(node, ast.Call):
             continue
         if not isinstance(node.func, ast.Name):
+            assert not (
+                isinstance(node.func, ast.Attribute) and node.func.attr in EMITTERS
+            ), f"an emitter reached as an attribute at line {node.lineno}"
             continue
         assert node.func.id != "_soak_log", (
-            f"a soak record written outside `done` at line {node.lineno} — the "
-            "consumer's collector enumerates `done` call sites and cannot see it"
+            f"a soak record written outside an emitter at line {node.lineno} — "
+            "the consumer's collector enumerates emitter call sites and cannot "
+            "see it"
         )
-        if node.func.id != "done":
+        if node.func.id not in EMITTERS:
             continue
         arg = node.args[0] if node.args else None
         # One conditional is unwrapped, matching the consumer's reader: the
@@ -5863,6 +5903,126 @@ def test_every_outcome_the_hook_writes_is_named_where_it_is_written() -> None:
     outcomes = _hook_outcomes()
     assert "dup-registration" in outcomes, sorted(outcomes)
     assert {"injected", "killed", "nomatch"} <= outcomes, sorted(outcomes)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ("not valid json {{{", "", "null", "42", "[1,2,3]", '"str"', '{"a": '),
+)
+def test_a_payload_that_is_not_an_object_still_leaves_a_record(
+    tmp_path, payload: str
+) -> None:
+    """The other half of the silent death, reached by a payload rather than a
+    signal.
+
+    Round 6 measured the SIGTERM half and closed it. Every one of these
+    reproduced the same signature against the fixed tree — rc=0, zero bytes of
+    stdout, zero bytes of stderr, and NO LINE IN log.jsonl — which is what a
+    hook that was never registered looks like. The parse and the `.get()` the
+    next line assumes both happen before either path has a record to write,
+    so `cli()`'s fail-open suppression swallowed them into nothing.
+
+    The CLI documents direct invocation, so this is not a shape only a broken
+    harness can produce.
+    """
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_env(tmp_path),
+    )
+    assert out.returncode == 0, out
+    assert out.stdout == "" and out.stderr == "", out
+    assert _last_record(tmp_path)["outcome"] == "main:badpayload", tmp_path
+
+
+@pytest.mark.parametrize("signame", ("SIGTERM", "SIGHUP", "SIGINT"))
+def test_every_signal_that_can_end_this_process_leaves_a_record(
+    tmp_path, signame: str
+) -> None:
+    """One answer for the whole class, not one per signal.
+
+    Round 6 fixed SIGTERM because SIGTERM is what the harness sends. SIGHUP
+    kept Python's default disposition — the process dies before any
+    interpreter-level code runs, so rc=-1 with no output and no record — and
+    SIGINT raised `KeyboardInterrupt`, a `BaseException` that
+    `contextlib.suppress(Exception)` does not catch, so Ctrl-C forwarded to
+    the process group printed a 637-byte traceback out of a hook whose stated
+    contract is to fail open quietly. Both are ordinary for a subprocess in a
+    foreground process group.
+
+    Signalled while blocked on `json.load(sys.stdin)` — stdin is opened and
+    never written — which is the same window round 6's own PE-01 case used and
+    needs no timing race.
+    """
+    signum = getattr(signal, signame)
+    with subprocess.Popen(
+        ["python3", HOOK],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_env(tmp_path),
+    ) as proc:
+        time.sleep(0.6)  # blocked on the payload that never comes
+        proc.send_signal(signum)
+        out, err = proc.communicate(timeout=15)
+    assert proc.returncode == 0, (proc.returncode, err)
+    assert "Traceback" not in err, err
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "killed", record
+    assert record["signal"] == signum, record
+
+
+def test_a_ledger_nested_past_the_parsers_budget_loads_empty(tmp_path) -> None:
+    """The shape the eight parametrized ones above do not cover.
+
+    `_load_session`'s docstring claims every shape json can hold loads as the
+    empty or not-comparable version of itself and never as an exception, and
+    gives the reason: the file persists, so an exception is not one lost
+    prompt but every prompt of that session for the rest of its life. A
+    document nested past the parser's recursion budget is such a shape, and
+    `json` answers it with `RecursionError`, which is neither an `OSError` nor
+    a `ValueError`. `_foreign_registration` had the identical gap and runs
+    FIRST on the prompt path.
+
+    Generated rather than written out, and end to end as well as at the unit,
+    because the cost the docstring names is the one the prompt path pays.
+    """
+    state = tmp_path / ".cache" / "memory-recall"
+    state.mkdir(parents=True)
+    ledger = state / "deepsess.json"
+    ledger.write_text("[" * 30000 + "]" * 30000)
+    assert hook._load_session(str(ledger)) == (set(), {})
+    assert hook._foreign_registration(str(ledger)) is None
+
+    memo = tmp_path / PROJECT_DIR / "search" / "gearbox.md"
+    memo.parent.mkdir(parents=True, exist_ok=True)
+    memo.write_text(
+        "---\nname: gearbox\ndescription: shim stack notes\ntype: reference\n---\n\n"
+        "sprocket backlash gearbox rebuild shim stack\n"
+    )
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "deepsess",
+                "prompt": "sprocket backlash gearbox rebuild shim stack",
+            }
+        ),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_env(tmp_path),
+    )
+    assert out.returncode == 0, out
+    # The prompt is SERVED, not merely survived: the ledger it could not read
+    # is an empty one, which is the fail-open direction the docstring argues.
+    assert "gearbox.md" in out.stdout, out.stdout
+    assert _last_record(tmp_path)["outcome"] == "injected", tmp_path
 
 
 def test_a_kill_after_a_duplicate_is_recorded_still_leaves_killed(tmp_path) -> None:
@@ -11240,6 +11400,10 @@ def test_every_task_outcome_is_registered_under_the_task_prefix() -> None:
         o for o in _hook_outcomes()
         if o not in hook.PROMPT_SHAPE_GATES
         and not o.startswith(("gate:", "cli:"))
+        # `main:*` is neither: it is a fact about the INVOCATION, written
+        # before the dispatch has decided which path this payload belongs to,
+        # so it can be neither a prompt outcome nor a task one.
+        and not o.startswith("main:")
         and o not in ("injected", "deduped", "floored", "killed", "error",
                       "output-lost", "nomatch", "index-unavailable",
                       "dup-registration")

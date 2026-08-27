@@ -3456,7 +3456,7 @@ def _marker_append(outcome: str) -> None:
         return
     with contextlib.suppress(Exception):
         records = []
-        with contextlib.suppress(OSError, ValueError):
+        with contextlib.suppress(OSError, ValueError, RecursionError):
             with open(path, encoding="utf-8") as f:
                 blob = json.load(f)
             if isinstance(blob, dict) and blob.get("v") == MARKER_SCHEMA:
@@ -3569,7 +3569,7 @@ def _foreign_registration(state_path: str) -> dict | None:
     None of the three is an error state, and silence here must not be read as
     "no duplicate".
     """
-    with contextlib.suppress(OSError, ValueError):
+    with contextlib.suppress(OSError, ValueError, RecursionError):
         with open(state_path, encoding="utf-8") as f:
             state = json.load(f)
         if not isinstance(state, dict):
@@ -3660,11 +3660,17 @@ def _load_session(path: str) -> tuple[set[str], dict[str, float | None]]:
     not-comparable version of itself, never as an exception. Because the file
     persists, an exception here is not one lost prompt — it is every prompt of
     that session, or every retry of that spawn, for the rest of its life.
+
+    EVERY shape includes one nested past the parser's recursion budget, which
+    `json` answers with `RecursionError` — neither an `OSError` nor a
+    `ValueError`, so the claim above was true of the eight shapes it was
+    written against and false one level up. `_task_payload` already spells the
+    same exception two screens away.
     """
     try:
         with open(path, encoding="utf-8") as f:
             state = json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return set(), {}
     if isinstance(state, list):
         return {p for p in state if isinstance(p, str)}, {
@@ -4418,9 +4424,43 @@ def _stderr_bytes(text: str) -> None:
         buffer.flush()
 
 
+# EVERY SIGNAL THAT CAN END THIS PROCESS, and the reason there is a list
+# rather than a name. Round 6 fixed SIGTERM, which is what the harness sends;
+# SIGHUP kept Python's default disposition, which terminates before any
+# interpreter-level code runs — no handler, no finally, no record, rc=-1 — and
+# SIGINT raises KeyboardInterrupt, a BaseException that `suppress(Exception)`
+# does not catch, so Ctrl-C forwarded to the process group printed a full
+# traceback out of a hook whose stated contract is to fail open quietly. Both
+# are ordinary events for a subprocess in a foreground process group.
+#
+# The decision, taken once for the class instead of once per signal: every way
+# this process can be killed leaves a record and none produces a traceback.
+# SIGKILL is outside it and always will be — nothing in a process runs on
+# SIGKILL.
+KILL_SIGNALS = ("SIGTERM", "SIGHUP", "SIGINT")
+
+
+def _kill_signals() -> list:
+    """The `KILL_SIGNALS` this platform actually has."""
+    return [sig for name in KILL_SIGNALS if (sig := getattr(signal, name, None))]
+
+
+def _on_kill(handler) -> None:
+    """Install one answer for every signal that can end this process.
+
+    Suppressed per signal rather than around the loop: a platform missing one
+    of these, or a thread that may not install handlers, must not cost the
+    others their handler.
+    """
+    for sig in _kill_signals():
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(sig, handler)
+
+
 @contextlib.contextmanager
 def _sigterm_masked():
-    """Hold SIGTERM for the duration of a block, then let it through.
+    """Hold every killing signal for the duration of a block, then let it
+    through.
 
     A pending signal is delivered on unblock, so the handler still runs and
     the process still leaves promptly — it just runs AFTER the block finished
@@ -4432,7 +4472,7 @@ def _sigterm_masked():
     survive it.
     """
     try:
-        prev = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        prev = signal.pthread_sigmask(signal.SIG_BLOCK, set(_kill_signals()))
     except (AttributeError, ValueError, OSError):
         yield  # no mask available: fall back to the unprotected ordering
         return
@@ -5122,11 +5162,10 @@ def _task_main(payload: dict, t0: float) -> None:
     def _flush_on_kill(signum, frame) -> None:
         if not logged:
             with contextlib.suppress(Exception):
-                done("task:killed")
+                done("task:killed", signal=signum)
         os._exit(0)
 
-    with contextlib.suppress(ValueError, OSError):
-        signal.signal(signal.SIGTERM, _flush_on_kill)
+    _on_kill(_flush_on_kill)
 
     try:
         # The matcher already scoped this to one tool, so a payload naming
@@ -5382,14 +5421,16 @@ def main() -> None:
     t0 = time.monotonic()
 
     # Fail-open starts before the first read, not after it. json.load blocks
-    # until the harness writes the payload, and a SIGTERM arriving in that
-    # window used to find Python's default disposition and kill the process —
-    # rc=-15 with no output, measured, which is the one status a hook on every
-    # prompt must never return. There is no record to write yet (rec does not
-    # exist), so the early handler only has to leave quietly; the
-    # record-writing handler replaces it as soon as there is something to say.
-    with contextlib.suppress(ValueError, OSError):
-        signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    # until the harness writes the payload, and a killing signal arriving in
+    # that window used to find Python's default disposition — rc=-15/-1 with
+    # no output, or a KeyboardInterrupt traceback, which are the statuses a
+    # hook on every prompt must never return.
+    #
+    # QUIET, HERE ONLY, and for one reason: the trust gate below has not run.
+    # An uninitialised install has no business creating the shared state dir,
+    # which is what writing a record would do, and its own record is the
+    # marker. Past the gate the handler is replaced by one that records.
+    _on_kill(lambda *_: os._exit(0))
 
     # The trust gate, before the payload is read rather than after. An
     # uninitialised plugin install has no business seeing the prompt at all,
@@ -5410,7 +5451,42 @@ def main() -> None:
         _marker_append(refusal)
         return
 
-    payload = json.load(sys.stdin)
+    def done(outcome: str, /, **kw) -> None:
+        """The record for a death that reached neither path's own `done()`.
+
+        Named `done` like the other two, and that is not cosmetic: the
+        consumer's collector enumerates this vocabulary by reading `done(...)`
+        call sites out of this file, so a record written by a differently
+        named emitter is one it cannot see — in neither the declined nor the
+        search-reaching population, and inside the denominator of every rate
+        computed over it.
+
+        Everything below this line can die before `rec` exists on either
+        path — blocked on stdin for a payload that never comes, or on one that
+        is not a JSON object — and round 6 measured what that costs: rc=0,
+        zero bytes of stdout, zero bytes of stderr, and NO LINE IN THE LOG,
+        which is indistinguishable from a hook that was never registered. The
+        `killed` machinery exists to make that outcome impossible, and it only
+        covered the path where a record already existed.
+        """
+        _soak_log(dict(kw, outcome=outcome, ms=int((time.monotonic() - t0) * 1000)))
+
+    _on_kill(lambda signum, _frame: (done("killed", signal=signum), os._exit(0)))
+
+    # THE PAYLOAD, and every shape stdin can hold that is not one. Empty,
+    # truncated, not JSON, or valid JSON that is not an object: all of them
+    # raise before either path has built a record, `cli()`'s fail-open
+    # suppression swallows the exception, and the run is the silent death
+    # above. The CLI documents direct invocation, so this is not a shape only
+    # a broken harness produces. RecursionError is in the set for the reason
+    # `_task_payload` already has it: json answers a document nested past its
+    # budget with one, and it is neither an OSError nor a ValueError.
+    try:
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict):
+            raise ValueError(f"payload is {type(payload).__name__}, not an object")
+    except (ValueError, OSError, RecursionError) as exc:
+        return done("main:badpayload", err=type(exc).__name__)
 
     # THE DISPATCH. Everything the task path needs differs from here down —
     # the gate, the query builder, the floor bars, the ledger, the budget and
@@ -5546,11 +5622,10 @@ def _prompt_main(payload: dict, t0: float) -> None:
     def _flush_on_kill(signum, frame) -> None:
         if not logged:
             with contextlib.suppress(Exception):
-                done("killed")
+                done("killed", signal=signum)
         os._exit(0)
 
-    with contextlib.suppress(ValueError, OSError):
-        signal.signal(signal.SIGTERM, _flush_on_kill)
+    _on_kill(_flush_on_kill)
 
     # The prompt-only gates come from prompt_gate() so that an analyzer asking
     # "would production have declined this?" gets the same answer this line
@@ -6345,7 +6420,15 @@ def cli() -> None:
             _stderr_bytes(f"{_self_name()}: {exc}\n")
             sys.exit(EXIT_ERROR)
     # Fail-open: no output, exit 0 — never block the prompt.
-    with contextlib.suppress(Exception):
+    #
+    # `KeyboardInterrupt` by name because it is a `BaseException` and this
+    # suppression does not otherwise cover it: SIGINT before `main()` has
+    # installed its handlers would print a traceback out of a hook whose
+    # contract is to fail open quietly. No record is written from here — that
+    # window is ahead of the trust gate, and creating the shared state dir for
+    # an install that has not been admitted is the mutation the gate exists to
+    # prevent. Past the gate every death has a handler that does record.
+    with contextlib.suppress(Exception, KeyboardInterrupt):
         main()
     # suppress() above does NOT cover a reader that closed early, and that is
     # an ordinary thing for the harness to do. stdout here is a pipe, so it is
