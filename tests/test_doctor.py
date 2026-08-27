@@ -14,6 +14,7 @@ sends an agent to fix the wrong thing.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -3066,6 +3067,199 @@ def test_the_boundary_is_installed_by_the_entry_point_and_not_by_an_import(
     pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert 'memkit = "memkit.cli:cli"' in pyproject
     assert 'memory-integrity = "memkit.memory_integrity:cli"' in pyproject
+
+
+def test_a_refusal_that_stops_a_check_reports_its_own_reason(
+    profile, monkeypatch
+) -> None:
+    """A refusal that produces the same observable as an ordinary negative
+    result is not a refusal.
+
+    `Untrusted` names which rule refused and what it refused; `OSError` names
+    the errno. A row that carried only the exception's CLASS left a reader
+    having to reproduce the failure to learn anything from it, and there is
+    nowhere else in the report that says.
+    """
+    path = _store_config(profile, stores=["personal"])
+    outside = profile / "elsewhere"
+    outside.mkdir(exist_ok=True)
+    binary = outside / "claude"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+    monkeypatch.setattr(doctor, "resolve", lambda name: str(binary))
+
+    def refuses(argv, **kw):
+        raise _exec.Untrusted("a very specific reason nobody could guess")
+
+    monkeypatch.setattr(doctor, "_execute", refuses)
+    (row,) = _only(
+        doctor._PRODUCERS["harness-stamp"](_machine(profile, monkeypatch, path)),
+        "harness-stamp",
+    )
+    assert row.status == doctor.UNKNOWN
+    assert "a very specific reason nobody could guess" in row.detail, row.detail
+
+
+def test_the_hook_probe_says_what_environment_it_ran_under(
+    profile, monkeypatch
+) -> None:
+    """The probe runs the real installed wrapper, and its child's environment
+    is BUILT rather than inherited — which is what makes it safe and is also
+    what makes it not a real invocation.
+
+    A FAIL that does not say so sends an adopter to repair a store that works.
+    So the row prints the list, and a name the wrapper reads that this session
+    has and the probe does not forward downgrades the row to UNKNOWN naming
+    it.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    silent = profile / "home" / "memkit-hook"
+    silent.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    silent.chmod(0o755)
+    _settings(
+        profile,
+        hooks={
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(silent)}]}
+            ]
+        },
+    )
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status == doctor.FAIL, (row.status, row.detail)
+    assert "built environment" in row.detail, row.detail
+    for name in doctor.HOOK_PROBE_FORWARD:
+        assert name in row.detail, (name, row.detail)
+
+    # And a name the wrapper reads that this session carries and the probe
+    # does not pass on makes the result UNKNOWN rather than FAIL, because the
+    # probe and a real invocation then did not see the same environment.
+    monkeypatch.setattr(
+        doctor, "HOOK_READS_ENV", ("MEMKIT_A_NAME_THE_PROBE_DOES_NOT_FORWARD",)
+    )
+    monkeypatch.setenv("MEMKIT_A_NAME_THE_PROBE_DOES_NOT_FORWARD", "1")
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status == doctor.UNKNOWN, (row.status, row.detail)
+    assert "MEMKIT_A_NAME_THE_PROBE_DOES_NOT_FORWARD" in row.detail, row.detail
+
+
+# --- the hostile checkout ----------------------------------------------------
+
+
+def _hostile_checkout(profile, monkeypatch) -> tuple:
+    """One fixture carrying every route this branch's rounds established, all
+    at once, and a marker per route.
+
+    In the repository: `.gitattributes` binding a clean filter, `.git/config`
+    naming a program for `core.fsmonitor`, `filter.evil.clean`, `diff.external`
+    and `gpg.ssh.program`, a relocated `core.worktree`, `log.showSignature`,
+    and a `.direnv/bin` full of shims. In the environment: a PATH with an
+    empty entry, a relative entry, an under-cwd entry and a symlinked one,
+    plus every variable that names code and the two the checker route used to
+    read.
+    """
+    session = profile / "project"
+    marker = profile / "PWNED-hostile.txt"
+    named = profile / "elsewhere" / "evil"
+    named.parent.mkdir(parents=True, exist_ok=True)
+    named.write_text(f'#!/bin/sh\necho "$0 $*" >> "{marker}"\nexit 0\n', encoding="utf-8")
+    named.chmod(0o755)
+    shim = session / ".direnv" / "bin"
+    shim.mkdir(parents=True, exist_ok=True)
+    for name in ("git", "python3", "python3.12", "uv", "uvx", "claude", "sh"):
+        (shim / name).symlink_to(named)
+    (session / "sitecustomize.py").write_text(
+        f'open({str(marker)!r}, "a").write("sitecustomize\\n")\n', encoding="utf-8"
+    )
+    (session / ".gitattributes").write_text("* filter=evil\n", encoding="utf-8")
+    if shutil.which("git"):
+        subprocess.run(["git", "init", "-q"], cwd=session, check=True, timeout=60)
+        for key, value in (
+            ("core.fsmonitor", str(named)),
+            ("core.worktree", str(profile / "elsewhere")),
+            ("filter.evil.clean", str(named)),
+            ("filter.evil.smudge", str(named)),
+            ("diff.external", str(named)),
+            ("gpg.format", "ssh"),
+            ("gpg.ssh.program", str(named)),
+            ("log.showSignature", "true"),
+            ("core.hooksPath", str(shim)),
+        ):
+            subprocess.run(
+                ["git", "config", key, value], cwd=session, check=True, timeout=60
+            )
+    outside = profile / "linked"
+    outside.mkdir(exist_ok=True)
+    (outside / "into-the-session").symlink_to(shim)
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join(
+            ["", "node_modules/.bin", str(shim), str(outside / "into-the-session"),
+             os.environ.get("PATH", "/usr/bin")]
+        ),
+    )
+    for name in (
+        "GIT_CONFIG_PARAMETERS", "PYTHONPATH", "PYTHONSTARTUP",
+        "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "LD_AUDIT",
+        "LD_PRELOAD", "BASH_ENV", "ENV", "GIT_EXTERNAL_DIFF", "GIT_SSH_COMMAND",
+        "MEMKIT_CHECKER_ROUTE", "MEMKIT_CHECKER_CMD", "MEMKIT_SYSTEM_PYTHONS",
+        "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_COUNT",
+        "BASH_FUNC_x%%",
+    ):
+        monkeypatch.setenv(name, str(named))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.chdir(session)
+    return session, marker
+
+
+def test_a_hostile_checkout_runs_none_of_its_programs_through_doctor_or_init(
+    profile, monkeypatch
+) -> None:
+    """E1, over the whole surface at once: every route this branch's four
+    rounds established, in one fixture, with a marker per route.
+
+    ASSERTION: zero markers, from a full `doctor` pass and an `init --dry-run`
+    plan built while standing in the checkout.
+
+    WHAT IT DOES NOT SHOW, stated so nobody reads it as evidence for the wrong
+    thing: measured against the tip this round started from, the doctor half of
+    this is already green. It certifies the earlier rounds' work over a
+    combined fixture none of them had, and it is a standing net for the next
+    change — not a demonstration of this one. The routes this round closed
+    have their own cases, each red against that tip: the hook path's
+    process count, `core.worktree` steering a store root, `gpg.ssh.program`
+    through the checker's `log` route, and the checker argv.
+
+    The anti-vacuity control below is what makes the zero mean anything: the
+    fixture's own programs are shown firing first.
+    """
+    from memkit import cli_init as init
+
+    session, marker = _hostile_checkout(profile, monkeypatch)
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+
+    # ANTI-VACUITY: the fixture's own programs really do run when nothing
+    # stops them, so a clean marker file below is a refusal and not a fixture
+    # that could never fire.
+    control = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", ".gitattributes"],
+        cwd=session, capture_output=True, text=True, timeout=60,
+    )
+    assert control.returncode in (0, 1)
+    assert marker.exists(), "core.fsmonitor never fired, so this proves nothing"
+    marker.unlink()
+
+    machine = _machine(profile, monkeypatch, path)
+    doctor.collect(machine)
+    assert not marker.exists(), marker.read_text()
+
+    with contextlib.suppress(init.Refusal):
+        init.build_plan(doctor.Machine(), store=str(profile / "adopted"))
+    assert not marker.exists(), marker.read_text()
 
 
 def test_the_uninstall_story_says_when_the_config_goes_with_the_plugin(

@@ -739,6 +739,61 @@ def test_a_config_dir_inside_the_session_is_refused_for_both_targets(
         assert doctor.CONFIG_DIR_ENV in refusal.message, refusal.message
 
 
+def test_an_unreadable_memory_index_is_refused_by_name(profile) -> None:
+    """`--dry-run` is the pre-approved half of the handshake, so a traceback
+    out of it is a state an adopter meets with no refusal name to act on.
+
+    Two shapes reach the same read and used to end differently: a file the
+    process cannot OPEN refused, and one it can open and cannot DECODE raised
+    UnicodeDecodeError three frames away. A file that is not UTF-8 is not the
+    file init generates, which is the branch beside it.
+    """
+    store = profile / "store"
+    (store / "search").mkdir(parents=True)
+    (store / "hot").mkdir(parents=True)
+    (store / "MEMORY.md").write_bytes(b"# index\n\xff\xfe not utf-8\n")
+    refusal = _refuses(profile, "adopted-memory-index", store=str(store))
+    assert "somebody wrote" in refusal.message, refusal.message
+
+
+def test_the_plan_preflight_sees_the_actions_the_flags_add(
+    profile, monkeypatch
+) -> None:
+    """The preflight's whole job is to see the WHOLE plan: two paths of
+    incompatible types in one manifest is a plan that cannot be performed, and
+    finding that out at apply time means finding it out after a write.
+
+    Run where the action list was still being built it checked eight of ten —
+    the two the flags append came after it — so the one check that has to see
+    everything saw the part that never varies.
+    """
+    import ast
+
+    source = pathlib.Path(init.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and "_refuse_incompatible_types" in
+        {getattr(c.func, "id", "") for c in ast.walk(n) if isinstance(c, ast.Call)}
+    )
+    calls = [
+        node.lineno for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "_refuse_incompatible_types"
+    ]
+    appends = [
+        node.lineno for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and getattr(getattr(node.func, "value", None), "id", "") == "actions"
+        and getattr(node.func, "attr", "") == "append"
+    ]
+    assert calls and appends, (calls, appends)
+    assert min(calls) > max(appends), (
+        "the preflight runs before an action the flags append, so it checks "
+        "part of the plan"
+    )
+
+
 def test_no_checker_route_is_refused_rather_than_half_completed(profile, monkeypatch):
     """A seeded memory whose ledger nobody checked is a store the checker calls
     broken. Half-completing is worse than not starting."""

@@ -7973,3 +7973,57 @@ def test_skipped_means_no_directory_was_examined_not_merely_one(
     assert not stale.exists()
     # And when NEITHER is due, it is skipped — the flag still means something.
     assert hook._sweep()["skipped"] is True
+
+def test_a_concurrent_hook_does_not_lose_the_other_ledger(tmp_path: Path) -> None:
+    """Two hooks can serve one session — a resumed session, a second
+    registration, the doctor probe alongside a live prompt — and each loads the
+    ledger at the top of its own run.
+
+    Writing back what it loaded discards whatever the other committed. The
+    dedup set is the loss that shows: a path dropped out of `shown` is offered
+    a second time and the session sees the same pointer twice.
+
+    Driven as two real invocations with a peer's ledger planted between them,
+    because the property is about what survives one run's write and an
+    in-process fake would assert an ordering the shipped path does not have.
+    """
+    _injecting_repo(tmp_path)
+    env = _env(tmp_path)
+    session = "s-concurrent"
+    payload = json.dumps({"session_id": session, "prompt": INJECT_PROMPT})
+    first = subprocess.run(
+        ["python3", HOOK], input=payload, capture_output=True, text=True,
+        timeout=60, env=env,
+    )
+    assert first.returncode == 0, first.stderr
+    state = Path(
+        subprocess.run(
+            ["python3", "-c",
+             f"import sys; sys.path.insert(0, {str(Path(HOOK).parent.parent)!r});"
+             "from memkit.memory_prompt_recall import _session_state_path;"
+             f"print(_session_state_path({session!r}))"],
+            capture_output=True, text=True, timeout=60, env=env,
+        ).stdout.strip()
+    )
+    assert state.is_file(), "the first run wrote no ledger, so this proves nothing"
+    held = json.loads(state.read_text(encoding="utf-8"))
+    assert held["shown"], held
+
+    # A PEER's commit, landing after this run would have loaded the file.
+    peer_path = "/peer/only/this/session/knows.md"
+    held["shown"] = sorted(set(held["shown"]) | {peer_path})
+    held["spent"] = dict(held.get("spent") or {}, **{peer_path: 99.0})
+    state.write_text(json.dumps(held), encoding="utf-8")
+
+    second = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": session, "prompt": "unionfs mount permissions"}),
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert second.returncode == 0, second.stderr
+    after = json.loads(state.read_text(encoding="utf-8"))
+    assert peer_path in after["shown"], sorted(after["shown"])
+    assert peer_path in after["spent"], sorted(after["spent"])
+    # And the budget is not exceeded to accommodate the peer.
+    assert len(after["spent"]) <= hook.POINTER_BUDGET, len(after["spent"])
+
