@@ -107,6 +107,7 @@ import importlib.util
 import inspect
 import json
 import pathlib
+import re
 import sys
 import time
 
@@ -551,6 +552,68 @@ def task_surface_gap(hook) -> str | None:
 TASK_INPUT_ASSUMED_OVERHEAD = 1024
 
 
+# A pointer line, up to the separator memkit renders between the path and the
+# description. Non-greedy, so it stops at the FIRST separator: the path field
+# is memkit's own rendering of a filesystem path and the description is file
+# content, so anything past the first em-dash belongs to the store.
+_POINTER_PATH = re.compile("^- (?P<path>.+?) \u2014 ")
+
+
+def _delivered_names(appended: str) -> set[str]:
+    """The basenames the block's pointer lines actually POINT AT.
+
+    Off the path field alone. Taking every whitespace token's basename made
+    any word of a surviving DESCRIPTION able to vouch for a pointer that was
+    shed or never emitted, and descriptions here are file contents — a memory
+    that names its neighbour is ordinary, not contrived. The gate would then
+    report subagent coverage for a pointer the subagent never received, which
+    is the single thing this slice exists to measure.
+
+    A line whose separator was consumed does not parse, and so does not count
+    as a delivery. That is the answer rather than a gap: the reader of such a
+    line is handed a filename with somebody's sentence welded to it, and
+    scoring it as delivered would be scoring the failure as a success.
+    """
+    names = set()
+    for line in appended.splitlines():
+        match = _POINTER_PATH.match(line)
+        if match is not None:
+            names.add(pathlib.Path(match.group("path")).name)
+    return names
+
+
+def _pad_to_overhead(tool_input: dict) -> dict:
+    """Weigh the non-brief part up to `TASK_INPUT_ASSUMED_OVERHEAD`, or raise.
+
+    The pad lands on the WHOLE serialized object rather than on one key's
+    value, because the whole object is what production weighs: an assumption
+    spelled as the length of `description` stops being the assumption the
+    moment this input grows a key.
+
+    RAISES rather than clipping, which is the half that was missing. The
+    clip's silence is the failure mode: `max(spare, 0)` turns "this shape has
+    outgrown the constant" into "no padding today", and the gate goes on
+    running, green, with a payload SMALLER than production's — which is
+    exactly the direction that lets a brief score `served` at a size
+    production refuses with `task:oversize`. This invariant has already
+    drifted once, and what caught it was a person reading the diff.
+
+    A gate is allowed to fail loudly; the hook it measures is not. Nothing
+    here runs on the every-prompt path.
+    """
+    weight = len(json.dumps(dict(tool_input, prompt=""), ensure_ascii=False))
+    spare = TASK_INPUT_ASSUMED_OVERHEAD - weight
+    if spare < 0:
+        raise ValueError(
+            f"the assumed Agent payload weighs {weight} characters, past "
+            f"TASK_INPUT_ASSUMED_OVERHEAD={TASK_INPUT_ASSUMED_OVERHEAD}; the "
+            "gate's payload would be smaller than production's, so it would "
+            "score briefs served at sizes production refuses"
+        )
+    tool_input["description"] += "." * spare
+    return tool_input
+
+
 def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     """Everything one brief's trip through the task path produced, as a
     record — which is what a subagent WOULD ACTUALLY RECEIVE for this brief.
@@ -711,14 +774,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "description": "score this brief",
         "subagent_type": "general-purpose",
     }
-    # The pad lands on the WHOLE non-brief part rather than on one key's value.
-    # What production weighs is the serialized object, so an assumption spelled
-    # as the length of `description` stops being the assumption the moment this
-    # input grows a key — the two agree today by 55 bytes.
-    spare = TASK_INPUT_ASSUMED_OVERHEAD - len(
-        json.dumps(dict(tool_input, prompt=""), ensure_ascii=False)
-    )
-    tool_input["description"] += "." * max(spare, 0)
+    _pad_to_overhead(tool_input)
     # THE HOOK'S OWN EMISSION DECISION, not a second copy of it. This slice
     # re-derived it — `_task_payload`, then its own size test, and no
     # encodability test at all — so a divergence between the two was invisible
@@ -735,15 +791,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     # latent rather than wrong, and one edit to a fixture away from a gate that
     # answers yes to an empty block.
     appended = delivered[len(brief) :] if delivered.startswith(brief) else delivered
-    lines = [ln for ln in appended.splitlines() if ln.startswith("- ")]
-    # THE NAMES THE LINES CARRY, matched whole. A basename tested for
-    # containment against a whole pointer line answers yes to any line that
-    # merely spells it somewhere — another memory whose name extends it, or a
-    # description that happens to mention it — so a pick the block dropped
-    # scores as delivered on its neighbour's line, and the readback stops being
-    # a readback. Off the line's own tokens instead, which survives the path
-    # being rendered differently without widening what counts as a match.
-    carried = {pathlib.Path(tok).name for line in lines for tok in line.split()}
+    carried = _delivered_names(appended)
     return {
         "names": [
             name

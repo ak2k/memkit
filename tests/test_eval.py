@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from memkit import eval_memory_recall as ev
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
@@ -922,3 +924,78 @@ def test_the_floor_faces_negatives_it_was_not_calibrated_against() -> None:
     assert "note_holdout" in index
     for case in held:
         assert (FIXTURES / BRIEFS / case["brief"]).is_file(), case
+
+
+def test_the_padded_tool_input_is_never_smaller_than_the_overhead_it_assumes(
+) -> None:
+    """`TASK_INPUT_ASSUMED_OVERHEAD` is the only thing keeping this gate's
+    payload from being SMALLER than what production sends the Agent tool, and
+    a gate whose payload is smaller than production's scores a brief `served`
+    at a size production refuses with `task:oversize`.
+
+    That invariant has drifted once already, silently: the pad used to land on
+    `description`'s VALUE rather than on the whole serialized object, so it
+    stopped being the stated assumption the moment the input grew a key. A
+    person noticed. Nothing in the suite did — the constant, the `spare`
+    variable and the padded object's size were referenced by no test at all.
+
+    Asserted against the shape `_task_delivery` builds, and then against that
+    shape PLUS a key, which is the exact class of change that caused the drift.
+    `max(spare, 0)` used to absorb the second case in silence; it raises now,
+    because a gate that has quietly stopped being conservative is worth more
+    to know about than one more green run.
+    """
+    shape = {
+        "prompt": "",
+        "description": "score this brief",
+        "subagent_type": "general-purpose",
+    }
+    weight = len(json.dumps(shape, ensure_ascii=False))
+    assert weight <= ev.TASK_INPUT_ASSUMED_OVERHEAD, (
+        weight,
+        ev.TASK_INPUT_ASSUMED_OVERHEAD,
+    )
+    # The padded object REACHES the assumed overhead rather than merely fitting
+    # under it — the pad exists to make the gate's payload no smaller than a
+    # real one, so an assumption nothing grows into is not an assumption.
+    padded = dict(shape, description=shape["description"] + "." * (
+        ev.TASK_INPUT_ASSUMED_OVERHEAD - weight
+    ))
+    assert len(json.dumps(padded, ensure_ascii=False)) == (
+        ev.TASK_INPUT_ASSUMED_OVERHEAD
+    )
+    # And a shape that has outgrown the constant fails LOUDLY. This is the
+    # drift c8be3fd fixed, reproduced: one more key, and the pad silently
+    # became a no-op that left the gate optimistic.
+    with pytest.raises(ValueError, match="TASK_INPUT_ASSUMED_OVERHEAD"):
+        ev._pad_to_overhead(dict(shape, model="x" * ev.TASK_INPUT_ASSUMED_OVERHEAD))
+
+
+def test_a_description_that_mentions_a_file_does_not_prove_it_was_delivered(
+) -> None:
+    """The readback has to read the PATH field, not the whole line.
+
+    Splitting a pointer line on whitespace and taking every token's basename
+    makes any word of a surviving DESCRIPTION able to vouch for a pointer that
+    was shed or never emitted — and descriptions in this corpus are file
+    contents, so a memory that mentions its neighbour by name is ordinary
+    rather than contrived. The gate then reports subagent coverage for a
+    pointer the subagent did not receive, which is the one thing this slice
+    exists to measure.
+    """
+    block = (
+        "- /store/search/sprocket_alignment.md — supersedes "
+        "flange_torque.md for the 2026 rebuild [matches 3 terms from this "
+        "brief: sprocket, backlash, shim]"
+    )
+    assert ev._delivered_names(block) == {"sprocket_alignment.md"}
+    # Non-vacuity: a line that really does carry the path still counts, and a
+    # path rendered with a `~` or a relative prefix is still its basename.
+    both = block + "\n- ~/store/search/flange_torque.md — star pattern, "
+    both += "three passes [matches 2 terms from this brief: flange, torque]"
+    assert ev._delivered_names(both) == {
+        "sprocket_alignment.md",
+        "flange_torque.md",
+    }
+    # And a line whose separator was consumed does not parse into a delivery.
+    assert ev._delivered_names("- /store/search/eaten.md no separator here") == set()
