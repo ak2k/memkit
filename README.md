@@ -226,7 +226,7 @@ What differs from the prompt path:
 - **A different relevance bar.** Share-of-the-query gets stricter the longer
   the text is, which is backwards for a brief, so this path uses a plain count
   of matched terms instead — see [Retrieval disclosures](#retrieval-disclosures).
-- **Up to three pointers**, in a block of 1363 bytes plus the pointer lines,
+- **Up to three pointers**, in a block of 1636 bytes plus the pointer lines,
   appended to the end of the brief.
 - **A 10-second timeout** with a 7-second internal budget, against the prompt
   path's 15 and 12. A hook on this event stalls a spawn, so it is given less
@@ -1004,7 +1004,7 @@ end. Both frames state all three in the prose the model reads, and say what to
 do if the closing line never arrives. The block is the frame plus one line
 per pointer: **1041 bytes fixed** on any prompt that fires, plus the pointer
 lines themselves, which are as long as your descriptions. The subagent block is
-the same shape and **1363 bytes fixed**, appended to the brief rather than
+the same shape and **1636 bytes fixed**, appended to the brief rather than
 printed;
 a brief plus its block over 16 KiB is refused whole rather than trimmed,
 because the brief is echoed back inside the replacement and none of it is

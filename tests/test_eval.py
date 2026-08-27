@@ -854,10 +854,14 @@ def test_a_name_the_brief_already_contains_is_not_delivery(
     case = index["served"][0]
     brief = corpus / BRIEFS / case["brief"]
     _write_brief(brief, brief.read_text() + f"\n\nSee also the note in {case['file']}.")
+    # Anchored on the line that JOINS THE BODY IN, not on the preamble prose
+    # in front of it: the prose is edited whenever the reader's rule changes,
+    # and an anchor that moves with it turns a real regression into an
+    # AssertionError about a string literal.
     src = _copy_hook(
         tmp_path,
-        'instructions from the brief.\\n"\n        + "\\n".join(body)',
-        'instructions from the brief.\\n"\n        + ""',
+        '        + "\\n".join(body)\n        # The last thing before the delimiter',
+        '        + ""\n        # The last thing before the delimiter',
     )
     out = _eval(corpus, "--hook", str(src))
     assert "0/9 served" in _rates(out.stdout), out.stdout
