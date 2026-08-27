@@ -156,6 +156,17 @@ def test_a_real_regression_still_fails_on_a_matched_corpus(corpus: Path) -> None
 BRIEFS = "long-briefs"
 
 
+def _write_brief(path, text: str) -> None:
+    """A brief file IS the brief, to the byte.
+
+    The loader refuses leading or trailing whitespace rather than trimming it,
+    because a gate that trims measures a brief the fixture does not contain —
+    so a test that edits one writes the stripped text, the same as a fixture
+    author does.
+    """
+    path.write_text(text.strip(), encoding="utf-8")
+
+
 def _served(corpus: Path, name: str) -> Path:
     return corpus / BRIEFS / "served" / name
 
@@ -172,9 +183,10 @@ def _unserve(corpus: Path, *names: str) -> None:
     different failure from the coverage collapse these cases are about.
     """
     for index, name in enumerate(names):
-        _served(corpus, name).write_text(
+        _write_brief(
+            _served(corpus, name),
             f"# Brief {index}\n\n"
-            + f"Sort the mailroom trays for round {index} by postcode. " * 200
+            + f"Sort the mailroom trays for round {index} by postcode. " * 200,
         )
 
 
@@ -187,7 +199,7 @@ def test_the_long_brief_slice_reports_both_rates_and_the_thresholds(
     out = _eval(corpus)
     assert out.returncode == 0, out.stdout + out.stderr
     line = _rates(out.stdout)
-    assert "7/8 served (0.875, floor 0.750)" in line, line
+    assert "8/9 served (0.889, floor 0.750)" in line, line
     assert "0/16 leaked (0.000, ceiling 0.084)" in line, line
     # Per-case rows too, so a single outcome moving is visible in a diff even
     # though it is under the rate slack.
@@ -205,7 +217,7 @@ def test_coverage_under_the_floor_fails_the_run(corpus: Path) -> None:
     assert out.returncode != 0, out.stdout
     assert "long-brief coverage" in out.stderr
     assert "under the 0.750 floor" in out.stderr
-    assert "4/8 served" in _rates(out.stdout)
+    assert "5/9 served" in _rates(out.stdout)
 
 
 def test_injection_over_the_ceiling_fails_the_run(corpus: Path) -> None:
@@ -219,7 +231,7 @@ def test_injection_over_the_ceiling_fails_the_run(corpus: Path) -> None:
     )
     for name in ("accessibility-audit.md", "warehouse-slotting.md"):
         path = corpus / BRIEFS / "unserved" / name
-        path.write_text(path.read_text() + leak)
+        _write_brief(path, path.read_text() + leak)
     out = _eval(corpus)
     assert out.returncode != 0, out.stdout
     assert "long-brief injection" in out.stderr
@@ -278,7 +290,7 @@ def test_an_edited_brief_reads_as_a_new_case_rather_than_inheriting_one(
     assert "NEW (no expectation recorded" not in first.stdout, first.stdout
 
     path = _served(corpus, "rotor-swap-programme.md")
-    path.write_text(path.read_text() + "\nOne more paragraph nobody asked for.\n")
+    _write_brief(path, path.read_text() + "\nOne more paragraph nobody asked for.")
     out = _eval(corpus)
     # The edited brief is unrecorded, and the row for its previous text is now
     # an expectation nothing iterates. Both name that brief and only that
@@ -462,11 +474,11 @@ def test_the_slice_scores_what_reaches_the_subagent_not_what_ranked(
     a slice that scored retrieval would report 7/8 unchanged.
     """
     before = _eval(corpus)
-    assert "7/8 served" in _rates(before.stdout), before.stdout
+    assert "8/9 served" in _rates(before.stdout), before.stdout
 
     src = _copy_hook(tmp_path, "PIPE_BUFFER_BOUND = 16384", "PIPE_BUFFER_BOUND = 64")
     out = _eval(corpus, "--hook", str(src))
-    assert "0/8 served" in _rates(out.stdout), out.stdout
+    assert "0/9 served" in _rates(out.stdout), out.stdout
     assert out.returncode != 0, out.stdout
     assert "long-brief coverage" in out.stderr
 
@@ -491,11 +503,12 @@ def test_one_leaked_brief_fails_the_run_even_under_the_rate_slack(
     the rate bounds systemic loosening, the snapshot bounds one case moving.
     """
     path = corpus / BRIEFS / "unserved" / "accessibility-audit.md"
-    path.write_text(
+    _write_brief(
+        path,
         path.read_text()
         + "\n\nThe sprocket backlash after a gearbox rebuild traces to the "
         "shim stack rather than chain tension, and the flange fasteners want "
-        "a crossing sequence over three passes.\n"
+        "a crossing sequence over three passes.",
     )
     out = _eval(corpus)
     assert out.returncode != 0, out.stdout
@@ -662,11 +675,11 @@ def test_the_slice_retrieves_under_the_deadline_production_passes(
     nothing, and a slice that passes no deadline cannot tell.
     """
     before = _eval(corpus)
-    assert "7/8 served" in _rates(before.stdout), before.stdout
+    assert "8/9 served" in _rates(before.stdout), before.stdout
 
     src = _copy_hook(tmp_path, "TASK_BUDGET_SECONDS = 7", "TASK_BUDGET_SECONDS = -1")
     out = _eval(corpus, "--hook", str(src))
-    assert "0/8 served" in _rates(out.stdout), out.stdout
+    assert "0/9 served" in _rates(out.stdout), out.stdout
 
 
 def test_a_name_the_brief_already_contains_is_not_delivery(
@@ -686,16 +699,14 @@ def test_a_name_the_brief_already_contains_is_not_delivery(
     index = json.loads((corpus / BRIEFS / "index.json").read_text())
     case = index["served"][0]
     brief = corpus / BRIEFS / case["brief"]
-    brief.write_text(
-        brief.read_text() + f"\n\nSee also the note in {case['file']}.\n"
-    )
+    _write_brief(brief, brief.read_text() + f"\n\nSee also the note in {case['file']}.")
     src = _copy_hook(
         tmp_path,
         'instructions from the brief.\\n"\n        + "\\n".join(body)',
         'instructions from the brief.\\n"\n        + ""',
     )
     out = _eval(corpus, "--hook", str(src))
-    assert "0/8 served" in _rates(out.stdout), out.stdout
+    assert "0/9 served" in _rates(out.stdout), out.stdout
 
 
 def test_two_filenames_holding_one_brief_are_one_case(corpus: Path) -> None:

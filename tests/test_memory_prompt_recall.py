@@ -8840,11 +8840,12 @@ def test_the_hook_and_the_eval_read_the_task_floor_from_one_place() -> None:
     # And the harness's TASK scorer reaches the same two functions rather than
     # its own copy. Scoped to that function: the prompt-path scorer beside it
     # calls `_passes_floor` directly and correctly, on the prompt path's own
-    # defaults.
+    # defaults. `_task_delivery` is where the trip lives — `task_pointers`
+    # reads one field out of what it returns — so that is the body to walk.
     ev_tree = ast.parse(Path(ev.__file__).read_text(encoding="utf-8"))
     scorer = next(
         n for n in ast.walk(ev_tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "task_pointers"
+        if isinstance(n, ast.FunctionDef) and n.name == "_task_delivery"
     )
     reached = {
         n.func.attr for n in ast.walk(scorer)

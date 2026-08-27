@@ -441,7 +441,21 @@ def long_brief_set(root: pathlib.Path) -> dict:
             # Uniqueness by resolved path counts two filenames holding one
             # brief as two cases — the same population inflation the path check
             # exists to prevent, one copy command away.
-            bodies[key] = full.read_text(encoding="utf-8").strip()
+            # VERBATIM. Production receives a brief exactly as the harness
+            # sent it, and `_task_emission` measures the whole payload against
+            # the hook's write bound — so a loader that quietly trimmed the
+            # fixture measured a brief the fixture does not contain, and near
+            # that bound could score served where production refuses. The
+            # committed file has to BE those bytes, which is a thing a fixture
+            # author can fix once rather than a difference the gate hides on
+            # every run.
+            bodies[key] = full.read_text(encoding="utf-8")
+            if bodies[key] != bodies[key].strip():
+                raise RuntimeError(
+                    f"{where}: `{rel}` has leading or trailing whitespace. The "
+                    "gate measures the bytes on disk, so the file has to be "
+                    "exactly the brief — strip it in the fixture, not here"
+                )
             digest = hashlib.sha256(bodies[key].encode()).hexdigest()[:12]
             if digest in texts:
                 first_rel, first_half = texts[digest]
@@ -472,6 +486,11 @@ def long_brief_set(root: pathlib.Path) -> dict:
             "name": f"{case['brief']}#{digest}",
             "file": case.get("file"),
             "brief": brief,
+            # Whether this brief is the one that drives the cap. Carried
+            # through rather than dropped: the slice reads it to decide
+            # whether to assert the cap's consequence, and a key silently lost
+            # here is a gate that runs on nothing and says so nowhere.
+            "over_cap": bool(case.get("over_cap")),
         }
     return {
         "min_served": float(index["min_served"]),
@@ -520,6 +539,77 @@ def task_surface_gap(hook) -> str | None:
     return None
 
 
+# How much the non-brief part of a real Agent payload is assumed to weigh, in
+# characters. `_task_emission` measures the WHOLE serialized object against the
+# hook's write bound, and production echoes back whatever keys the harness
+# sent — so a gate whose payload is smaller than production's scores a brief as
+# served at a size production would refuse. The three keys below are the ones
+# the Agent tool requires; this pads them out so the gate's payload is no
+# SMALLER than a real one, which is the direction that keeps the gate
+# conservative. It cannot be exact — the harness owns that shape — so the
+# assumption is named here rather than left in the shape of a stub.
+TASK_INPUT_ASSUMED_OVERHEAD = 1024
+
+
+def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
+    """Everything one brief's trip through the task path produced, as a record.
+
+    `task_pointers` reads the names out of it and the long-brief slice reads
+    the cap's consequence out of it: the number of hits that cleared the floor,
+    the number the cap kept, and the bytes the emission decided to write. All
+    from ONE trip, because two trips is two populations.
+    """
+    return _task_delivery(hook, brief, dirs)
+
+
+def over_cap_faults(hook, case: dict, got: dict) -> list[str]:
+    """What is wrong with the way the cap was applied to this brief, if
+    anything.
+
+    The one thing about the task path that only a brief of this shape can
+    exercise. `TASK_MAX_HITS` is 3 and every other fixture brief clears the
+    floor on one memory, so until this case existed the eval never drove the
+    cap at all: the truncation sentence and the block that carries it were
+    covered by production's own tests and by the eval and production sharing a
+    spelling, which is a source tripwire rather than a case. A future change
+    that keeps the spelling and stops writing the sentence — or writes the
+    wrong count into it — would pass everything else here.
+
+    Three claims, all read out of the bytes the emission decided to write
+    rather than off the picks: the cap bound, the count of what it dropped is
+    the difference it actually dropped, and the sentence saying so reached the
+    subagent.
+    """
+    faults = []
+    if got["eligible"] <= hook.TASK_MAX_HITS:
+        faults.append(
+            f"{case['name']} cleared the floor on {got['eligible']} "
+            f"memories, at or under the cap of {hook.TASK_MAX_HITS} — the case "
+            "exists to drive the cap and no longer does, so the corpus or the "
+            "brief has moved and the truncation path is ungated again"
+        )
+        return faults
+    if got["picks"] != hook.TASK_MAX_HITS:
+        faults.append(
+            f"{case['name']} showed {got['picks']} pointers with "
+            f"{got['eligible']} eligible; the cap is {hook.TASK_MAX_HITS}"
+        )
+    dropped = got["eligible"] - got["picks"]
+    if got["truncated"] != dropped:
+        faults.append(
+            f"{case['name']} reported {got['truncated']} truncated with "
+            f"{dropped} actually dropped"
+        )
+    plural = "match" if dropped == 1 else "matches"
+    sentence = f"{dropped} further {plural} not shown"
+    if sentence not in got["delivered"]:
+        faults.append(
+            f"{case['name']} delivered a block that does not say "
+            f"`{sentence}` — the cap bound and the subagent was not told"
+        )
+    return faults
+
+
 def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     """What a subagent WOULD ACTUALLY RECEIVE for this brief, best-first.
 
@@ -541,8 +631,15 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     A gated brief returns nothing, which is the same answer as no hits and is
     correct here: the question this slice asks is what reaches the subagent.
     """
+    return _task_delivery(hook, brief, dirs)["names"]
+
+
+def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
+    """The one trip. See `task_pointers` above for why each stage is the task
+    path's own."""
+    empty = {"names": [], "eligible": 0, "picks": 0, "truncated": 0, "delivered": ""}
     if hook.task_gate(brief) is not None:
-        return []
+        return empty
     query = hook.build_task_query(brief)
     # THE BUDGET PRODUCTION RUNS UNDER. `recall`'s `deadline` defaults to None,
     # which is unlimited — so against a consumer's own store under `--repo` or
@@ -562,21 +659,23 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     # silently score a retriever no subagent meets.
     eligible, _floored = hook._eligible(hits, terms, **hook._task_floor())
     if not eligible:
-        return []
+        return empty
     # THE HOOK'S OWN CAP AND ITS CONSEQUENCE, not a second copy. This slice
     # took its own slice of the eligible list and built the frame with the
     # truncation count defaulted to zero, so on any brief the cap binds on it
     # scored a block SMALLER than the one production writes — missing the
     # truncation sentence, against the write bound this slice exists to gate.
-    block, picks, _truncated = hook._task_block(eligible)
+    block, picks, truncated = hook._task_block(eligible)
     if not picks:
-        return []
-    # The tool input a spawn actually carries: both keys the Agent tool
+        return empty
+    # The tool input a spawn actually carries: every key the Agent tool
     # requires, so the allowlist is exercised on a realistic shape rather than
-    # on a one-key stub that could never fail it.
+    # on a one-key stub that could never fail it — and weighing at least what a
+    # real one weighs, so the byte budget this measures is not smaller than the
+    # budget production measures. See TASK_INPUT_ASSUMED_OVERHEAD.
     tool_input = {
         "prompt": brief,
-        "description": "score this brief",
+        "description": "score this brief".ljust(TASK_INPUT_ASSUMED_OVERHEAD, "."),
         "subagent_type": "general-purpose",
     }
     # THE HOOK'S OWN EMISSION DECISION, not a second copy of it. This slice
@@ -586,7 +685,7 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     # to write scored as served.
     text, _verdict, _size = hook._task_emission(tool_input, block)
     if text is None:
-        return []
+        return empty
     delivered = json.loads(text)["hookSpecificOutput"]["updatedInput"]["prompt"]
     # ONLY THE APPENDED PART, and only its pointer lines. `updatedInput.prompt`
     # is the brief this slice supplied plus the block, so `name in delivered`
@@ -596,11 +695,17 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
     # answers yes to an empty block.
     appended = delivered[len(brief) :] if delivered.startswith(brief) else delivered
     lines = [ln for ln in appended.splitlines() if ln.startswith("- ")]
-    return [
-        name
-        for name in (pathlib.Path(p).name for p, _, _ in picks)
-        if any(name in line for line in lines)
-    ]
+    return {
+        "names": [
+            name
+            for name in (pathlib.Path(p).name for p, _, _ in picks)
+            if any(name in line for line in lines)
+        ],
+        "eligible": len(eligible),
+        "picks": len(picks),
+        "truncated": truncated,
+        "delivered": appended,
+    }
 
 
 def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:
@@ -1047,6 +1152,7 @@ def main() -> None:
     # scoring is the task path's rather than the prompt path's, and it gates on
     # two RATES rather than on the snapshot — see below for why it needs both.
     served_hit = leaked = 0
+    cap_fail: list[str] = []
     briefs = None
     if not cfg.eval_long_briefs:
         if LONG_BRIEF_SLICE in gating:
@@ -1106,7 +1212,8 @@ def main() -> None:
                 sys.exit(f"memory-eval: {exc}")
             print()
             for case in briefs["served"]:
-                shown = task_pointers(hook, case["brief"], dirs)
+                got = task_delivery(hook, case["brief"], dirs)
+                shown = got["names"]
                 ok = case["file"] in shown
                 served_hit += ok
                 mark = "BRIEF-SERVED" if ok else "BRIEF-MISS"
@@ -1117,6 +1224,8 @@ def main() -> None:
                     f"[{mark:<12}] {case['name'][:58]:<58} -> "
                     f"{case['file']} (got {shown or '(nothing)'}){moved}"
                 )
+                if case.get("over_cap"):
+                    cap_fail.extend(over_cap_faults(hook, case, got))
             for case in briefs["unserved"]:
                 shown = task_pointers(hook, case["brief"], dirs)
                 ok = not shown
@@ -1159,7 +1268,7 @@ def main() -> None:
     # serves none. The pair is what makes the numbers a calibration rather than
     # a count — "non-vacuous" bounds neither a gate too strict for real briefs
     # nor one too loose for irrelevant ones.
-    rate_fail: list[str] = []
+    rate_fail: list[str] = list(cap_fail)
     if briefs is not None:
         # No `or 1` denominator guard: `long_brief_set` refuses a half that
         # cannot carry a rate, so an empty population is a refusal rather than

@@ -38,6 +38,12 @@
     {
       "brief": "served/period-close-automation.md",
       "file": "ledger_reconciliation.md"
+    },
+    {
+      "brief": "served/shutdown-readiness-review.md",
+      "file": "turbine_balancing.md",
+      "over_cap": true,
+      "note": "the only brief here that clears the floor on more memories than TASK_MAX_HITS keeps \u2014 four eligible, three shown. `over_cap` makes the slice assert the cap's consequence through the eval path: the picks are capped, the count of what was dropped is right, and the truncation sentence is in the bytes the emission wrote. Without a case of this shape the truncation sentence was only inferred from production and the gate sharing a spelling."
     }
   ],
   "unserved": [
