@@ -9148,6 +9148,60 @@ def test_the_file_the_transaction_must_read_is_bounded_in_size(
         con.close()
 
 
+def test_a_memory_that_grows_past_the_cap_stops_answering_with_its_old_text(
+    corpus: Path,
+) -> None:
+    """The cap spared oversize files from being READ, and that spared them
+    from being SWEPT as well — so a memory that grew kept answering with its
+    pre-growth text, for good.
+
+    Reproduced: a memory indexed under `sprocket backlash gearbox` grows to
+    6.6 MB of `flange torque wrench`, and the next sync leaves both chunk rows
+    exactly as they were. Nothing ever reads that file again, so nothing ever
+    corrects them — the index holds a version of the memory that no longer
+    exists and answers queries for words the file no longer contains.
+
+    Sparing is right for a file this run could not read: the run knows nothing
+    new, and deleting on the strength of that would drop a memory sitting
+    right there. It is wrong for a file this run STAT'D and declined: the run
+    knows its size crossed a line, so it knows the stored rows are stale. The
+    rows go; the file stays out of the read set; `lex_oversize` says it
+    happened.
+    """
+    _many_memos(corpus, 2)
+    grower = corpus / "grow.md"
+    grower.write_text("# Grow\n\nsprocket backlash gearbox tuning\n")
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        hook._fts_sync(con, str(corpus))
+        assert hook._fts_search(con, "sprocket backlash gearbox tuning"), "not indexed"
+        stored = con.execute(
+            "SELECT count(*) FROM chunks WHERE path = ?", (str(grower),)
+        ).fetchone()[0]
+        assert stored, "the growth case needs rows to go stale"
+
+        grower.write_text("# Grow\n\n" + ("flange torque wrench calibration " * 200_000))
+        assert grower.stat().st_size > hook.INDEX_FILE_MAX_BYTES
+        for key in hook._LEX_COUNTS:
+            hook._LEX_COUNTS[key] = 0
+        hook._fts_sync(con, str(corpus))
+
+        assert hook._LEX_COUNTS["lex_oversize"] == 1, dict(hook._LEX_COUNTS)
+        left = con.execute(
+            "SELECT text FROM chunks WHERE path = ?", (str(grower),)
+        ).fetchall()
+        assert not left, left
+        # And the memories this run DID read are untouched: the sweep is
+        # narrowed to the path it knows about, not widened.
+        survivors = {
+            os.path.basename(row[0])
+            for row in con.execute("SELECT DISTINCT path FROM chunks")
+        }
+        assert survivors == {"m0000.md", "m0001.md"}, survivors
+    finally:
+        con.close()
+
+
 def test_a_store_of_nothing_but_oversized_files_says_so(corpus: Path) -> None:
     """An empty index answers "no hits", which the caller believes — so an
     index left empty by a rule of memkit's own has to raise rather than answer.

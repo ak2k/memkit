@@ -2387,9 +2387,9 @@ def _fts_sync(
     starts from there.
     """
     disk, spared, unwalked, oversize = _fts_scan(root)
-    # Spared, with the same guarantee every other spared path carries: it
-    # empties `sweep`, so a file this run declined to read cannot have its
-    # existing rows deleted on the strength of that refusal.
+    # Spared from being READ, with everything that carries: it stays out of
+    # `disk`, so no run stages it, opens a transaction for it, or pays for it.
+    # NOT spared from being SWEPT — see `sweep` below for the difference.
     spared |= oversize
     _LEX_COUNTS["lex_unwalked"] += len(unwalked)
     _LEX_COUNTS["lex_oversize"] += len(oversize)
@@ -2436,8 +2436,21 @@ def _fts_sync(
     # picture of the index but a worse one of the corpus: it names rows written
     # after this walk, for files that did exist, and "my walk never saw it" is
     # not evidence about a file that came into being after the walk.
-    sweep = {p: i for p, i in snapshot.items() if p not in disk and p not in spared}
-    if {p: i for p, i in snapshot.items() if p not in spared} != disk:
+    #
+    # `exempt` is the spared paths MINUS the oversize ones, and the difference
+    # is "I could not look" against "I looked and declined". A path spared
+    # because it could not be read, or because the budget ran out, is a path
+    # this run knows nothing new about, and deleting its rows on the strength
+    # of that would throw away a memory that is sitting right there. A path
+    # over the file cap is the opposite: the walk stat'd it, so this run knows
+    # its size crossed a line the index cannot follow it past, and the rows
+    # standing under it describe a version of the file that is gone. Sparing
+    # those too turned a temporary reprieve into permanent staleness — a
+    # memory that grew kept answering with its pre-growth text forever, with
+    # no path back, because nothing would ever read it again.
+    exempt = spared - oversize
+    sweep = {p: i for p, i in snapshot.items() if p not in disk and p not in exempt}
+    if {p: i for p, i in snapshot.items() if p not in exempt} != disk:
         con.execute("BEGIN IMMEDIATE")
         try:
             stored = _fts_identity(con)
