@@ -2022,13 +2022,16 @@ _LEX_SCORES: dict[str, float] = {}
 
 
 # MERGE SEAM. Track A's `_fts_scan` returns three values — identities, spared,
-# unwalked — and has no notion of a file too big to read. This one returns four
-# and `INDEX_FILE_MAX_BYTES` decides the fourth. A rebase that takes Track A's
-# three-tuple compiles, unpacks one value short at the single call site, and
-# loses the cap; `test_the_track_a_seam_keeps_the_shape_this_branch_needs`
-# fails on it rather than leaving it to a runtime unpack.
+# unwalked — takes no `deadline`, and has no notion of a file too big to read.
+# This one returns four, `INDEX_FILE_MAX_BYTES` decides the fourth, and the
+# deadline is what stops a slow store outliving the task path's whole budget.
+# A rebase that takes Track A's three-tuple compiles, unpacks one value short
+# at the single call site, and loses the cap; one that takes its signature
+# drops the deadline silently, since the argument is positional-with-default.
+# `test_the_track_a_seam_keeps_the_shape_this_branch_needs` fails on both
+# rather than leaving either to a runtime unpack or to nobody.
 def _fts_scan(
-    root: str,
+    root: str, deadline: float | None = None
 ) -> tuple[dict[str, tuple[int, int, int]], set[str], set[str], set[str]]:
     """Walk one corpus root: (stat-able identities, spared, unwalked, oversize).
 
@@ -2048,10 +2051,25 @@ def _fts_scan(
     or an open/close) only predicts what that read is about to report: it
     cannot change an outcome, and costs ~1.9 ms of a ~10 ms warm path.
 
-    `unwalked` is the directories the walk could not read. The walk is only
-    authoritative where it reached — an unreadable subtree is invisible, not
-    empty, and treating it as empty would sweep every memory in it out of
-    the index.
+    `unwalked` is the directories the walk could not read, AND the root when
+    the clock ran out mid-walk. The walk is only authoritative where it
+    reached — an unreadable subtree is invisible, not empty, and treating it
+    as empty would sweep every memory in it out of the index. A truncated walk
+    is the same statement about a different cause, which is why it reuses this
+    set rather than adding a fifth classification: an interrupted walk cannot
+    know WHICH paths it never reached, and `_fts_sync`'s answer to `unwalked`
+    — spare everything the snapshot holds and this walk did not see — is
+    exactly the guarantee it needs.
+
+    `deadline` bounds it, and this was the last stage of a cold sync with no
+    clock in it. On a local corpus the walk is a rounding error against the
+    transaction and the ratio case pins it there; on a store the OS is slow
+    about — a network mount, FUSE, a cold disk — it is not, and there the task
+    path exits with no `updatedInput` and no self-heal, which is the failure
+    the rest of this machinery exists to end. ONE DIRECTORY IS ALWAYS WALKED,
+    for the reason the staging loop always reads one file: a corpus that
+    exhausts the budget before its first directory would otherwise never index
+    anything at all, and a rate of one directory a run is a rate.
 
     `oversize` is the files past INDEX_FILE_MAX_BYTES. Decided HERE, from the
     stat this walk already does, because the point of the cap is that the
@@ -2074,7 +2092,16 @@ def _fts_scan(
         unwalked.add(exc.filename or root)
 
     root_real = os.path.realpath(root)
-    for dirpath, dirnames, filenames in os.walk(root, onerror=unreadable):
+    for seen, (dirpath, dirnames, filenames) in enumerate(
+        os.walk(root, onerror=unreadable)
+    ):
+        if seen and deadline is not None and time.monotonic() >= deadline:
+            # Not authoritative past here, and it cannot name what it missed —
+            # so it says so about the root and lets `_fts_sync` spare every
+            # indexed path this walk did not reach. The alternative is a walk
+            # that stopped early being read as a corpus that shrank.
+            unwalked.add(root)
+            break
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         for name in filenames:
             path = os.path.join(dirpath, name)
@@ -2347,7 +2374,7 @@ def _fts_sync(
     finish. Each run commits the slice it managed to read, and the next run
     starts from there.
     """
-    disk, spared, unwalked, oversize = _fts_scan(root)
+    disk, spared, unwalked, oversize = _fts_scan(root, deadline)
     # Spared from being READ, with everything that carries: it stays out of
     # `disk`, so no run stages it, opens a transaction for it, or pays for it.
     # NOT spared from being SWEPT — see `sweep` below for the difference.
@@ -3114,6 +3141,22 @@ def _state_name(key: str, prefix: str = "") -> str:
     directory — a harness-supplied id is not a name this may trust — and two
     copies of it drift in the direction where one of them stops bounding the
     length or stops dropping a separator.
+
+    THE STEM'S SHAPE IS A PUBLISHED INVARIANT, not an implementation detail,
+    because a SECOND PROCESS decides what to delete by matching it. Track A's
+    GC sweep collects a per-task ledger by its filename alone — the whole
+    point of `TASK_STATE_PREFIX` is that the predicate is a name and not a
+    parse — so a stem outside the shape it allows is a file nothing ever
+    collects, and those ledgers then accumulate for good. Stated so the other
+    side can be written against it:
+
+        every stem is `[A-Za-z0-9_-]{1,80}`, and the stem for a key whose
+        sanitized form exceeded 80 characters is exactly 71 of those
+        characters, one `-`, and 8 lowercase hex digits.
+
+    Changing either half is a coordinated change with whatever sweeps this
+    directory, and `test_the_task_ledger_stem_is_a_shape_track_as_sweep_can_collect`
+    is what stops it happening by accident.
     """
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)
     if len(safe) > 80:
@@ -3135,6 +3178,19 @@ def _session_state_path(session_id: str) -> str:
 # files written by an earlier experiment already sit in the author's cache,
 # and a collector that had to open one to recognise it would have to
 # understand a shape that predates this build.
+#
+# MERGE SEAM, and the one a rebase is most likely to miss because nothing
+# about it LOOKS changed. This constant, `TASK_OUTCOME_PREFIX` and
+# `_task_state_path`'s signature are all as Track A has them; what changed is
+# the STEM `_state_name` returns, which now carries a digest for a key over
+# eighty characters. The sweep that deletes these files lives on Track A and
+# decides by matching that stem, so a stem outside its allowlist is a ledger
+# nothing ever collects — accumulating forever, in exactly the class Track A's
+# own "a prefix is not ownership" comment was written to bound. The shape is
+# published in `_state_name`'s docstring and pinned by
+# `test_the_task_ledger_stem_is_a_shape_track_as_sweep_can_collect`; the
+# allowlist on the other side has to admit it, and no test on either side
+# covered this before.
 TASK_STATE_PREFIX = "t-"
 
 

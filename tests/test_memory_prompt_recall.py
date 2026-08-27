@@ -9365,6 +9365,68 @@ def test_a_sync_whose_budget_went_before_the_first_read_still_commits_one_file(
         con.close()
 
 
+def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
+    corpus: Path, monkeypatch
+) -> None:
+    """The last stage in the chain with no clock in it.
+
+    Every other stage of a cold sync is bounded — staging, the insert, the
+    sweep, the OR'd MATCH, the per-term walk — and `_fts_scan` ran to
+    completion before `_fts_sync` read the clock. On a local corpus that is a
+    rounding error and the ratio case beside this one pins it there. It is not
+    a rounding error on a store the operating system is slow about: a network
+    mount, a FUSE filesystem, a cold spinning disk. There the task path exits
+    with no `updatedInput` and no self-heal, which is the exact failure the
+    rest of this machinery exists to end.
+
+    Truncation reuses `unwalked` rather than inventing a classification. That
+    set already means "this walk is not authoritative here", and `_fts_sync`
+    already answers it by sparing everything the snapshot holds and the walk
+    did not see — which is precisely the guarantee an interrupted walk needs,
+    since it cannot know which paths it never reached.
+    """
+    # Across several directories, because one directory is always walked in
+    # full: a flat store can never be truncated, which is a property worth
+    # having and makes it the wrong shape to drive this with.
+    paths = [
+        _memo(
+            corpus,
+            f"d{i}/m{i}.md",
+            f"# Memo {i}\n\nsprocket backlash shim stack gearbox rebuild {i}.\n",
+        )
+        for i in range(6)
+    ]
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        hook._fts_sync(con, str(corpus))
+        before = hook._fts_identity(con)
+        assert len(before) == len(paths), (len(before), len(paths))
+    finally:
+        con.close()
+
+    disk, _spared, unwalked, _oversize = hook._fts_scan(
+        str(corpus), deadline=time.monotonic() - 1
+    )
+    # It made progress — one directory, always — and then stopped.
+    assert unwalked, "an expired deadline did not truncate the walk"
+
+    # And the truncated walk deletes nothing: every row it did not get to is
+    # spared, so a slow store loses no memories to a walk that ran out of time.
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        hook._fts_sync(con, str(corpus), deadline=time.monotonic() - 1)
+        after = hook._fts_identity(con)
+    finally:
+        con.close()
+    assert after == before, (len(after), len(before))
+
+    # Non-vacuity: with budget, the same walk sees the whole corpus.
+    full, _s, none_unwalked, _o = hook._fts_scan(
+        str(corpus), deadline=time.monotonic() + 3600
+    )
+    assert len(full) == len(paths) and not none_unwalked, (len(full), none_unwalked)
+
+
 def test_the_walk_is_not_where_a_cold_sync_spends_its_budget(
     corpus: Path,
 ) -> None:
@@ -9476,8 +9538,8 @@ def test_a_file_that_grows_past_the_cap_before_the_read_is_still_declined(
     grower.write_text("## G\nsprocket backlash gearbox\n")
     real_scan = hook._fts_scan
 
-    def scan_then_grow(root: str):
-        result = real_scan(root)
+    def scan_then_grow(root: str, deadline: float | None = None):
+        result = real_scan(root, deadline)
         grower.write_text("## G\nsprocket backlash gearbox\n" * 200_000)
         return result
 
@@ -10103,26 +10165,81 @@ def test_the_track_a_seam_keeps_the_shape_this_branch_needs() -> None:
     """The four functions this branch changed out from under Track A.
 
     Track A owns the same file and has its own version of each: `_fts_scan`
-    returns three values there and four here, and `_fts_sync`, `_fts_search`
-    and `_record_matched` take no `deadline` there and take one here. Every one
-    of those differences is load-bearing — the fourth value is the file cap's
-    accounting, and the deadline is the only thing bounding a cold build, an
-    OR'd MATCH over a 12 KB brief, and a per-term walk.
+    returns three values there and four here and takes no `deadline`, and
+    `_fts_sync`, `_fts_search` and `_record_matched` take no `deadline` there
+    and take one here. Every one of those differences is load-bearing — the
+    fourth value is the file cap's accounting, and the deadline is the only
+    thing bounding a cold build, an OR'd MATCH over a 12 KB brief, a per-term
+    walk, and the store walk that feeds all three.
 
     A rebase that takes Track A's side of any of them mostly still COMPILES.
-    Two of the three deadline arguments are keyword-with-default at every call
-    site, so they simply stop being passed, and the work goes back to being
-    unbounded with no test naming the loss. The disclosure lives in the report
-    and in a comment at each definition; this is the part of it that fails a
-    build.
+    Every deadline argument is keyword-with-default at every call site, so
+    they simply stop being passed, and the work goes back to being unbounded
+    with no test naming the loss. The disclosure lives in the report and in a
+    comment at each definition; this is the part of it that fails a build.
     """
     scan = inspect.signature(hook._fts_scan)
     assert str(scan.return_annotation).count("set[str]") == 3, scan
     assert "oversize" in inspect.getsource(hook._fts_scan), "the cap's accounting"
-    for name in ("_fts_sync", "_fts_search", "_record_matched"):
+    for name in ("_fts_scan", "_fts_sync", "_fts_search", "_record_matched"):
         params = inspect.signature(getattr(hook, name)).parameters
         assert "deadline" in params, (name, sorted(params))
         assert params["deadline"].default is None, (name, params["deadline"])
+
+
+def test_the_task_ledger_stem_is_a_shape_track_as_sweep_can_collect() -> None:
+    """THE MERGE ITEM NEITHER SIDE PINNED, and the one this round created.
+
+    `TASK_STATE_PREFIX`, `TASK_OUTCOME_PREFIX` and `_task_state_path`'s
+    SIGNATURE are all unchanged, which is what the seam was scoped as — but
+    the STEM the function RETURNS changed when a digest was appended to any
+    sanitized key over eighty characters. Track A's GC sweep is what deletes
+    stale per-task ledgers, and it only collects a file whose stem matches its
+    own allowlist. A stem it does not match is a file nothing ever collects,
+    so after a merge those ledgers accumulate forever — in exactly the class
+    Track A's own comment ("a prefix is not ownership") was written to bound.
+
+    So the shape is stated here as an invariant, in the form the other side
+    has to accept, rather than left as a fact about an implementation:
+
+      EVERY stem is `[A-Za-z0-9_-]{1,80}`, and a stem for a key whose
+      sanitized form exceeded eighty characters is exactly 71 of those
+      characters, one `-`, and 8 lowercase hex digits.
+
+    Track A widens its allowlist to match and pins it from its side. This is
+    the half that fails a build HERE if the shape drifts again.
+    """
+    shape = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+    digested = re.compile(r"^[A-Za-z0-9_-]{71}-[0-9a-f]{8}$")
+    cases = [
+        "toolu_01ABCDEFGHIJKLMNOP",
+        "toolu_" + "0" * 84,
+        "toolu-01ABCDEFGHIJKLMNOP",
+        "toolu_01ABCDEFGHIJKLM.NOP",
+        "../../etc/passwd",
+        "z" * 500,
+        "s" + json.loads('"\\ud800"') + "x" * 90,
+        "deadbeef",
+    ]
+    for key in cases:
+        for path in (hook._task_state_path(key), hook._session_state_path(key)):
+            name = Path(path).name
+            assert name.endswith(".json"), name
+            stem = name[: -len(".json")]
+            if stem.startswith(hook.TASK_STATE_PREFIX):
+                stem = stem[len(hook.TASK_STATE_PREFIX) :]
+            assert shape.match(stem), (key, stem)
+            # And the filename bound the prefix rule rests on.
+            assert len(name) < 100, name
+    # The digest branch's exact shape, which is the half a sibling regex has
+    # to be written against.
+    long_stem = Path(hook._task_state_path("toolu_" + "0" * 84)).name
+    long_stem = long_stem[len(hook.TASK_STATE_PREFIX) : -len(".json")]
+    assert digested.match(long_stem), long_stem
+    # Non-vacuity: a short key is NOT digested, so the branch is real.
+    assert Path(hook._task_state_path("toolu_abc")).name == (
+        f"{hook.TASK_STATE_PREFIX}toolu_abc.json"
+    )
 
 
 def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None:
