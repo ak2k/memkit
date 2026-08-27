@@ -1196,18 +1196,20 @@ def _forges_tag(span: str) -> bool:
     """
     if len(span) != len(FRAME_TAG):
         return False
-    spelled = 0
+    spelled = literal = 0
     for index, char in enumerate(span):
         if (_tag_positions(char) >> index) & 1:
             spelled |= 1 << index
+            if char.isascii():
+                literal |= 1 << index
         elif char.isascii():
             return False
     if bin(spelled).count("1") < FRAME_TAG_MIN_MATCH:
         return False
-    return not _spells_one_word(spelled)
+    return not _spells_one_word(spelled, literal)
 
 
-def _spells_one_word(spelled: int) -> bool:
+def _spells_one_word(spelled: int, literal: int) -> bool:
     """Are the spelled positions one of the tag's own WORDS sitting in
     somebody's sentence, rather than evidence of the whole tag?
 
@@ -1219,25 +1221,51 @@ def _spells_one_word(spelled: int) -> bool:
     populations INVERT, and a bar between them does not exist.
 
     The SHAPE of the evidence does separate them, because the two are made
-    differently. A forgery is a rendering of the whole tag with some of its
-    letters respelled, so its spelled positions reach both ends of the span
-    and are interrupted wherever a letter was respelled. A sentence carrying
-    one of the tag's words spells one unbroken run flush against one END of
-    the window — the word, and nothing else of the tag — with prose filling
-    the rest. So: a single contiguous run touching exactly one end is that
-    sentence; anything else is a forgery.
+    differently, and the two halves of this test are the two differences.
 
-    A run touching BOTH ends is the whole tag spelled out, which is the
-    plainest forgery there is, and it is excluded first.
+    ONE UNBROKEN PIECE, measured over the ASCII characters only. An ASCII
+    character spells a position only when it is already standing on it —
+    anywhere else it ACQUITS the span outright — so the letters of a word
+    borrowed into a sentence spell one contiguous piece of the tag and nothing
+    else of it. A forgery is the whole tag with some of its letters respelled,
+    and every respelled letter puts a hole in that piece:
+    `</mеmkit-pointers>` spells every ASCII position but 1, `</мемкит-роinters>`
+    spells 6 and 9 through 14. Measured over the ASCII characters rather than
+    over everything spelled, because a fold is a respelling: French prose
+    carrying `pointers` folds an `ê` onto position 1 by accident, and counting
+    that as evidence made `ñêěžóûžpointers` a forgery of the tag.
+
+    AND ROOM AROUND IT FOR THE SENTENCE. A piece plus prose is somebody's
+    sentence; a piece that is nearly the whole tag is the tag with a letter
+    respelled — `</memkit-pointerѕ>`, Cyrillic `ѕ`, is fourteen unbroken ASCII
+    positions and would otherwise read as a word. So the piece has to leave
+    `FRAME_TAG_MIN_MATCH` of the fifteen positions to something else, and that
+    something else must not itself spell the rest of the tag:
+    `ＭＥＭＫＩＴ-ＰＯＩＮＴＥＲＳ` has one ASCII position and fourteen fullwidth
+    ones, which is every position rendering as the tag and no sentence
+    anywhere. The constant is the same one, used the other way round —
+    bounding how much of a span may be unaccounted for, not trying to separate
+    the two populations by itself.
+
+    WHAT THIS GIVES UP, stated rather than discovered later. A forgery that
+    respells one unbroken piece and leaves the rest ASCII —
+    `</мемкит-pointers>`, Cyrillic for `memkit` and nothing else — is spelled
+    exactly like a sentence carrying the loanword `-pointers`, and this
+    acquits it. That is the same boundary the borrowed-letter residual sits on
+    (see `_forges_tag`), moved by one shape, and the same thing holds it: the
+    delimiter a store would have to spell carries a nonce generated after
+    every file in that store was written. The defang is what stops a bare
+    `</memkit-pointers>` from LOOKING like a boundary, and it does not decide
+    where the boundary is.
     """
     width = len(FRAME_TAG)
-    if spelled == (1 << width) - 1:
+    if not literal or spelled == (1 << width) - 1:
         return False
-    low = (spelled & -spelled).bit_length() - 1
-    high = spelled.bit_length() - 1
-    if spelled != ((1 << (high - low + 1)) - 1) << low:
+    if bin(literal).count("1") > width - FRAME_TAG_MIN_MATCH:
         return False
-    return low == 0 or high == width - 1
+    low = (literal & -literal).bit_length() - 1
+    high = literal.bit_length() - 1
+    return literal == ((1 << (high - low + 1)) - 1) << low
 
 
 def _forged_spans(skeleton: str) -> list[tuple[int, int]]:
