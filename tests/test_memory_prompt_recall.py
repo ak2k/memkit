@@ -9383,6 +9383,68 @@ def test_a_file_that_grows_past_the_cap_before_the_read_is_still_declined(
     assert hook._LEX_COUNTS["lex_oversize"] == 1, hook._LEX_COUNTS
 
 
+def test_a_symlink_out_of_the_store_is_refused_and_counted(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """A committed `*.md` symlink is a read of any file the user can read.
+
+    `os.stat` follows links and `os.walk`'s `followlinks=False` only stops
+    DIRECTORY recursion, so a link named `notes.md` under `search/` was
+    stat'd through, indexed, and rendered as an ordinary pointer — the
+    description and `[section: ...]` are the TARGET's text while the path
+    shown is the in-store one, so nothing in the transcript says it is a link.
+
+    The adversary is this project's stated one: somebody who can land a commit
+    in a shared store. What that buys them is no longer a human squinting at
+    an odd pointer, because the block now reaches an unattended subagent under
+    the frame's own `Open the ones whose matched terms are load-bearing`.
+    """
+    outside = tmp_path / "outside" / "private.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text(
+        "---\ndescription: SECRET deployment credentials for the bastion\n"
+        "type: reference\n---\n\n# Private\n\nsprocket backlash gearbox shim\n"
+    )
+    (corpus / "innocuous.md").symlink_to(outside)
+    hook._LEX_COUNTS["lex_outside"] = 0
+    disk, _spared, _unwalked, _oversize = hook._fts_scan(str(corpus))
+    assert str(corpus / "innocuous.md") not in disk, sorted(disk)
+    # COUNTED, not merely dropped: a memory that is not being consulted has to
+    # be visible as such, or its owner infers it from a file count one short.
+    assert hook._LEX_COUNTS["lex_outside"] == 1, hook._LEX_COUNTS
+    # And nothing the target holds reaches the index.
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        hook._fts_sync(con, str(corpus))
+        assert hook._fts_search(con, "sprocket backlash gearbox") == []
+    finally:
+        con.close()
+
+
+def test_the_symlinks_a_real_deployment_uses_still_index(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """Non-vacuity, and the reason the rule RESOLVES rather than rejecting.
+
+    Refusing `os.path.islink` outright would refuse the shape home-manager's
+    `mkOutOfStoreSymlink` deploys, which is how this repository's own personal
+    store is installed: the store ROOT is a link into a checkout, and every
+    file under it is reached through it. Containment is decided against the
+    root's own resolved path, so that store indexes exactly as before, and so
+    does a link from one memory to another inside the same corpus.
+    """
+    _memo(corpus, "real.md", "## R\nsprocket backlash gearbox shim stack\n")
+    (corpus / "alias.md").symlink_to(corpus / "real.md")
+    disk, _s, _u, _o = hook._fts_scan(str(corpus))
+    assert str(corpus / "alias.md") in disk, sorted(disk)
+
+    # The store root is itself a link, and its files are ordinary files.
+    linked_root = tmp_path / "linked-store"
+    linked_root.symlink_to(corpus)
+    disk2, _s, _u, _o = hook._fts_scan(str(linked_root))
+    assert str(linked_root / "real.md") in disk2, sorted(disk2)
+
+
 def test_one_match_cannot_outlive_the_budget_it_was_admitted_under(
     corpus: Path, monkeypatch
 ) -> None:

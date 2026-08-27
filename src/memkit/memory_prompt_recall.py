@@ -73,6 +73,7 @@ import re
 import secrets
 import signal
 import sqlite3
+import stat as statmod
 import subprocess
 import sys
 import tempfile
@@ -1357,21 +1358,73 @@ def _store_live_dir(cfg, store, searched: list) -> str | None:
     return _search_root(live) if os.path.isdir(live) else None
 
 
+def _inside(path: str, root_real: str) -> bool:
+    """Is `path` still under `root_real` once every link on it is resolved?
+
+    WHAT A `*.md` SYMLINK IS. `os.stat` follows links, and `os.walk`'s
+    `followlinks=False` only stops DIRECTORY recursion — a symlinked FILE is
+    an ordinary entry in `filenames`. So a link committed into a shared store
+    was stat'd through, indexed, and rendered as a pointer whose path is the
+    in-store name and whose description and `[section: ...]` are the target's
+    text: nothing in the transcript said it was a link. That is a read of any
+    file the store's readers can read, and the block now reaches an unattended
+    subagent under the frame's own "Open the ones whose matched terms are
+    load-bearing for the task".
+
+    RESOLVED RATHER THAN REFUSED, which is the whole design of this predicate.
+    Rejecting `os.path.islink` would also reject the shape home-manager's
+    `mkOutOfStoreSymlink` deploys — a store ROOT that is a link into a
+    checkout, with every file underneath reached through it — which is how
+    this project's own personal store is installed. Containment against the
+    root's OWN resolved path admits that and admits a link from one memory to
+    another inside the same corpus, while refusing the one thing the rule is
+    about: a path that leaves the tree its owner published.
+
+    Not a defence against a HARDLINK, and it cannot be: a hardlink to a file
+    outside the root is indistinguishable from a file inside it, by design and
+    at the inode level. It is not the same exposure — git cannot represent
+    one, so it does not survive the commit that is this attacker's whole
+    route.
+    """
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    return real == root_real or real.startswith(root_real + os.sep)
+
+
+def _link_inside(path: str, root_real: str) -> bool:
+    """`_inside`, paid for only when there is a link to resolve.
+
+    `os.walk` never descends into a symlinked DIRECTORY, so no file is reached
+    through a linked ancestor below the root; the root's own links are already
+    resolved into `root_real`. That leaves the leaf as the only place a link
+    can be, which is what makes one `lstat` enough to decide whether the
+    per-component resolution is worth paying for.
+    """
+    return not os.path.islink(path) or _inside(path, root_real)
+
+
 def _corpus_files(root: str) -> int:
     """How many files retrieval would consider under `root`.
 
-    Shares the RULES with the indexing walk — `EXCLUDE_DIRS` and
-    `EXCLUDE_BASENAMES` are the module's, not a second copy — and not the walk
-    itself: that one collects sizes and mtimes to decide what to reindex, and
-    this runs on a diagnostic whose contract is that it opens no index.
+    Shares the RULES with the indexing walk — `EXCLUDE_DIRS`,
+    `EXCLUDE_BASENAMES` and `_inside` are the module's, not a second copy —
+    and not the walk itself: that one collects sizes and mtimes to decide what
+    to reindex, and this runs on a diagnostic whose contract is that it opens
+    no index. A count that included the links retrieval refuses would tell a
+    store owner their corpus is bigger than the one being searched.
     """
     total = 0
-    for _dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+    root_real = os.path.realpath(root)
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         total += sum(
             1
             for name in filenames
-            if name.endswith(".md") and name not in EXCLUDE_BASENAMES
+            if name.endswith(".md")
+            and name not in EXCLUDE_BASENAMES
+            and _link_inside(os.path.join(dirpath, name), root_real)
         )
     return total
 
@@ -1861,6 +1914,13 @@ _LEX_COUNTS: dict[str, int] = {
     # is the same tolerance a spared path has; what it costs is that a mass
     # deletion takes more than one run to disappear from the index.
     "lex_unswept": 0,
+    # `*.md` symlinks whose target is outside the corpus root. Counted for the
+    # same reason `lex_oversize` is: the refusal is correct and it is also the
+    # only signal that a file a store owner can see in their tree is not being
+    # searched. Silence here would be indistinguishable from the link not
+    # existing — and a non-zero value is worth looking at, since nothing a
+    # normal store does produces one.
+    "lex_outside": 0,
 }
 
 # Where each hit came from INSIDE its file: path -> the heading of the
@@ -1927,6 +1987,13 @@ def _fts_scan(
     stat this walk already does, because the point of the cap is that the
     bytes are never read — a size checked after the open has already paid for
     what it was meant to refuse.
+
+    A `*.md` SYMLINK OUT OF THE ROOT IS NOT A FILE THIS WALK FOUND. See
+    `_inside` for what one is and why the rule resolves rather than refusing
+    links; the count goes straight into `_LEX_COUNTS` rather than into a fifth
+    return value, because this function's arity is a merge seam with Track A
+    and a refusal nobody has ever seen in a real store is not worth widening
+    it by.
     """
     disk: dict[str, tuple[int, int, int]] = {}
     spared: set[str] = set()
@@ -1936,6 +2003,7 @@ def _fts_scan(
     def unreadable(exc: OSError) -> None:
         unwalked.add(exc.filename or root)
 
+    root_real = os.path.realpath(root)
     for dirpath, dirnames, filenames in os.walk(root, onerror=unreadable):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         for name in filenames:
@@ -1943,12 +2011,36 @@ def _fts_scan(
             if not name.endswith(".md") or _excluded(path):
                 continue
             try:
-                st = os.stat(path)
+                # NOT following the link, which is what makes the containment
+                # test below reachable at all — and it costs nothing: for the
+                # entries this walk is actually made of, an lstat and a stat
+                # are the same syscall on the same inode.
+                st = os.stat(path, follow_symlinks=False)
             except FileNotFoundError:
                 continue  # vanished mid-walk; it simply stays unindexed
             except OSError:
                 spared.add(path)
                 continue
+            if statmod.S_ISLNK(st.st_mode):
+                if not _inside(path, root_real):
+                    # Neither indexed NOR spared. Spared means "this run could
+                    # not find out", and this run found out: a link leaving the
+                    # tree is not a memory this corpus published. Leaving it
+                    # out of `spared` is what lets `sweep` delete rows a
+                    # previous run indexed through it, so the leak does not
+                    # outlive the commit that removed it.
+                    _LEX_COUNTS["lex_outside"] += 1
+                    continue
+                try:
+                    # The TARGET's identity, since the target is what the
+                    # staging read will open. Only reached for a link that
+                    # already passed the containment test.
+                    st = os.stat(path)
+                except FileNotFoundError:
+                    continue  # a dangling link inside the store
+                except OSError:
+                    spared.add(path)
+                    continue
             if st.st_size > INDEX_FILE_MAX_BYTES:
                 oversize.add(path)
                 continue
