@@ -2058,6 +2058,38 @@ class GitRouteTableTest(unittest.TestCase):
             "-c", "safe.directory=/another",
         ], flags
 
+        # AND THAT THEY REACH A ROUTE. The reader answering is half of it; the
+        # repair is the values arriving on the invocation that would otherwise
+        # be refused.
+        seen: list = []
+        real = _exec.subprocess.run
+
+        def watched(argv, *a, **kw):
+            seen.append(list(argv))
+            return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
+
+        _exec._SAFE_DIRECTORIES.clear()
+        os.environ["HOME"] = str(home)
+        try:
+            # The reader runs for REAL and caches, then the route's own
+            # invocation is the one observed — patching first would make the
+            # read answer nothing and the assertion below vacuous.
+            assert _exec._safe_directory_flags(), "the reader answered nothing"
+            _exec.subprocess.run = watched
+            _exec.run_git(_exec.GitRoute.UNTRACKED, repo=str(root))
+        except _exec.Untrusted:
+            self.skipTest("no trusted git")
+        finally:
+            _exec.subprocess.run = real
+            _exec._SAFE_DIRECTORIES.clear()
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+        assert seen, "no route invocation was observed"
+        assert "safe.directory=/some/other/path" in seen[-1], seen[-1]
+        assert "safe.directory=/another" in seen[-1], seen[-1]
+
     def test_an_option_shaped_safe_directory_is_not_re_supplied(self) -> None:
         """A value beginning with `-` would be re-supplied as an option, not as
         a value: `-c safe.directory=--output=x` is one word, but a config that

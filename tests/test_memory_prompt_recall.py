@@ -4414,6 +4414,33 @@ def test_the_hook_path_refuses_a_process_start_rather_than_relying_on_nobody_ask
     assert "REFUSED=ProcessStartRefused" in out.stderr, out.stderr[-500:]
     assert "may not start a program" in out.stderr, out.stderr[-500:]
 
+    # THROUGH THE REAL ENTRY POINT, not through the installer by hand. The
+    # rule is only enforced if the file that the harness runs installs it, and
+    # a case that calls the installer itself would stay green with the call
+    # deleted from `cli()`. The hook runs first, then the driver asks for a
+    # program: the audit hook it installed is still there, because one cannot
+    # be removed.
+    driver = (
+        "import runpy, subprocess, sys, io\n"
+        "sys.stdin = io.StringIO('{\"session_id\": \"s-entry\", "
+        "\"prompt\": \"flange torque spec\"}')\n"
+        "try:\n"
+        f"    runpy.run_path({HOOK!r}, run_name='__main__')\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "try:\n"
+        "    subprocess.run(['/bin/echo', 'x'], capture_output=True)\n"
+        "except Exception as exc:\n"
+        "    sys.stderr.write('ENTRY=REFUSED:' + type(exc).__name__)\n"
+        "else:\n"
+        "    sys.stderr.write('ENTRY=RAN')\n"
+    )
+    entry = subprocess.run(
+        ["python3", "-c", driver],
+        capture_output=True, text=True, timeout=120, env=_unconfigured(tmp_path),
+    )
+    assert "ENTRY=REFUSED:ProcessStartRefused" in entry.stderr, entry.stderr[-600:]
+
     # And the shapes a static walk cannot resolve, which is the whole reason
     # this is a runtime rule. Each one is a call the AST guard reports as
     # unresolvable and therefore waves through.
@@ -4581,6 +4608,24 @@ def test_a_repository_may_not_choose_which_sessions_a_cwd_gated_store_serves(
     try:
         assert hook._cwd_in_root(str(root)) is False
     finally:
+        hook._cwd_in_root.cache_clear()
+
+    # A session whose own directory was removed underneath it is not inside
+    # anybody's root. That is an ANSWER, not a fallback: what hangs off it is
+    # whether a gated store's memories reach the prompt, and a gate that opens
+    # because nothing could be established is not a gate.
+    gone = home / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    hook._cwd_in_root.cache_clear()
+    try:
+        with pytest.raises(hook._RootUnknown):
+            hook._session_cwd()
+        assert hook._cwd_in_root(str(root)) is False
+        assert hook._cwd_in_root(str(home)) is False
+    finally:
+        os.chdir(str(home))
         hook._cwd_in_root.cache_clear()
 
 
@@ -8026,4 +8071,35 @@ def test_a_concurrent_hook_does_not_lose_the_other_ledger(tmp_path: Path) -> Non
     assert peer_path in after["spent"], sorted(after["spent"])
     # And the budget is not exceeded to accommodate the peer.
     assert len(after["spent"]) <= hook.POINTER_BUDGET, len(after["spent"])
+
+    # THE INTERLEAVE THIS IS ACTUALLY FOR, which two sequential runs cannot
+    # produce: a peer committing after this run's load and before its write.
+    # The runs above cover the whole path around it; this covers the merge,
+    # because a second run that loads the file finds the peer's entry there
+    # already and would keep it whether or not anything merged.
+    mine = {"/mine/a.md", "/mine/b.md"}
+    late = dict(json.loads(state.read_text(encoding="utf-8")))
+    late["shown"] = ["/late/peer.md"]
+    late["spent"] = {"/late/peer.md": 42.0}
+    state.write_text(json.dumps(late), encoding="utf-8")
+    merged_shown, merged_spent = hook._merged_ledger(
+        str(state), mine, {"/mine/a.md": 1.0}
+    )
+    assert "/late/peer.md" in merged_shown, merged_shown
+    assert set(mine) <= set(merged_shown), merged_shown
+    assert merged_spent["/late/peer.md"] == 42.0, merged_spent
+    assert merged_spent["/mine/a.md"] == 1.0, merged_spent
+
+    # This run's own evidence wins for a path both spent on, and the cap is
+    # not raised to fit a peer in.
+    state.write_text(
+        json.dumps({
+            "shown": [],
+            "spent": {f"/peer/{n}.md": 1.0 for n in range(hook.POINTER_BUDGET + 5)},
+        }),
+        encoding="utf-8",
+    )
+    _, capped = hook._merged_ledger(str(state), set(), {"/mine/a.md": 9.0})
+    assert len(capped) <= hook.POINTER_BUDGET, len(capped)
+    assert capped["/mine/a.md"] == 9.0, capped["/mine/a.md"]
 

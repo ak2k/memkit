@@ -476,6 +476,11 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     assert listed.returncode == 0, listed.stderr
     count = len(listed.stdout.split())
     assert f"**{count} files" in note, (count, "not the number the note states")
+    # ONCE. A second copy of the number is a second thing to keep in step, and
+    # the paragraph below the table says the two agree "by construction" — a
+    # claim a hard-coded repeat makes false the first time either moves.
+    stated = re.findall(r"\b(\d+) files\b", note)
+    assert stated == [str(count)], stated
     # Stated ONCE. Both stale figures the final review found were second copies
     # of the total — one in the `.git` row ("on top of the 57"), one closing the
     # reproduce recipe ("returns the same 57") — sitting far from the headline
@@ -1321,6 +1326,18 @@ def test_the_interpreter_the_hook_runs_is_never_found_by_searching(
     # to be read.
     steered = dict(env, MEMKIT_SYSTEM_PYTHONS=str(hostile))
     assert _decide(root, "memkit-hook", steered).interpreter == decided.interpreter
+
+    # And a pinned candidate that is a DIRECTORY is skipped, not exec'd.
+    # `[ -x ]` alone is true of one — the execute bit means "searchable" — and
+    # `exec` on it dies 126, which on UserPromptSubmit hands the user their
+    # prompt back. The list is a list of files.
+    a_directory = tmp_path / "libexec-bin"
+    a_directory.mkdir()
+    real = _shim(tmp_path / "real", "python3", "exit 0")
+    skipped = _decide(
+        _repinned(root, [a_directory, real]), "memkit-hook", shimmed()
+    )
+    assert skipped.interpreter == str(real), skipped.interpreter
 
 
 def test_a_recorded_interpreter_wins_over_the_path(root, tmp_path, shimmed) -> None:

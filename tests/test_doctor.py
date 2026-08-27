@@ -1673,6 +1673,13 @@ def test_no_environment_variable_contributes_a_word_to_the_checker_command(
         sys.executable,
         *_exec.CHECKER_TAIL,
     ]
+    # An unrecognised route is not a route. It fails AT THE ENUM BOUNDARY
+    # rather than falling through to an argv nobody wrote — a parse failure is
+    # an exception, never a default, which is what stops a string arriving
+    # from anywhere and being treated as one of the four.
+    for bad in ("python", "self", "uvx", None, 0):
+        with pytest.raises(_exec.Untrusted):
+            _exec.checker_argv(bad, sys.executable)  # type: ignore[arg-type]
 
 
 def test_a_recorded_interpreter_that_is_not_honoured_is_said_out_loud(

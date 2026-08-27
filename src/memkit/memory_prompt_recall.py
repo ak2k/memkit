@@ -3662,6 +3662,30 @@ def _load_session(path: str) -> tuple[set[str], dict[str, float | None]]:
     }
 
 
+def _merged_ledger(path: str, shown: set, ledger: dict) -> tuple:
+    """This run's ledger, merged over whatever is at `path` NOW.
+
+    A named function so the merge can be driven without racing two hooks: what
+    it is for cannot be produced by two sequential runs, because the second
+    loads the file at the top of its own run and would find the first's write
+    there already. The interleaving it answers is a peer committing AFTER this
+    run's load and BEFORE its write.
+
+    The dedup set is unioned — a path dropped out of it is offered a second
+    time and the session sees the same pointer twice. The budget takes this
+    run's own entries first and admits a peer's only up to the cap:
+    `setdefault`, because this run's evidence for a path it also spent on is
+    the newer measurement, and the cap may not grow to accommodate a peer.
+    """
+    peer_shown, peer_spent = _load_session(path)
+    merged = dict(ledger)
+    for peer_path, peer_evidence in peer_spent.items():
+        if len(merged) >= POINTER_BUDGET:
+            break
+        merged.setdefault(peer_path, peer_evidence)
+    return sorted(peer_shown | shown), merged
+
+
 def _replace(
     spent: dict[str, float | None], offered: list[tuple[str, list[str], int]]
 ) -> tuple[list[tuple[str, list[str], int]], dict[str, float | None], list[str]]:
@@ -4672,20 +4696,14 @@ def main() -> None:
                 # every-prompt path that can BLOCK is a worse trade than a rare
                 # lost update — the hook has fifteen seconds before the harness
                 # kills it, and nothing here is worth spending them on.
-                peer_shown, peer_spent = _load_session(state_path)
-                merged_spent = dict(ledger)
-                for peer_path, peer_evidence in peer_spent.items():
-                    if len(merged_spent) >= POINTER_BUDGET:
-                        break
-                    # `setdefault`: this run's own evidence for a path it also
-                    # spent on is the newer measurement, and the budget must
-                    # not grow past its cap to accommodate a peer.
-                    merged_spent.setdefault(peer_path, peer_evidence)
+                merged_shown, merged_spent = _merged_ledger(
+                    state_path, shown | set(fresh), ledger
+                )
                 try:
                     with open(tmp_path, "w", encoding="utf-8") as f:
                         json.dump(
                             {
-                                "shown": sorted(peer_shown | shown | set(fresh)),
+                                "shown": merged_shown,
                                 "spent": merged_spent,
                                 # Which registration wrote this. The next
                                 # process to read the file compares it against

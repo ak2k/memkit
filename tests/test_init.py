@@ -2093,8 +2093,31 @@ def test_the_checker_command_is_built_and_no_input_contributes_a_word(
     for name, value in (
         ("MEMKIT_CHECKER_ROUTE", "python"),
         ("MEMKIT_CHECKER_CMD", f"{hostile} -m memkit.memory_integrity"),
+        # The TAIL as well as the interpreter: a constant with a hole in it is
+        # an input under another name, and this is the spelling that would put
+        # one there.
+        ("MEMKIT_CHECKER_TAIL", "-c import os;os.system('x')"),
     ):
         monkeypatch.setenv(name, value)
+    # A CONSTANT WITH NO HOLE, asserted on the source. The value alone would
+    # not say it: a tail computed from the environment at import time reads
+    # back as its default in any process that did not set the variable, which
+    # is every process except the one the attack is in.
+    import ast
+
+    tree = ast.parse(pathlib.Path(_exec.__file__).read_text(encoding="utf-8"))
+    assigned = next(
+        node.value for node in tree.body
+        if isinstance(node, ast.Assign)
+        and getattr(node.targets[0], "id", "") == "CHECKER_TAIL"
+    )
+    assert isinstance(assigned, ast.Tuple), ast.dump(assigned)
+    assert [
+        e.value for e in assigned.elts if isinstance(e, ast.Constant)
+    ] == ["-m", "memkit.memory_integrity"], ast.dump(assigned)
+    assert _exec.CHECKER_TAIL == ("-m", "memkit.memory_integrity"), (
+        _exec.CHECKER_TAIL
+    )
 
     ran: list = []
     real = init.subprocess.run
@@ -2134,6 +2157,7 @@ def test_the_checker_command_is_built_and_no_input_contributes_a_word(
     assert not ran, ran
     assert code == 1
     assert "no checker route" in detail, detail
+
 
 
 def test_the_dry_run_runs_git_where_no_configuration_can_name_a_program(
