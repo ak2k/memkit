@@ -7426,7 +7426,7 @@ def test_the_preferred_cache_converges_at_the_same_rate_whatever_the_fallback_is
     monkeypatch.setattr(hook, "SWEEP_MAX_UNLINKS", 40)
     aged = time.time() - 30 * 86400
 
-    def one_run(label: str, fallback) -> tuple:
+    def one_run(label: str, fallback) -> int:
         state = tmp_path / f"state-{label}"
         state.mkdir()
         for index in range(60):
