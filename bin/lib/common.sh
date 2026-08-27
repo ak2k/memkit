@@ -512,10 +512,67 @@ memkit_python_meets_checker_floor() {
 #   none    neither. The operation that needs it refuses by name and writes
 #           nothing; a seeded memory with no ledger row is a broken store, so
 #           half-completing is worse than not starting.
+# The PATH entries no checkout can steer, as one PATH string.
+#
+# The shell spelling of `_trusted_path_entries` in cli_doctor's gate, and for
+# the same reason: an EMPTY entry is the current directory written the way
+# every shell reads it, a relative one is that under another name, and an
+# entry under the session directory or inside the plugin payload is one a
+# checkout chose. What runs after a lookup over those is a program a
+# repository supplied.
+#
+# NO REALPATH, because there is no external command to do it with and the
+# hook path may not fork one. So this compares the entries as written, which
+# is weaker than the python rule by exactly one case: an absolute entry
+# outside the session directory that is a LINK into it. The python side
+# refuses that when it re-resolves what this exports, which is where the
+# stronger rule can afford to live.
+memkit_trusted_path() {
+    _tp_out=""
+    _tp_pwd="$PWD/"
+    _tp_payload=${CLAUDE_PLUGIN_ROOT:-}
+    [ -n "$_tp_payload" ] && _tp_payload="$_tp_payload/"
+    _tp_rest=${PATH:-}
+    while [ -n "$_tp_rest" ]; do
+        case $_tp_rest in
+            *:*) _tp_entry=${_tp_rest%%:*} ; _tp_rest=${_tp_rest#*:} ;;
+            *) _tp_entry=$_tp_rest ; _tp_rest="" ;;
+        esac
+        # Absolute, which also drops the empty entry.
+        case $_tp_entry in /*) : ;; *) continue ;; esac
+        # A trailing slash on both sides, so this is a directory test and not
+        # a string one: `/repo` must not exclude `/repository/bin`. The
+        # prefixes are QUOTED inside the expansion, which is what makes them
+        # literal rather than glob patterns.
+        _tp_e="$_tp_entry/"
+        [ "${_tp_e#"$_tp_pwd"}" != "$_tp_e" ] && continue
+        if [ -n "$_tp_payload" ]; then
+            [ "${_tp_e#"$_tp_payload"}" != "$_tp_e" ] && continue
+        fi
+        if [ -z "$_tp_out" ]; then
+            _tp_out=$_tp_entry
+        else
+            _tp_out="$_tp_out:$_tp_entry"
+        fi
+    done
+    printf '%s\n' "$_tp_out"
+}
+
 memkit_resolve_checker() {
     _base=$1
     MEMKIT_CHECKER_ROUTE=none
     MEMKIT_CHECKER_CMD=""
+    # THE PROBE BELOW EXECUTES WHAT IT FINDS, so the lookup that finds it may
+    # not be one the session steers. Every candidate after `$_base` is a bare
+    # NAME resolved over PATH and then run, which is the whole of the route
+    # between a checkout exporting a `.direnv/bin` and a program of its choice
+    # running as the user — before any python-side gate exists to have an
+    # opinion. `$_base` is exempt by being an absolute path already: it is
+    # whatever `memkit_resolve_interpreter` settled, which is a separate
+    # decision documented where that function is.
+    _saved_path=$PATH
+    PATH=$(memkit_trusted_path)
+    export PATH
     # The already-resolved interpreter first: on a machine where it is new
     # enough, that is the whole probe and it costs one fork.
     for _cand in "$_base" python3.14 python3.13 python3.12 python3; do
@@ -531,6 +588,12 @@ memkit_resolve_checker() {
         MEMKIT_CHECKER_ROUTE=uvx
         MEMKIT_CHECKER_CMD="uvx --from $MEMKIT_UVX_SPEC memory-integrity"
     fi
+    # RESTORED, on every route out of the probe. The filter is this function's
+    # rule about what it may run, not a change to the environment the
+    # subcommand inherits — `memkit doctor` reports on the PATH the install
+    # really has.
+    PATH=$_saved_path
+    export PATH
     export MEMKIT_CHECKER_ROUTE MEMKIT_CHECKER_CMD
 }
 

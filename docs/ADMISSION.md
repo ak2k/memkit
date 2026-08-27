@@ -111,7 +111,13 @@ README's *Derived state* has the table.
   is ever found by a PATH lookup the session's own `PATH` could steer — so a
   checked-in `node_modules/.bin`, a direnv-exported venv or an empty `PATH`
   entry cannot supply the `claude`, the `git` or the `python3` it asks
-  questions of. A `memkitConfig` recorded by `.claude/settings.json` in the
+  questions of, and git runs with every configuration key that names a program
+  overridden, because a repository's own `.git/config` is a way to choose one
+  too. **One program is exempt, and it is the first one**: `bin/memkit` finds
+  the python that runs memkit with the shell's own lookup, since an install
+  whose only python3 is a project venv would otherwise not start at all. Every
+  program found after that point is resolved against the filtered entries.
+  A `memkitConfig` recorded by `.claude/settings.json` in the
   session's directory is reported and never followed, and `--config` naming a
   config no route on this install reads makes the hook probe report `UNKNOWN`
   rather than run: a config names the interpreter the wrapper execs, so
@@ -171,7 +177,7 @@ it.**
 So the payload is code you can read that acts on decisions you made elsewhere,
 within those two limits.
 The thing worth auditing before installing is not this tree's size; it is
-`bin/memkit-hook` and `bin/lib/common.sh`, which are **658 lines of POSIX
+`bin/memkit-hook` and `bin/lib/common.sh`, which are **721 lines of POSIX
 shell** between them — mostly comment — and run no command that is not a shell
 builtin.
 

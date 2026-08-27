@@ -4329,6 +4329,112 @@ def test_the_shell_and_the_python_expand_home_the_same_way(monkeypatch) -> None:
     assert expand_home("~root/x") == "~root/x"
 
 
+def test_the_checker_probe_never_executes_what_the_session_path_supplied(
+    tmp_path,
+) -> None:
+    """The probe runs each candidate to ask its version, so the lookup that
+    finds it is a lookup that executes it.
+
+    A checkout with a `.direnv/bin/python3.12` therefore got its own program
+    run as the user on every `memkit` invocation — `bin/memkit` calls
+    `memkit_resolve_checker` unconditionally, including for `doctor` and for
+    `init --dry-run`, the two commands the skills pre-approve.
+    """
+    session = tmp_path / "project"
+    (session / ".direnv" / "bin").mkdir(parents=True)
+    marker = tmp_path / "PWNED-probe.txt"
+    shim = session / ".direnv" / "bin" / "python3.12"
+    shim.write_text(f"#!/bin/sh\necho pwned >> {marker}\nexit 0\n", encoding="utf-8")
+    shim.chmod(0o755)
+    env = dict(
+        os.environ,
+        PATH=os.pathsep.join([str(shim.parent), "/usr/bin", "/bin"]),
+        PWD=str(session),
+    )
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+    out = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'. "{COMMON_SH}"\n'
+            "memkit_resolve_checker /usr/bin/false\n"
+            'printf "%s\\n" "$MEMKIT_CHECKER_CMD"\n'
+            'printf "%s\\n" "$PATH"\n',
+        ],
+        capture_output=True, text=True, timeout=120, check=True,
+        cwd=str(session), env=env,
+    )
+    command, path_after = out.stdout.splitlines()[:2]
+    assert not marker.exists(), marker.read_text()
+    assert str(shim) not in command, command
+    # And the filter is the probe's own rule, not a change to what the
+    # subcommand inherits: doctor reports on the PATH the install really has.
+    assert path_after == env["PATH"], (path_after, env["PATH"])
+
+
+def test_the_shell_and_the_python_agree_on_which_path_entries_are_trusted(
+    tmp_path, monkeypatch
+) -> None:
+    """The invariant is "no repository, session or environment-supplied input
+    may choose a program this code executes", and the shell is where the
+    checker probe traverses it.
+
+    `memkit_resolve_checker` resolves `python3.14/3.13/3.12/python3` with an
+    unfiltered `command -v` and then EXECUTES what it finds, to ask its
+    version — so on an unconfigured or sub-3.12 install a program the checkout
+    supplied had already run as the user before any python-side gate existed,
+    and its path was exported as `MEMKIT_CHECKER_CMD` for the confirm turn to
+    run again.
+
+    Differential over the PAIR, like the path-refusal and home-expansion
+    rules beside it: the same corpus through the real shell function and
+    through `_trusted_path_entries`, requiring the same answer. No symlinks in
+    it, because the shell has no `realpath` and no external command to borrow
+    one from — that one case is the documented difference, and the python side
+    re-resolves what the shell exports.
+    """
+    session = tmp_path / "project"
+    payload = tmp_path / "payload"
+    (session / "node_modules" / ".bin").mkdir(parents=True)
+    (payload / "bin").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    corpus = [
+        "",
+        ".",
+        "node_modules/.bin",
+        "../elsewhere",
+        str(session),
+        str(session / "node_modules" / ".bin"),
+        str(payload / "bin"),
+        str(payload),
+        str(tmp_path / "elsewhere"),
+        str(tmp_path) + "-not-a-prefix-of-the-session",
+        "/usr/bin",
+        "/bin",
+    ]
+    path_value = os.pathsep.join(corpus)
+    env = dict(
+        os.environ, PATH=path_value, CLAUDE_PLUGIN_ROOT=str(payload), PWD=str(session)
+    )
+    out = subprocess.run(
+        ["sh", "-c", f'. "{COMMON_SH}"\nmemkit_trusted_path\n'],
+        capture_output=True, text=True, timeout=120, check=True,
+        cwd=str(session), env=env,
+    )
+    theirs = out.stdout.strip()
+    monkeypatch.setenv("PATH", path_value)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload))
+    monkeypatch.chdir(session)
+    hook._cwd_in_root.cache_clear()
+    mine = os.pathsep.join(hook._trusted_path_entries())
+    assert theirs == mine, (theirs, mine)
+    # And it is not vacuous in either direction: something survives, and the
+    # entries a checkout can write do not.
+    assert "/usr/bin" in mine.split(os.pathsep), mine
+    assert str(session) not in mine, mine
+    assert str(payload / "bin") not in mine, mine
+
+
 def test_one_home_expansion_reaches_the_reader_the_commands_hand_paths_to(
     tmp_path, monkeypatch
 ) -> None:
