@@ -7216,6 +7216,94 @@ def test_the_task_state_path_is_the_one_both_units_have_to_agree_on(state):
     assert "/" not in os.path.basename(path)
 
 
+# The digested stem Track B's `_state_name` emits for a long `tool_use_id`,
+# written out rather than computed. A test that derived it from the same
+# function it is checking would agree with that function by construction —
+# which is exactly why the pin on the other side did not catch this seam.
+# Produced once by Track B's rule (71 sanitised characters, `-`, 8 lowercase
+# hex of sha256 over the whole key) for these two keys:
+#   "toolu_01" + "A" * 90
+#   "toolu_01-mixed_id-" + "z" * 80
+# The filler is deliberately NOT a hex character in either: an eight-run of
+# hex before that `-` would read as a session id to
+# `test_no_fixture_session_id_can_pass_for_a_real_one`, whose whole job is to
+# keep a fixture out of somebody's measured numbers.
+_DIGESTED = "toolu_01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-a2defde6"
+# The same shape with `-` and `_` surviving into the prefix, because the
+# sanitiser admits both and a class that forgot them would still pass on the
+# first literal.
+_DIGESTED_MIXED = "toolu_01-mixed_id-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-93b100aa"
+
+
+def test_the_task_allowlist_admits_every_stem_shape_memkit_writes() -> None:
+    """THE MERGE SEAM, asserted from the outside.
+
+    Three populations reach this predicate and all three are real: the
+    harness's `tool_use_id`, the eight-hex generation already in the author's
+    cache, and — after the merge with Track B — the digest-suffixed stem
+    `_state_name` emits for a key whose sanitised form ran past eighty
+    characters. A stem outside the allowlist is a ledger the sweep never
+    collects, accumulating for good in the directory this sweep exists to
+    bound, and nothing about `TASK_STATE_PREFIX` or `_task_state_path`'s
+    signature changes when that happens — which is why no seam check on
+    either side sees it.
+
+    Every literal here is written out. Track B's own pin asserts the emitted
+    stem against its own emitter, so it agrees with a drift rather than
+    catching one; this one cannot, because it never calls the emitter.
+    """
+    for stem in (
+        "toolu_013zc7VVZYu1RcH29DhM4MEJ",  # the harness's id
+        "02a50f4e",                        # the eight-hex generation
+        _DIGESTED,                         # Track B's digested stem
+        _DIGESTED_MIXED,
+    ):
+        assert hook._TASK_NAME.match(stem), stem
+    # Length is load-bearing in both directions: the digest rule is 71 + 1 + 8
+    # and nothing else, so a stem one character off on either side is not one
+    # memkit wrote.
+    assert len(_DIGESTED) == 80
+    assert len(_DIGESTED_MIXED) == 80
+    for stem in (
+        # 70 characters before the dash, and 72.
+        "toolu_01" + "A" * 62 + "-a2defde6",
+        "toolu_01" + "A" * 64 + "-a2defde6",
+        # The digest is lowercase hex; uppercase is a different alphabet.
+        "toolu_01" + "A" * 63 + "-A2DEFDE6",
+        # Seven digits, and nine.
+        "toolu_01" + "A" * 63 + "-a2defde",
+        "toolu_01" + "A" * 63 + "-a2defde67",
+        # A separator that is not the one the rule writes.
+        "toolu_01" + "A" * 63 + "_a2defde6",
+        # A character the sanitiser would have replaced, so a stem carrying it
+        # is not one that came through `_state_name` at all.
+        "toolu_01" + "A" * 62 + ".-a2defde6",
+        # And the adjacent shapes the predicate already had to refuse.
+        "notes",
+        "t1",
+        "2026-08",
+        "toolu_short",
+    ):
+        assert not hook._TASK_NAME.match(stem), stem
+
+
+def test_a_digest_suffixed_task_ledger_is_actually_collected(state) -> None:
+    """The allowlist through the sweep, because the regex is not the subject on
+    its own — `_collectible` is what decides an unlink, and it slices the stem
+    out of the filename before matching. A ledger of this shape that the sweep
+    leaves behind is the accumulation the whole pass exists to prevent."""
+    aged = _aged(state / f"{hook.TASK_STATE_PREFIX}{_DIGESTED}.json", days=30)
+    fresh = _aged(state / f"{hook.TASK_STATE_PREFIX}{_DIGESTED_MIXED}.json", days=1)
+    assert hook._collectible(str(state), aged.name, time.time()) == "task-state"
+    hook._sweep()
+    assert not aged.exists()
+    # Non-vacuity: it is the AGE that spared this one, not the name failing to
+    # match — otherwise this test passes just as well against an allowlist that
+    # admits nothing.
+    assert fresh.is_file()
+    assert hook._collectible(str(state), fresh.name, time.time()) == ""
+
+
 def test_the_sweep_respects_its_own_interval(state) -> None:
     """The hook runs on every prompt. A sweep with no interval is a directory
     walk on every prompt of every session."""

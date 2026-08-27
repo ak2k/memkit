@@ -2820,7 +2820,29 @@ _SESSION_NAME = re.compile(
 # the predicate is still filename plus mtime and never a parse. An id of some
 # FUTURE shape leaks rather than being collected: this tuple is what a naming
 # change extends, the way `_FTS_LEGACY_PREFIXES` is.
-_TASK_NAME = re.compile(r"^(?:toolu_[A-Za-z0-9]{16,}|[0-9a-f]{8})$")
+#
+# MERGE SEAM with `_state_name`, and the third alternative is the whole of it.
+# Nothing on the WRITING side looks changed — `TASK_STATE_PREFIX`,
+# `TASK_OUTCOME_PREFIX` and `_task_state_path`'s signature are all as this
+# branch has always had them — but the STEM that side returns now carries a
+# digest for a key whose sanitised form ran past eighty characters: exactly 71
+# characters of `[A-Za-z0-9_-]`, one `-`, and 8 lowercase hex of a sha256 over
+# the whole key. That stem matches neither of the first two alternatives (the
+# literal `-` at position 71 ends the `toolu_` run), so an allowlist without
+# the third leaves every long-id ledger uncollected — accumulating for good,
+# in precisely the class the comment above bounds. The cost of the widening is
+# that an adopter's own file named in that exact eighty-character shape is now
+# collectible; the cost of omitting it is a directory this sweep no longer
+# bounds, which is the failure the sweep exists to prevent.
+#
+# Pinned from the outside by
+# `test_the_task_allowlist_admits_every_stem_shape_memkit_writes`, which
+# writes its literals out rather than deriving them from the emitter — the
+# pin on the writing side asserts that emitter against itself, so it agrees
+# with a drift instead of catching one.
+_TASK_NAME = re.compile(
+    r"^(?:toolu_[A-Za-z0-9]{16,}|[0-9a-f]{8}|[A-Za-z0-9_-]{71}-[0-9a-f]{8})$"
+)
 
 _FTS_PREFIX = "fts5-"
 # Index name generations this build no longer writes. The author's cache holds
