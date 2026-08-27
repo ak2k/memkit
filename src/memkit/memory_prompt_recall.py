@@ -1363,9 +1363,14 @@ def sanitize(text: str) -> str:
 # emission echoes the whole brief back and the brief is the bulk — there is
 # nothing in it this hook may drop to make room.
 #
-# Conservative rather than exact: the real capacity measured on this platform
-# is 65536 bytes, and the floor is what POSIX guarantees. The margin is the
-# point — the failure it prevents is a hook that cannot be killed.
+# Conservative rather than exact, and EMPIRICAL rather than standard-backed.
+# The pipe capacity measured on Linux and macOS defaults is 65536 bytes and
+# 16384 sits well under it. POSIX guarantees no minimum pipe CAPACITY at all:
+# `PIPE_BUF` (512 on Darwin, 4096 on Linux) bounds write ATOMICITY, which is a
+# different property than the one this constant needs. Said plainly because
+# "what POSIX guarantees" reads as a hard floor somebody may later rely on.
+# The margin is the point — the failure it prevents is a hook that cannot be
+# killed.
 PIPE_BUFFER_BOUND = 16384
 
 # Ledgers, sub-indexes, and dead memories must not surface as pointers.
@@ -4393,6 +4398,26 @@ def _write_out(text: str) -> None:
     buffer.flush()
 
 
+def _stderr_bytes(text: str) -> None:
+    """Diagnostics, emitted as bytes for the reason `_write_out` is.
+
+    Whatever `sys.stderr` was configured to encode with is the environment's
+    choice; a path the filesystem holds as undecodable bytes is not something
+    that choice can express, and the raise lands wherever the message was
+    being written — which for the `--search` tail is inside the handler that
+    exists to convert a failure into an exit code.
+    """
+    buffer = getattr(sys.stderr, "buffer", None)
+    if buffer is None:
+        with contextlib.suppress(Exception):
+            sys.stderr.write(text)
+        return
+    with contextlib.suppress(Exception):
+        sys.stderr.flush()
+        buffer.write(_utf8(text))
+        buffer.flush()
+
+
 @contextlib.contextmanager
 def _sigterm_masked():
     """Hold SIGTERM for the duration of a block, then let it through.
@@ -6309,7 +6334,15 @@ def cli() -> None:
             # Never exit EXIT_NO_MATCH or EXIT_INERT on a failure: both codes
             # are spoken for, and an agent reading either as "there is no such
             # memory" or "nothing is set up here" would stop looking.
-            print(f"{_self_name()}: {exc}", file=sys.stderr)
+            #
+            # The message is written as BYTES this handler encodes itself. The
+            # text of an exception here routinely carries outside-origin text —
+            # a store root or a config path the filesystem holds as undecodable
+            # bytes — and `print` to a text stream would encode it a second
+            # time, strictly, RAISING FROM INSIDE the handler whose whole job
+            # is to turn a failure into EXIT_ERROR. The exit code is the thing
+            # being protected, so nothing in here may be able to raise.
+            _stderr_bytes(f"{_self_name()}: {exc}\n")
             sys.exit(EXIT_ERROR)
     # Fail-open: no output, exit 0 — never block the prompt.
     with contextlib.suppress(Exception):
