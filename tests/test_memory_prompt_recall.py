@@ -9746,6 +9746,127 @@ def test_the_symlinks_a_real_deployment_uses_still_index(
     assert str(linked_root / "real.md") in disk2, sorted(disk2)
 
 
+def _link_out(corpus: Path, tmp_path: Path) -> Path:
+    """An indexed memory replaced, after indexing, by a link out of the store.
+
+    The two states this drives are the two the module documents as normal: a
+    walk that could not finish (`_fts_sync` spares every row it could not
+    account for) and an index one sweep behind. In both the refused link is
+    still a live index row, which is what makes the read the place the rule
+    has to hold.
+    """
+    outside = tmp_path / "outside" / "private.md"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text(
+        "---\ndescription: SECRETLEAK bastion credentials hunter2\n"
+        "type: reference\n---\n\n# Private\n\nsprocket backlash gearbox shim\n"
+    )
+    (corpus / "innocuous.md").write_text(
+        "---\nname: innocuous\ndescription: an ordinary memory\n"
+        "type: reference\n---\n\nsprocket backlash gearbox shim stack\n"
+    )
+    (corpus / "other.md").write_text(
+        "---\nname: other\ndescription: another ordinary memory\n"
+        "type: reference\n---\n\nsprocket backlash chain tension gearbox shim\n"
+    )
+    hook._fts_dir("sprocket backlash gearbox shim stack", str(corpus))
+    (corpus / "innocuous.md").unlink()
+    (corpus / "innocuous.md").symlink_to(outside)
+    return outside
+
+
+def test_a_link_flipped_in_after_indexing_is_refused_where_the_file_is_read(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The walk's refusal is not the boundary; the read is.
+
+    Containment used to be decided in exactly one place, the indexing walk, and
+    nothing on the path that OPENS a file re-decided it. That holds only while
+    the index agrees with the walk, and this module documents two states where
+    it does not: an incomplete walk spares every row it could not account for,
+    and a sync that loses the write-lock race is skipped with the query run
+    anyway. In either state the row the walk just refused is still live, and
+    retrieval read through it — delivering the TARGET's `description:` on a
+    pointer line carrying the IN-STORE path, with nothing saying it is a link.
+    """
+    _link_out(corpus, tmp_path)
+    # One unreadable subdirectory is all it takes: the walk cannot finish, so
+    # the sync spares the stale row instead of sweeping it.
+    unreadable = corpus / "shut"
+    unreadable.mkdir()
+    (unreadable / "x.md").write_text("nothing\n")
+    os.chmod(unreadable, 0o000)
+    hook._LEX_COUNTS["lex_outside"] = 0
+    try:
+        hits = hook._fts_dir("sprocket backlash gearbox shim stack", str(corpus))
+    finally:
+        os.chmod(unreadable, 0o755)
+    names = sorted(os.path.basename(h) for h in hits)
+    assert "innocuous.md" not in names, names
+    # Non-vacuity: the store still answers with the file that IS a memory, so
+    # the refusal is the link's and not the query's.
+    assert "other.md" in names, names
+    assert hook._LEX_COUNTS["lex_outside"] >= 1, hook._LEX_COUNTS
+
+
+def test_no_pointer_carries_text_read_from_outside_the_store(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The delivered line is what the subagent acts on, so it is what this
+    asserts on — not the return value of the stage that produced it."""
+    _link_out(corpus, tmp_path)
+    unreadable = corpus / "shut"
+    unreadable.mkdir()
+    (unreadable / "x.md").write_text("nothing\n")
+    os.chmod(unreadable, 0o000)
+    terms = ["sprocket", "backlash", "gearbox", "shim", "stack"]
+    try:
+        hits = hook.recall(" ".join(terms), dirs=[str(corpus)])
+    finally:
+        os.chmod(unreadable, 0o755)
+    kept, _floored = hook._eligible(hits, terms)
+    lines = [hook._pointer_line(p, m, t) for p, m, t in kept]
+    assert not any("SECRETLEAK" in ln for ln in lines), lines
+    assert not any("innocuous.md" in ln for ln in lines), lines
+    assert lines, "nothing was delivered at all, so this asserts nothing"
+
+
+def test_every_read_of_a_store_file_decides_containment_for_itself(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The class, not the instance: each function that OPENS a store file
+    refuses the link on its own, handed one directly.
+
+    A filter in front of them is a fourth place the rule could be enforced and
+    a fourth place a future path could route around. These three are where the
+    bytes are actually read, so this is where the answer has to be the same
+    whatever admitted the path.
+    """
+    outside = _link_out(corpus, tmp_path)
+    link = str(corpus / "innocuous.md")
+    root_real = os.path.realpath(str(corpus))
+    terms = ["sprocket", "backlash"]
+    hook._LEX_MATCHED[link] = list(terms)
+
+    assert hook._description(link, root_real) == ""
+    assert hook._relevance(terms, link, root_real) == ([], len(terms), "?")
+    with pytest.raises(hook._OutsideStore):
+        hook._read_capped(link, root_real)
+
+    # Non-vacuity, and the reason the rule resolves rather than refusing every
+    # link: the same three reads answer for a link that stays inside the store.
+    inside = corpus / "alias.md"
+    inside.symlink_to(corpus / "other.md")
+    hook._LEX_MATCHED[str(inside)] = list(terms)
+    assert hook._description(str(inside), root_real) == "another ordinary memory"
+    assert hook._relevance(terms, str(inside), root_real)[0] == terms
+    assert hook._read_capped(str(inside), root_real)
+
+    # And the target itself is readable, so the refusals above are the rule's
+    # and not the filesystem's.
+    assert outside.read_text().count("SECRETLEAK") == 1
+
+
 def test_one_match_cannot_outlive_the_budget_it_was_admitted_under(
     corpus: Path, monkeypatch
 ) -> None:
@@ -10093,7 +10214,13 @@ def test_the_deadline_reaches_every_stage_it_is_supposed_to_bound() -> None:
         n.name: n for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef)
     }
-    for name in ("_fts_dir", "_fts_sync", "_fts_search", "_record_matched"):
+    for name in (
+        "_fts_scan",
+        "_fts_dir",
+        "_fts_sync",
+        "_fts_search",
+        "_record_matched",
+    ):
         args = [a.arg for a in fns[name].args.args]
         assert "deadline" in args, (name, args)
 
@@ -10108,13 +10235,16 @@ def test_the_deadline_reaches_every_stage_it_is_supposed_to_bound() -> None:
 
     # Positionally forwarded rather than defaulted, at every link.
     assert forwarded("_fts_dir", "_fts_sync") == ["con", "d", "deadline"]
-    assert forwarded("_fts_dir", "_fts_search") == ["con", "query", "deadline"]
+    assert forwarded("_fts_sync", "_fts_scan") == ["root", "deadline"]
+    assert forwarded("_fts_dir", "_fts_search") == [
+        "con", "query", "deadline", "root_real",
+    ]
     assert forwarded("_fts_search", "_record_matched") == [
         "con", "terms", "ranked", "deadline",
     ]
     # And both halves actually READ it: a parameter accepted and ignored is
     # the same defect wearing the signature this test was written to check.
-    for name in ("_fts_sync", "_fts_search", "_record_matched"):
+    for name in ("_fts_scan", "_fts_sync", "_fts_search", "_record_matched"):
         reads = [
             n for n in ast.walk(fns[name])
             if isinstance(n, ast.Name) and n.id == "deadline"

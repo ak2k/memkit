@@ -337,7 +337,7 @@ def pointers(hook, prompt: str, hits: list[str]) -> tuple[list[str], list[str]]:
     passed = [
         pathlib.Path(h).name
         for h in hits
-        if hook._passes_floor(*hook._relevance(terms, h))
+        if hook._passes_floor(*hook._relevance(terms, h, hook._LEX_ROOT.get(h, "")))
     ]
     return passed, passed[: hook.MAX_HITS]
 

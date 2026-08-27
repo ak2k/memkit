@@ -688,10 +688,9 @@ def test_an_index_that_cannot_answer_is_not_scored_as_a_retrieval_miss(
     """
     src = _copy_hook(
         tmp_path,
-        '    if not os.path.isdir(d):\n        return []\n    db = _fts_db(d)',
-        '    if not os.path.isdir(d):\n        return []\n'
+        '    db = _fts_db(d)\n    _fts_note_root(db, d)',
         '    raise sqlite3.OperationalError("database is locked")\n'
-        '    db = _fts_db(d)',
+        '    db = _fts_db(d)\n    _fts_note_root(db, d)',
     )
     out = _eval(corpus, "--hook", str(src))
     assert out.returncode != 0, out.stdout
@@ -728,10 +727,9 @@ def test_an_index_that_cannot_answer_is_not_scored_as_a_quiet_brief(
     assert unserved, "the fixture corpus must carry negative cases"
     src = _copy_hook(
         tmp_path,
-        '    if not os.path.isdir(d):\n        return []\n    db = _fts_db(d)',
-        '    if not os.path.isdir(d):\n        return []\n'
+        '    db = _fts_db(d)\n    _fts_note_root(db, d)',
         '    raise sqlite3.OperationalError("database is locked")\n'
-        '    db = _fts_db(d)',
+        '    db = _fts_db(d)\n    _fts_note_root(db, d)',
     )
     out = _eval(corpus, "--hook", str(src))
     assert out.returncode != 0, out.stdout

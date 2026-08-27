@@ -1428,8 +1428,27 @@ def _store_live_dir(cfg, store, searched: list) -> str | None:
     return _search_root(live) if os.path.isdir(live) else None
 
 
-def _inside(path: str, root_real: str) -> bool:
-    """Is `path` still under `root_real` once every link on it is resolved?
+class _OutsideStore(Exception):
+    """A store file whose bytes are not this store's to hand out.
+
+    An exception rather than a falsy return because every reader here already
+    has a return value meaning something else — `None` is PAST THE CAP, `""`
+    is NO DESCRIPTION — and a refusal that arrives spelled as one of those is
+    classified as the wrong thing by a caller that is otherwise correct.
+    """
+
+
+def _store_path(
+    path: str, root_real: str, st: os.stat_result | None = None
+) -> str | None:
+    """The path to OPEN for `path`, or None if this store did not publish it.
+
+    THE containment decision, and the only one. It returns a path rather than
+    a bool so that the caller reads the object this resolved instead of
+    re-resolving the name for itself: deciding on one resolution and reading
+    on another is how the rule came to hold at the indexing walk and nowhere
+    else. Callers pass the `lstat` they already have when they have one, so
+    the walk pays no syscall for asking.
 
     WHAT A `*.md` SYMLINK IS. `os.stat` follows links, and `os.walk`'s
     `followlinks=False` only stops DIRECTORY recursion — a symlinked FILE is
@@ -1441,6 +1460,14 @@ def _inside(path: str, root_real: str) -> bool:
     subagent under the frame's own "Open the ones whose matched terms are
     load-bearing for the task".
 
+    ENFORCED WHERE THE FILE IS OPENED, not where it was found. The index is
+    allowed to disagree with the disk — an incomplete walk spares every row it
+    could not account for, and a sync that loses the write-lock race is skipped
+    with the query run anyway, both documented as normal here — so a row the
+    walk refused can still be live when retrieval reads it. Every read site
+    therefore asks this for itself, and a filter in front of them is an
+    optimisation rather than the boundary.
+
     RESOLVED RATHER THAN REFUSED, which is the whole design of this predicate.
     Rejecting `os.path.islink` would also reject the shape home-manager's
     `mkOutOfStoreSymlink` deploys — a store ROOT that is a link into a
@@ -1450,36 +1477,43 @@ def _inside(path: str, root_real: str) -> bool:
     another inside the same corpus, while refusing the one thing the rule is
     about: a path that leaves the tree its owner published.
 
+    NO ROOT IS A REFUSAL, for a link. A caller that cannot say which store a
+    file belongs to has not established containment, and this fails toward the
+    answer that loses a pointer rather than the one that publishes a file. An
+    ordinary file needs no root: it is not a link, so there is nothing it can
+    be a link out of.
+
     Not a defence against a HARDLINK, and it cannot be: a hardlink to a file
     outside the root is indistinguishable from a file inside it, by design and
     at the inode level. It is not the same exposure — git cannot represent
     one, so it does not survive the commit that is this attacker's whole
     route.
+
+    Nor against an ancestor DIRECTORY replaced by a link after the walk passed
+    through it. `os.walk` never descends into a symlinked directory, so no
+    such path is ever found; one already in the index resolves through the new
+    ancestor and this returns it. Closing that needs the walk to carry
+    directory handles, which is a different design than a leaf rule.
     """
+    is_link = statmod.S_ISLNK(st.st_mode) if st is not None else os.path.islink(path)
+    if not is_link:
+        return path
+    if not root_real:
+        return None
     try:
         real = os.path.realpath(path)
     except OSError:
-        return False
-    return real == root_real or real.startswith(root_real + os.sep)
-
-
-def _link_inside(path: str, root_real: str) -> bool:
-    """`_inside`, paid for only when there is a link to resolve.
-
-    `os.walk` never descends into a symlinked DIRECTORY, so no file is reached
-    through a linked ancestor below the root; the root's own links are already
-    resolved into `root_real`. That leaves the leaf as the only place a link
-    can be, which is what makes one `lstat` enough to decide whether the
-    per-component resolution is worth paying for.
-    """
-    return not os.path.islink(path) or _inside(path, root_real)
+        return None
+    if real == root_real or real.startswith(root_real + os.sep):
+        return real
+    return None
 
 
 def _corpus_files(root: str) -> int:
     """How many files retrieval would consider under `root`.
 
     Shares the RULES with the indexing walk — `EXCLUDE_DIRS`,
-    `EXCLUDE_BASENAMES` and `_inside` are the module's, not a second copy —
+    `EXCLUDE_BASENAMES` and `_store_path` are the module's, not a second copy —
     and not the walk itself: that one collects sizes and mtimes to decide what
     to reindex, and this runs on a diagnostic whose contract is that it opens
     no index. A count that included the links retrieval refuses would tell a
@@ -1494,7 +1528,7 @@ def _corpus_files(root: str) -> int:
             for name in filenames
             if name.endswith(".md")
             and name not in EXCLUDE_BASENAMES
-            and _link_inside(os.path.join(dirpath, name), root_real)
+            and _store_path(os.path.join(dirpath, name), root_real) is not None
         )
     return total
 
@@ -2007,6 +2041,13 @@ _LEX_SECTIONS: dict[str, str] = {}
 # path missing from here has no evidence and the floor drops it.
 _LEX_MATCHED: dict[str, list[str]] = {}
 
+# Which store root each hit was found under: path -> that root's resolved
+# path. Travels beside the hits for the reason above, and it is what lets the
+# reads that render a pointer decide containment for themselves rather than
+# trusting whatever filter admitted the path. A path missing from here has no
+# store, and `_store_path` refuses a link on those terms.
+_LEX_ROOT: dict[str, str] = {}
+
 # What the ranker actually scored each hit: path -> rank/best_rank, the same
 # top-normalized number FLOOR_LEX is compared against, so 1.0 is that dir's
 # best chunk and FLOOR_LEX is the weakest thing kept. Logged, never acted on.
@@ -2077,11 +2118,12 @@ def _fts_scan(
     what it was meant to refuse.
 
     A `*.md` SYMLINK OUT OF THE ROOT IS NOT A FILE THIS WALK FOUND. See
-    `_inside` for what one is and why the rule resolves rather than refusing
-    links; the count goes straight into `_LEX_COUNTS` rather than into a fifth
-    return value, because this function's arity is a merge seam with Track A
-    and a refusal nobody has ever seen in a real store is not worth widening
-    it by.
+    `_store_path` for what one is and why the rule resolves rather than
+    refusing links; the count goes straight into `_LEX_COUNTS` rather than into
+    a fifth return value, because this function's arity is a merge seam with
+    Track A and a refusal nobody has ever seen in a real store is not worth
+    widening it by. The walk is not where the rule holds, only the first place
+    it is asked — every read asks it again.
     """
     disk: dict[str, tuple[int, int, int]] = {}
     spared: set[str] = set()
@@ -2120,21 +2162,22 @@ def _fts_scan(
                 continue
             # `statmod`, because `stat` is the obvious name for a local
             # holding an `os.stat` result and one of those is right here.
-            if statmod.S_ISLNK(st.st_mode):
-                if not _inside(path, root_real):
-                    # Neither indexed NOR spared. Spared means "this run could
-                    # not find out", and this run found out: a link leaving the
-                    # tree is not a memory this corpus published. Leaving it
-                    # out of `spared` is what lets `sweep` delete rows a
-                    # previous run indexed through it, so the leak does not
-                    # outlive the commit that removed it.
-                    _LEX_COUNTS["lex_outside"] += 1
-                    continue
+            target = _store_path(path, root_real, st)
+            if target is None:
+                # Neither indexed NOR spared. Spared means "this run could not
+                # find out", and this run found out: a link leaving the tree is
+                # not a memory this corpus published. Leaving it out of
+                # `spared` is what lets `sweep` delete rows a previous run
+                # indexed through it, so the leak does not outlive the commit
+                # that removed it.
+                _LEX_COUNTS["lex_outside"] += 1
+                continue
+            if target != path:
                 try:
                     # The TARGET's identity, since the target is what the
                     # staging read will open. Only reached for a link that
                     # already passed the containment test.
-                    st = os.stat(path)
+                    st = os.stat(target)
                 except FileNotFoundError:
                     continue  # a dangling link inside the store
                 except OSError:
@@ -2147,8 +2190,16 @@ def _fts_scan(
     return disk, spared, unwalked, oversize
 
 
-def _read_capped(path: str) -> str | None:
+def _read_capped(path: str, root_real: str = "") -> str | None:
     """The file's text, or None if it is past `INDEX_FILE_MAX_BYTES`.
+
+    Raises `_OutsideStore` for a path this store did not publish. The walk
+    decided that once already, and this decides it again because the walk's
+    answer is about the instant it was taken: the staging loop reads minutes
+    of wall clock later, and a link swapped in between the two would otherwise
+    be indexed from the target's bytes. `root_real` defaults to empty so a
+    caller with no store in hand still refuses a link and still reads an
+    ordinary file, which is the fail-closed direction.
 
     The walk's stat cannot be the cap's only reading. Stores are written by
     editors and by other sessions, so a file that was under the cap when it
@@ -2176,7 +2227,10 @@ def _read_capped(path: str) -> str | None:
     Universal newlines by hand, because binary mode does not do it and both
     `_md_sections` and the `[section: ...]` label read what this returns.
     """
-    with open(path, "rb") as f:
+    target = _store_path(path, root_real)
+    if target is None:
+        raise _OutsideStore(path)
+    with open(target, "rb") as f:
         raw = f.read(INDEX_FILE_MAX_BYTES + 1)
     if len(raw) > INDEX_FILE_MAX_BYTES:
         return None
@@ -2376,6 +2430,7 @@ def _fts_sync(
     finish. Each run commits the slice it managed to read, and the next run
     starts from there.
     """
+    root_real = os.path.realpath(root)
     disk, spared, unwalked, oversize = _fts_scan(root, deadline)
     # Spared from being READ, with everything that carries: it stays out of
     # `disk`, so no run stages it, opens a transaction for it, or pays for it.
@@ -2415,7 +2470,15 @@ def _fts_sync(
             truncated += 1
             continue
         try:
-            text = _read_capped(path)
+            text = _read_capped(path, root_real)
+        except _OutsideStore:
+            # The walk found a file and the read found a link out of the store,
+            # so something replaced it in between. Classified exactly as the
+            # walk classifies one: refused, counted, and NOT spared, so the
+            # sweep is free to delete whatever it was indexed as before.
+            _LEX_COUNTS["lex_outside"] += 1
+            del disk[path]
+            continue
         except OSError:
             spared.add(path)
             del disk[path]  # unreadable is not indexable; its old rows stand
@@ -2484,7 +2547,14 @@ def _fts_sync(
                     # failure here be the race it is; if it turns out to be a
                     # mode rather than a moment, the next scan classifies it.
                     try:
-                        text = _read_capped(path)
+                        text = _read_capped(path, root_real)
+                    except _OutsideStore:
+                        # As above, and inside the transaction: no `del`, since
+                        # this loop iterates a list taken from `disk` and the
+                        # subtraction happens after the commit. Not spared, so
+                        # the rows it had go.
+                        _LEX_COUNTS["lex_outside"] += 1
+                        continue
                     except OSError:
                         spared.add(path)
                         continue
@@ -2585,11 +2655,23 @@ def _fts_sync(
 
 
 # MERGE SEAM. Track A's takes `(con, query)`. Without the `deadline` a 12 KB
-# brief's OR'd MATCH runs past the harness kill with nothing to stop it.
+# brief's OR'd MATCH runs past the harness kill with nothing to stop it, and
+# without `root_real` a row the walk refused is still a row this answers from.
 def _fts_search(
-    con: sqlite3.Connection, query: str, deadline: float | None = None
+    con: sqlite3.Connection,
+    query: str,
+    deadline: float | None = None,
+    root_real: str = "",
 ) -> list[str]:
     """Query one index; return file paths best-first.
+
+    `root_real` is the resolved store root these rows belong to. It is what
+    every returned path is recorded against, so the reads that render a
+    pointer can decide containment for themselves; and the filter below uses
+    it too, because a path refused here never reaches those reads at all and a
+    pointer naming a file memkit will not open is a pointer telling an agent
+    to open it itself. Defaulting to empty keeps a caller with no store in
+    hand fail-closed for links rather than fail-open.
 
     `deadline` bounds this half of the stage the way it bounds the sync, and
     for the same reason: the task path admits up to TASK_QUERY_MAX_TERMS,
@@ -2649,8 +2731,17 @@ def _fts_search(
         # write-lock race answers from rows that still name a deleted memory —
         # and the caller turns a hit into a pointer the user is told to read.
         score = rank / best_rank
-        if score < FLOOR_LEX or _excluded(path) or not os.path.exists(path):
+        if score < FLOOR_LEX or _excluded(path):
             continue
+        if _store_path(path, root_real) is None:
+            # Counted on the same record as the walk's refusals, so a run whose
+            # index is a sweep behind does not report a link refused and a file
+            # injected with nothing tying the two lines together.
+            _LEX_COUNTS["lex_outside"] += 1
+            continue
+        if not os.path.exists(path):
+            continue
+        _LEX_ROOT[path] = root_real
         _LEX_SCORES[path] = score
         label = _section_label(text)
         if label:
@@ -2798,6 +2889,7 @@ def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
     """
     if not os.path.isdir(d):
         return []
+    root_real = os.path.realpath(d)
     db = _fts_db(d)
     _fts_note_root(db, d)
 
@@ -2864,7 +2956,7 @@ def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
             # got there.
             _fts_note_build(db, outcome, files)
             noted = True
-            return _fts_search(con, query, deadline)
+            return _fts_search(con, query, deadline, root_real)
         finally:
             con.close()
 
@@ -2944,10 +3036,18 @@ def _interleave(ranked_lists: list[list[str]]) -> list[str]:
     return merged
 
 
-def _description(path: str) -> str:
-    """Frontmatter `description:` line, else first heading, else ''."""
+def _description(path: str, root_real: str = "") -> str:
+    """Frontmatter `description:` line, else first heading, else ''.
+
+    This is the text the pointer line renders, so it is one of the three reads
+    that has to decide containment for itself — see `_store_path`. A refusal
+    reads as no description, which is what an unreadable file already gives.
+    """
+    target = _store_path(path, root_real)
+    if target is None:
+        return ""
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(target, encoding="utf-8", errors="replace") as f:
             head = f.read(4096)
     except OSError:
         return ""
@@ -2963,7 +3063,9 @@ def _description(path: str) -> str:
     return _display_cap(desc, DESC_MAX_CHARS)
 
 
-def _relevance(terms: list[str], path: str) -> tuple[list[str], int, str]:
+def _relevance(
+    terms: list[str], path: str, root_real: str = ""
+) -> tuple[list[str], int, str]:
     """Read a memory file once and return (matched query terms in query
     order, total terms, frontmatter `type:`).
 
@@ -2989,9 +3091,18 @@ def _relevance(terms: list[str], path: str) -> tuple[list[str], int, str]:
     retrieved it gets its own terms answered, never the search's.
 
     Only the frontmatter is read, since that is all `type:` needs.
+
+    Containment is decided here too — see `_store_path`. The refusal drops the
+    matched terms as well as the type, which is what makes it a refusal: the
+    terms come from the index and would otherwise carry a path past the floor
+    on evidence gathered before the file stopped being one this store
+    published.
     """
+    target = _store_path(path, root_real)
+    if target is None:
+        return [], len(terms), "?"
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(target, encoding="utf-8", errors="replace") as f:
             head = f.read(4096)
     except OSError:
         return [], len(terms), "?"
@@ -3842,6 +3953,7 @@ def recall(
     _LEX_SECTIONS.clear()
     _LEX_MATCHED.clear()
     _LEX_SCORES.clear()
+    _LEX_ROOT.clear()
     hits = _stage("lex", _fts_dir)
     rec["lex_hits"] = len(hits)
     # The built query, kept for the offline shadow harness — the instrument
@@ -3894,7 +4006,7 @@ def _eligible(
     kept: list[tuple[str, list[str], int]] = []
     floored: list[str] = []
     for path in paths:
-        matched, total, mtype = _relevance(terms, path)
+        matched, total, mtype = _relevance(terms, path, _LEX_ROOT.get(path, ""))
         if _passes_floor(
             matched,
             total,
@@ -3966,7 +4078,7 @@ def _pointer_line(
     was rather than anything about the memory, so the same evidence reads
     weaker the more the parent wrote.
     """
-    desc = _description(path)
+    desc = _description(path, _LEX_ROOT.get(path, ""))
     shown = ", ".join(matched[:6]) + (", …" if len(matched) > 6 else "")
     evidence = (
         f"matches {len(matched)} terms from this brief"
