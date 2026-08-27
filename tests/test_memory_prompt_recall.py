@@ -5967,6 +5967,40 @@ def test_the_sanitizer_removes_bare_control_characters_too() -> None:
         )
 
 
+def test_the_label_scan_cap_costs_a_label_and_never_costs_content() -> None:
+    """What the 4096-character scan gives up, pinned so the comment beside it
+    is checked rather than believed.
+
+    A character past the slice reaches the reader only if the 4096 in front of
+    it survive `sanitize`, so a heading whose first 4096 are control
+    characters or spaces yields no label at all — its real text, at character
+    5000, is not rendered. Nothing TRUNCATED is delivered, which is the rule
+    that matters on a rendering path; what is lost is the `[section: ...]`
+    tag, on a heading shaped to lose it.
+
+    The two caps are one function now, so the arithmetic either side of them
+    is asserted here as well: the ellipsis counts towards the cap, on both.
+    """
+    real = "Retry budget for the gearbox rig"
+    assert hook._section_label(f"# {real}\n\nbody") == real
+    for filler in ("\x00", " ", "\x1b[31m"):
+        pad = filler * (hook.LABEL_SCAN_MAX_CHARS // len(filler) + 1)
+        assert hook._section_label(f"# {pad}{real}\n\nbody") == "", filler
+    # Just inside the scan, the heading still arrives — so the empty answer
+    # above is the cap and not the sanitizer refusing the shape outright.
+    near = " " * (hook.LABEL_SCAN_MAX_CHARS - len(real) - 4)
+    assert hook._section_label(f"# {near}{real}\n\nbody") == real
+
+    # One cap, one arithmetic, and what is rendered is never longer than asked.
+    assert len(hook._section_label("# " + "z" * 500 + "\n")) == 60
+    assert hook._section_label("# " + "z" * 500 + "\n").endswith("...")
+    assert hook.DESC_KEEP_CHARS == hook.DESC_MAX_CHARS - 3
+    assert len(hook._display_cap("z" * 500, hook.DESC_MAX_CHARS)) == (
+        hook.DESC_MAX_CHARS
+    )
+    assert hook._display_cap("z" * 10, 60) == "z" * 10
+
+
 def test_a_hostile_heading_is_sanitized_where_the_section_label_is_built(
     tmp_path,
 ) -> None:
@@ -7847,7 +7881,7 @@ def test_an_event_for_another_tool_says_so_instead_of_going_quiet(
     assert record["tool"] == "Subagent"
 
 
-def test_an_agent_call_under_another_event_is_recorded_and_not_rewritten(
+def test_neither_path_serves_an_event_it_did_not_register_for(
     tmp_path,
 ) -> None:
     """`main()` routes a tool-shaped payload here whatever the event was
@@ -7881,6 +7915,61 @@ def test_an_agent_call_under_another_event_is_recorded_and_not_rewritten(
     )
     assert record["outcome"] == "task:event", record
     assert record["event"] == "PostToolUse", record
+
+    # THE PROMPT PATH, under the same rule. The task path fails closed on an
+    # unregistered event and the prompt path was failing OPEN: a payload
+    # carrying `prompt` got the whole pointer block under any event name at
+    # all, so what authorised the injection was the shape of the payload
+    # rather than the registration. The asymmetry is the finding.
+    for name in ("PostToolUse", "SessionStart", "Stop", "Notification"):
+        out = subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps(
+                {
+                    "session_id": f"ev{name}",
+                    "hook_event_name": name,
+                    "prompt": _brief("served/backlash-rig.md")[:300],
+                }
+            ),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout == "", (name, out.stdout)
+        record = json.loads(
+            (tmp_path / ".cache" / "memory-recall" / "log.jsonl")
+            .read_text()
+            .splitlines()[-1]
+        )
+        assert record["outcome"] == "gate:event", (name, record)
+        assert record["event"] == name, (name, record)
+
+    # Non-vacuity, and the carve-out: the registered name serves, and so does a
+    # payload with no event name at all — that is how this file is driven
+    # directly, and refusing it would refuse the documented invocation.
+    for payload in (
+        {"session_id": "evok1", "hook_event_name": hook.PROMPT_EVENT},
+        {"session_id": "evok2"},
+    ):
+        out = subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps(
+                dict(payload, prompt=_brief("served/backlash-rig.md")[:300])
+            ),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        assert out.returncode == 0, out.stderr
+        record = json.loads(
+            (tmp_path / ".cache" / "memory-recall" / "log.jsonl")
+            .read_text()
+            .splitlines()[-1]
+        )
+        assert record["outcome"] != "gate:event", (payload, record)
 
     # A payload for another tool under another event stays `task:notool`: the
     # tool is checked first, because a call this hook has nothing to say about

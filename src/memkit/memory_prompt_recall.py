@@ -877,13 +877,31 @@ COMMON_WORDS_FILE = os.path.join(os.path.dirname(__file__), "common-words.txt")
 FEEDBACK_MIN_TERMS = 2  # feedback additionally: >= this many terms
 FEEDBACK_MIN_RATIO = 0.12  # ...AND matched/total >= this
 
+# What stands for the part of a display string a cap cut off.
+_ELLIPSIS = "..."
+
 # A pointer line is `path — description`, and a description long enough to
 # wrap costs more context than the pointer buys. Named because
 # the integrity checker caps authored descriptions below DESC_KEEP_CHARS and
 # quotes the number in its error: as bare literals here, raising the cut
 # would silently make that cap and that message wrong.
-DESC_KEEP_CHARS = 157
 DESC_MAX_CHARS = 160
+# What survives the cut: the cap, minus the ellipsis that stands for the rest.
+# DERIVED rather than written down beside it, because two literals either side
+# of the same arithmetic is one of them being retuned — and this was the pair
+# the description path and the section label disagreed about by a character.
+DESC_KEEP_CHARS = DESC_MAX_CHARS - len(_ELLIPSIS)
+
+
+def _display_cap(text: str, cap: int) -> str:
+    """`text` at `cap` display characters, with an ellipsis when it was cut.
+
+    One spelling, because there were two — the description's and the section
+    label's — each with its own literals either side of the same arithmetic.
+    The ellipsis counts towards the cap, so what is rendered is never longer
+    than the caller asked for.
+    """
+    return text[: cap - len(_ELLIPSIS)] + _ELLIPSIS if len(text) > cap else text
 
 # --- what a memory file may put in front of the model -------------------------
 #
@@ -1534,19 +1552,22 @@ def _section_label(chunk: str) -> str:
     first = chunk.split("\n", 1)[0]
     if not _HEADING.match(first):
         return ""
-    # A heading is file content too, and it reaches the same pointer line the
-    # description does — so it is sanitized BEFORE the cap, the way
-    # `_description` sanitizes before its cap and for the same reason: the
-    # other order lets an escape sequence spend the budget and then disappear.
+    # `_md_sections` yields a whole file as one chunk when it holds no
+    # newline, so `first` is bounded by INDEX_FILE_MAX_BYTES and nothing else,
+    # and this runs once per ranked row inside a loop that had no clock in it.
+    # The slice is what makes the cost a constant.
     #
-    # Over a BOUNDED read, also the way `_description` does it. `_md_sections`
-    # yields a whole file as one chunk when it holds no newline, so `first` is
-    # bounded by INDEX_FILE_MAX_BYTES and nothing else, and this runs once per
-    # ranked row inside a loop that had no clock in it. Slicing first is what
-    # makes the cost a constant; it costs no content, because a character past
-    # the slice could not have reached the sixty this returns.
-    label = sanitize(first.lstrip("#")[:LABEL_SCAN_MAX_CHARS]).strip()
-    return label[:57] + "..." if len(label) > 60 else label
+    # WHAT THE SLICE COSTS, which is not nothing. A character past it reaches
+    # the reader only if the 4096 in front of it survive `sanitize`, and a
+    # heading whose first 4096 are control characters, ANSI escapes or spaces
+    # sanitizes to the empty string — so its real text, sitting at character
+    # 5000, is not rendered and the pointer line carries no `[section: ...]`
+    # at all. Nothing TRUNCATED is delivered, which is the rule that matters
+    # on a path that renders; what is given up is a label, on a heading shaped
+    # to give one up. Making it cost nothing means sanitizing until sixty
+    # display characters exist, and the thing being bounded is exactly that
+    # work.
+    return _display_cap(sanitize(first.lstrip("#")[:LABEL_SCAN_MAX_CHARS]).strip(), 60)
 
 
 def _fts_db(root: str) -> str:
@@ -2634,7 +2655,7 @@ def _description(path: str) -> str:
     # The other order lets an escape sequence spend the budget and then
     # disappear, and leaves the truncation point inside a sequence.
     desc = sanitize(m.group(1)).strip().strip("\"'")
-    return desc[:DESC_KEEP_CHARS] + "..." if len(desc) > DESC_MAX_CHARS else desc
+    return _display_cap(desc, DESC_MAX_CHARS)
 
 
 def _relevance(terms: list[str], path: str) -> tuple[list[str], int, str]:
@@ -3899,6 +3920,14 @@ def _sigterm_masked():
 # allowlist's key-set equality is what makes that unreachable, and it is a
 # correctness requirement rather than only a safety one.
 TASK_EVENT = "PreToolUse"
+# The event the prompt path registered for, in `hooks/hooks.json`. Named
+# because the two paths have to fail the same way on an event nobody
+# registered either of them for: the task path refuses to rewrite under an
+# unrecognised name, and the prompt path was serving one. A payload carrying
+# `prompt` and any other event name — `PostToolUse`, `Stop`, `SessionStart` —
+# got the full pointer block, so the injection surface was the SHAPE of the
+# payload rather than the registration.
+PROMPT_EVENT = "UserPromptSubmit"
 TASK_TOOL = "Agent"
 TASK_PROMPT_KEY = "prompt"
 
@@ -4933,6 +4962,17 @@ def _prompt_main(payload: dict, t0: float) -> None:
     # gate:stopwords because a machine with no corpora could not have answered
     # the prompt whatever its vocabulary. Splitting the call is what preserves
     # that order without restating any condition.
+    # The same fail-closed test the task path applies, on the path that fires
+    # on every prompt. ABSENT is served, because a payload with no event name
+    # is what every direct invocation of this file sends — the CLI's own
+    # probes and an adopter piping JSON in — and refusing those would refuse
+    # the documented way to drive it. Anything else is recorded and not
+    # served: the block is an injection, and what authorises it is the
+    # registration rather than the presence of a `prompt` key.
+    event = payload.get("hook_event_name")
+    if event is not None and event != PROMPT_EVENT:
+        return done("gate:event", event=str(event)[:40])
+
     gate = prompt_gate(stripped)
     if gate in PROMPT_SHAPE_GATES:
         return done(gate)

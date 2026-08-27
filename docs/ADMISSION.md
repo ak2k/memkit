@@ -18,7 +18,7 @@ still names 0.2.1, whose tree is 63 files and about 1.3 MiB)*:
 | what | files | why it is there |
 |---|---|---|
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/` | 13 | the payload proper — the wrappers, the hook module, the manifests |
-| `tests/` | 53 | not needed at run time; see below |
+| `tests/` | 54 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 16 | likewise |
 | `README.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 7 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |

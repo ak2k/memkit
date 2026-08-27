@@ -312,6 +312,7 @@ every rate you compute a rate over an unknown mixture.
 | `injected` | pointers were written into the prompt |
 | `gate:envelope` · `gate:empty` · `gate:slash` · `gate:short` · `gate:long` · `gate:stopwords` | the prompt's shape, per the table above. In releases before 0.2.0 the middle four were one value, **`gate:shape`** — a log written by 0.1.0 shows that instead |
 | `gate:nodirs` | nothing to search: no config, or no store on disk and in scope here |
+| `gate:event` | a prompt-shaped payload arrived under an event name this hook did not register for. Recorded and NOT served: what authorises the injection is the registration, not the presence of a `prompt` key. A payload with no event name at all is served, since that is how the hook is driven directly |
 | `nomatch` | the stores were searched and nothing came back |
 | `index-unavailable` | the stores were asked and at least one could not answer — an index mid-rebuild, a corpus that could not be read, or a query the budget ran out under. Distinct from `nomatch`, which means the search ran and found nothing |
 | `deduped` | every match had already been offered this session |

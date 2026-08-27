@@ -423,6 +423,43 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     )
 
 
+def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
+    """The rows are the argument. This page's opening line says the case
+    "rests on the exact ones", and a reader who does what it asks — count the
+    categories, check the arithmetic — got 89 against a stated 90, because a
+    commit updated the headline and left the `tests/` row two lines below it.
+
+    Every row is read off the tree here rather than compared to a literal, so
+    the drift that matters is the row disagreeing with what an install puts on
+    the machine, not with a number somebody typed twice.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    tracked = _git("ls-files").stdout.split()
+
+    def under(*prefixes: str) -> int:
+        return sum(1 for f in tracked if f.startswith(prefixes))
+
+    payload = under("bin/", "src/memkit/", "hooks/", ".claude-plugin/")
+    tests = under("tests/")
+    prose = under("docs/") + sum(
+        1 for f in tracked if f in ("README.md", "LICENSE", "NOTICE")
+    )
+    rest = len(tracked) - payload - tests - prose
+    rows = {
+        "`bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`": payload,
+        "`tests/`": tests,
+        "`.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files":
+            rest,
+        "`README.md`, `LICENSE`, `NOTICE`, and all of `docs/`": prose,
+    }
+    for label, count in rows.items():
+        assert f"| {label} | {count} |" in note, (label, count, "row is stale")
+    # And the rows are the total, which is the arithmetic the page asks for.
+    assert sum(rows.values()) == len(tracked), rows
+    assert f"**{len(tracked)} files" in note, len(tracked)
+
+
 def test_the_admission_notes_recipe_returns_the_number_it_states() -> None:
     """This page's whole claim on a reader is checkability: "every number here
     is read out of the tree" plus a command to run.
