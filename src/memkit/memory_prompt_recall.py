@@ -2118,6 +2118,8 @@ def _fts_scan(
             except OSError:
                 spared.add(path)
                 continue
+            # `statmod`, because `stat` is the obvious name for a local
+            # holding an `os.stat` result and one of those is right here.
             if statmod.S_ISLNK(st.st_mode):
                 if not _inside(path, root_real):
                     # Neither indexed NOR spared. Spared means "this run could
