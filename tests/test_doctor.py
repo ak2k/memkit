@@ -24,6 +24,7 @@ import sys
 
 import pytest
 
+from memkit import _exec
 from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
@@ -2231,6 +2232,7 @@ def test_no_module_in_this_package_starts_a_process_outside_the_gate() -> None:
     # defect was found in.
     assert names >= {
         "__init__.py",
+        "_exec.py",
         "cli.py",
         "cli_doctor.py",
         "cli_init.py",
@@ -2238,7 +2240,7 @@ def test_no_module_in_this_package_starts_a_process_outside_the_gate() -> None:
         "memory_integrity.py",
         "memory_prompt_recall.py",
     }, sorted(names)
-    allowed = {("memory_prompt_recall.py", "_execute"): {"subprocess.run"}}
+    allowed = {("_exec.py", "_execute"): {"subprocess.run"}}
     offences = []
     seen_allowed = 0
     for module in modules:
@@ -2252,6 +2254,49 @@ def test_no_module_in_this_package_starts_a_process_outside_the_gate() -> None:
     # And the one permitted site is really there: an `_execute` that stopped
     # calling `subprocess.run` would empty this test of its subject.
     assert seen_allowed == 1, seen_allowed
+
+
+def test_the_every_prompt_module_cannot_reach_the_executor_at_all() -> None:
+    """The hook file's IMPORTS are the guarantee, not an audit of its call
+    sites.
+
+    `memory_prompt_recall.py` is what the harness runs on every prompt, with
+    whatever environment, PATH and repository configuration the session
+    supplied. It answers every question it used to fork for — where the
+    repository is, which worktrees share it — from the filesystem, so it needs
+    no executor, and a module that does not import one cannot acquire a call
+    site that uses it by accident.
+
+    Asserted on the SOURCE rather than on the imported module, because an
+    attribute that arrives by re-export would satisfy a `hasattr` check while
+    the import line that a reader checks is still absent.
+    """
+    import ast
+
+    source = (REPO / "src" / "memkit" / "memory_prompt_recall.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    assert "subprocess" not in imported, sorted(imported)
+    assert not [n for n in imported if n.endswith("_exec")], sorted(imported)
+    # Anti-vacuity: the walk really does see this file's imports.
+    assert "sqlite3" in imported, sorted(imported)
+    # And the module object carries none of the executor's names either, so a
+    # `from memkit._exec import *`-shaped re-export cannot reintroduce them.
+    for name in (
+        "_execute",
+        "_trusted_git",
+        "_trusted_which",
+        "_may_execute",
+        "_child_env",
+    ):
+        assert not hasattr(hook, name), name
 
 
 def test_the_gate_guard_sees_the_shapes_written_to_evade_it() -> None:
@@ -2336,7 +2381,7 @@ def test_the_gate_hands_a_child_no_variable_that_names_code(
         monkeypatch.setenv(name, str(hostile / "payload"))
     monkeypatch.setenv("HOME", str(profile / "home"))
     monkeypatch.setenv("PATH", os.pathsep.join([str(profile / "project"), "/usr/bin"]))
-    env = hook._child_env()
+    env = _exec._child_env()
     # Each name that was really there, rather than a prefix sweep: the nix
     # build sandbox exports `PYTHONNOUSERSITE`, which hardens the child rather
     # than naming code for it, and a `startswith("PYTHON")` assertion made
@@ -2361,21 +2406,21 @@ def test_the_gate_scrubs_an_environment_a_call_site_built_itself(
     """
     monkeypatch.setenv("PATH", "/usr/bin")
     seen: dict = {}
-    real = hook.subprocess.run
+    real = _exec.subprocess.run
 
     def watched(argv, *a, **kw):
         seen.update(kw.get("env") or {})
         return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
 
-    monkeypatch.setattr(hook.subprocess, "run", watched)
+    monkeypatch.setattr(_exec.subprocess, "run", watched)
     try:
-        hook._execute(
+        _exec._execute(
             [sys.executable, "-c", "pass"],
             env=dict(os.environ, LD_PRELOAD="/x", PYTHONPATH="/y"),
             env_extra={"PYTHONPATH": "/kept"},
         )
     finally:
-        monkeypatch.setattr(hook.subprocess, "run", real)
+        monkeypatch.setattr(_exec.subprocess, "run", real)
     assert "LD_PRELOAD" not in seen, seen.get("LD_PRELOAD")
     assert seen["PYTHONPATH"] == "/kept", seen.get("PYTHONPATH")
 
@@ -2393,18 +2438,18 @@ def test_the_execution_gate_refuses_what_it_is_there_to_refuse(
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     outside.chmod(0o755)
-    assert hook._may_execute(str(outside))
-    assert not hook._may_execute(str(inside))
-    assert not hook._may_execute("prog")
-    assert not hook._may_execute(str(profile / "elsewhere"))
-    assert not hook._may_execute("")
+    assert _exec._may_execute(str(outside))
+    assert not _exec._may_execute(str(inside))
+    assert not _exec._may_execute("prog")
+    assert not _exec._may_execute(str(profile / "elsewhere"))
+    assert not _exec._may_execute("")
     for argv in ([], ["prog"], [str(inside)]):
-        with pytest.raises(hook._Untrusted):
-            hook._execute(argv)
+        with pytest.raises(_exec._Untrusted):
+            _exec._execute(argv)
     # A symlink out of the session directory is the case a prefix test misses.
     disguise = profile / "elsewhere" / "disguise"
     disguise.symlink_to(inside)
-    assert not hook._may_execute(str(disguise))
+    assert not _exec._may_execute(str(disguise))
 
 
 def test_an_option_the_wrapper_refuses_by_shape_is_named_as_that(
@@ -2703,7 +2748,7 @@ def test_the_trusted_path_drops_every_entry_a_checkout_can_write(
             ]
         ),
     )
-    assert hook._trusted_path_entries() == ["/usr/bin"]
+    assert _exec._trusted_path_entries() == ["/usr/bin"]
 
 
 def test_the_uninstall_story_says_when_the_config_goes_with_the_plugin(

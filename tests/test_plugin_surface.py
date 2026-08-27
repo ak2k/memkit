@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from memkit import _exec
 from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
@@ -52,6 +53,11 @@ PAYLOAD = [
     "bin/lib/common.sh",
     "src/memkit/memory_prompt_recall.py",
     "src/memkit/common-words.txt",
+    # The package's executor. Not reached from the hook — that path starts no
+    # process and imports nothing from here — but the dispatcher's two
+    # subcommands both import it at module scope, so it is on the 3.9 floor
+    # and in the payload for the same reason `cli_doctor.py` is.
+    "src/memkit/_exec.py",
     "src/memkit/cli.py",
     # Imported by the dispatcher at module scope, so it is on the 3.9 floor and
     # in the payload for the same reason `cli.py` is: `bin/memkit` runs the
@@ -4426,7 +4432,7 @@ def test_the_shell_and_the_python_agree_on_which_path_entries_are_trusted(
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload))
     monkeypatch.chdir(session)
     hook._cwd_in_root.cache_clear()
-    mine = os.pathsep.join(hook._trusted_path_entries())
+    mine = os.pathsep.join(_exec._trusted_path_entries())
     assert theirs == mine, (theirs, mine)
     # And it is not vacuous in either direction: something survives, and the
     # entries a checkout can write do not.

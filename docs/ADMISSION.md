@@ -11,7 +11,7 @@ pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
 The table below counts **the tree this file ships in**, which is the tree the
-next pin will name: **70 files, about 1.9 MiB**. Between releases `main`
+next pin will name: **71 files, about 1.9 MiB**. Between releases `main`
 carries files the pin does not, so a count taken at today's pin is smaller —
 run the recipe at the bottom against either and it reproduces that one exactly.
 The release procedure re-derives the table at the tag, which is when the two

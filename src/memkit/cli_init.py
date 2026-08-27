@@ -41,6 +41,14 @@ import subprocess
 import sys
 import time
 
+from memkit._exec import (
+    _execute,
+    _may_execute,
+    _trusted_git,
+    _trusted_which,
+    _under_cwd,
+    _Untrusted,
+)
 from memkit.cli_doctor import (
     CANARY_NAME,
     CONFIG_DIR_ENV,
@@ -62,13 +70,7 @@ from memkit.memory_prompt_recall import (
     PLUGIN_SEARCH_CLI,
     SCHEMA,
     _display_path,
-    _execute,
-    _may_execute,
     _plugin_install,
-    _trusted_git,
-    _trusted_which,
-    _under_cwd,
-    _Untrusted,
     append_record,
     expand_home,
     path_refusal,

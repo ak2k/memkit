@@ -65,11 +65,13 @@ import re  # noqa: E402
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+from memkit._exec import (
+    _trusted_git,
+    _Untrusted,
+)
 from memkit.memory_prompt_recall import (  # noqa: E402
     CONFIG_ENV,
     ConfigError,
-    _trusted_git,
-    _Untrusted,
     load_config,
 )
 

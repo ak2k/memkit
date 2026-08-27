@@ -28,6 +28,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from memkit import _exec
 from memkit import eval_memory_recall as ev
 from memkit import memory_integrity as mi
 from memkit import memory_prompt_recall as hook
@@ -1840,12 +1841,12 @@ class GitArgvTest(unittest.TestCase):
         external-diff drivers — both of which name a program the repository
         gets to choose.
         """
-        argv = hook._git_argv("/usr/bin/git", ["-C", "/some/dir", "log", "-p"])
+        argv = _exec._git_argv("/usr/bin/git", ["-C", "/some/dir", "log", "-p"])
         assert argv[0] == "/usr/bin/git"
         assert "--no-textconv" in argv and "--no-ext-diff" in argv
         assert argv.index("--no-textconv") == argv.index("log") + 1
         # `ls-files` renders no content, so it takes neither.
-        plain = hook._git_argv("/usr/bin/git", ["-C", "/d", "ls-files", "-z"])
+        plain = _exec._git_argv("/usr/bin/git", ["-C", "/d", "ls-files", "-z"])
         assert "--no-textconv" not in plain, plain
         # The neutralising `-c` settings are there in every shape.
         assert "core.fsmonitor=" in plain

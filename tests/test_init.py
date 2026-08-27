@@ -27,6 +27,7 @@ import time
 
 import pytest
 
+from memkit import _exec
 from memkit import cli_doctor as doctor
 from memkit import cli_init as init
 from memkit import memory_prompt_recall as hook
@@ -64,7 +65,7 @@ def _which_git() -> str:
     `shutil.which` would answer for a git these cases then could not run,
     which is a skip that hides a real failure.
     """
-    return hook._trusted_which("git")
+    return _exec._trusted_which("git")
 
 
 def _args(**kw) -> argparse.Namespace:

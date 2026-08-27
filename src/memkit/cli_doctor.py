@@ -57,6 +57,13 @@ import sys
 import time
 from collections.abc import Callable
 
+from memkit._exec import (
+    _execute,
+    _trusted_git,
+    _trusted_which,
+    _under_cwd,
+    _Untrusted,
+)
 from memkit.memory_prompt_recall import (
     BUILD_BUSY,
     BUILD_OK,
@@ -82,16 +89,11 @@ from memkit.memory_prompt_recall import (
     _corpus_files,
     _cwd_digest,
     _display_path,
-    _execute,
     _fts_db,
     _search_root,
     _session_state_path,
     _state_dir_candidate,
     _store_live_dir,
-    _trusted_git,
-    _trusted_which,
-    _under_cwd,
-    _Untrusted,
     _version,
     claim_holds,
     expand_home,
