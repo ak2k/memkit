@@ -8292,7 +8292,9 @@ def test_the_opening_delimiter_declares_how_many_lines_the_region_holds() -> Non
             body = block.split("\n")
             assert body[0] == f"<{tag} lines={len(body) - 3}>", body[0]
             assert body[-2] == f"</{tag}>", body[-2]
-            declared = int(re.search(r"lines=(\d+)", body[0]).group(1))
+            stated = re.search(r"lines=(\d+)", body[0])
+            assert stated, body[0]
+            declared = int(stated.group(1))
             assert declared == len(body) - 3, (declared, len(body))
             assert declared == len(block.split("\n")[1:-2]), block
     # The notice line is inside the count, like every other line.
