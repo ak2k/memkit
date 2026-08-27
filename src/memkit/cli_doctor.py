@@ -58,11 +58,14 @@ import time
 from collections.abc import Callable
 
 from memkit._exec import (
+    CheckerRoute,
     Untrusted,
     _execute,
     _trusted_git,
     _under_cwd,
     _Untrusted,
+    checker_argv,
+    require_executable,
     resolve,
 )
 from memkit.memory_prompt_recall import (
@@ -2458,12 +2461,21 @@ NIX_STORE = "/nix/store/"
 # lives in two files by necessity — one of them is POSIX sh and cannot import
 # the other — and a test scrapes them against each other.
 CHECKER_FLOOR = (3, 12)
+# What an adopter with no route is told, in one place because two commands say
+# it. LOCATING is not PROVISIONING: `uv python find` answers with a path it can
+# already see, so a machine with uv and no 3.12 is told the one-time command
+# rather than having an interpreter downloaded for it by a diagnostic.
+NO_CHECKER_REMEDY = (
+    "Install python 3.12 or newer — `uv python install 3.12` if you have uv, "
+    "or your platform's package manager — and re-run. Until then any command "
+    "that regenerates a ledger refuses by name and writes nothing: a seeded "
+    "memory with no ledger row is a broken store, so half-completing is worse "
+    "than not starting."
+)
 # The hook's floor, which is NOT the checker's. A stock macOS python is 3.9.6
 # and every current Linux distribution clears it.
 HOOK_FLOOR = (3, 9)
 
-ROUTE_ENV = "MEMKIT_CHECKER_ROUTE"
-ROUTE_CMD_ENV = "MEMKIT_CHECKER_CMD"
 
 
 def build_facts() -> tuple:
@@ -2553,47 +2565,48 @@ def _build(machine: Machine) -> list[Check]:
     return [Check("build", INFO, version_line())]
 
 
-def _checker_route_is_ambient() -> bool:
-    """Whether the checker command arrived from the ENVIRONMENT.
-
-    One predicate rather than two readings of the same variable, because what
-    hangs off the answer is a trust decision: a route the wrapper exported
-    travelled through an unfiltered `command -v` and can equally have been
-    exported by whatever else could write this process's environment, while a
-    route `_probe_checker_route` returned is this process's own pin.
-    """
-    return bool(os.environ.get(ROUTE_ENV))
-
-
 def _checker_route(machine: Machine) -> tuple:
-    """(route, command) for checker-backed work.
+    """`(CheckerRoute, interpreter path)` for checker-backed work.
 
-    Read from the environment when the wrapper resolved it, which is the whole
-    point of the wrapper exporting it: the route is decided once per invocation
-    so that two subcommands cannot pick differently. Probed only where there is
-    no wrapper — the pip and uvx channels — and cached on the machine, because
-    each probe is a fork.
+    THE PROCESS'S OWN ANSWER, probed once and cached on the machine. Two
+    subcommands of one invocation must not pick differently, and a per-process
+    cache is that guarantee with no ambient channel to carry it — an
+    environment variable that answers this question is an environment variable
+    that chooses the code memkit runs.
     """
-    route = os.environ.get(ROUTE_ENV) if _checker_route_is_ambient() else ""
-    if route:
-        # Split on whitespace and nothing cleverer: it is a space-joined
-        # string, and the wrapper's own contract says so.
-        return route, (os.environ.get(ROUTE_CMD_ENV) or "").split()
     if machine._route is None:
         machine._route = _probe_checker_route()
     return machine._route
 
 
+# The interpreter LOCATOR, not a package fetcher. `uv python find` answers
+# with a path and resolves no name from any index; `--no-python-downloads` and
+# `UV_PYTHON_DOWNLOADS=never` say the same thing twice, once as a flag and once
+# as a declared environment entry, because a uv old enough not to know the flag
+# errors rather than downloading.
+#
+# What runs afterwards is THIS PAYLOAD'S OWN checker — already on disk, because
+# a plugin install is a git clone at a pinned sha — so the checker and the hook
+# are the same release by construction, rather than two releases that agree
+# only while two pins do.
+#
+# Locating is not provisioning, and that is the cost: on a machine with `uv`
+# and no 3.12 anywhere, this refuses and names `uv python install 3.12` rather
+# than downloading an interpreter nobody asked for. An implicit interpreter
+# download triggered by a diagnostic is a large unconsented side effect.
+_UV_FIND = ("python", "find", "--no-python-downloads", "--no-project")
+
+
 def _probe_checker_route() -> tuple:
     if sys.version_info[:2] >= CHECKER_FLOOR:
-        return "python", [sys.executable, "-m", "memkit.memory_integrity"]
+        return CheckerRoute.SELF, sys.executable
     for name in ("python3.14", "python3.13", "python3.12", "python3"):
         try:
             found = resolve(name)
         except Untrusted:
             continue
         with contextlib.suppress(
-            OSError, subprocess.SubprocessError, ValueError, _Untrusted
+            OSError, subprocess.SubprocessError, ValueError, Untrusted
         ):
             # `-I`: `python -c` puts the session directory on `sys.path`,
             # and `site` imports a `sitecustomize.py` it finds there before
@@ -2607,10 +2620,22 @@ def _probe_checker_route() -> tuple:
             if out.returncode == 0 and "(3, 1" in out.stdout:
                 pair = out.stdout.strip().strip("()").split(",")
                 if (int(pair[0]), int(pair[1])) >= CHECKER_FLOOR:
-                    return "python", [found, "-m", "memkit.memory_integrity"]
-    with contextlib.suppress(Untrusted):
-        return "uvx", [resolve("uvx"), "memory-integrity"]
-    return "none", []
+                    return CheckerRoute.LOCAL, found
+    with contextlib.suppress(OSError, subprocess.SubprocessError, Untrusted):
+        out = _execute(
+            [
+                resolve("uv"),
+                *_UV_FIND,
+                f"{CHECKER_FLOOR[0]}.{CHECKER_FLOOR[1]}",
+            ],
+            timeout=30,
+            env_extra={"UV_PYTHON_DOWNLOADS": "never"},
+        )
+        located = out.stdout.strip()
+        if out.returncode == 0 and located:
+            require_executable(located)
+            return CheckerRoute.UV_MANAGED, located
+    return CheckerRoute.NONE, ""
 
 
 def _recorded_interpreter(machine: Machine) -> str:
@@ -2639,7 +2664,7 @@ def _interpreter(machine: Machine) -> list[Check]:
     claim scoreable instead of a shrug.
     """
     running = ".".join(str(n) for n in sys.version_info[:3])
-    route, command = _checker_route(machine)
+    route, interpreter = _checker_route(machine)
     recorded = _recorded_interpreter(machine)
     honoured = ""
     if recorded:
@@ -2668,18 +2693,16 @@ def _interpreter(machine: Machine) -> list[Check]:
                 f'. The config records "{recorded}" and this process is '
                 f"{_display_path(sys.executable)}"
             )
-    if route == "none":
+    floor = f"{CHECKER_FLOOR[0]}.{CHECKER_FLOOR[1]}"
+    if route is CheckerRoute.NONE:
         return [
             Check(
                 "interpreter",
                 FAIL,
-                f"hook interpreter {running}; NO checker route: no python "
-                f"meets {CHECKER_FLOOR[0]}.{CHECKER_FLOOR[1]} and there is no "
-                f"uvx{honoured}",
-                "Install python 3.12 or newer, or install uv. Until then any "
-                "command that regenerates a ledger refuses by name and writes "
-                "nothing — a seeded memory with no ledger row is a broken "
-                "store, so half-completing is worse than not starting.",
+                f"hook interpreter {running}; NO checker route: no python on "
+                f"this machine meets {floor}, and `uv` located none "
+                f"either{honoured}",
+                NO_CHECKER_REMEDY,
                 actor=USER,
                 terminal=True,
             )
@@ -2701,17 +2724,16 @@ def _interpreter(machine: Machine) -> list[Check]:
     # the detail is pasted into issues, and an absolute interpreter path under
     # `/Users/<name>` or `/home/<name>` carries the username while every
     # neighbouring line has been shortened.
-    where = (
-        " ".join([_display_path(command[0]), *command[1:]]) if command else "?"
-    )
-    if route == "uvx":
+    command = checker_argv(route, interpreter)
+    where = " ".join([_display_path(command[0]), *command[1:]])
+    if route is CheckerRoute.UV_MANAGED:
         return [
             Check(
                 "interpreter",
                 INFO,
-                f"hook interpreter {running}; checker route uvx ({where}), "
-                f"because no local python meets {CHECKER_FLOOR[0]}."
-                f"{CHECKER_FLOOR[1]}. Retrieval is unaffected{honoured}",
+                f"hook interpreter {running}; checker route {route.value} "
+                f"({where}), because no python on PATH meets {floor} and `uv` "
+                f"located one. Retrieval is unaffected{honoured}",
             )
         ]
     if honoured:
@@ -2719,7 +2741,7 @@ def _interpreter(machine: Machine) -> list[Check]:
             Check(
                 "interpreter",
                 INFO,
-                f"hook interpreter {running}; checker route {route} "
+                f"hook interpreter {running}; checker route {route.value} "
                 f"({where}){honoured}",
             )
         ]
@@ -2727,7 +2749,7 @@ def _interpreter(machine: Machine) -> list[Check]:
         Check(
             "interpreter",
             PASS,
-            f"hook interpreter {running}; checker route {route} ({where})",
+            f"hook interpreter {running}; checker route {route.value} ({where})",
         )
     ]
 

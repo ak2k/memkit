@@ -1595,49 +1595,83 @@ def test_no_checker_route_is_terminal_and_never_silent(profile, monkeypatch):
     needs the checker refuses by name and writes nothing. `terminal` is what
     tells an agent that retrying cannot help."""
     path = _store_config(profile, stores=["personal"])
-    monkeypatch.setenv(doctor.ROUTE_ENV, "none")
-    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "")
-    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    machine = _machine(profile, monkeypatch, path)
+    machine._route = (_exec.CheckerRoute.NONE, "")
+    checks = doctor.collect(machine)
     (row,) = _only(checks, "interpreter")
     assert row.status == doctor.FAIL
     assert row.terminal is True
     assert doctor.verdict(checks) != "OK"
+    # The adopter-facing cost of locating rather than provisioning: the one
+    # command that fixes it is named, because nothing downloads an interpreter
+    # for them any more.
+    assert "uv python install 3.12" in (row.remedy or ""), row.remedy
 
 
-def test_a_uvx_checker_route_is_information_and_leaves_the_verdict_green(
-    profile, monkeypatch
+def test_a_uv_located_checker_route_is_information_and_leaves_the_verdict_green(
+    profile, monkeypatch, tmp_path
 ) -> None:
     """The stock-mac case: `python3` is 3.9.6 and the checker's floor is 3.12,
-    so an install that retrieves perfectly cannot regenerate a ledger without
-    uvx. Reporting WHICH route resolved is what makes the claim scoreable
-    rather than a shrug."""
+    so an install that retrieves perfectly cannot regenerate a ledger until
+    something newer is found. Reporting WHICH route resolved is what makes the
+    claim scoreable rather than a shrug."""
     path = _store_config(profile, stores=["personal"])
-    monkeypatch.setenv(doctor.ROUTE_ENV, "uvx")
-    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "uvx --from git+https://x memory-integrity")
-    (row,) = _only(
-        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, path)),
-        "interpreter",
-    )
+    located = profile / "elsewhere" / "python3.12"
+    located.parent.mkdir(parents=True, exist_ok=True)
+    located.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    located.chmod(0o755)
+    machine = _machine(profile, monkeypatch, path)
+    machine._route = (_exec.CheckerRoute.UV_MANAGED, str(located))
+    (row,) = _only(doctor._PRODUCERS["interpreter"](machine), "interpreter")
     assert row.status == doctor.INFO
-    assert "uvx" in row.detail
+    assert "uv-managed" in row.detail, row.detail
     assert "Retrieval is unaffected" in row.detail
+    # The argv is the reconstruction, and the tail is the constant: no route
+    # names `memory-integrity` as a program for anything to resolve.
+    assert "-m memkit.memory_integrity" in row.detail, row.detail
     assert doctor.verdict([row]) == "OK"
 
 
-def test_the_route_is_read_from_the_wrapper_rather_than_probed_again(
+def test_no_environment_variable_contributes_a_word_to_the_checker_command(
     profile, monkeypatch
 ) -> None:
-    """The wrapper resolves it once per invocation and exports it precisely so
-    two subcommands cannot pick differently. Splitting the command on
-    whitespace and nothing cleverer is the wrapper's own written contract."""
-    monkeypatch.setenv(doctor.ROUTE_ENV, "python")
-    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "/opt/py -m memkit.memory_integrity")
+    """The route used to be READ from the environment, and the argv beside it
+    was a whitespace-joined string that a subcommand then ran — so a variable
+    chose the code that ran, reachable by anything that could write this
+    process's environment.
+
+    What the wrapper's export bought was that two subcommands could not pick
+    differently. The per-process cache is that same guarantee with no ambient
+    channel: probed once, and never again in this process.
+    """
+    for name, value in (
+        ("MEMKIT_CHECKER_ROUTE", "self"),
+        ("MEMKIT_CHECKER_CMD", "/bin/echo pwned"),
+    ):
+        monkeypatch.setenv(name, value)
+    # The names are gone from the tree, not merely unread: a variable nothing
+    # reads is one the next reader wires back up.
+    for rel in ("src/memkit/cli_doctor.py", "src/memkit/cli_init.py",
+                "src/memkit/_exec.py", "bin/memkit", "bin/lib/common.sh"):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        assert "MEMKIT_CHECKER_CMD" not in text, rel
+        assert "MEMKIT_CHECKER_ROUTE" not in text, rel
+
+    calls = []
     monkeypatch.setattr(
-        doctor, "_probe_checker_route", lambda: pytest.fail("probed anyway")
+        doctor,
+        "_probe_checker_route",
+        lambda: calls.append(1) or (_exec.CheckerRoute.SELF, sys.executable),
     )
-    route, command = doctor._checker_route(doctor.Machine())
-    assert route == "python"
-    assert command == ["/opt/py", "-m", "memkit.memory_integrity"]
+    machine = doctor.Machine()
+    first = doctor._checker_route(machine)
+    assert first == (_exec.CheckerRoute.SELF, sys.executable)
+    assert doctor._checker_route(machine) == first
+    assert len(calls) == 1, calls
+    assert _exec.checker_argv(*first) == [
+        sys.executable,
+        *_exec.CHECKER_TAIL,
+    ]
 
 
 def test_a_recorded_interpreter_that_is_not_honoured_is_said_out_loud(
@@ -1764,14 +1798,21 @@ def test_the_uninstall_story_names_the_canaries_by_path(profile, monkeypatch):
     assert "index, log, journal" in row.detail
 
 
-def test_the_checker_floor_matches_the_one_the_wrappers_hold() -> None:
-    """The number lives in two files by necessity — one of them is POSIX sh and
-    cannot import the other — and a floor that drifted would route a 3.11
-    python straight into the guard it exists to avoid."""
+def test_the_checker_floor_no_longer_lives_in_the_shell_at_all() -> None:
+    """It used to live in two files by necessity — one of them is POSIX sh and
+    cannot import the other — and a test held the copies equal.
+
+    The shell decides nothing about the checker now, so the second copy is
+    deleted rather than kept honest, and the floor sits beside the guard that
+    enforces it.
+    """
     common = (REPO / "bin" / "lib" / "common.sh").read_text(encoding="utf-8")
+    assert "MEMKIT_CHECKER_FLOOR" not in common
+    guard = (REPO / "src" / "memkit" / "memory_integrity.py").read_text(
+        encoding="utf-8"
+    )
     major, minor = doctor.CHECKER_FLOOR
-    assert f"MEMKIT_CHECKER_FLOOR_MAJOR={major}" in common
-    assert f"MEMKIT_CHECKER_FLOOR_MINOR={minor}" in common
+    assert f"sys.version_info < ({major}, {minor})" in guard
 
 
 # --- hook-errors: where the swallowed stderr went ----------------------------

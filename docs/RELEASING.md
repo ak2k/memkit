@@ -12,14 +12,14 @@ With squash merges the consequence is sharper than it looks. If one PR both
 edits the release state and moves the pin, the pin can only name that PR's
 *parent* — and every edit the PR made is therefore in a commit adopters never
 install. That is not hypothetical: v0.2.0 shipped `"version": "0.1.0"` in the
-manifest an adopter reads, a `MEMKIT_UVX_SPEC` pointing at the previous tag, and
-an `ADMISSION.md` whose file count described a different tree.
+manifest an adopter reads, a quoted install rev pointing at the previous tag,
+and an `ADMISSION.md` whose file count described a different tree.
 
 Splitting it fixes the ordering:
 
 | | what it does | what it must not do |
 |---|---|---|
-| **PR A — release state** | versions, `MEMKIT_UVX_SPEC`, ADMISSION's numbers, the marker sweep, docs | touch `marketplace.json`'s `sha` |
+| **PR A — release state** | versions, ADMISSION's numbers, the marker sweep, docs | touch `marketplace.json`'s `sha` |
 | **PR B — the pin** | move `marketplace.json`'s `sha` to A's squash commit | anything else |
 
 A's squash commit — call it **S1** — is then the tree adopters install, and it
@@ -27,8 +27,8 @@ already contains the release state. B is one line and ships in the *next*
 release's payload, which is exactly where a stale pin does no harm.
 
 **Tag `v<x.y.z>` on S1**, not on B's merge and not on the branch tip. S1 is what
-adopters install, what `MEMKIT_UVX_SPEC` forward-references, and what hatch-vcs
-reads to stamp the version. Tagging anywhere else makes the version an adopter
+adopters install, what the docs' quoted rev forward-references, and what
+hatch-vcs reads to stamp the version. Tagging anywhere else makes the version an adopter
 gets differ from the version the tag names.
 
 Run A and B back to back. Between them the pin still names the previous release,
@@ -42,14 +42,12 @@ Everything below has been missed at least once.
 
 1. **Versions.** `.claude-plugin/plugin.json` and the `marketplace.json` entry.
    A test holds them equal; nothing holds them to reality, so read them.
-2. **`MEMKIT_UVX_SPEC`** → the tag this release will carry. It is a forward
-   reference until the tag exists — safe, because the name is one we control and
-   a missing tag fails loudly rather than resolving to something else. Update the
-   comment beside it, which names the tag.
-3. **Every other quote of that tag.** `README.md` and `docs/STORE.md` both print
-   `uvx --from git+…@vX.Y.Z`. A pin holds the shell and the README together;
-   nothing holds `docs/STORE.md`, and the `Leaving` recipe was unpinned for two
-   releases.
+2. **The tag the docs quote.** `README.md` and `docs/STORE.md` print
+   `uvx --from git+…@vX.Y.Z` for the no-install channel. Nothing in `bin/` or
+   `src/` names a rev any more — the code fetches nothing — so these are the
+   only two quotes left, and a test holds both equal to `plugin.json`'s
+   version. Step 1 therefore carries this one: update the version and the test
+   names the docs if they lag.
 4. **Sweep `(from the next release)`.** `grep -rn "from the next release"`.
    Every behaviour marker becomes a plain statement — the pin is about to carry
    it. Two occurrences are *not* markers and stay: the `## Status` sentence that
@@ -69,8 +67,8 @@ Everything below has been missed at least once.
    to write as a description of one particular payload. It must read correctly
    both immediately after a release and mid-window.
 8. **Full gates**, including the Linux checks, and the mutation sweep. Expect to
-   re-anchor the release-state mutations: the pinned sha, the uvx spec in three
-   places, ADMISSION's count, and the vocabulary's dated row.
+   re-anchor the release-state mutations: the pinned sha, the quoted rev,
+   ADMISSION's count, and the vocabulary's dated row.
 
 ### PR B
 

@@ -29,6 +29,7 @@ A path being ABSOLUTE settles none of them. Trust is decided by origin.
 
 from __future__ import annotations
 
+import enum
 import os
 import subprocess
 import sys
@@ -205,7 +206,7 @@ def resolve(name: str) -> str:
 CHILD_ENV_KEEP = ("HOME", "LANG", "LC_ALL", "TMPDIR", "TZ")
 
 
-def child_env(extra: dict = None, forward: tuple = ()) -> dict:  # noqa: RUF013
+def child_env(extra: dict | None = None, forward: tuple = ()) -> dict:
     """The environment a child of this package is handed.
 
     `extra` is a route's own additions, values it computed. `forward` NAMES
@@ -231,7 +232,7 @@ def child_env(extra: dict = None, forward: tuple = ()) -> dict:  # noqa: RUF013
 def _execute(
     argv: list,
     *,
-    env_extra: dict = None,  # noqa: RUF013
+    env_extra: dict | None = None,
     env_forward: tuple = (),
     **kw,
 ) -> subprocess.CompletedProcess:
@@ -354,3 +355,53 @@ def _trusted_git(args: list, **kw) -> subprocess.CompletedProcess:
     extra = dict(_GIT_NEUTRAL_ENV)
     extra.update(kw.pop("env_extra", None) or {})
     return _execute(_git_argv(git, list(args)), env_extra=extra, **kw)
+
+
+# --- the checker's invocation, reconstructed ---------------------------------
+#
+# An argv is BUILT from a closed route and one hole. It is never parsed, never
+# read out of an environment variable and never passed through from a caller,
+# because a command assembled out of an input is an input choosing the code
+# that runs — and no amount of validating that input turns it back into a
+# command this package chose.
+#
+# The tail is a CONSTANT with no hole in it, identical on every live route —
+# only the interpreter varies, and that one hole goes back through
+# `require_executable` immediately before the call. So the set of commands
+# this package can ever spell for the checker is three, and they differ in one
+# absolute path.
+
+CHECKER_TAIL = ("-m", "memkit.memory_integrity")
+
+
+class CheckerRoute(enum.Enum):
+    """Which interpreter runs the checker. A closed set, not a string.
+
+    A route has no spelling that is not one of these four, and an unrecognised
+    value fails at the boundary rather than falling through to a bare-name
+    lookup — a parse failure is an exception, never a default. Because the
+    argv is derived from the route, "there is no route" also has exactly one
+    condition rather than a route name and an empty command list to be held in
+    agreement.
+    """
+
+    SELF = "self"
+    LOCAL = "local"
+    UV_MANAGED = "uv-managed"
+    NONE = "none"
+
+
+def checker_argv(route: CheckerRoute, interpreter: str) -> list:
+    """The command for `route`, or `Untrusted`.
+
+    NONE is a state callers must handle, and it is spelled as a refusal rather
+    than as an empty list, so "this machine has no checker" and "somebody
+    forgot to build the command" cannot arrive at a call site looking the
+    same.
+    """
+    if not isinstance(route, CheckerRoute):
+        raise Untrusted(f"{route!r} is not a checker route")
+    if route is CheckerRoute.NONE:
+        raise Untrusted("this machine has no interpreter that can run the checker")
+    require_executable(interpreter)
+    return [interpreter, *CHECKER_TAIL]

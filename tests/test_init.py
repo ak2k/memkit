@@ -742,10 +742,14 @@ def test_a_config_dir_inside_the_session_is_refused_for_both_targets(
 def test_no_checker_route_is_refused_rather_than_half_completed(profile, monkeypatch):
     """A seeded memory whose ledger nobody checked is a store the checker calls
     broken. Half-completing is worse than not starting."""
-    monkeypatch.setenv(doctor.ROUTE_ENV, "none")
-    monkeypatch.setenv(doctor.ROUTE_CMD_ENV, "")
+    monkeypatch.setattr(
+        doctor, "_probe_checker_route", lambda: (_exec.CheckerRoute.NONE, "")
+    )
     refusal = _refuses(profile, "no-checker-route")
-    assert "uvx" in refusal.message
+    assert "uv" in refusal.message
+    # The adopter-facing cost of locating rather than provisioning is a named
+    # one-time command, not a silent download.
+    assert "uv python install 3.12" in refusal.message, refusal.message
 
 
 def test_adopting_a_flat_store_is_refused_and_the_refusal_names_the_migration(
@@ -1967,36 +1971,38 @@ def test_the_dry_run_never_runs_a_program_the_checkout_supplied(
     assert not marker.exists(), marker.read_text()
 
 
-def test_the_checker_command_is_not_taken_from_the_session_path(
+def test_the_checker_command_is_built_and_no_input_contributes_a_word(
     profile, monkeypatch
 ) -> None:
-    """The wrapper hands the checker over as a space-joined string, and its
-    first word came from the wrapper's own unfiltered `command -v`.
+    """The two cases this replaces both asserted that a hostile
+    `$MEMKIT_CHECKER_CMD` was RE-RESOLVED — one that the directory in it was
+    re-derived, one that an absolute word in it was refused. Both were rules
+    about an input that no longer reaches this function, and a rule about an
+    input is one more input than a constructed command has.
 
-    So the word is untrusted whatever its shape. A bare name resolves against
-    the entries no checkout can steer, and where no trusted candidate answers
-    the call REFUSES: `--confirm`'s permission prompt shows `memkit init
-    --confirm <digest>` and never this argv, so consent for the command was
-    never consent for whatever the session's PATH happened to supply.
+    `--confirm`'s permission prompt shows `memkit init --confirm <digest>` and
+    never this argv, so consent for the command is not consent for whatever a
+    session's PATH supplied. What runs is therefore derived, not received:
+    THIS process's interpreter and a constant tail.
     """
-    hostile = profile / "elsewhere" / "prog"
+    hostile = profile / "elsewhere" / "fakepy"
     hostile.parent.mkdir(parents=True, exist_ok=True)
-    hostile.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    marker = profile / "PWNED-checker.txt"
+    hostile.write_text(
+        f"#!/bin/sh\necho pwned > {marker}\nexit 0\n", encoding="utf-8"
+    )
     hostile.chmod(0o755)
     shim = profile / "project" / "node_modules" / ".bin"
     shim.mkdir(parents=True)
-    (shim / "uvx").symlink_to(hostile)
-    # One the checkout supplies, FIRST, and one outside it after — so the
-    # answer is a choice between two real candidates rather than a question
-    # about what this machine happens to have installed.
-    theirs = profile / "usr-bin"
-    theirs.mkdir()
-    trusted = theirs / "uvx"
-    trusted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    trusted.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{shim}:{theirs}:{os.environ['PATH']}")
-    monkeypatch.setenv("MEMKIT_CHECKER_ROUTE", "uvx")
-    monkeypatch.setenv("MEMKIT_CHECKER_CMD", "uvx --from memkit memory-integrity")
+    for name in ("uvx", "uv", "python3", "python3.12"):
+        (shim / name).symlink_to(hostile)
+    monkeypatch.setenv("PATH", f"{shim}:{os.environ['PATH']}")
+    for name, value in (
+        ("MEMKIT_CHECKER_ROUTE", "python"),
+        ("MEMKIT_CHECKER_CMD", f"{hostile} -m memkit.memory_integrity"),
+    ):
+        monkeypatch.setenv(name, value)
+
     ran: list = []
     real = init.subprocess.run
 
@@ -2005,51 +2011,36 @@ def test_the_checker_command_is_not_taken_from_the_session_path(
         return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
 
     monkeypatch.setattr(init.subprocess, "run", watched)
-    init._run_checker(doctor.Machine(), str(profile / "memkit.json"))
-    monkeypatch.setattr(init.subprocess, "run", real)
+    try:
+        init._run_checker(doctor.Machine(), str(profile / "memkit.json"))
+    finally:
+        monkeypatch.setattr(init.subprocess, "run", real)
     assert ran, "the checker was never invoked, so this proves nothing"
-    assert ran[0][0] == str(trusted), ran[0]
+    # This interpreter, and the constant tail. Not the environment's word, not
+    # the shim's, and no `memory-integrity` for anything to resolve by name.
+    assert ran[0] == [
+        sys.executable,
+        *_exec.CHECKER_TAIL,
+        "--config",
+        str(profile / "memkit.json"),
+    ], ran[0]
+    assert not marker.exists(), marker.read_text()
 
-    # And with the trusted candidate gone, nothing runs at all. The fallback
-    # that used to stand here ran the checkout's own program on the write turn.
-    monkeypatch.setenv("PATH", str(shim))
+    # And with no route at all, one condition decides that nothing runs.
+    monkeypatch.setattr(
+        doctor, "_probe_checker_route", lambda: (_exec.CheckerRoute.NONE, "")
+    )
     ran.clear()
     monkeypatch.setattr(init.subprocess, "run", watched)
-    code, detail = init._run_checker(doctor.Machine(), str(profile / "memkit.json"))
-    monkeypatch.setattr(init.subprocess, "run", real)
+    try:
+        code, detail = init._run_checker(
+            doctor.Machine(), str(profile / "memkit.json")
+        )
+    finally:
+        monkeypatch.setattr(init.subprocess, "run", real)
     assert not ran, ran
     assert code == 1
-    assert "no trusted checker route" in detail, detail
-
-
-def test_the_checker_refuses_an_absolute_program_the_environment_named(
-    profile, monkeypatch
-) -> None:
-    """An absolute path is the SHAPE `$MEMKIT_CHECKER_CMD` always carries.
-
-    `bin/lib/common.sh` resolves the python route with `command -v` and
-    exports the answer, so every real invocation of this function on the
-    plugin channel arrives with an already-absolute first word — and anything
-    else that can write this process's environment arrives the same way. A
-    rule that let an absolute word through unexamined therefore governed
-    nothing on the path it was written for.
-    """
-    outside = profile / "elsewhere"
-    outside.mkdir(exist_ok=True)
-    hostile = outside / "fakepy"
-    marker = profile / "PWNED-checker.txt"
-    hostile.write_text(
-        f"#!/bin/sh\necho pwned > {marker}\nexit 0\n", encoding="utf-8"
-    )
-    hostile.chmod(0o755)
-    # NOT on PATH: the variable is the whole of how this program was named.
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    monkeypatch.setenv("MEMKIT_CHECKER_ROUTE", "python")
-    monkeypatch.setenv("MEMKIT_CHECKER_CMD", f"{hostile} -m memkit.memory_integrity")
-    code, detail = init._run_checker(doctor.Machine(), str(profile / "memkit.json"))
-    assert code == 1, (code, detail)
-    assert "no trusted checker route" in detail, detail
-    assert not marker.exists(), marker.read_text()
+    assert "no checker route" in detail, detail
 
 
 def test_the_dry_run_runs_git_where_no_configuration_can_name_a_program(

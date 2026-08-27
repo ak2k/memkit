@@ -29,7 +29,6 @@ from pathlib import Path
 
 import pytest
 
-from memkit import _exec
 from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
@@ -350,27 +349,26 @@ def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
         )
 
 
-def test_the_uvx_spec_and_the_readme_name_the_same_rev() -> None:
-    """The one route that resolves code from GitHub at run time, and the
-    sentence an adopter reads about it.
+def test_the_docs_quote_the_release_this_payload_is() -> None:
+    """The no-install recipes an adopter TYPES, held to the version this tree
+    ships.
 
-    Unpinned, it resolved whatever `main` held, so a machine on an older
-    release routed checker work through a newer checker with nothing saying so.
-    The README describes it as pinned; that description is only true while the
-    shell agrees, and the two are edited by different hands at different times.
+    Unpinned, `uvx --from git+…/memkit` resolves whatever `main` holds, so
+    somebody checking their store survives an uninstall gets a different build
+    than the one they were running. The rev used to be pinned against a shell
+    constant, which was one of four copies of a spec that had already drifted
+    once. There is no constant now — nothing in `bin/` or `src/` names a rev,
+    because nothing memkit runs is fetched — so the manifest's own version is
+    what the docs are held to, and it is already the thing a release bumps.
+
+    NOT a route this package takes: `--from` names the source and the trailing
+    word names a console script inside it, so no name is resolved from any
+    public index by either line.
     """
-    shell = COMMON_SH.read_text(encoding="utf-8")
-    match = re.search(r'^MEMKIT_UVX_SPEC="([^"]+)"', shell, re.M)
-    assert match, "MEMKIT_UVX_SPEC is not assigned a literal"
-    spec = match.group(1)
-    # A rev, not a bare repository URL — `git+…/memkit` means main.
-    assert "@" in spec.rsplit("/", 1)[-1], spec
-    # EVERY rev the docs quote for this repository, not merely one of them.
-    # Requiring a single match was enough while the README named the spec once;
-    # pinning the `Leaving` recipe gave it a second call site, and a rev can now
-    # go stale in one place while the other keeps the case green. `docs/STORE.md`
-    # carries a third.
-    rev = spec.rsplit("@", 1)[1]
+    manifest = json.loads(
+        (REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    rev = "v" + manifest["version"]
     quoted = {}
     for rel in ("README.md", "docs/STORE.md"):
         text = (REPO / rel).read_text(encoding="utf-8")
@@ -876,17 +874,27 @@ def test_the_registration_runs_the_wrapper_and_not_the_hook_directly() -> None:
         assert handler["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/memkit-hook", handler
 
 
-def test_the_checker_floor_in_the_probe_matches_the_checkers_own_guard() -> None:
-    """KTD13's probe exists to avoid the checker's version guard, so a floor
-    that drifted would route an interpreter straight into the refusal it was
-    picked to avoid. The number lives in two files by necessity: one of them
-    cannot import the other."""
+def test_the_checker_floor_lives_in_one_file_now_that_the_shell_holds_none(
+) -> None:
+    """The floor used to live in two files, because a POSIX-sh probe cannot
+    import python — so the number was written twice and a test held the copies
+    equal.
+
+    The shell no longer probes anything: which interpreter runs the checker is
+    python's own question, answered where the floor already is. So the second
+    copy is gone rather than kept in agreement, and what is pinned now is that
+    it did not come back.
+    """
     guard = (REPO / "src" / "memkit" / "memory_integrity.py").read_text()
     match = re.search(r"sys\.version_info < \((\d+), (\d+)\)", guard)
     assert match, "the checker's version guard moved — this pin cannot see it"
-    probe = COMMON_SH.read_text(encoding="utf-8")
-    assert f"MEMKIT_CHECKER_FLOOR_MAJOR={match.group(1)}" in probe
-    assert f"MEMKIT_CHECKER_FLOOR_MINOR={match.group(2)}" in probe
+    floor = (int(match.group(1)), int(match.group(2)))
+    assert floor == doctor.CHECKER_FLOOR, (doctor.CHECKER_FLOOR, floor)
+    shell = COMMON_SH.read_text(encoding="utf-8")
+    for gone in ("MEMKIT_CHECKER_FLOOR", "MEMKIT_UVX_SPEC", "MEMKIT_CHECKER_CMD",
+                 "MEMKIT_CHECKER_ROUTE", "memkit_resolve_checker",
+                 "memkit_trusted_path", "uvx"):
+        assert gone not in shell, gone
 
 
 # --- the wrappers, as processes ----------------------------------------------
@@ -2313,62 +2321,31 @@ def test_the_dispatcher_runs_the_package_from_this_tree(root, shimmed) -> None:
     assert shimmed.read()["PYTHONPATH"] == str(root / "src")
 
 
-def test_the_checker_route_is_python_when_one_meets_the_floor(
+def test_the_dispatcher_exports_no_checker_route_for_anything_to_read(
     root, tmp_path, shimmed
 ) -> None:
-    env = shimmed()
-    # A `python3` that claims 3.12 by exiting 0 for the floor probe, and
-    # records for the shim contract otherwise.
-    _shim(
-        shimmed.dir, "python3",
-        'case "$*" in *version_info*) exit 0 ;; esac\n' + SHIM_BODY,
-    )
-    out = _run(root / "bin" / "memkit", "doctor", env=env)
-    assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["MEMKIT_CHECKER_ROUTE"] == "python"
-    assert seen["MEMKIT_CHECKER_CMD"].endswith("-m memkit.memory_integrity")
-    # THIS tree's checker, so the checker and the hook are one release.
-    assert seen["MEMKIT_CHECKER_CMD"].startswith(str(shimmed.dir))
+    """The three cases this replaces asserted the VALUES of two variables the
+    dispatcher exported — a route name and a whitespace-joined argv — and the
+    second of those was a command a subcommand then ran. An environment
+    variable choosing the code that runs is not a thing to validate; it is a
+    channel, and this asserts it is closed.
 
-
-def test_the_checker_route_falls_back_to_uvx_below_the_floor(
-    root, tmp_path, shimmed
-) -> None:
-    """The stock-python mac in the success criteria: 3.9.6 everywhere, and a
-    checker that hard-refuses below 3.12. uvx provisions its own interpreter,
-    which is what makes that machine able to run the checker at all."""
-    env = shimmed()
-    _shim(
-        shimmed.dir, "python3",
-        'case "$*" in *version_info*) exit 1 ;; esac\n' + SHIM_BODY,
-    )
-    _shim(shimmed.dir, "uvx", "exit 0")
-    out = _run(root / "bin" / "memkit", "doctor", env=env)
-    assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["MEMKIT_CHECKER_ROUTE"] == "uvx"
-    assert "git+https://github.com/ak2k/memkit" in seen["MEMKIT_CHECKER_CMD"]
-
-
-def test_no_checker_route_is_a_state_the_dispatcher_reports_rather_than_dies_on(
-    root, tmp_path, shimmed
-) -> None:
-    """`none` must not be fatal HERE. Refusing at this level would take out
-    `--help` and diagnosis — the two things an adopter in that state most needs
-    — on behalf of a subcommand they did not run. The operation that cannot
-    proceed without a checker is the one that refuses by name.
+    The probe that produced them is gone too: it EXECUTED each candidate python
+    it found, over a PATH the session steers, before any python-side rule
+    existed to have an opinion.
     """
-    env = shimmed()
     _shim(
         shimmed.dir, "python3",
         'case "$*" in *version_info*) exit 1 ;; esac\n' + SHIM_BODY,
     )
-    out = _run(root / "bin" / "memkit", "doctor", env=env)
+    out = _run(root / "bin" / "memkit", "doctor", env=shimmed())
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
-    assert seen["MEMKIT_CHECKER_ROUTE"] == "none"
-    assert seen["MEMKIT_CHECKER_CMD"] == ""
+    for gone in ("MEMKIT_CHECKER_ROUTE", "MEMKIT_CHECKER_CMD"):
+        assert seen[gone] == "<unset>", (gone, seen[gone])
+    # ANTI-VACUITY: the recorder really does report a variable that IS set, so
+    # `<unset>` above is an observation and not a broken shim.
+    assert seen["MEMKIT_PLUGIN"] == "1", seen["MEMKIT_PLUGIN"]
 
 
 def test_the_dispatcher_refuses_by_name_when_nothing_can_run_it(
@@ -2812,7 +2789,7 @@ def test_the_release_procedure_is_written_down_and_reachable() -> None:
     """
     note = (REPO / "docs" / "RELEASING.md").read_text(encoding="utf-8")
     for subject in ("two pull requests", "cannot name its own sha", "squash",
-                    "marketplace.json", "MEMKIT_UVX_SPEC", "from the next release",
+                    "marketplace.json", "plugin.json", "from the next release",
                     "gate:shape", "hatch-vcs"):
         assert subject in note, subject
     # The tag goes on the release-state commit, which is the instruction the
@@ -4378,69 +4355,32 @@ def test_the_checker_probe_never_executes_what_the_session_path_supplied(
     assert path_after == env["PATH"], (path_after, env["PATH"])
 
 
-def test_the_shell_and_the_python_agree_on_which_path_entries_are_trusted(
-    tmp_path, monkeypatch
+def test_the_shell_has_no_second_implementation_of_the_path_rule(
+    tmp_path,
 ) -> None:
-    """The invariant is "no repository, session or environment-supplied input
-    may choose a program this code executes", and the shell is where the
-    checker probe traverses it.
+    """The parity case this replaces held two implementations of one rule in
+    agreement. There is one now, and the second one is deleted rather than
+    kept honest.
 
-    `memkit_resolve_checker` resolves `python3.14/3.13/3.12/python3` with an
-    unfiltered `command -v` and then EXECUTES what it finds, to ask its
-    version — so on an unconfigured or sub-3.12 install a program the checkout
-    supplied had already run as the user before any python-side gate existed,
-    and its path was exported as `MEMKIT_CHECKER_CMD` for the confirm turn to
-    run again.
-
-    Differential over the PAIR, like the path-refusal and home-expansion
-    rules beside it: the same corpus through the real shell function and
-    through `_trusted_path_entries`, requiring the same answer. No symlinks in
-    it, because the shell has no `realpath` and no external command to borrow
-    one from — that one case is the documented difference, and the python side
-    re-resolves what the shell exports.
+    It could not be made correct in POSIX sh under this project's own
+    zero-external-command rule: no `realpath`, so its filter was a string
+    prefix test; it compared against the LOGICAL `$PWD` where python compares
+    `realpath(getcwd())`; and its success path printed `""`, which POSIX reads
+    as the current directory. Its only consumer was a probe that executed each
+    candidate python it found, and that is gone too.
     """
-    session = tmp_path / "project"
-    payload = tmp_path / "payload"
-    (session / "node_modules" / ".bin").mkdir(parents=True)
-    (payload / "bin").mkdir(parents=True)
-    (tmp_path / "elsewhere").mkdir()
-    corpus = [
-        "",
-        ".",
-        "node_modules/.bin",
-        "../elsewhere",
-        str(session),
-        str(session / "node_modules" / ".bin"),
-        str(payload / "bin"),
-        str(payload),
-        str(tmp_path / "elsewhere"),
-        str(tmp_path) + "-not-a-prefix-of-the-session",
-        "/usr/bin",
-        "/bin",
-    ]
-    path_value = os.pathsep.join(corpus)
-    env = dict(
-        os.environ, PATH=path_value, CLAUDE_PLUGIN_ROOT=str(payload), PWD=str(session)
-    )
-    out = subprocess.run(
-        ["sh", "-c", f'. "{COMMON_SH}"\nmemkit_trusted_path\n'],
-        capture_output=True, text=True, timeout=120, check=True,
-        cwd=str(session), env=env,
-    )
-    theirs = out.stdout.strip()
-    monkeypatch.setenv("PATH", path_value)
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload))
-    monkeypatch.chdir(session)
-    hook._cwd_in_root.cache_clear()
-    mine = os.pathsep.join(_exec.trusted_path())
-    assert theirs == mine, (theirs, mine)
-    # And it is not vacuous in either direction: something survives, and the
-    # entries a checkout can write do not.
-    assert "/usr/bin" in mine.split(os.pathsep), mine
-    assert str(session) not in mine, mine
-    assert str(payload / "bin") not in mine, mine
-
-
+    shell = COMMON_SH.read_text(encoding="utf-8")
+    assert "memkit_trusted_path" not in shell
+    # And nothing else in `bin/` resolves a program by NAME any more, which is
+    # the property the deleted parity case was standing in for. `command -v` on
+    # the wrapper's own `$0` is not that: it locates this file, not a program
+    # to run.
+    for wrapper in ("memkit", "memkit-hook", "memkit-recall"):
+        text = (BIN / wrapper).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "command -v" not in line or line.lstrip().startswith("#"):
+                continue
+            assert '"$_self"' in line, (wrapper, line)
 def test_one_home_expansion_reaches_the_reader_the_commands_hand_paths_to(
     tmp_path, monkeypatch
 ) -> None:

@@ -736,10 +736,14 @@ tree at that sha — more than the hook needs, and worth knowing about before yo
 install a prompt hook: [docs/ADMISSION.md](docs/ADMISSION.md) says what is in
 it and where the trust boundary sits.
 
-The `uvx` fallback used for checker work on a machine with no Python 3.12
-resolves `git+https://github.com/ak2k/memkit@v0.2.1` — the release tag, not
-`main`. Nothing on the every-prompt path uses it; it is reached only by a
-subcommand that regenerates a ledger.
+**Nothing memkit runs is fetched at run time.** Checker-backed work needs
+Python 3.12, which the hook does not; on a machine whose `python3` is older,
+memkit asks `uv` to LOCATE an interpreter (`uv python find`) and then runs the
+checker out of the payload you already installed. It downloads nothing, and it
+resolves no package name from any index — so the checker that runs is the same
+release as the hook that asked for it, by construction. Where no interpreter
+is found, `memkit doctor` says so and names `uv python install 3.12`; retrieval
+is unaffected either way.
 
 **Check that it took.** `claude plugin details memkit@memkit` reports the hooks
 it registered: `Hooks (1)` is a working install and `Hooks (0)` is not. Worth
@@ -748,8 +752,7 @@ a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.
 
 **What the installed copy is.** The pin names the release commit itself, so what
-you install carries this release's version, its `uvx` tag and its copy of these
-documents. That takes two pull requests to arrange — a commit cannot name its
+you install carries this release's version and its copy of these documents. That takes two pull requests to arrange — a commit cannot name its
 own sha, so one carries the release and a second moves the pin to it — and
 [docs/RELEASING.md](docs/RELEASING.md) explains why. The only commit missing
 from your copy is that second one, which is the pin and nothing else.
