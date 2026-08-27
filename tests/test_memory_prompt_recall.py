@@ -9056,6 +9056,35 @@ def test_a_sync_whose_budget_went_before_the_first_read_still_commits_one_file(
         con.close()
 
 
+def test_the_walk_is_not_where_a_cold_sync_spends_its_budget(
+    corpus: Path,
+) -> None:
+    """The one loop the deadline does not bound, held to the reason it is not
+    bounded.
+
+    `_fts_scan` runs to completion before `_fts_sync` reads the clock, so the
+    walk is genuinely unbounded — the argument for leaving it that way is that
+    it is a rounding error against the loop that IS bounded, and an argument
+    from a number nobody re-measures is how this file has been wrong before.
+    A ratio rather than a millisecond bar, so it means the same thing on a
+    slow machine as on a fast one.
+    """
+    _many_memos(corpus, 400)
+    walk = min(_elapsed(lambda: hook._fts_scan(str(corpus))) for _ in range(3))
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        cold = _elapsed(lambda: hook._fts_sync(con, str(corpus)))
+    finally:
+        con.close()
+    assert walk < cold / 20, (walk, cold, "the walk is now a share of the budget")
+
+
+def _elapsed(work) -> float:
+    start = time.monotonic()
+    work()
+    return time.monotonic() - start
+
+
 def test_the_file_the_transaction_must_read_is_bounded_in_size(
     corpus: Path,
 ) -> None:

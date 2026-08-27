@@ -363,6 +363,25 @@ they run when a human runs them. An agent-invocable doctor that answers "is
 retrieval actually working here" is deferred; until it exists, treat the verify
 recipe as mandatory per host rather than as a spot check.
 
+### The soak log's degradation keys, and the reader that drops them
+
+The hook omits a `lex_*` key when nothing happened, so absence in the log means
+none of it happened — which is a contract only as good as the reader holding up
+its end. The known external reader,
+`~/.config/nix/scripts/memory-recall-report.py`, sums a fixed four-key tuple
+(`lex_spared`, `lex_unwalked`, `lex_busy_skip`, `lex_rebuilds`) written before
+this branch, so every key added since is silently dropped from its health
+summary — `lex_note_unwritten`, which predates this branch, and `lex_deadline`,
+`lex_oversize` and `lex_unswept`, which are the three counters that say a sync
+hit the budget, refused a file for size, or ran out of budget mid-sweep.
+
+The consequence is an operator reading "no lex degradation" while stores are
+actively hitting those paths, which is exactly the observability an oversize
+file's permanent staleness depends on. The fix is in another repository and
+belongs there: widen that tuple to the full `_LEX_COUNTS` key set, or derive it
+from `hook._LEX_COUNTS.keys()` if the collector can import memkit, so the next
+key added here does not need a matching hand-edit there.
+
 ## The edit-to-live loop
 
 Two different things travel at two very different speeds, and confusing them is

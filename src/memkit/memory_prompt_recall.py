@@ -2003,9 +2003,24 @@ class _IndexTruncated(OSError):
 
 
 # MERGE SEAM. Track A's takes `(con, root)` and returns three values. The
-# `deadline` here is what bounds all three loops, and the fourth value is what
-# it truncated; a rebase that takes Track A's shape silently unbounds a cold
-# build. Pinned by `test_the_track_a_seam_keeps_the_shape_this_branch_needs`.
+# `deadline` here is what bounds the three loops BELOW, and the fourth value
+# counts what memkit's own limits declined; a rebase that takes Track A's
+# shape silently unbounds a cold build. Pinned by
+# `test_the_track_a_seam_keeps_the_shape_this_branch_needs`.
+#
+# WHAT IT DOES NOT BOUND, said here rather than left to be discovered: the
+# WALK. `_fts_scan` runs to completion before the first clock read, so a
+# corpus whose directory tree takes longer to traverse than the budget is not
+# stopped by it. Measured on 2,800 files: the walk is 7.5 ms of a 7.9 s cold
+# sync, 0.09%, because a local stat is cheap and the read-and-insert loop is
+# not — and that loop IS bounded, which is why an expired deadline returns a
+# cold sync in 15 ms. Bounding the walk as well needs a fifth classification
+# for its remainder (halted is not unreadable and not oversize, and calling it
+# either is the misdiagnosis the outcome vocabulary exists to prevent), so it
+# is not worth the seam it would widen at 0.09%. The arithmetic that would
+# change that is a store on a network mount, where a stat costs milliseconds
+# rather than microseconds; `test_the_walk_is_not_where_a_cold_sync_spends_its
+# _budget` is what fails if the local number ever moves.
 def _fts_sync(
     con: sqlite3.Connection, root: str, deadline: float | None = None
 ) -> tuple[int, int, int, int]:
@@ -4651,6 +4666,16 @@ def _task_main(payload: dict, t0: float) -> None:
         # system working as designed, for as long as the file survives. Being
         # served twice is the fail-open direction here, and the degradation
         # gets a name on the record rather than a silence.
+        #
+        # THE SAME DIRECTION FOR A CONCURRENT REPLAY, deliberately. Two
+        # invocations carrying one id can both read this file before either
+        # writes it, and both emit — reproduced. What that costs is one
+        # duplicate record, because only one `updatedInput` can be the reply
+        # to a tool call and the loser's block never reaches the agent. What a
+        # claim before the emission would cost is the other direction: a
+        # claimant that dies between claiming and writing starves every retry
+        # of that spawn, which is the failure this whole ledger is arranged to
+        # avoid. Read-then-write, and the duplicate stays visible in the log.
         tool_use_id = str(payload.get("tool_use_id", "") or "")
         state_path = _task_state_path(tool_use_id) if tool_use_id else None
         shown = _load_session(state_path)[0] if state_path else set()
