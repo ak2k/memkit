@@ -372,8 +372,14 @@ its end. The known external reader,
 (`lex_spared`, `lex_unwalked`, `lex_busy_skip`, `lex_rebuilds`) written before
 this branch, so every key added since is silently dropped from its health
 summary — `lex_note_unwritten`, which predates this branch, and `lex_deadline`,
-`lex_oversize` and `lex_unswept`, which are the three counters that say a sync
-hit the budget, refused a file for size, or ran out of budget mid-sweep.
+`lex_oversize` and `lex_unswept`, which say a sync hit the budget, refused a
+file for size, or ran out of budget mid-sweep, plus four that name a file the
+store owner can see in their tree and retrieval is not searching:
+`lex_outside` (a `*.md` symlink whose target leaves the store),
+`lex_unnameable` (a filename this hook cannot render, so a pointer to it would
+name a path that does not exist), `lex_undecodable` (a filename the filesystem
+holds as bytes that are not UTF-8) and `lex_linkdir` (a symlinked
+subdirectory, which `os.walk` never descends).
 
 The consequence is an operator reading "no lex degradation" while stores are
 actively hitting those paths, which is exactly the observability an oversize
