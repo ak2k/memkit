@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import inspect
 import io
 import itertools
 import json
@@ -9454,6 +9455,32 @@ def test_the_prompt_path_tells_an_unanswerable_index_from_an_empty_corpus(
     readme = Path(__file__).resolve().parent.parent / "README.md"
     assert "| `index-unavailable` |" in readme.read_text(encoding="utf-8")
 
+
+
+def test_the_track_a_seam_keeps_the_shape_this_branch_needs() -> None:
+    """The four functions this branch changed out from under Track A.
+
+    Track A owns the same file and has its own version of each: `_fts_scan`
+    returns three values there and four here, and `_fts_sync`, `_fts_search`
+    and `_record_matched` take no `deadline` there and take one here. Every one
+    of those differences is load-bearing — the fourth value is the file cap's
+    accounting, and the deadline is the only thing bounding a cold build, an
+    OR'd MATCH over a 12 KB brief, and a per-term walk.
+
+    A rebase that takes Track A's side of any of them mostly still COMPILES.
+    Two of the three deadline arguments are keyword-with-default at every call
+    site, so they simply stop being passed, and the work goes back to being
+    unbounded with no test naming the loss. The disclosure lives in the report
+    and in a comment at each definition; this is the part of it that fails a
+    build.
+    """
+    scan = inspect.signature(hook._fts_scan)
+    assert str(scan.return_annotation).count("set[str]") == 3, scan
+    assert "oversize" in inspect.getsource(hook._fts_scan), "the cap's accounting"
+    for name in ("_fts_sync", "_fts_search", "_record_matched"):
+        params = inspect.signature(getattr(hook, name)).parameters
+        assert "deadline" in params, (name, sorted(params))
+        assert params["deadline"].default is None, (name, params["deadline"])
 
 
 def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None:

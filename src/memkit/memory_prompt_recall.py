@@ -2201,6 +2201,12 @@ _LEX_MATCHED: dict[str, list[str]] = {}
 _LEX_SCORES: dict[str, float] = {}
 
 
+# MERGE SEAM. Track A's `_fts_scan` returns three values — identities, spared,
+# unwalked — and has no notion of a file too big to read. This one returns four
+# and `INDEX_FILE_MAX_BYTES` decides the fourth. A rebase that takes Track A's
+# three-tuple compiles, unpacks one value short at the single call site, and
+# loses the cap; `test_the_track_a_seam_keeps_the_shape_this_branch_needs`
+# fails on it rather than leaving it to a runtime unpack.
 def _fts_scan(
     root: str,
 ) -> tuple[dict[str, tuple[int, int, int]], set[str], set[str], set[str]]:
@@ -2288,6 +2294,10 @@ class _IndexTruncated(OSError):
     """
 
 
+# MERGE SEAM. Track A's takes `(con, root)` and returns three values. The
+# `deadline` here is what bounds all three loops, and the fourth value is what
+# it truncated; a rebase that takes Track A's shape silently unbounds a cold
+# build. Pinned by `test_the_track_a_seam_keeps_the_shape_this_branch_needs`.
 def _fts_sync(
     con: sqlite3.Connection, root: str, deadline: float | None = None
 ) -> tuple[int, int, int, int]:
@@ -2551,6 +2561,8 @@ def _fts_sync(
     return len(disk.keys() - spared), len(spared), len(unwalked), truncated
 
 
+# MERGE SEAM. Track A's takes `(con, query)`. Without the `deadline` a 12 KB
+# brief's OR'd MATCH runs past the harness kill with nothing to stop it.
 def _fts_search(
     con: sqlite3.Connection, query: str, deadline: float | None = None
 ) -> list[str]:
@@ -2624,6 +2636,8 @@ def _fts_search(
     return hits
 
 
+# MERGE SEAM. Track A's takes `(con, terms, ranked)`. The `deadline` is what
+# keeps the per-term walk inside the budget the caller was admitted under.
 def _record_matched(
     con: sqlite3.Connection,
     terms: list[str],
