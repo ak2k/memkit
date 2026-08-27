@@ -1826,28 +1826,183 @@ class BlameBaseShapeTest(unittest.TestCase):
         assert mi._rows_at(ledger, repo, repo, base) is None
         after = sorted(p.name for p in repo.iterdir())
         assert after == before, [n for n in after if n not in before]
-        # And an ordinary ref is untouched by the guard.
-        assert mi._refuse_option_shaped_base("origin/main") == "origin/main"
+        # The shape is refused where the revision is CONSTRUCTED, so there is
+        # no `""` for one call site to check for and the other to pass on.
+        for refused in (base, "", "-x", "  HEAD"):
+            with self.assertRaises(_exec.Untrusted):
+                _exec.Rev(refused)
+        # And an ordinary ref is untouched.
+        assert str(_exec.Rev("origin/main")) == "origin/main"
 
 
-class GitArgvTest(unittest.TestCase):
-    def test_the_content_subcommand_is_found_past_the_options_that_take_a_value(
-        self,
-    ) -> None:
-        """`-C <dir>` puts a non-flag word in front of the subcommand.
+class GitRouteTableTest(unittest.TestCase):
+    """The case this replaces walked a caller-assembled argv looking for the
+    subcommand, because `-C <dir>` puts a non-flag word in front of it and a
+    walk that stopped at the first such word left `log -p` with its textconv
+    and external-diff drivers — both of which name a program the repository
+    chooses.
 
-        A walk that stops at the first word not starting with `-` stops at the
-        DIRECTORY, so `git -C <dir> log -p` would keep its textconv and
-        external-diff drivers — both of which name a program the repository
-        gets to choose.
+    There is no walk now, because there is no assembly: a caller names a route
+    and its template is fixed. So what these pin is that every member HAS one,
+    that the content routes carry the two flags, that the `log` routes decline
+    signature verification, and that the path routes carry `--`.
+    """
+
+    HOLES = {"path": "a.md", "paths": ["a.md"], "limit": 5}
+
+    def test_every_route_has_a_template_and_the_flags_its_shape_needs(self) -> None:
+        holes = dict(self.HOLES, rev=_exec.Rev("HEAD"))
+        content = {
+            _exec.GitRoute.CHANGED_VS_HEAD,
+            _exec.GitRoute.CHANGED_SINCE,
+            _exec.GitRoute.BLOB_AT,
+            _exec.GitRoute.LAST_TOUCH,
+            _exec.GitRoute.ROW_TOUCH,
+        }
+        takes_path = {
+            _exec.GitRoute.LAST_TOUCH,
+            _exec.GitRoute.ROW_TOUCH,
+            _exec.GitRoute.TRACKED,
+        }
+        seen_log = 0
+        for route in _exec.GitRoute:
+            argv = _exec._git_template(route, holes)
+            assert argv, route
+            if route in content:
+                assert "--no-textconv" in argv and "--no-ext-diff" in argv, route
+            else:
+                assert "--no-textconv" not in argv, route
+            if "log" in argv:
+                seen_log += 1
+                assert "log.showSignature=false" in argv, route
+            if route in takes_path:
+                assert "--" in argv, route
+        # Anti-vacuity: there really are `log` routes for the rule above to be
+        # about, and there really are content routes.
+        assert seen_log == 2, seen_log
+        assert len(content) == 5
+
+    def test_an_unrecognised_route_is_a_refusal_and_not_an_argv(self) -> None:
+        # The type says a route is a route; this is about what happens when
+        # one arrives from somewhere the type checker never saw, which is the
+        # case a closed enum has to answer for.
+        for bad in ("toplevel", None, 0):
+            with self.assertRaises(_exec.Untrusted):
+                _exec._git_template(bad, {})  # type: ignore[arg-type]
+        # A hole the route needs and did not get is the same kind of refusal,
+        # rather than an argv with a gap in it.
+        for route in (
+            _exec.GitRoute.MERGE_BASE,
+            _exec.GitRoute.CHANGED_SINCE,
+            _exec.GitRoute.BLOB_AT,
+            _exec.GitRoute.LAST_TOUCH,
+            _exec.GitRoute.ROW_TOUCH,
+            _exec.GitRoute.TRACKED,
+        ):
+            with self.assertRaises(_exec.Untrusted):
+                _exec._git_template(route, {})
+        # And a `rev` hole will not take a bare string, however innocent — the
+        # validation is the type, so it cannot be skipped at one call site.
+        with self.assertRaises(_exec.Untrusted):
+            _exec._git_template(_exec.GitRoute.MERGE_BASE, {"rev": "HEAD"})
+
+    def test_the_neutralising_settings_are_in_every_shape(self) -> None:
+        seen: list = []
+        real = _exec.subprocess.run
+
+        def watched(argv, *a, **kw):
+            seen.append(list(argv))
+            return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
+
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        _exec.subprocess.run = watched
+        try:
+            _exec.run_git(_exec.GitRoute.UNTRACKED, repo=str(repo))
+        except _exec.Untrusted:  # no trusted git here at all
+            self.skipTest("no trusted git")
+        finally:
+            _exec.subprocess.run = real
+        assert seen, "no git invocation was observed, so this proves nothing"
+        assert "--no-optional-locks" in seen[0]
+        assert "core.fsmonitor=" in seen[0]
+
+    def test_the_log_routes_do_not_ask_git_to_verify_a_signature(self) -> None:
+        """`gpg.<format>.program` names a program git runs, and the FORMAT half
+        is the repository's choice — so no fixed `-c` covers the family and
+        `gpg.program=` silences only the OpenPGP one.
+
+        The answer is to stop ASKING: signature verification is requested by
+        `log` and by nothing else here, so the two `log` templates carry
+        `log.showSignature=false`. Driven through the real `_row_touch`, with a
+        positive control first — a case whose fixture cannot fire the program
+        proves nothing at all.
         """
-        argv = _exec._git_argv("/usr/bin/git", ["-C", "/some/dir", "log", "-p"])
-        assert argv[0] == "/usr/bin/git"
-        assert "--no-textconv" in argv and "--no-ext-diff" in argv
-        assert argv.index("--no-textconv") == argv.index("log") + 1
-        # `ls-files` renders no content, so it takes neither.
-        plain = _exec._git_argv("/usr/bin/git", ["-C", "/d", "ls-files", "-z"])
-        assert "--no-textconv" not in plain, plain
-        # The neutralising `-c` settings are there in every shape.
-        assert "core.fsmonitor=" in plain
-        assert "--no-optional-locks" in plain
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("no git")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        repo = root / "repo"
+        repo.mkdir()
+        marker = root / "PWNED-gpg.txt"
+        evil = root / "evil"
+        evil.write_text(
+            f'#!/bin/sh\necho pwned >> "{marker}"\nexit 0\n', encoding="utf-8"
+        )
+        evil.chmod(0o755)
+        signers = root / "allowed"
+        signers.write_text(
+            "nobody@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB0"
+            + "0" * 40 + "\n",
+            encoding="utf-8",
+        )
+
+        def g(*args: str, **kw) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [git, *args], cwd=repo, capture_output=True, text=True,
+                timeout=60, **kw,
+            )
+
+        g("init", "-q")
+        (repo / "a.md").write_text("x\n", encoding="utf-8")
+        for args in (
+            ("-c", "user.email=a@b", "-c", "user.name=a", "add", "a.md"),
+            ("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x"),
+            ("config", "gpg.format", "ssh"),
+            ("config", "gpg.ssh.program", str(evil)),
+            ("config", "gpg.ssh.allowedSignersFile", str(signers)),
+            ("config", "log.showSignature", "true"),
+        ):
+            g(*args)
+        # A commit carrying a signature header, so there is something to
+        # verify. Written by hand: signing it for real needs a key.
+        raw = g("cat-file", "commit", "HEAD").stdout.split("\n")
+        at = next(n for n, line in enumerate(raw) if line.startswith("committer"))
+        raw[at + 1 : at + 1] = [
+            "gpgsig -----BEGIN SSH SIGNATURE-----", " bogus",
+            " -----END SSH SIGNATURE-----",
+        ]
+        sha = g(
+            "hash-object", "-t", "commit", "-w", "--stdin", input="\n".join(raw)
+        ).stdout.strip()
+        g("update-ref", "HEAD", sha)
+
+        # POSITIVE CONTROL, without the hardening.
+        g("log", "-2", "--format=%ct", "-p", "--no-color", "--", "a.md")
+        assert marker.is_file(), (
+            "gpg.ssh.program never fired, so this fixture proves nothing"
+        )
+        marker.unlink()
+
+        # The route, which must still ANSWER — a refusal here would pass this
+        # case for the wrong reason.
+        out = _exec.run_git(
+            _exec.GitRoute.ROW_TOUCH, repo=str(repo), limit=2, path="a.md"
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip(), "the log route returned nothing"
+        assert not marker.exists(), marker.read_text()
+        assert mi._row_touch(repo, repo / "SEARCH.md") == {}
+        assert not marker.exists(), marker.read_text()
+

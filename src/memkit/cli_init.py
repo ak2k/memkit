@@ -43,12 +43,12 @@ import time
 
 from memkit._exec import (
     CheckerRoute,
+    GitRoute,
     Untrusted,
     _execute,
-    _trusted_git,
     _under_cwd,
-    _Untrusted,
     checker_argv,
+    run_git,
 )
 from memkit.cli_doctor import (
     CANARY_NAME,
@@ -935,8 +935,10 @@ def _git_tracked(path: str) -> bool:
     parent = os.path.dirname(path) or "."
     # `init --dry-run` is the PRE-APPROVED half of the handshake — the skill
     # grants it with no permission prompt — so this call must not be able to
-    # start a program somebody else chose. Which git runs is settled by
-    # `_trusted_which` inside `_trusted_git`; WHERE it runs is settled here.
+    # start a program somebody else chose. Which git runs and what it is told
+    # to forget are settled by the route table; WHERE it stands is settled
+    # here, and it is a parameter of the call rather than a word inside an
+    # argv.
     #
     # A repository's own `.git/config` names programs git runs — `ls-files
     # --error-unmatch` executes `core.fsmonitor`, reproduced twice per call —
@@ -950,11 +952,8 @@ def _git_tracked(path: str) -> bool:
     if _under_cwd(parent):
         return False
     try:
-        out = _trusted_git(
-            ["-C", parent, "ls-files", "--error-unmatch", path],
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError, _Untrusted):
+        out = run_git(GitRoute.TRACKED, repo=parent, path=path, timeout=15)
+    except (OSError, subprocess.SubprocessError, Untrusted):
         return False
     return out.returncode == 0
 

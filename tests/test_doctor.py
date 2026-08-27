@@ -2465,16 +2465,28 @@ def test_a_call_site_may_not_hand_the_gate_an_environment_it_built_itself(
     A call site that builds `dict(os.environ, ...)` used to put back every
     variable the scrub had just taken — which is exactly what the hook probe
     did. Under a built environment there is nothing for such a call to mean,
-    so it is refused rather than scrubbed: what a route adds it names in
-    `env_extra`, and what it inherits it names in `env_forward`.
+    so it has no spelling: what a route adds it names in `env_extra`, and what
+    it inherits it names in `env_forward`.
+
+    The same absence closes the three keywords that let a call THROUGH the
+    gate defeat it — `executable=` substitutes a different program behind an
+    approved argv, `shell=True` reinterprets it, `preexec_fn=` runs code in
+    the child first. The signature names every parameter, so none of them is
+    filtered or validated; there is nowhere to put them.
     """
     monkeypatch.setenv("PATH", "/usr/bin")
     monkeypatch.setenv("LD_PRELOAD", "/x")
-    with pytest.raises(_exec.Untrusted):
-        _exec._execute(
-            [sys.executable, "-c", "pass"],
-            env=dict(os.environ, LD_PRELOAD="/x"),
-        )
+    import inspect
+
+    accepted = set(inspect.signature(_exec._execute).parameters)
+    assert not any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in inspect.signature(_exec._execute).parameters.values()
+    ), accepted
+    for closed in ("env", "executable", "shell", "preexec_fn", "restore_signals"):
+        assert closed not in accepted, closed
+        with pytest.raises(TypeError):
+            _exec._execute([sys.executable, "-c", "pass"], **{closed: True})
     seen: dict = {}
     real = _exec.subprocess.run
 

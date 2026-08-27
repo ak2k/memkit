@@ -60,14 +60,17 @@ if sys.version_info < (3, 12):  # noqa: UP036 — the guard IS the old-version p
     )
 
 import argparse  # noqa: E402 — everything below the version guard, by design
+import contextlib  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from memkit._exec import (
-    _trusted_git,
-    _Untrusted,
+from memkit._exec import (  # noqa: E402
+    GitRoute,
+    Rev,
+    Untrusted,
+    run_git,
 )
 from memkit.memory_prompt_recall import (  # noqa: E402
     CONFIG_ENV,
@@ -93,19 +96,6 @@ DEFAULT_BLAME_BASE = "origin/main"
 # the live tree instead; verifying the edit tree is what removed the need.
 WRITE_CLI = "memory-integrity --write"
 WRITE_RECIPE = f"run `{WRITE_CLI}`"
-
-
-def _refuse_option_shaped_base(blame_base: str) -> str:
-    """`blame_base` as a git argument, or "" when it may not be one.
-
-    `citations.blame_base` is a CONFIG-SUPPLIED string that reaches
-    `git show f"{base}:{rel}"` and `git merge-base <base> HEAD`. Git reads a
-    leading `-` as an option wherever a revision is expected, and `git show`
-    accepts `--output=<file>` — so a value beginning with one turns a read
-    into a write git performs on the config's behalf. No placement of `--`
-    fixes a `rev:path` argument, so the SHAPE is refused instead.
-    """
-    return "" if blame_base.startswith("-") else blame_base
 
 
 def _stale_base_hint(blame_base: str) -> str:
@@ -665,25 +655,23 @@ def _changed_files(repo: Path, blame_base: str) -> tuple[set[str], str]:
     from a check that passed.
     """
 
-    def git(*args: str) -> subprocess.CompletedProcess[str] | None:
+    def git(route: GitRoute, **holes) -> subprocess.CompletedProcess[str] | None:
         try:
-            out = _trusted_git(list(args), cwd=repo, timeout=30)
-        except (OSError, subprocess.SubprocessError, _Untrusted):
+            out = run_git(route, repo=str(repo), timeout=30, **holes)
+        except (OSError, subprocess.SubprocessError, Untrusted):
             return None
         return out if out.returncode == 0 else None
 
     def paths(proc: subprocess.CompletedProcess[str] | None) -> list[str]:
         return [n for n in proc.stdout.split("\0") if n] if proc else []
 
-    top = git("rev-parse", "--show-toplevel")
+    top = git(GitRoute.TOPLEVEL)
     if top is None or Path(top.stdout.strip()).resolve() != repo.resolve():
         return set(), f"{repo} is not a git toplevel"
-    changed = git("diff", "-z", "--name-only", "HEAD")
+    changed = git(GitRoute.CHANGED_VS_HEAD)
     if changed is None:
         return set(), "no HEAD to diff against"
-    names = paths(changed) + paths(
-        git("ls-files", "-z", "--others", "--exclude-standard")
-    )
+    names = paths(changed) + paths(git(GitRoute.UNTRACKED))
     # A branch with no merge base — blame_base unfetched, a repo without that
     # ref at all, a fixture — simply contributes nothing here. The working tree
     # still answers, so the check degrades to what it did before rather than to
@@ -692,9 +680,17 @@ def _changed_files(repo: Path, blame_base: str) -> tuple[set[str], str]:
     # blamed set and somebody else's drift blocks this build. No fetch is done
     # to prevent that — network in a gate that runs on every commit costs more
     # than the fault — so the DEAD-PATH text names it instead.
-    base = git("merge-base", _refuse_option_shaped_base(blame_base), "HEAD")
+    # A `blame_base` that is not a revision refuses AT CONSTRUCTION, so there
+    # is no empty argument for git to fail on for an incidental reason and no
+    # second call site to disagree about what a refusal meant.
+    base = None
+    with contextlib.suppress(Untrusted):
+        base = git(GitRoute.MERGE_BASE, rev=Rev(blame_base))
     if base is not None and base.stdout.strip():
-        names += paths(git("diff", "-z", "--name-only", base.stdout.strip(), "HEAD"))
+        with contextlib.suppress(Untrusted):
+            names += paths(
+                git(GitRoute.CHANGED_SINCE, rev=Rev(base.stdout.strip()))
+            )
     files = set(names)
     return files, "" if files else "working tree is clean and no commits on this branch"
 
@@ -804,12 +800,11 @@ def _rows_at(
         rel = ledger.resolve().relative_to(repo.resolve())
     except ValueError:
         return None
-    base = _refuse_option_shaped_base(base)
-    if not base:
-        return None
     try:
-        out = _trusted_git(["show", f"{base}:{rel}"], cwd=repo, timeout=30)
-    except (OSError, subprocess.SubprocessError, _Untrusted):
+        out = run_git(
+            GitRoute.BLOB_AT, repo=str(repo), rev=Rev(base), path=str(rel)
+        )
+    except (OSError, subprocess.SubprocessError, Untrusted):
         return None
     if out.returncode != 0:
         return None
@@ -923,12 +918,10 @@ def _last_touch(repo: Path, paths: list[str]) -> dict[str, int]:
     if not paths:
         return {}
     try:
-        out = _trusted_git(
-            ["log", "--format=%ct", "--name-only", "--no-renames", "--", *paths],
-            cwd=repo,
-            timeout=60,
+        out = run_git(
+            GitRoute.LAST_TOUCH, repo=str(repo), paths=list(paths), timeout=60
         )
-    except (OSError, subprocess.SubprocessError, _Untrusted):
+    except (OSError, subprocess.SubprocessError, Untrusted):
         return {}
     seen: dict[str, int] = {}
     ts = 0
@@ -949,12 +942,10 @@ def _row_touch(repo: Path, ledger: Path, limit: int = 400) -> dict[str, int]:
     except ValueError:
         return {}
     try:
-        out = _trusted_git(
-            ["log", f"-{limit}", "--format=%ct", "-p", "--no-color", "--", rel],
-            cwd=repo,
-            timeout=60,
+        out = run_git(
+            GitRoute.ROW_TOUCH, repo=str(repo), limit=limit, path=rel, timeout=60
         )
-    except (OSError, subprocess.SubprocessError, _Untrusted):
+    except (OSError, subprocess.SubprocessError, Untrusted):
         return {}
     seen: dict[str, int] = {}
     ts = 0

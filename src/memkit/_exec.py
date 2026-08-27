@@ -57,10 +57,6 @@ class Untrusted(Exception):
     """
 
 
-# The old name, for the `except` clauses that spell it. One class, so an
-# `except _Untrusted` and an `except Untrusted` cannot come apart.
-_Untrusted = Untrusted
-
 
 def require_executable(path: str) -> None:
     """THE ONE RULE for every program any module in this package starts.
@@ -234,7 +230,9 @@ def _execute(
     *,
     env_extra: dict | None = None,
     env_forward: tuple = (),
-    **kw,
+    timeout: int | None = None,
+    cwd: str | None = None,
+    input: str | None = None,  # noqa: A002 — subprocess.run spells it this way
 ) -> subprocess.CompletedProcess:
     """The one place any module in this package starts a process.
 
@@ -243,23 +241,50 @@ def _execute(
     check that called it reports UNKNOWN with the reason instead, which is the
     answer a diagnostic owes when honouring the rule costs it its signal.
 
-    The environment is BUILT, never derived from the caller's: there is no
-    `env=` to pass, because a call site that assembles `dict(os.environ, …)`
+    EVERY parameter is named here, and the absent `**kw` is the point: the
+    gate governs the whole invocation rather than argv[0]. Forwarding a
+    caller's keywords let `executable=` substitute a different program behind
+    an argv the gate had approved, `shell=True` reinterpret it as a command
+    line, and `preexec_fn=` run arbitrary code in the child before it. None of
+    those has a spelling here — not a filtered one, not a validated one.
+
+    The environment is likewise BUILT rather than derived from the caller's:
+    there is no `env=`, because a call site that assembles `dict(os.environ, …)`
     is the whole class of defect this exists to remove.
     """
     if not argv:
         raise Untrusted("no program was named")
     require_executable(argv[0])
-    if "env" in kw:
-        raise Untrusted(
-            "a caller may not supply a child environment; name what the route "
-            "adds in env_extra and what it inherits in env_forward"
-        )
-    env = child_env(env_extra, env_forward)
-    kw.setdefault("capture_output", True)
-    kw.setdefault("text", True)
-    return subprocess.run(argv, env=env, **kw)  # noqa: S603
+    return subprocess.run(  # noqa: S603
+        argv,
+        env=child_env(env_extra, env_forward),
+        timeout=timeout,
+        cwd=cwd,
+        input=input,
+        capture_output=True,
+        text=True,
+    )
 
+
+# --- git, as a closed table of routes ----------------------------------------
+#
+# A caller NAMES a route and supplies typed holes; it never supplies argv. The
+# set of git subcommands this package can ever run is therefore finite and
+# printable, which turns "which configuration keys can this subcommand reach a
+# program through" from an open question into one asked ten times.
+#
+# That is the answer to a class, not to a key. A `-c` list silences the keys
+# somebody thought of — three were missing, one of them
+# (`filter.<driver>.clean`) not expressible as a `-c` at all because the
+# driver's NAME is chosen by the repository — so the invocations also have to
+# stop ASKING for the work that reaches the unlisted ones. Signature
+# verification is the case in hand: it is asked for by `log` and by nothing
+# else here, so `log.showSignature=false` sits in the two `log` templates
+# rather than at their call sites, where the eleventh route would not have it.
+#
+# `--` is in every template that takes a path, so a path that begins with `-`
+# is a path; and every revision arrives as a `Rev`, which has no empty and no
+# option-shaped value. Neither is a rule a call site can forget.
 
 # What a git invocation must be told to forget. A repository's own
 # `.git/config` is not reachable by any environment variable — there is no
@@ -267,6 +292,11 @@ def _execute(
 # command line instead, where a `-c` beats the file. `core.fsmonitor` is the
 # one reproduced end to end: `git ls-files --error-unmatch` runs it, twice,
 # from the config of whatever repository the path belongs to.
+#
+# This list is a SECOND line and is known to be incomplete — see the route
+# table's own comment. What bounds the exposure is that the every-prompt path
+# runs no git at all, and that the repositories reached from here are ones the
+# adopter declared.
 _GIT_NEUTRAL_CONFIG = (
     "core.fsmonitor=",
     "core.hooksPath=/dev/null",
@@ -282,79 +312,200 @@ _GIT_NEUTRAL_CONFIG = (
     "protocol.ext.allow=never",
 )
 
-# The subcommands that render CONTENT, and so consult `.gitattributes` for a
-# textconv or an external diff driver. `--no-textconv` and `--no-ext-diff` are
-# only accepted by these, which is why the list exists rather than a blanket
-# flag.
-_GIT_CONTENT_SUBCOMMANDS = ("diff", "log", "show")
-
-
-# The git-level options that take a VALUE. Without them the walk below stops
-# at `<dir>` in `git -C <dir> log ...` and never reaches the subcommand.
-_GIT_VALUE_OPTIONS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace")
-
-
-def _git_argv(git: str, args: list) -> list:
-    """`git` plus `args`, with every config key that names a program silenced."""
-    flags = ["--no-optional-locks"]
-    for setting in _GIT_NEUTRAL_CONFIG:
-        flags += ["-c", setting]
-    rest = list(args)
-    i = 0
-    while i < len(rest):
-        word = rest[i]
-        if word in _GIT_VALUE_OPTIONS:
-            i += 2
-            continue
-        if word.startswith("-"):
-            i += 1
-            continue
-        if word in _GIT_CONTENT_SUBCOMMANDS:
-            rest[i + 1 : i + 1] = ["--no-textconv", "--no-ext-diff"]
-        break
-    return [git, *flags, *rest]
-
-
-# Config DISCOVERY, switched off at the two levels an environment variable can
+# Config DISCOVERY, switched off at the levels an environment variable can
 # reach. `/dev/null` rather than an unset variable: unset means "look in the
 # usual place", and the usual place is a file whichever `$HOME` the session
 # exported points at.
 #
-# The `-c` overrides above already beat every config file, so this is the
-# second line rather than the first: what it buys is a key nobody enumerated.
-# What it costs is `core.excludesFile` — `git ls-files --others
-# --exclude-standard` in the checker no longer honours an adopter's GLOBAL
-# ignore file, so a file they ignore everywhere reads as untracked here. The
-# checker's blamed set is `.md` under a memory store, which is not what a
-# global ignore file is usually about.
+# `GIT_CONFIG_PARAMETERS` is git's own serialisation of `-c` options and is
+# honoured despite every other name here. It cannot arrive — the child's
+# environment is built from an allow-list and this is not in it — and it is
+# set EMPTY anyway, because a route that one day declares a forward should not
+# be able to reopen config discovery by accident.
+#
+# What this costs is `core.excludesFile` — `ls-files --others
+# --exclude-standard` no longer honours an adopter's GLOBAL ignore file, so a
+# file they ignore everywhere reads as untracked here. The blamed set is `.md`
+# under a memory store, which is not what a global ignore file is usually
+# about.
 _GIT_NEUTRAL_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_SYSTEM": "/dev/null",
     "GIT_CONFIG_COUNT": "0",
+    "GIT_CONFIG_PARAMETERS": "",
     "GIT_ATTR_NOSYSTEM": "1",
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_NO_REPLACE_OBJECTS": "1",
 }
 
+# The subcommands that render CONTENT, and so consult `.gitattributes` for a
+# textconv or an external diff driver. Only these accept the two flags, which
+# is why they are in three templates rather than in the shared prefix.
+_NO_CONTENT_DRIVERS = ("--no-textconv", "--no-ext-diff")
 
-def _trusted_git(args: list, **kw) -> subprocess.CompletedProcess:
-    """One `git` run: a trusted binary, told to read no configuration that
-    names a program.
+# Signature verification names a program through `gpg.<format>.program`, whose
+# FORMAT half a repository chooses, so no fixed `-c` covers the family. `log`
+# is the only route that can be asked for it, and it is asked here not to be.
+_NO_SIGNATURES = ("-c", "log.showSignature=false")
 
-    Both halves are the rule. `resolve` settles WHICH git runs; `_git_argv`
-    and `_GIT_NEUTRAL_ENV` settle what it reads once it is running — and the
-    second half is not optional, because git standing in a directory somebody
-    else wrote is git being handed a program to run.
+
+class GitRoute(enum.Enum):
+    """Every git invocation this package can make. A closed set."""
+
+    TOPLEVEL = "toplevel"
+    HEAD_SHA = "head-sha"
+    CHANGED_VS_HEAD = "changed-vs-head"
+    CHANGED_SINCE = "changed-since"
+    UNTRACKED = "untracked"
+    MERGE_BASE = "merge-base"
+    BLOB_AT = "blob-at"
+    LAST_TOUCH = "last-touch"
+    ROW_TOUCH = "row-touch"
+    TRACKED = "tracked"
+
+
+class Rev:
+    """A git revision, validated where it is CONSTRUCTED rather than where it
+    is used.
+
+    Git reads a leading `-` as an option wherever a revision is expected, and
+    `git show` accepts `--output=<file>` — so a config-supplied value starting
+    with one turns a read into a write git performs on the config's behalf. No
+    placement of `--` fixes a `rev:path` argument, so the shape is refused.
+
+    An empty revision is refused for the reason the guard this replaces got
+    wrong: it answered `""`, one of its two call sites checked for that and
+    the other did not, and git was handed an empty argument and failed for an
+    incidental reason instead of declining to run. A type cannot be half
+    checked.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: str) -> None:
+        if not isinstance(value, str) or not value:
+            raise Untrusted("a revision may not be empty")
+        if value.startswith("-"):
+            raise Untrusted(f"{value!r} is option-shaped, so it is not a revision")
+        if value != value.strip() or "\0" in value:
+            raise Untrusted(f"{value!r} is not a well-formed revision")
+        self.value = value
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __repr__(self) -> str:
+        return f"Rev({self.value!r})"
+
+
+def _require_path(value: str, where: str) -> str:
+    """A path hole that no `--` protects — `show <rev>:<path>` is one word."""
+    if not isinstance(value, str) or not value:
+        raise Untrusted(f"{where} may not be empty")
+    if value.startswith("-"):
+        raise Untrusted(f"{where} {value!r} is option-shaped")
+    return value
+
+
+def _git_template(route: GitRoute, holes: dict) -> list:
+    """`route`'s fixed template with its holes filled, or `Untrusted`.
+
+    One branch per member and no default: an unrecognised route is not a route,
+    and falls out as a refusal rather than as an argv nobody wrote.
+    """
+    if not isinstance(route, GitRoute):
+        raise Untrusted(f"{route!r} is not a git route")
+    if route is GitRoute.TOPLEVEL:
+        return ["rev-parse", "--show-toplevel"]
+    if route is GitRoute.HEAD_SHA:
+        return ["rev-parse", "HEAD"]
+    if route is GitRoute.CHANGED_VS_HEAD:
+        return ["diff", *_NO_CONTENT_DRIVERS, "-z", "--name-only", "HEAD"]
+    if route is GitRoute.CHANGED_SINCE:
+        rev = _rev(holes)
+        return [
+            "diff", *_NO_CONTENT_DRIVERS, "-z", "--name-only", str(rev), "HEAD"
+        ]
+    if route is GitRoute.UNTRACKED:
+        return ["ls-files", "-z", "--others", "--exclude-standard"]
+    if route is GitRoute.MERGE_BASE:
+        return ["merge-base", str(_rev(holes)), "HEAD"]
+    if route is GitRoute.BLOB_AT:
+        rev = _rev(holes)
+        path = _require_path(_str(holes, "path"), "a blob path")
+        return ["show", *_NO_CONTENT_DRIVERS, f"{rev}:{path}"]
+    if route is GitRoute.LAST_TOUCH:
+        return [
+            *_NO_SIGNATURES, "log", *_NO_CONTENT_DRIVERS, "--format=%ct",
+            "--name-only", "--no-renames", "--", *_paths(holes),
+        ]
+    if route is GitRoute.ROW_TOUCH:
+        limit = _int(holes, "limit")
+        path = _str(holes, "path")
+        return [
+            *_NO_SIGNATURES, "log", *_NO_CONTENT_DRIVERS, f"-{limit}",
+            "--format=%ct", "-p", "--no-color", "--", path,
+        ]
+    # TRACKED, and there is no `else`: a member added without a template
+    # reaches the refusal below rather than an argv nobody wrote.
+    if route is GitRoute.TRACKED:
+        return ["ls-files", "--error-unmatch", "--", _str(holes, "path")]
+    raise Untrusted(f"{route!r} has no template")
+
+
+def _rev(holes: dict) -> Rev:
+    value = holes.get("rev")
+    if not isinstance(value, Rev):
+        raise Untrusted("this route needs a Rev it did not get")
+    return value
+
+
+def _str(holes: dict, name: str) -> str:
+    value = holes.get(name)
+    if not isinstance(value, str) or not value:
+        raise Untrusted(f"this route needs a non-empty {name} it did not get")
+    return value
+
+
+def _int(holes: dict, name: str) -> int:
+    value = holes.get(name)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise Untrusted(f"this route needs a positive {name} it did not get")
+    return value
+
+
+def _paths(holes: dict) -> list:
+    value = holes.get("paths")
+    if not isinstance(value, (list, tuple)) or not value:
+        raise Untrusted("this route needs at least one path it did not get")
+    return [_str({"p": p}, "p") for p in value]
+
+
+def run_git(
+    route: GitRoute, *, repo: str, timeout: int = 30, **holes
+) -> subprocess.CompletedProcess:
+    """One `git` run: a trusted binary, a template from the closed table above,
+    and configuration it is told to forget.
+
+    `repo` is where git STANDS, and it is a directory a caller declared rather
+    than a `-C` word inside an argv somebody assembled — which is what makes
+    "which repository answered" a thing the signature says.
 
     Raises `Untrusted` when no trusted git resolves, so a caller cannot get a
     silent "not a repository" answer out of a refusal.
     """
-    git = resolve("git")
-    extra = dict(_GIT_NEUTRAL_ENV)
-    extra.update(kw.pop("env_extra", None) or {})
-    return _execute(_git_argv(git, list(args)), env_extra=extra, **kw)
+    argv = _git_template(route, holes)
+    flags = ["--no-optional-locks"]
+    for setting in _GIT_NEUTRAL_CONFIG:
+        flags += ["-c", setting]
+    return _execute(
+        [resolve("git"), *flags, *argv],
+        cwd=repo,
+        timeout=timeout,
+        env_extra=dict(_GIT_NEUTRAL_ENV),
+    )
 
 
 # --- the checker's invocation, reconstructed ---------------------------------

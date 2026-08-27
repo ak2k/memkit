@@ -59,14 +59,14 @@ from collections.abc import Callable
 
 from memkit._exec import (
     CheckerRoute,
+    GitRoute,
     Untrusted,
     _execute,
-    _trusted_git,
     _under_cwd,
-    _Untrusted,
     checker_argv,
     require_executable,
     resolve,
+    run_git,
 )
 from memkit.memory_prompt_recall import (
     BUILD_BUSY,
@@ -2352,7 +2352,7 @@ def _harness_stamp(machine: Machine) -> list[Check]:
         ]
     try:
         out = _execute([binary, "--version"], timeout=30)
-    except (OSError, subprocess.SubprocessError, _Untrusted) as exc:
+    except (OSError, subprocess.SubprocessError, Untrusted) as exc:
         return [
             Check(
                 "harness-stamp",
@@ -2503,8 +2503,8 @@ def build_facts() -> tuple:
     payload = None
     root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     if root and os.path.isdir(os.path.join(root, ".git")):
-        with contextlib.suppress(OSError, subprocess.SubprocessError, _Untrusted):
-            out = _trusted_git(["-C", root, "rev-parse", "HEAD"], timeout=15)
+        with contextlib.suppress(OSError, subprocess.SubprocessError, Untrusted):
+            out = run_git(GitRoute.HEAD_SHA, repo=root, timeout=15)
             if out.returncode == 0:
                 payload = out.stdout.strip()[:12]
     return package, hook_version, payload
