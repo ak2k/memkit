@@ -9498,6 +9498,122 @@ def test_a_file_that_grows_past_the_cap_before_the_read_is_still_declined(
     assert hook._LEX_COUNTS["lex_oversize"] == 1, hook._LEX_COUNTS
 
 
+def test_the_file_cap_is_enforced_in_the_unit_it_is_declared_in(
+    tmp_path: Path,
+) -> None:
+    """`INDEX_FILE_MAX_BYTES` is a BYTE cap — the walk's own check is
+    `st.st_size > INDEX_FILE_MAX_BYTES` — and the fallback read enforced it in
+    CHARACTERS.
+
+    The two disagree by up to four on the same file, and not in the harmless
+    direction. A file of dense multibyte prose (CJK, emoji — a Japanese memory
+    store is not exotic) whose character count is under the cap and whose byte
+    count is well over it was read whole and indexed, on the one path with no
+    fresh size check in front of it. That is the exact file the walk's stat
+    would have declined, accepted by the check that exists to be the walk's
+    second reading.
+
+    The cap's stated point is that the bytes are never read: "a size checked
+    after the open has already paid for what it was meant to refuse".
+    """
+    dense = tmp_path / "dense.md"
+    # Half the cap in CHARACTERS, twice the cap in BYTES.
+    dense.write_text("\U0001F600" * (hook.INDEX_FILE_MAX_BYTES // 2), encoding="utf-8")
+    assert dense.stat().st_size > hook.INDEX_FILE_MAX_BYTES, dense.stat().st_size
+    assert hook._read_capped(str(dense)) is None, "read past the byte cap"
+
+    # Non-vacuity: a file under the cap in bytes still comes back, byte for
+    # byte, and a file of the same CHARACTER count in ASCII is well under.
+    ok = tmp_path / "ok.md"
+    body = "# H\n\nsprocket backlash gearbox\n" + "\U0001F600" * 1000
+    ok.write_text(body, encoding="utf-8")
+    assert hook._read_capped(str(ok)) == body
+
+    # And universal newlines still apply, because `_md_sections` and the
+    # `[section: ...]` label both read what this returns.
+    crlf = tmp_path / "crlf.md"
+    crlf.write_bytes(b"# H\r\n\r\nsprocket backlash\r\n")
+    assert hook._read_capped(str(crlf)) == "# H\n\nsprocket backlash\n"
+
+
+def test_a_file_that_grew_past_the_cap_under_the_lock_is_not_indexed_as_empty(
+    corpus: Path, monkeypatch
+) -> None:
+    """`_read_capped` returns None to mean "past the cap", and the
+    in-transaction re-read swallowed that sentinel with `or ""`.
+
+    What that costs is the failure this project fears most. The file's real
+    chunk rows are DELETEd and one EMPTY chunk is inserted in their place, so
+    the memory stops being findable — while `lex_oversize`, `lex_spared` and
+    the returned `declined` count all stay 0 and the `.build` sidecar records
+    `ok` with the file among `files`. Not a refusal, not a spare: the content
+    silently vanishes and nothing in the record says a file was declined.
+
+    It also contradicts `_fts_sync`'s own docstring ("Unreadable files are
+    skipped, never indexed as empty") and the sibling staging branch forty
+    lines above, which handles the identical None correctly.
+
+    Reaching the branch needs the under-lock identity read to disagree with
+    the pre-lock snapshot — a racing writer between them — which is what the
+    stub below is. The growth is real.
+    """
+    _many_memos(corpus, 1)
+    grower = corpus / "grower.md"
+    grower.write_text("## G\nsprocket backlash gearbox rebuild shim\n")
+    db = hook._fts_db(str(corpus))
+    con = hook._fts_connect(db)
+    try:
+        hook._fts_sync(con, str(corpus))
+        assert str(grower) in hook._fts_search(con, "sprocket backlash gearbox")
+    finally:
+        con.close()
+
+    # Work for the second sync to do, so `BEGIN IMMEDIATE` is reached at all:
+    # with nothing changed the identity comparison finds no difference and the
+    # transaction — the whole subject here — is never opened.
+    (corpus / "m0000.md").write_text("# Memo 0\n\nsprocket backlash shim moved.\n")
+
+    real_identity = hook._fts_identity
+    calls = {"n": 0}
+
+    def racing_identity(con):
+        """Pre-lock: the truth. Under the lock: a writer has been here.
+
+        The path is then in `disk`, matches the SNAPSHOT (so staging skips it,
+        and nothing is staged for it) and differs from STORED (so the
+        transaction re-reads it) — which is the branch under test.
+        """
+        got = real_identity(con)
+        calls["n"] += 1
+        if calls["n"] >= 2 and str(grower) in got:
+            m, c, s = got[str(grower)]
+            got[str(grower)] = (m, c, s + 1)
+            grower.write_text("## G\nsprocket backlash gearbox rebuild shim\n" * 200_000)
+        return got
+
+    monkeypatch.setattr(hook, "_fts_identity", racing_identity)
+    for key in hook._LEX_COUNTS:
+        hook._LEX_COUNTS[key] = 0
+    con = hook._fts_connect(db)
+    try:
+        files, spared, unwalked, declined = hook._fts_sync(con, str(corpus))
+        rows = con.execute(
+            "SELECT count(*), coalesce(sum(length(text)), 0) FROM chunks WHERE path = ?",
+            (str(grower),),
+        ).fetchone()
+    finally:
+        con.close()
+    assert grower.stat().st_size > hook.INDEX_FILE_MAX_BYTES
+    # Never indexed as EMPTY. Either its old rows still stand or they are
+    # gone; what must not happen is one row holding no text, which answers
+    # nothing and reports as a healthy index.
+    assert rows != (1, 0), (rows, "indexed as empty")
+    # And the run SAYS a file was declined, in every place that speaks: the
+    # returned count, the counter, and therefore the `.build` sidecar.
+    assert declined >= 1, (files, spared, unwalked, declined)
+    assert hook._LEX_COUNTS["lex_oversize"] >= 1, hook._LEX_COUNTS
+
+
 def test_a_symlink_out_of_the_store_is_refused_and_counted(
     corpus: Path, tmp_path: Path
 ) -> None:
@@ -9619,6 +9735,61 @@ def test_one_match_cannot_outlive_the_budget_it_was_admitted_under(
     # what `_fts_dir` answers by unlinking the DB, so every over-budget query
     # would rebuild the corpus it had just failed to search.
     assert not issubclass(hook._QueryTimeout, sqlite3.OperationalError)
+
+
+def test_the_per_term_walk_is_bounded_inside_its_statements_too(
+    corpus: Path, monkeypatch
+) -> None:
+    """The other half of the same gap, on the loop that costs more.
+
+    `_fts_search`'s OR'd MATCH was routed through the bounded executor and
+    `_record_matched`'s per-term MATCH was left admission-checked: the clock is
+    read before each term, so a statement that starts inside the budget runs to
+    completion however long it takes. This is the loop measured at 2.6 s of a
+    6.2 s brief on a 2800-file index — one corpus-wide MATCH per term, up to
+    TASK_QUERY_MAX_TERMS of them — so it is where a single statement is most
+    able to outlive the budget it was admitted under, and past the task path's
+    budget is past the harness kill.
+
+    Asserted on the wiring, the way the sibling case is: the per-term
+    statements go through the bounded executor carrying the deadline this
+    function was given.
+    """
+    _many_memos(corpus, 3)
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        hook._fts_sync(con, str(corpus))
+        rows = con.execute("SELECT path, rowid FROM chunks LIMIT 2").fetchall()
+        ranked = dict(rows)
+        seen: list = []
+        real = hook._fts_bounded
+        monkeypatch.setattr(
+            hook,
+            "_fts_bounded",
+            lambda c, q, p, d, w: seen.append(d) or real(c, q, p, None, w),
+        )
+        deadline = time.monotonic() + 3600
+        hook._record_matched(con, ["sprocket", "backlash"], ranked, deadline)
+        assert len(seen) == 2, seen
+        assert all(d == deadline for d in seen), seen
+        # Non-vacuity: the evidence it exists to build is still built.
+        assert any(hook._LEX_MATCHED[p] for p in ranked), dict(hook._LEX_MATCHED)
+    finally:
+        con.close()
+
+    # And an abort inside one of those statements is the caller's timeout, not
+    # a damaged index — the same conversion the OR'd MATCH already gets.
+    con = hook._fts_connect(hook._fts_db(str(corpus)))
+    try:
+        monkeypatch.undo()
+        monkeypatch.setattr(hook, "FTS_PROGRESS_OPS", 1)
+        rows = con.execute("SELECT path, rowid FROM chunks LIMIT 2").fetchall()
+        with pytest.raises(hook._QueryTimeout):
+            hook._record_matched(
+                con, ["sprocket"], dict(rows), time.monotonic() - 1
+            )
+    finally:
+        con.close()
 
 
 def test_a_memory_that_grows_past_the_cap_stops_answering_with_its_old_text(

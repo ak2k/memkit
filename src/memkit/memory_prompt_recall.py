@@ -2129,14 +2129,30 @@ def _read_capped(path: str) -> str | None:
     character past the cap is what makes the refusal a decision taken on this
     side of the bytes.
 
-    Characters rather than bytes, which is the cheap approximation and the
-    right one here: the expensive half is the tokenize, and that is bounded by
-    characters. Pathological multibyte content can still pull up to four times
-    the cap off the disk before the length test settles it.
+    IN BYTES, which is the unit the constant is declared in and the unit the
+    walk's own `st.st_size` check enforces. Read in text mode this counted
+    CHARACTERS, and the two disagree by up to four on the same file: measured,
+    a request for `cap + 1` characters against an all-four-byte-UTF-8 file
+    pulled 16.00 MiB off a 4 MiB cap. That is not only cost. A file of dense
+    multibyte prose — a Japanese store is not exotic — whose character count
+    was under the cap and whose byte count was well over it came back WHOLE
+    and was indexed, on the one path with no fresh size check in front of it.
+    The check that exists to be the walk's second reading was accepting
+    exactly the file the walk's first reading declines.
+
+    The length test happens BEFORE the decode, so an over-cap file costs the
+    read and nothing else — and so the decode never sees a multi-byte
+    character sliced at the cap boundary.
+
+    Universal newlines by hand, because binary mode does not do it and both
+    `_md_sections` and the `[section: ...]` label read what this returns.
     """
-    with open(path, encoding="utf-8", errors="replace") as f:
-        text = f.read(INDEX_FILE_MAX_BYTES + 1)
-    return None if len(text) > INDEX_FILE_MAX_BYTES else text
+    with open(path, "rb") as f:
+        raw = f.read(INDEX_FILE_MAX_BYTES + 1)
+    if len(raw) > INDEX_FILE_MAX_BYTES:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 # How often SQLite consults an abort callback, in VM instructions. Small enough
@@ -2269,10 +2285,14 @@ def _fts_sync(
     past busy_timeout. One transaction also means an interrupted sync leaves
     the previous index rather than a half-updated one.
 
-    Unreadable files are skipped, never indexed as empty — but an index that
-    holds NOTHING and skipped something raises, because an empty index is
-    indistinguishable from a corpus with nothing to say once the rows are
-    gone, and "no hits" is an answer the caller trusts.
+    Unreadable files are skipped, never indexed as empty — and neither is a
+    file past the cap, at EITHER read. An index that holds NOTHING and skipped
+    something raises, because an empty index is indistinguishable from a
+    corpus with nothing to say once the rows are gone, and "no hits" is an
+    answer the caller trusts. The same argument one level down is why nothing
+    here may index a file as empty: a memory that is not being consulted has
+    to be visible as such in the counters and the returned `declined`, never
+    inferred from an absence.
 
     `deadline` TRUNCATES ALL THREE LOOPS — staging, insert, sweep — and it is
     the only thing that bounds this function at all. The callers' budgets were
@@ -2435,10 +2455,31 @@ def _fts_sync(
                     # failure here be the race it is; if it turns out to be a
                     # mode rather than a moment, the next scan classifies it.
                     try:
-                        sections = _md_sections(_read_capped(path) or "")
+                        text = _read_capped(path)
                     except OSError:
                         spared.add(path)
                         continue
+                    if text is None:
+                        # `_read_capped` returns None to mean PAST THE CAP, and
+                        # `or ""` read that as an empty file: the real chunk
+                        # rows were deleted and one empty chunk inserted in
+                        # their place, so the memory stopped being findable
+                        # while `lex_oversize`, `lex_spared` and `declined` all
+                        # stayed 0 and the `.build` sidecar recorded `ok` with
+                        # the file counted among `files`. Not a refusal and not
+                        # a spare — the content vanished with nothing saying
+                        # so, which is the one failure this whole module is
+                        # arranged against.
+                        #
+                        # Classified exactly as the staging loop classifies the
+                        # identical None. No `del disk[path]`: this loop
+                        # iterates `planned`, a list taken from `disk`, and the
+                        # subtraction that removes it happens after the
+                        # transaction instead.
+                        oversize.add(path)
+                        spared.add(path)
+                        continue
+                    sections = _md_sections(text)
                 con.execute("DELETE FROM chunks WHERE path = ?", (path,))
                 con.executemany(
                     "INSERT INTO chunks VALUES (?, ?, ?, ?, ?)",
@@ -2593,7 +2634,8 @@ def _fts_search(
 
 
 # MERGE SEAM. Track A's takes `(con, terms, ranked)`. The `deadline` is what
-# keeps the per-term walk inside the budget the caller was admitted under.
+# keeps the per-term walk inside the budget the caller was admitted under, and
+# it is carried into each statement rather than only checked between them.
 def _record_matched(
     con: sqlite3.Connection,
     terms: list[str],
@@ -2653,9 +2695,20 @@ def _record_matched(
         # wrong one.
         if deadline is not None and time.monotonic() >= deadline:
             raise _QueryTimeout(f"{len(terms)} terms, {t!r} unreached")
-        for (p,) in con.execute(
+        # Through the bounded executor, for the reason `_fts_bounded` gives:
+        # the check above is an ADMISSION test, and this is the loop where the
+        # gap between admission and completion is a budget rather than a
+        # rounding error. Each statement is a corpus-wide MATCH, there are up
+        # to TASK_QUERY_MAX_TERMS of them, and the loop measures 2.6 s of a
+        # 6.2 s brief on a 2800-file index — so one statement admitted with a
+        # little budget left can spend the rest of it, and past this budget is
+        # past the harness kill.
+        for (p,) in _fts_bounded(
+            con,
             f"SELECT DISTINCT path FROM chunks WHERE chunks MATCH ? AND path IN ({ph})",  # noqa: S608
             (f'"{t}"', *paths),
+            deadline,
+            f"{len(terms)} terms, {t!r}",
         ):
             _LEX_MATCHED[p].append(t)
 
