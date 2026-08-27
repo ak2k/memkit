@@ -1380,23 +1380,29 @@ def sanitize(text: str) -> str:
 # killed.
 PIPE_BUFFER_BOUND = 16384
 
-# How often the walk reads the clock, in candidate files. Not every file, and
-# not once per directory.
+# How often the walk reads the clock, counted in ENTRIES `os.walk` yields —
+# every filename, not only the `.md` ones, because seeing them is the cost
+# this bounds. Neither once per directory nor once per entry.
 #
-# Once per DIRECTORY cannot bound a corpus that IS one directory — the walk
-# then runs to completion whatever the budget, measured at 224x a 0.05 s
-# deadline on a store the filesystem was slow about.
+# Once per DIRECTORY cannot bound a corpus that IS one directory: the walk
+# then runs to completion whatever the budget. A local corpus does not show
+# it — 4,000 files walk in 19 ms here — and a store the filesystem is slow
+# about does; the 224x overshoot behind this change was measured by the review
+# rather than reproduced on this machine, and the mechanism is the part that
+# does not depend on that number.
 #
-# Every file is worse in the other direction, and the cost is not the clock
-# read (83 ns against a 1-2 us stat): it is that the walk is the CHEAP loop
-# and would then compete for the budget on equal terms with the staging read,
-# which is the expensive one. A corpus larger than the budget then indexes ONE
-# file per run instead of the accelerating slice `_fts_sync` is built to
-# deliver, which is the "does not self-heal" failure the deadline was adopted
+# Once per ENTRY is worse in the other direction, and the cost is not the
+# clock read: measured here, `time.monotonic()` is 41 ns against `os.stat`'s
+# 1,298 ns. It is that the walk is the CHEAP loop and would then compete for
+# the budget on equal terms with the staging read, which is the expensive one.
+# A corpus larger than the budget then indexes ONE file per run instead of the
+# accelerating slice `_fts_sync` is built to deliver — measured on the
+# convergence case as [1, 2, 3, 4, 5, 6] where it should be [7, 21, 40, 40,
+# 40, 40] — which is the "does not self-heal" failure the deadline was adopted
 # to prevent.
 #
-# So: a corpus under this many files is never truncated at the walk, and one
-# over it overshoots by at most this many stats.
+# So: a corpus smaller than this is never truncated at the walk, and one
+# larger overshoots by at most this many entries.
 WALK_DEADLINE_EVERY = 64
 
 # Ledgers, sub-indexes, and dead memories must not surface as pointers.
