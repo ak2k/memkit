@@ -2054,6 +2054,17 @@ _LEX_COUNTS: dict[str, int] = {
     # existing — and a non-zero value is worth looking at, since nothing a
     # normal store does produces one.
     "lex_outside": 0,
+    # Files whose NAME this hook cannot render verbatim — a control character,
+    # an escape sequence, an invisible. A pointer's whole content is a path the
+    # agent is told to open, and the emission sanitizer rewrites the name on
+    # the way out, so such a file was delivered under a path that does not
+    # exist: a failed read and a store the reader learns to distrust. Refused
+    # instead, and counted, because a memory that is not being consulted has to
+    # be visible as such. It costs the rare legitimate case — an emoji ZWJ
+    # sequence in a filename is `Cf` and is refused here — which is a decision
+    # rather than an oversight: a name that cannot be printed cannot be a
+    # pointer, and the counter is what says so.
+    "lex_unnameable": 0,
     # Files whose NAME the filesystem holds as bytes that are not UTF-8.
     # `os.walk` hands those back with surrogateescape codepoints in them, and
     # sqlite3 encodes a str parameter strictly, so binding one raises inside
@@ -2194,6 +2205,13 @@ def _fts_scan(
                 # store permanently unsearchable rather than making itself
                 # unindexed.
                 _LEX_COUNTS["lex_undecodable"] += 1
+                continue
+            if strip_unsafe(name) != name:
+                # After the surrogate test, which is the more specific
+                # diagnosis of the same symptom: an undecodable name is also a
+                # name this cannot print, and the store owner needs to be told
+                # which of the two they have.
+                _LEX_COUNTS["lex_unnameable"] += 1
                 continue
             try:
                 # NOT following the link, which is what makes the containment
