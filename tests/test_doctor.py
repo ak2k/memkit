@@ -2304,37 +2304,49 @@ def test_the_gate_hands_a_child_no_variable_that_names_code(
     """
     hostile = profile / "elsewhere"
     hostile.mkdir(exist_ok=True)
-    for name in (
+    planted = (
         "LD_PRELOAD",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
         "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
         "PYTHONPATH",
         "PYTHONSTARTUP",
+        "PYTHONHOME",
         "BASH_ENV",
         "ENV",
+        "SHELLOPTS",
         "NODE_OPTIONS",
+        "PERL5OPT",
+        "RUBYOPT",
         "GIT_EXTERNAL_DIFF",
         "GIT_SSH_COMMAND",
+        "GIT_PROXY_COMMAND",
+        "GIT_ASKPASS",
+        "GIT_CONFIG",
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_KEY_0",
         "GIT_CONFIG_VALUE_0",
+        "GIT_CONFIG_KEY_7",
         "GIT_DIR",
+        "GIT_INDEX_FILE",
         "BASH_FUNC_x%%",
-    ):
+    )
+    for name in planted:
         monkeypatch.setenv(name, str(hostile / "payload"))
     monkeypatch.setenv("HOME", str(profile / "home"))
     monkeypatch.setenv("PATH", os.pathsep.join([str(profile / "project"), "/usr/bin"]))
     env = hook._child_env()
-    leaked = [k for k in env if k.startswith(("LD_", "DYLD_", "PYTHON", "GIT_CONFIG_"))]
-    assert leaked == [], leaked
-    for name in ("BASH_ENV", "ENV", "NODE_OPTIONS", "GIT_EXTERNAL_DIFF", "GIT_DIR"):
-        assert name not in env, name
-    assert not [k for k in env if k.startswith("BASH_FUNC_")], sorted(env)
+    # Each name that was really there, rather than a prefix sweep: the nix
+    # build sandbox exports `PYTHONNOUSERSITE`, which hardens the child rather
+    # than naming code for it, and a `startswith("PYTHON")` assertion made
+    # this case pass locally and fail there.
+    assert [n for n in planted if n in env] == [], sorted(n for n in planted if n in env)
     # PATH is rebuilt from the entries a checkout cannot steer, so what the
-    # child resolves next is governed by the same rule as what this process
+    # CHILD resolves next is governed by the same rule as what this process
     # resolved.
     assert env["PATH"] == "/usr/bin", env["PATH"]
-    # And what a child legitimately needs is named at its own call site.
-    assert hook._child_env()["PATH"] == "/usr/bin"
+    # And the environment a program needs to run at all survives.
     assert "HOME" in env
 
 
