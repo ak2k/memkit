@@ -8526,17 +8526,25 @@ def test_the_declared_count_counts_the_way_the_reader_splits(brk: str) -> None:
     job is to make this unreachable from a store — which is exactly why the
     guarantee needs a case of its own rather than an argument.
     """
+    def declared(head: str) -> int:
+        """The count off the opening line, asserted rather than assumed.
+
+        A `re.search(...).group(1)` straight into `int()` reads a maybe-None,
+        and an opening line that stopped declaring anything would then fail
+        this case with an AttributeError about the test instead of a count.
+        """
+        match = re.search(r"lines=(\d+)", head)
+        assert match, head
+        return int(match.group(1))
+
     block = hook._framed_region("t", f"a{brk}b")
     head, *rest = block.splitlines()
-    declared = int(re.search(r"lines=(\d+)", head).group(1))
-    assert declared == len(rest) - 1, (declared, rest)
+    assert declared(head) == len(rest) - 1, (head, rest)
     # And it still agrees with the old expression everywhere the old one was
     # right, including the empty body a bare `splitlines()` gets wrong.
     for inner in ("", "one", "a\nb", "a\nb\nc", "\n", "trailing\n"):
-        head = hook._framed_region("t", inner).splitlines()[0]
-        assert int(re.search(r"lines=(\d+)", head).group(1)) == (
-            inner.count("\n") + 1
-        ), (inner, head)
+        opener = hook._framed_region("t", inner).splitlines()[0]
+        assert declared(opener) == inner.count("\n") + 1, (inner, opener)
 
 
 def test_the_redraw_never_returns_a_delimiter_it_did_not_check(
