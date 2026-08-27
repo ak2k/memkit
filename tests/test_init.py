@@ -794,6 +794,23 @@ def test_the_plan_preflight_sees_the_actions_the_flags_add(
     )
 
 
+def test_the_package_hands_the_checker_its_own_src_and_not_the_sessions(
+    monkeypatch,
+) -> None:
+    """`PYTHONPATH` is stripped from every child and was then concatenated back
+    on by the one call site that needed to ADD to it — the scrub undone by the
+    code that most needed it.
+
+    `python -m` reads the module it runs out of that string, so a session that
+    exported a `PYTHONPATH` named the code the checker imported, on the write
+    turn, under a consent given for `memkit init --confirm <digest>`.
+    """
+    monkeypatch.setenv("PYTHONPATH", "/session/evil")
+    here = os.path.dirname(os.path.dirname(os.path.abspath(init.__file__)))
+    assert init._package_path() == here, init._package_path()
+    assert "/session/evil" not in init._package_path()
+
+
 def test_no_checker_route_is_refused_rather_than_half_completed(profile, monkeypatch):
     """A seeded memory whose ledger nobody checked is a store the checker calls
     broken. Half-completing is worse than not starting."""
