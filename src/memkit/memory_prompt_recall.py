@@ -1102,14 +1102,21 @@ _PROMPT_FRAME_TAG = f"{FRAME_TAG}-{secrets.token_hex(FRAME_NONCE_BYTES)}"
 # WHAT THIS GIVES UP, stated here rather than discovered later. A description
 # that writes `</memkit-pointers>` is delivered exactly as the file wrote it,
 # because nothing rewrites it — and to a reader that ignores all three rules
-# and stops at the tag STEM, that is a boundary. Measured over the corpus:
-# lookalikes are carried where the previous rule removed some of them, and the
-# previous rule paid for that by destroying up to 87 characters of honest
-# prose per hit and, in the fullwidth-Latin class that is how CJK writes a
-# Latin loanword, by welding a sentence onto the filename in front of it. The
-# trade is deliberate: the preamble states all three rules, and a rule a
-# reader can check beats a rewrite that has been wrong in five consecutive
-# rounds.
+# and stops at the tag STEM, that is a boundary. So this carries lookalikes a
+# rewriting rule removed some of, and the trade is deliberate: what that rule
+# charged for them was honest prose, in whole sentences and not in characters,
+# and worst in the class where a CJK store writes a Latin loanword in
+# fullwidth — there it took the separator out of the pointer line too and
+# welded the sentence onto the filename in front of it. A rule the reader can
+# check beats a rewrite that has been wrong in five consecutive rounds, and
+# the preamble states all three so the reader has them.
+#
+# No number is quoted here on purpose. The rule those numbers were measured
+# against is gone, so nothing in this repository can recompute them, and a
+# figure nobody can re-derive sitting in a comment beside one that is pinned
+# is how three of the last round's findings arose. What IS checkable is in the
+# cases: honest prose arrives byte-identical, and neither frame can be closed
+# by anything a store wrote.
 
 
 def _frame_tag(default: str, body: list[str]) -> str:
