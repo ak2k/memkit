@@ -9414,13 +9414,22 @@ def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None
     no record and no pointers.
 
     The constant is named, not just the keyword: `deadline=t0 + 3` would pass a
-    presence check and silently retune a budget that is sized against
-    `HARNESS_TIMEOUT` two constants away.
+    presence check and silently retune a budget that is sized against the
+    harness timeout two constants away.
+
+    And the SHAPE, not just the names in it. Collecting `ast.Name` nodes
+    accepts any arithmetic built from the right two names: `t0 +
+    TASK_BUDGET_SECONDS * 0` is a zero-length budget and `t0 -
+    TASK_BUDGET_SECONDS` is one that expired before the stage began, and both
+    passed a guard whose own docstring claimed to pin the constant. A guard
+    that only catches the mutation it was written for is not a guard, so what
+    is asserted is the expression: one addition, `t0` on the left, the budget
+    on the right, nothing else in it.
     """
     tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
     fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
-    def deadline_names(caller: str) -> set[str]:
+    def deadline_budget(caller: str) -> str:
         calls = [
             n
             for n in ast.walk(fns[caller])
@@ -9431,15 +9440,22 @@ def test_the_two_entry_points_supply_the_deadline_they_are_budgeted_by() -> None
         assert len(calls) == 1, (caller, len(calls))
         keywords = {k.arg or "**": k.value for k in calls[0].keywords}
         assert "deadline" in keywords, (caller, sorted(keywords))
-        return {
-            n.id for n in ast.walk(keywords["deadline"]) if isinstance(n, ast.Name)
-        }
+        node = keywords["deadline"]
+        assert isinstance(node, ast.BinOp), (caller, ast.dump(node))
+        assert isinstance(node.op, ast.Add), (caller, ast.dump(node))
+        assert isinstance(node.left, ast.Name), (caller, ast.dump(node))
+        assert node.left.id == "t0", (caller, ast.dump(node))
+        assert isinstance(node.right, ast.Name), (caller, ast.dump(node))
+        return node.right.id
 
-    assert deadline_names("_task_main") == {"t0", "TASK_BUDGET_SECONDS"}
-    assert deadline_names("_prompt_main") == {"t0", "BUDGET_SECONDS"}
-    # Both budgets end before the harness kills the process they run in, which
-    # is the only reason either number is the number it is.
-    assert hook.TASK_BUDGET_SECONDS < hook.HARNESS_TIMEOUT
+    assert deadline_budget("_task_main") == "TASK_BUDGET_SECONDS"
+    assert deadline_budget("_prompt_main") == "BUDGET_SECONDS"
+    # Each budget ends before the harness kills the process IT runs in, which
+    # is the only reason either number is the number it is — and the two paths
+    # are registered with different timeouts, so each has to be compared
+    # against its own. (`test_plugin_surface.py` is what ties both constants to
+    # the timeouts `hooks.json` actually registers.)
+    assert hook.TASK_BUDGET_SECONDS < hook.TASK_HARNESS_TIMEOUT
     assert hook.BUDGET_SECONDS < hook.HARNESS_TIMEOUT
 
 
