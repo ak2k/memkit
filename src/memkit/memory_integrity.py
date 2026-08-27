@@ -68,6 +68,8 @@ from pathlib import Path  # noqa: E402
 from memkit.memory_prompt_recall import (  # noqa: E402
     CONFIG_ENV,
     ConfigError,
+    _trusted_git,
+    _Untrusted,
     load_config,
 )
 
@@ -650,10 +652,8 @@ def _changed_files(repo: Path, blame_base: str) -> tuple[set[str], str]:
 
     def git(*args: str) -> subprocess.CompletedProcess[str] | None:
         try:
-            out = subprocess.run(
-                ["git", *args], capture_output=True, text=True, cwd=repo, timeout=30
-            )
-        except (OSError, subprocess.SubprocessError):
+            out = _trusted_git(list(args), cwd=repo, timeout=30)
+        except (OSError, subprocess.SubprocessError, _Untrusted):
             return None
         return out if out.returncode == 0 else None
 
@@ -790,14 +790,8 @@ def _rows_at(
     except ValueError:
         return None
     try:
-        out = subprocess.run(
-            ["git", "show", f"{base}:{rel}"],
-            capture_output=True,
-            text=True,
-            cwd=repo,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
+        out = _trusted_git(["show", f"{base}:{rel}"], cwd=repo, timeout=30)
+    except (OSError, subprocess.SubprocessError, _Untrusted):
         return None
     if out.returncode != 0:
         return None
@@ -910,13 +904,14 @@ def _last_touch(repo: Path, paths: list[str]) -> dict[str, int]:
     """path -> unix time of the newest commit touching it (0 if untracked)."""
     if not paths:
         return {}
-    out = subprocess.run(
-        ["git", "log", "--format=%ct", "--name-only", "--no-renames", "--", *paths],
-        capture_output=True,
-        text=True,
-        cwd=repo,
-        timeout=60,
-    )
+    try:
+        out = _trusted_git(
+            ["log", "--format=%ct", "--name-only", "--no-renames", "--", *paths],
+            cwd=repo,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError, _Untrusted):
+        return {}
     seen: dict[str, int] = {}
     ts = 0
     for line in out.stdout.splitlines():
@@ -935,13 +930,14 @@ def _row_touch(repo: Path, ledger: Path, limit: int = 400) -> dict[str, int]:
         rel = str(ledger.relative_to(repo))
     except ValueError:
         return {}
-    out = subprocess.run(
-        ["git", "log", f"-{limit}", "--format=%ct", "-p", "--no-color", "--", rel],
-        capture_output=True,
-        text=True,
-        cwd=repo,
-        timeout=60,
-    )
+    try:
+        out = _trusted_git(
+            ["log", f"-{limit}", "--format=%ct", "-p", "--no-color", "--", rel],
+            cwd=repo,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError, _Untrusted):
+        return {}
     seen: dict[str, int] = {}
     ts = 0
     for line in out.stdout.splitlines():

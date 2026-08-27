@@ -48,9 +48,7 @@ from memkit.cli_doctor import (
     OPTION_KEY,
     Machine,
     _checker_route,
-    _execute,
-    _trusted_which,
-    _Untrusted,
+    _checker_route_is_ambient,
     authored_configs,
     canary_query,
 )
@@ -64,7 +62,13 @@ from memkit.memory_prompt_recall import (
     PLUGIN_SEARCH_CLI,
     SCHEMA,
     _display_path,
+    _execute,
+    _may_execute,
     _plugin_install,
+    _trusted_git,
+    _trusted_which,
+    _under_cwd,
+    _Untrusted,
     expand_home,
     path_refusal,
     state_token,
@@ -882,17 +886,25 @@ def _git_tracked(path: str) -> bool:
     # git about the link's own directory answers about the wrong tree.
     path = os.path.realpath(path)
     parent = os.path.dirname(path) or "."
-    # `_trusted_which`, not a PATH lookup: `init --dry-run` is the
-    # pre-approved half of the handshake, so a `git` the session's own PATH
-    # supplies is a program a checkout gets to choose and this call then runs
-    # as the user. Unresolvable means the warning is not made rather than made
+    # `init --dry-run` is the PRE-APPROVED half of the handshake — the skill
+    # grants it with no permission prompt — so this call must not be able to
+    # start a program somebody else chose. Which git runs is settled by
+    # `_trusted_which` inside `_trusted_git`; WHERE it runs is settled here.
+    #
+    # A repository's own `.git/config` names programs git runs — `ls-files
+    # --error-unmatch` executes `core.fsmonitor`, reproduced twice per call —
+    # so pointing this at a directory inside the session is handing a checkout
+    # the same primitive under another name. `_trusted_git` silences that
+    # config surface; the refusal below is the half a `-c` cannot buy, because
+    # a repository can always add a key nobody thought to override.
+    #
+    # Unresolvable, or refused, means the warning is not made rather than made
     # by whatever was in front.
-    git = _trusted_which("git")
-    if not git:
+    if _under_cwd(parent):
         return False
     try:
-        out = _execute(
-            [git, "-C", parent, "ls-files", "--error-unmatch", path],
+        out = _trusted_git(
+            ["-C", parent, "ls-files", "--error-unmatch", path],
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError, _Untrusted):
@@ -1530,23 +1542,47 @@ def _run_checker(machine: Machine, config_path: str) -> tuple:
     route, command = _checker_route(machine)
     if route == "none" or not command:
         return 1, "no checker route"
-    # The wrapper hands this over as a space-joined string whose first word may
-    # be a bare name (`uvx`), and resolving that against the session's own PATH
-    # would let a checkout choose the program. Resolved against the entries no
-    # checkout can steer; where nothing resolves, the original stands rather
-    # than a working install breaking — this call is reached only through
-    # `--confirm`, whose permission prompt showed the argv.
-    if not os.path.isabs(command[0]):
-        command = [_trusted_which(command[0]) or command[0], *command[1:]]
-    try:
-        out = subprocess.run(  # noqa: S603
-            [*command, "--config", config_path],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env=dict(os.environ, PYTHONPATH=_package_path()),
+    # The wrapper hands this over as a space-joined string, and the first word
+    # arrives from the wrapper's OWN `command -v` — an unfiltered lookup over
+    # the session's PATH. So the word is untrusted whatever its shape: an
+    # absolute path is the form that lookup produces, not evidence that
+    # anything vouched for it.
+    #
+    # Trust is decided by ORIGIN, in one predicate and with no fallback. A
+    # bare name resolves against the entries no checkout can steer; a path
+    # stands only if `_may_execute` admits it, which is the same rule
+    # `_execute` applies again below. Where nothing answers, this refuses —
+    # `--confirm`'s permission prompt shows `memkit init --confirm <digest>`
+    # and never this argv, so consent for the command is not consent for
+    # whatever program the session's PATH happened to supply.
+    first = command[0] if command else ""
+    if _checker_route_is_ambient():
+        # Only the NAME survives an environment variable. The DIRECTORY in it
+        # is the wrapper's `command -v` answer over the session's own PATH —
+        # and the variable is equally writable by anything else that reached
+        # this process's environment — so the path is re-resolved against the
+        # entries no checkout can steer, and an unresolvable name refuses.
+        resolved = _trusted_which(os.path.basename(first))
+    else:
+        # This process's own pin: `sys.executable`, or something
+        # `_trusted_which` already answered for.
+        resolved = first if _may_execute(first) else _trusted_which(first)
+    if not resolved:
+        return 1, (
+            "no trusted checker route: nothing outside this session's own "
+            f"directory resolves {first!r}"
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    try:
+        out = _execute(
+            [resolved, *command[1:], "--config", config_path],
+            timeout=300,
+            # This package's own `src`, and `PYTHONSAFEPATH` so the session
+            # directory is not the first place `-m` looks for the module named
+            # on it. Named explicitly because `_child_env` strips the whole
+            # class, which is what makes this one exception visible.
+            env_extra={"PYTHONPATH": _package_path(), "PYTHONSAFEPATH": "1"},
+        )
+    except (OSError, subprocess.SubprocessError, _Untrusted) as exc:
         return 1, f"{type(exc).__name__}: {exc}"
     return out.returncode, (out.stdout + out.stderr).strip()
 

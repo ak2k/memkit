@@ -52,7 +52,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 import time
@@ -83,11 +82,16 @@ from memkit.memory_prompt_recall import (
     _corpus_files,
     _cwd_digest,
     _display_path,
+    _execute,
     _fts_db,
     _search_root,
     _session_state_path,
     _state_dir_candidate,
     _store_live_dir,
+    _trusted_git,
+    _trusted_which,
+    _under_cwd,
+    _Untrusted,
     _version,
     claim_holds,
     expand_home,
@@ -1540,108 +1544,6 @@ def _installed_hook(machine: Machine) -> tuple:
     return [], "nothing registers a UserPromptSubmit hook for memkit", NO_HOOK_REMEDY
 
 
-def _under_cwd(path: str) -> bool:
-    """Whether `path` lands inside the directory this session stands in."""
-    try:
-        cwd = os.path.realpath(os.getcwd())
-        target = os.path.realpath(path)
-    except OSError:
-        return True
-    return target == cwd or target.startswith(cwd + os.sep)
-
-
-class _Untrusted(Exception):
-    """A program whose identity this command may not take from where it found
-    it."""
-
-
-def _may_execute(path: str) -> bool:
-    """THE ONE RULE for every program this module starts.
-
-    Program identity comes from an adopter-owned settings scope, from the
-    plugin's own payload, or from a pinned absolute path — never from
-    something a repository can write and never from a PATH lookup. `memkit
-    doctor` is model-invocable and its skill pre-approves the exact argv, so
-    running it inside somebody else's checkout must not be that checkout
-    choosing a program to run as the user, with the session's whole
-    environment inherited by the child.
-
-    Kept as one predicate rather than a rule repeated at each call site,
-    because the failure mode is a call site that does not apply it — a rule
-    held in five places is a rule the sixth will not have.
-    """
-    if not path or not os.path.isabs(path):
-        return False
-    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
-        return False
-    return not _under_cwd(path)
-
-
-def _trusted_path_entries() -> list:
-    """The PATH entries a repository cannot steer.
-
-    An EMPTY entry is the current directory, spelled the way every shell reads
-    it, and a relative one is the same thing under another name — so a
-    `PATH=:/usr/bin` inherited from the session hands the lookup to whatever
-    the checkout ships. Entries under the session directory go for the same
-    reason a `node_modules/.bin` or a direnv-exported venv is the checkout's
-    choice, and entries inside the payload go because a plugin's own tree is a
-    clone of a pinned commit: it may supply memkit's wrappers, not the
-    harness binary memkit asks questions of.
-    """
-    cwd = os.path.realpath(os.getcwd())
-    payload = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
-    payload_real = os.path.realpath(payload) if payload else ""
-    entries = []
-    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
-        if not entry or not os.path.isabs(entry):
-            continue
-        try:
-            real = os.path.realpath(entry)
-        except OSError:
-            continue
-        if real == cwd or real.startswith(cwd + os.sep):
-            continue
-        if payload_real and (
-            real == payload_real or real.startswith(payload_real + os.sep)
-        ):
-            continue
-        entries.append(entry)
-    return entries
-
-
-def _trusted_which(name: str) -> str:
-    """`name` resolved against `_trusted_path_entries`, or "".
-
-    Never `shutil.which` directly: that reads the session's PATH, which is an
-    input a repository steers through direnv, a checked-in venv or a
-    `node_modules/.bin` — and the result is a program this command then runs.
-    """
-    entries = _trusted_path_entries()
-    if not entries:
-        return ""
-    found = shutil.which(name, path=os.pathsep.join(entries))
-    if not found or not _may_execute(found):
-        return ""
-    return found
-
-
-def _execute(argv: list, **kw):
-    """The one place this module starts a process.
-
-    Raises `_Untrusted` rather than running anything whose program fails
-    `_may_execute`, so a call site that forgot the rule cannot silently
-    execute — the check that called it reports UNKNOWN with a remedy instead,
-    which is the answer a diagnostic owes when honouring the rule costs it its
-    signal.
-    """
-    if not argv or not _may_execute(argv[0]):
-        raise _Untrusted(argv[0] if argv else "")
-    kw.setdefault("capture_output", True)
-    kw.setdefault("text", True)
-    return subprocess.run(argv, **kw)  # noqa: S603
-
-
 def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
     """One real run of the installed hook. Returns (stdout, stderr, code, ms).
 
@@ -1667,7 +1569,10 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
         }
     )
     started = time.monotonic()
-    env = dict(os.environ, **{DOCTOR_ENV: "1"})
+    # The DELTA, not a copy of the environment: `_execute` builds the child's
+    # from `_child_env`, and handing it a snapshot of `os.environ` here would
+    # put back every variable that strips.
+    env = {DOCTOR_ENV: "1"}
     if machine.explicit_config:
         # `--config` says "diagnose THIS config", and the wrapper reads its own
         # rungs — it deliberately ignores `$MEMKIT_CONFIG` — so the only way to
@@ -1684,7 +1589,7 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
             command,
             input=payload,
             timeout=HOOK_PROBE_TIMEOUT,
-            env=env,
+            env_extra=env,
         )
     except subprocess.TimeoutExpired:
         return "", "", None, int((time.monotonic() - started) * 1000)
@@ -2526,10 +2431,9 @@ def build_facts() -> tuple:
         hook_version = _version()
     payload = None
     root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
-    git = _trusted_which("git")
-    if git and root and os.path.isdir(os.path.join(root, ".git")):
+    if root and os.path.isdir(os.path.join(root, ".git")):
         with contextlib.suppress(OSError, subprocess.SubprocessError, _Untrusted):
-            out = _execute([git, "-C", root, "rev-parse", "HEAD"], timeout=15)
+            out = _trusted_git(["-C", root, "rev-parse", "HEAD"], timeout=15)
             if out.returncode == 0:
                 payload = out.stdout.strip()[:12]
     return package, hook_version, payload
@@ -2590,6 +2494,18 @@ def _build(machine: Machine) -> list[Check]:
     return [Check("build", INFO, version_line())]
 
 
+def _checker_route_is_ambient() -> bool:
+    """Whether the checker command arrived from the ENVIRONMENT.
+
+    One predicate rather than two readings of the same variable, because what
+    hangs off the answer is a trust decision: a route the wrapper exported
+    travelled through an unfiltered `command -v` and can equally have been
+    exported by whatever else could write this process's environment, while a
+    route `_probe_checker_route` returned is this process's own pin.
+    """
+    return bool(os.environ.get(ROUTE_ENV))
+
+
 def _checker_route(machine: Machine) -> tuple:
     """(route, command) for checker-backed work.
 
@@ -2599,7 +2515,7 @@ def _checker_route(machine: Machine) -> tuple:
     no wrapper — the pip and uvx channels — and cached on the machine, because
     each probe is a fork.
     """
-    route = os.environ.get(ROUTE_ENV)
+    route = os.environ.get(ROUTE_ENV) if _checker_route_is_ambient() else ""
     if route:
         # Split on whitespace and nothing cleverer: it is a space-joined
         # string, and the wrapper's own contract says so.
@@ -2619,8 +2535,13 @@ def _probe_checker_route() -> tuple:
         with contextlib.suppress(
             OSError, subprocess.SubprocessError, ValueError, _Untrusted
         ):
+            # `-I`: `python -c` puts the session directory on `sys.path`,
+            # and `site` imports a `sitecustomize.py` it finds there before
+            # the `-c` line runs — so the version probe would be the checkout
+            # executing code. Isolated mode drops that entry and the
+            # environment with it.
             out = _execute(
-                [found, "-c", "import sys; print(sys.version_info[:2])"],
+                [found, "-I", "-c", "import sys; print(sys.version_info[:2])"],
                 timeout=15,
             )
             if out.returncode == 0 and "(3, 1" in out.stdout:

@@ -2085,44 +2085,287 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
     assert "inside this directory" in how, how
 
 
-def test_every_process_this_command_starts_goes_through_one_gate() -> None:
-    """The rule is a chokepoint, not a habit.
+# --- the package-wide execution gate ------------------------------------------
+#
+# The analyser is shared by the two tests below on purpose: one runs it over
+# the real package, the other over sources written to defeat it. A guard whose
+# own completeness is never tested is a guard that reports green about the
+# shapes it cannot see, which is how this rule reopened three rounds running.
 
-    A rule held at each call site is a rule the next call site will not have,
-    and that is how one execution route gets closed while its sibling stays
-    open. Here it lives in `_execute` and `_trusted_which`, and this asserts
-    that nothing else in the module starts a process or resolves a program
-    name — so a check added later cannot quietly acquire its own way out.
+_PROCESS_START_ROOTS = ("subprocess", "os", "shutil", "multiprocessing", "pty")
+
+
+def _is_process_start(dotted: str) -> bool:
+    """Whether `dotted` names a process start or a program-name resolution.
+
+    By FAMILY rather than by a list of members: `os.execve`, `os.posix_spawnp`
+    and `os.spawnvpe` are the same primitive as `os.execv`, and a list is what
+    left the first two of them admitted.
+    """
+    parts = dotted.split(".")
+    root, attr = parts[0], parts[-1]
+    if root in ("subprocess", "os", "shutil") and len(parts) != 2:
+        return False
+    if root == "subprocess":
+        return attr in {
+            "run",
+            "Popen",
+            "call",
+            "check_call",
+            "check_output",
+            "getoutput",
+            "getstatusoutput",
+        }
+    if root == "os":
+        return attr.startswith(("exec", "spawn", "posix_spawn")) or attr in {
+            "system",
+            "popen",
+            "fork",
+            "forkpty",
+            "startfile",
+        }
+    if root == "shutil":
+        return attr == "which"
+    if root in ("multiprocessing", "pty"):
+        return True
+    if root == "asyncio":
+        return attr.startswith("create_subprocess")
+    return False
+
+
+def _process_starts(source: str) -> list:
+    """(dotted target, owning function) for every process start in `source`.
+
+    Resolved through the module's own bindings rather than string-compared
+    against `ast.unparse` output: `from subprocess import Popen as P` unparses
+    to `P` and `mod = subprocess` makes `mod.run` unparse to `mod.run`, and a
+    literal compare sees neither. Anything it CANNOT resolve to a name — a
+    `getattr` on a dangerous module with a computed attribute — is reported
+    too, because a guard that cannot decide must not decide "fine".
     """
     import ast
 
-    source = (REPO / "src" / "memkit" / "cli_doctor.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    allowed = {"subprocess.run": "_execute", "shutil.which": "_trusted_which"}
-    banned = (
-        "subprocess.Popen",
-        "subprocess.call",
-        "subprocess.check_output",
-        "os.system",
-        "os.popen",
-        "os.execv",
-        "os.execvp",
-        "os.spawnv",
-    )
-    owners = {}
+    bindings: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bindings[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name if alias.asname else alias.name.split(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                bindings[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def resolve(node) -> str:
+        if isinstance(node, ast.Name):
+            return bindings.get(node.id, "")
+        if isinstance(node, ast.Attribute):
+            base = resolve(node.value)
+            return f"{base}.{node.attr}" if base else ""
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+        ):
+            base = resolve(node.args[0])
+            if not base:
+                return ""
+            if isinstance(node.args[1], ast.Constant) and isinstance(
+                node.args[1].value, str
+            ):
+                return f"{base}.{node.args[1].value}"
+            # A computed attribute on a resolvable module: unprovable, so it
+            # is spelled as an offence rather than passed over.
+            return f"{base}.<computed>" if base in _PROCESS_START_ROOTS else ""
+        return ""
+
+    # Assignment aliasing, to a fixed point: `a = subprocess`, then
+    # `b = a.run`, then `b(...)`.
+    for _ in range(4):
+        before = dict(bindings)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                value = resolve(node.value)
+                if isinstance(target, ast.Name) and value:
+                    bindings.setdefault(target.id, value)
+        if bindings == before:
+            break
+
+    owners: dict = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for child in ast.walk(node):
                 owners[id(child)] = node.name
-    offences = []
+    found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        name = ast.unparse(node.func)
-        owner = owners.get(id(node), "<module>")
-        if name in banned or (name in allowed and owner != allowed[name]):
-            offences.append((name, owner))
+        name = resolve(node.func)
+        if name.endswith(".<computed>") or _is_process_start(name):
+            found.append((name, owners.get(id(node), "<module>")))
+    return found
+
+
+def test_no_module_in_this_package_starts_a_process_outside_the_gate() -> None:
+    """The rule is a chokepoint, not a habit — and the whole package, not one
+    file.
+
+    A rule held at each call site is a rule the next call site will not have,
+    and a GUARD held over one file is a guard the next file will not have:
+    this test read `cli_doctor.py` alone while `cli_init.py`, next door and on
+    the write path, started a process of its own with nothing between it and
+    `subprocess.run`.
+
+    So the modules are DISCOVERED rather than listed. A file added to this
+    package tomorrow is walked because it is there, not because somebody
+    remembered this test existed.
+    """
+    package = REPO / "src" / "memkit"
+    modules = sorted(package.rglob("*.py"))
+    names = {m.name for m in modules}
+    # Anti-vacuity: a discovery that finds nothing passes for the wrong
+    # reason, and so does one that quietly stops finding the two modules this
+    # defect was found in.
+    assert names >= {
+        "__init__.py",
+        "cli.py",
+        "cli_doctor.py",
+        "cli_init.py",
+        "eval_memory_recall.py",
+        "memory_integrity.py",
+        "memory_prompt_recall.py",
+    }, sorted(names)
+    allowed = {("memory_prompt_recall.py", "_execute"): {"subprocess.run"}}
+    offences = []
+    seen_allowed = 0
+    for module in modules:
+        source = module.read_text(encoding="utf-8")
+        for name, owner in _process_starts(source):
+            if name in allowed.get((module.name, owner), ()):
+                seen_allowed += 1
+                continue
+            offences.append((module.name, owner, name))
     assert not offences, offences
+    # And the one permitted site is really there: an `_execute` that stopped
+    # calling `subprocess.run` would empty this test of its subject.
+    assert seen_allowed == 1, seen_allowed
+
+
+def test_the_gate_guard_sees_the_shapes_written_to_evade_it() -> None:
+    """The guard's own completeness, since it is the only thing standing
+    between a new call site and an ungoverned process start.
+
+    Every case here was undetected by the string-compare version, and the last
+    four are primitives its banned tuple never listed at all.
+    """
+    evasions = (
+        "import subprocess\ndef f():\n    subprocess.Popen(['x'])\n",
+        "from subprocess import Popen as P\ndef f():\n    P(['x'])\n",
+        "import subprocess as sp\ndef f():\n    sp.run(['x'])\n",
+        "import subprocess\nmod = subprocess\ndef f():\n    mod.run(['x'])\n",
+        "import subprocess\nr = subprocess.run\ndef f():\n    r(['x'])\n",
+        "import subprocess\ndef f():\n    getattr(subprocess, 'run')(['x'])\n",
+        "import subprocess\ndef f(n):\n    getattr(subprocess, n)(['x'])\n",
+        "import os\ndef f():\n    os.execve('/bin/sh', [], {})\n",
+        "import os\ndef f():\n    os.posix_spawn('/bin/sh', [], {})\n",
+        "import os\ndef f():\n    os.spawnvpe(os.P_WAIT, 'sh', [], {})\n",
+        "import os\ndef f():\n    os.execlp('sh', 'sh')\n",
+        "import shutil\ndef f():\n    shutil.which('git')\n",
+    )
+    for source in evasions:
+        assert _process_starts(source), source
+    # Controls: the shapes that must NOT be flagged, or the guard is noise
+    # somebody will delete.
+    for benign in (
+        "import os\ndef f():\n    os.path.exists('/x')\n",
+        "import os\ndef f():\n    os.path.expanduser('~')\n",
+        "import os\ndef f():\n    os.execute = 1\n",
+        "import subprocess\ndef f():\n    raise subprocess.SubprocessError()\n",
+        "import os\ndef f():\n    os.environ.get('PATH')\n",
+    ):
+        assert not _process_starts(benign), benign
+
+
+def test_the_gate_hands_a_child_no_variable_that_names_code(
+    profile, monkeypatch
+) -> None:
+    """A program's environment is part of its identity.
+
+    Every variable here names code the child loads before its own first
+    instruction — a loader preload, an interpreter's module path or startup
+    file, the file a non-interactive shell sources, the program git runs in
+    place of a diff. They all arrive from whatever launched this process,
+    which on the pre-approved surfaces is a session a checkout steers, so a
+    trusted binary handed them is somebody else's program under a trusted
+    name. PATH goes the same way, one process further down.
+    """
+    hostile = profile / "elsewhere"
+    hostile.mkdir(exist_ok=True)
+    for name in (
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "BASH_ENV",
+        "ENV",
+        "NODE_OPTIONS",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_SSH_COMMAND",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_DIR",
+        "BASH_FUNC_x%%",
+    ):
+        monkeypatch.setenv(name, str(hostile / "payload"))
+    monkeypatch.setenv("HOME", str(profile / "home"))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(profile / "project"), "/usr/bin"]))
+    env = hook._child_env()
+    leaked = [k for k in env if k.startswith(("LD_", "DYLD_", "PYTHON", "GIT_CONFIG_"))]
+    assert leaked == [], leaked
+    for name in ("BASH_ENV", "ENV", "NODE_OPTIONS", "GIT_EXTERNAL_DIFF", "GIT_DIR"):
+        assert name not in env, name
+    assert not [k for k in env if k.startswith("BASH_FUNC_")], sorted(env)
+    # PATH is rebuilt from the entries a checkout cannot steer, so what the
+    # child resolves next is governed by the same rule as what this process
+    # resolved.
+    assert env["PATH"] == "/usr/bin", env["PATH"]
+    # And what a child legitimately needs is named at its own call site.
+    assert hook._child_env()["PATH"] == "/usr/bin"
+    assert "HOME" in env
+
+
+def test_the_gate_scrubs_an_environment_a_call_site_built_itself(
+    profile, monkeypatch
+) -> None:
+    """`env=` was the way around it.
+
+    A call site that builds `dict(os.environ, ...)` and hands it over would
+    otherwise put back every variable the gate exists to strip, which is
+    exactly what the hook probe used to do.
+    """
+    monkeypatch.setenv("PATH", "/usr/bin")
+    seen: dict = {}
+    real = hook.subprocess.run
+
+    def watched(argv, *a, **kw):
+        seen.update(kw.get("env") or {})
+        return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
+
+    monkeypatch.setattr(hook.subprocess, "run", watched)
+    try:
+        hook._execute(
+            [sys.executable, "-c", "pass"],
+            env=dict(os.environ, LD_PRELOAD="/x", PYTHONPATH="/y"),
+            env_extra={"PYTHONPATH": "/kept"},
+        )
+    finally:
+        monkeypatch.setattr(hook.subprocess, "run", real)
+    assert "LD_PRELOAD" not in seen, seen.get("LD_PRELOAD")
+    assert seen["PYTHONPATH"] == "/kept", seen.get("PYTHONPATH")
 
 
 def test_the_execution_gate_refuses_what_it_is_there_to_refuse(
@@ -2138,18 +2381,18 @@ def test_the_execution_gate_refuses_what_it_is_there_to_refuse(
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     outside.chmod(0o755)
-    assert doctor._may_execute(str(outside))
-    assert not doctor._may_execute(str(inside))
-    assert not doctor._may_execute("prog")
-    assert not doctor._may_execute(str(profile / "elsewhere"))
-    assert not doctor._may_execute("")
+    assert hook._may_execute(str(outside))
+    assert not hook._may_execute(str(inside))
+    assert not hook._may_execute("prog")
+    assert not hook._may_execute(str(profile / "elsewhere"))
+    assert not hook._may_execute("")
     for argv in ([], ["prog"], [str(inside)]):
-        with pytest.raises(doctor._Untrusted):
-            doctor._execute(argv)
+        with pytest.raises(hook._Untrusted):
+            hook._execute(argv)
     # A symlink out of the session directory is the case a prefix test misses.
     disguise = profile / "elsewhere" / "disguise"
     disguise.symlink_to(inside)
-    assert not doctor._may_execute(str(disguise))
+    assert not hook._may_execute(str(disguise))
 
 
 def test_an_option_the_wrapper_refuses_by_shape_is_named_as_that(
@@ -2404,7 +2647,7 @@ def test_the_trusted_path_drops_every_entry_a_checkout_can_write(
             ]
         ),
     )
-    assert doctor._trusted_path_entries() == ["/usr/bin"]
+    assert hook._trusted_path_entries() == ["/usr/bin"]
 
 
 def test_the_uninstall_story_says_when_the_config_goes_with_the_plugin(

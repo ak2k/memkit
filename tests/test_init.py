@@ -58,6 +58,15 @@ def profile(tmp_path, monkeypatch):
     hook._use_config(None)
 
 
+def _which_git() -> str:
+    """A trusted `git`, or "" — the same lookup the code under test uses.
+
+    `shutil.which` would answer for a git these cases then could not run,
+    which is a skip that hides a real failure.
+    """
+    return hook._trusted_which("git")
+
+
 def _args(**kw) -> argparse.Namespace:
     ns = argparse.Namespace(
         dry_run=True,
@@ -1774,14 +1783,14 @@ def test_the_dry_run_never_runs_a_program_the_checkout_supplied(
 def test_the_checker_command_is_not_taken_from_the_session_path(
     profile, monkeypatch
 ) -> None:
-    """The wrapper hands the checker over as a space-joined string whose first
-    word may be a bare name.
+    """The wrapper hands the checker over as a space-joined string, and its
+    first word came from the wrapper's own unfiltered `command -v`.
 
-    Resolving that against the session's own PATH lets a checkout choose the
-    program the confirm turn runs. Where nothing trusted resolves the original
-    stands, because this call is reached only through `--confirm`, whose
-    permission prompt showed the argv — a working install must not break for a
-    hardening.
+    So the word is untrusted whatever its shape. A bare name resolves against
+    the entries no checkout can steer, and where no trusted candidate answers
+    the call REFUSES: `--confirm`'s permission prompt shows `memkit init
+    --confirm <digest>` and never this argv, so consent for the command was
+    never consent for whatever the session's PATH happened to supply.
     """
     hostile = profile / "elsewhere" / "prog"
     hostile.parent.mkdir(parents=True, exist_ok=True)
@@ -1813,3 +1822,143 @@ def test_the_checker_command_is_not_taken_from_the_session_path(
     monkeypatch.setattr(init.subprocess, "run", real)
     assert ran, "the checker was never invoked, so this proves nothing"
     assert ran[0][0] == str(trusted), ran[0]
+
+    # And with the trusted candidate gone, nothing runs at all. The fallback
+    # that used to stand here ran the checkout's own program on the write turn.
+    monkeypatch.setenv("PATH", str(shim))
+    ran.clear()
+    monkeypatch.setattr(init.subprocess, "run", watched)
+    code, detail = init._run_checker(doctor.Machine(), str(profile / "memkit.json"))
+    monkeypatch.setattr(init.subprocess, "run", real)
+    assert not ran, ran
+    assert code == 1
+    assert "no trusted checker route" in detail, detail
+
+
+def test_the_checker_refuses_an_absolute_program_the_environment_named(
+    profile, monkeypatch
+) -> None:
+    """An absolute path is the SHAPE `$MEMKIT_CHECKER_CMD` always carries.
+
+    `bin/lib/common.sh` resolves the python route with `command -v` and
+    exports the answer, so every real invocation of this function on the
+    plugin channel arrives with an already-absolute first word — and anything
+    else that can write this process's environment arrives the same way. A
+    rule that let an absolute word through unexamined therefore governed
+    nothing on the path it was written for.
+    """
+    outside = profile / "elsewhere"
+    outside.mkdir(exist_ok=True)
+    hostile = outside / "fakepy"
+    marker = profile / "PWNED-checker.txt"
+    hostile.write_text(
+        f"#!/bin/sh\necho pwned > {marker}\nexit 0\n", encoding="utf-8"
+    )
+    hostile.chmod(0o755)
+    # NOT on PATH: the variable is the whole of how this program was named.
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("MEMKIT_CHECKER_ROUTE", "python")
+    monkeypatch.setenv("MEMKIT_CHECKER_CMD", f"{hostile} -m memkit.memory_integrity")
+    code, detail = init._run_checker(doctor.Machine(), str(profile / "memkit.json"))
+    assert code == 1, (code, detail)
+    assert "no trusted checker route" in detail, detail
+    assert not marker.exists(), marker.read_text()
+
+
+def test_the_dry_run_runs_git_where_no_configuration_can_name_a_program(
+    profile, monkeypatch
+) -> None:
+    """Which git runs was the first half of this rule; where it runs is the
+    second.
+
+    A repository's own `.git/config` is a program-selection surface: `git
+    ls-files --error-unmatch` executes `core.fsmonitor`, and `$CLAUDE_CONFIG_DIR`
+    is what decides which repository this call stands in. `init --dry-run
+    --wire-claude-md` is the pre-approved half of the handshake, so a checkout
+    that names a program there gets it run as the user with no prompt. The
+    same primitive is reachable from `GIT_CONFIG_COUNT` alone, with no path
+    steering at all, which is why both are here.
+    """
+    if not _which_git():
+        pytest.skip("no git")
+    repo = profile / "elsewhere" / "dotfiles"
+    repo.mkdir(parents=True, exist_ok=True)
+    marker = profile / "PWNED-git-config.txt"
+    named = profile / "elsewhere" / "fsmon"
+    named.write_text(
+        f"#!/bin/sh\necho pwned >> {marker}\nexit 0\n", encoding="utf-8"
+    )
+    named.chmod(0o755)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=60)
+    subprocess.run(
+        ["git", "config", "core.fsmonitor", str(named)],
+        cwd=repo, check=True, timeout=60,
+    )
+    target = repo / "CLAUDE.md"
+    target.write_text("# theirs\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "CLAUDE.md"],
+        cwd=repo, check=True, timeout=60,
+    )
+    # The staging above ran git WITHOUT the hardening, so it proves the probe
+    # can fire on this machine's git at all. A case whose marker could never
+    # be written would assert nothing.
+    assert marker.exists(), "core.fsmonitor never fired, so this proves nothing"
+    marker.unlink()
+
+    # The warning is still made — the hardening may not cost the check its
+    # subject — and the named program is not run.
+    assert init._git_tracked(str(target)) is True
+    assert not marker.exists(), marker.read_text()
+
+    # The environment route: no repository config at all, and no path
+    # steering. `GIT_CONFIG_COUNT` names the program on its own.
+    plain = profile / "elsewhere" / "plain"
+    plain.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=plain, check=True, timeout=60)
+    other = plain / "CLAUDE.md"
+    other.write_text("# theirs\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "CLAUDE.md"],
+        cwd=plain, check=True, timeout=60,
+    )
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(named))
+    # The same call this function makes, without the hardening: the live
+    # probe, so a green assertion below cannot come from a variable this git
+    # ignores.
+    subprocess.run(
+        ["git", "-C", str(plain), "ls-files", "--error-unmatch", str(other)],
+        capture_output=True, timeout=60,
+    )
+    assert marker.exists(), "GIT_CONFIG_COUNT never fired, so this proves nothing"
+    marker.unlink()
+    assert init._git_tracked(str(other)) is True
+    assert not marker.exists(), marker.read_text()
+
+
+def test_the_dry_run_never_asks_git_about_a_directory_inside_this_session(
+    profile,
+) -> None:
+    """A `-c` override silences the keys somebody thought of.
+
+    A repository can always add one nobody did, so the directory itself is
+    refused rather than only disarmed: `$CLAUDE_CONFIG_DIR` pointed into the
+    checkout is the checkout asking for git to be run inside it, and the
+    warning is not worth that.
+    """
+    if not _which_git():
+        pytest.skip("no git")
+    inside = profile / "project" / ".claude"
+    inside.mkdir(parents=True, exist_ok=True)
+    target = inside / "CLAUDE.md"
+    target.write_text("# theirs\n", encoding="utf-8")
+    # A REAL repository, and the file really tracked in it, so a False answer
+    # here is the refusal and not "there was nothing to find".
+    subprocess.run(["git", "init", "-q"], cwd=inside, check=True, timeout=60)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "CLAUDE.md"],
+        cwd=inside, check=True, timeout=60,
+    )
+    assert init._git_tracked(str(target)) is False
