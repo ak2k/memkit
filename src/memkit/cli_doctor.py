@@ -392,7 +392,18 @@ def authored_configs(state_dir: str) -> set:
     then create a config there. `claim_holds` is where that rule lives, shared
     with the hook so the two readers of one journal cannot come to read it
     differently.
+
+    NOTHING at all when the journal's own directory sits inside the session's:
+    `$XDG_CACHE_HOME` is an environment variable, so a checkout that exports
+    one and checks in a `memory-recall/init-journal.jsonl` gets to write this
+    function's answer. What hangs off that answer is whether doctor may run a
+    config, and whether init may overwrite one — two authorisations a
+    repository must not be able to grant itself. It is the same rule
+    `settings_scopes` applies to `$CLAUDE_CONFIG_DIR`, on the file that
+    records what was written rather than on the settings that ask for it.
     """
+    if _under_cwd(state_dir):
+        return set()
     claims = journal_config_claims(state_dir)
     return {path for path, records in claims.items() if claim_holds(path, records)}
 
@@ -519,6 +530,16 @@ class Machine:
         if not self.explicit_config:
             return True, ""
         target = os.path.realpath(self.explicit_config)
+        if _under_cwd(target):
+            # Before the three acceptance routes, because it closes all of
+            # them at once: a config inside the session directory is a file
+            # the checkout wrote, and every route below is a way for the
+            # checkout to name its own.
+            return False, (
+                "it resolves inside the directory this session stands in, so "
+                "it is a file the checkout supplied rather than a config this "
+                "install reads"
+            )
         if self.ambient_config and os.path.realpath(self.ambient_config) == target:
             return True, ""
         option, _scope = self.settings_option()

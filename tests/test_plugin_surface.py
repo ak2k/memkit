@@ -4149,6 +4149,27 @@ def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
     assert "wc -l bin/memkit-hook bin/lib/common.sh" in note
 
 
+def test_the_published_sweep_budget_is_the_one_the_code_holds() -> None:
+    """Both documents that publish it, against the live constants.
+
+    ADMISSION.md's first line promises "every number here is read out of the
+    tree at the pinned sha rather than remembered", and this pair was
+    remembered: a commit raised the caps six-fold to shrink convergence and
+    left the sentence saying 500 and 100, where it stayed through two review
+    rounds while README.md next door already said 3000 and 1000. Asserted
+    against `SWEEP_MAX_STATS`/`SWEEP_MAX_UNLINKS` rather than against a
+    literal, so the next bump moves the documents or fails here.
+    """
+    stats, unlinks = hook.SWEEP_MAX_STATS, hook.SWEEP_MAX_UNLINKS
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for name, text in (("ADMISSION.md", note), ("README.md", readme)):
+        found = re.findall(r"(\d+) stats and\s+(\d+)\s+unlinks", text)
+        assert found, (name, "no sweep-budget sentence to check")
+        for pair in found:
+            assert (int(pair[0]), int(pair[1])) == (stats, unlinks), (name, pair)
+
+
 # --- the one path-admission rule, proved over the PAIR ------------------------
 
 

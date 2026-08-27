@@ -2533,6 +2533,50 @@ def test_a_config_dir_inside_the_session_directory_is_not_an_adopter_scope(
     assert not any(s.adopter_owned for s in machine.settings if s.scope == "user")
 
 
+def test_a_journal_inside_the_session_authorises_nothing(
+    profile, monkeypatch
+) -> None:
+    """The third acceptance route was a file a checkout could check in.
+
+    `machine.state_dir` comes from `$XDG_CACHE_HOME`, so a repository that
+    exports one through direnv and commits a
+    `memory-recall/init-journal.jsonl` writes the answer to "did memkit author
+    this config?" — and two authorisations hang off that answer: doctor may
+    probe through the config, which makes the wrapper exec the `interpreter`
+    it records, and init's `foreign-config` refusal is waived, so `--confirm`
+    merges into a config memkit never wrote.
+    """
+    import time as _time
+
+    repo = profile / "project"
+    cache = repo / ".cache" / "memory-recall"
+    cache.mkdir(parents=True, exist_ok=True)
+    theirs = repo / "theirs.json"
+    theirs.write_text(json.dumps({"schema": 1, "stores": []}), encoding="utf-8")
+    (cache / hook.INIT_JOURNAL_NAME).write_text(
+        json.dumps(
+            {
+                "v": 1,
+                "op": "merge-config",
+                "authored_config": True,
+                "path": str(theirs),
+                "before": "absent",
+                "after": "file:deadbeef",
+                "t": _time.time(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CACHE_HOME", str(repo / ".cache"))
+    machine = doctor.Machine(str(theirs))
+    assert machine.state_dir.startswith(str(repo)), machine.state_dir
+    assert doctor.authored_configs(machine.state_dir) == set()
+    allowed, why = machine.may_probe()
+    assert allowed is False, why
+    assert "inside the directory this session stands in" in why, why
+
+
 def test_doctor_never_probes_through_a_config_this_install_does_not_read(
     profile, monkeypatch
 ) -> None:

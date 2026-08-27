@@ -11,7 +11,7 @@ pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
 The table below counts **the tree this file ships in**, which is the tree the
-next pin will name: **70 files, about 1.8 MiB**. Between releases `main`
+next pin will name: **70 files, about 1.9 MiB**. Between releases `main`
 carries files the pin does not, so a count taken at today's pin is smaller —
 run the recipe at the bottom against either and it reproduces that one exactly.
 The release procedure re-derives the table at the tag, which is when the two
@@ -88,8 +88,8 @@ writes nothing but a record of its own refusal, and prints nothing. With a
 config it reads the store directories that config names, and nothing else.
 
 Once it is serving, the same process also collects its own derived state — at
-most hourly, after the pointers have been written, bounded to 500 stats and 100
-unlinks per run. The predicate is an allowlist of collectible name patterns, so
+most hourly, after the pointers have been written, bounded to 3000 stats and
+1000 unlinks per run. The predicate is an allowlist of collectible name patterns, so
 the default is keep. Never collected whatever their age: `log.jsonl`, any
 config the init journal records having authored, a `memkit.json` living there,
 the journal itself, and the sweep's own stamp — and a `.json` whose name is not

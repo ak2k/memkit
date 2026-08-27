@@ -660,6 +660,28 @@ def test_an_unparseable_settings_file_is_refused_rather_than_replaced(profile):
     assert "will not replace" in refusal.message
 
 
+def test_a_config_dir_inside_the_session_is_refused_for_both_targets(
+    profile, monkeypatch
+) -> None:
+    """Round 2's P0 was a repository choosing where a config got READ from.
+    This is the same shape on the WRITER.
+
+    `$CLAUDE_CONFIG_DIR` decides where `CLAUDE.md` and `settings.json` go, and
+    a checkout that exports one through direnv gets the `@-import` appended to
+    the REPOSITORY's `CLAUDE.md` — a file loaded into every session in that
+    project — while `--auto-dream-off` rewrites the repository's settings and
+    leaves the adopter's own untouched, reporting success for a change nobody
+    asked for. `settings_scopes()` already declares this variable untrusted on
+    the read side; nothing did on the write side.
+    """
+    inside = profile / "project" / ".claude"
+    inside.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(inside))
+    for kw in ({"wire_claude_md": True}, {"auto_dream_off": True}):
+        refusal = _refuses(profile, "config-dir-in-session-directory", **kw)
+        assert doctor.CONFIG_DIR_ENV in refusal.message, refusal.message
+
+
 def test_no_checker_route_is_refused_rather_than_half_completed(profile, monkeypatch):
     """A seeded memory whose ledger nobody checked is a store the checker calls
     broken. Half-completing is worse than not starting."""

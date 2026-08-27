@@ -676,6 +676,16 @@ def check_refusals(
         if not flag:
             continue
         _refuse_path(what, target)
+        if _under_cwd(target):
+            raise Refusal(
+                "config-dir-in-session-directory",
+                f"{_display_path(target)} resolves inside the directory this "
+                f"session stands in, so ${CONFIG_DIR_ENV} names the checkout "
+                "rather than your own harness configuration. An @-import "
+                "written there loads into every session in that project and "
+                "not into yours, and a setting written there leaves the one "
+                "you asked to change untouched.",
+            )
         if _inside(target, store_path):
             raise Refusal(
                 "store-resident-target",
