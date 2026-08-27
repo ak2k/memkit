@@ -660,6 +660,48 @@ def test_the_slice_emits_through_the_hooks_own_writer(corpus: Path) -> None:
     assert "TASK_MAX_HITS]" not in source
 
 
+def test_an_index_that_cannot_answer_is_not_scored_as_a_retrieval_miss(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The state the task path added `index-unavailable` FOR, and the one the
+    gate could not see.
+
+    Parallel spawns are the normal case on the task path, they share one
+    sqlite index, and a contender that loses a cold build's write-lock race
+    meets an index with no committed rows. `recall` suppresses that per dir
+    and returns the other dirs' hits, so from the outside it is indistinguish-
+    able from a corpus with nothing to say — which is why production splits the
+    two by `errs_lex` and records `task:index-unavailable` rather than
+    `task:nomatch`.
+
+    The gate scored briefs serially and read only the hits, so every one of
+    those cases would have counted as BRIEF-MISS: an infrastructure failure
+    arriving as a coverage number, quietly, with the rate and the rows looking
+    exactly like a task gate that stopped serving. It refuses now.
+
+    The condition is injected rather than raced. A real lock race is the same
+    fact arriving nondeterministically and slowly; what has to be gated is
+    what the run DOES with the fact, and a hook copy whose lexical stage cannot
+    answer produces it on every dir, every time.
+    """
+    src = _copy_hook(
+        tmp_path,
+        '    if not os.path.isdir(d):\n        return []\n    db = _fts_db(d)',
+        '    if not os.path.isdir(d):\n        return []\n'
+        '    raise sqlite3.OperationalError("database is locked")\n'
+        '    db = _fts_db(d)',
+    )
+    out = _eval(corpus, "--hook", str(src))
+    assert out.returncode != 0, out.stdout
+    assert "could not answer" in out.stderr, out.stderr
+    assert "not a retrieval miss" in out.stderr, out.stderr
+    assert "[BRIEF-NOINDEX]" in out.stdout, out.stdout
+    # And it is the refusal that fails the run, not the coverage rate dropping
+    # out from under it — the point is that the number is not reported as a
+    # measurement at all.
+    assert "0/9 served" in _rates(out.stdout), out.stdout
+
+
 def test_the_slice_retrieves_under_the_deadline_production_passes(
     corpus: Path, tmp_path: Path
 ) -> None:

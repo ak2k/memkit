@@ -11,8 +11,8 @@ for each is below.
 
 `/plugin install memkit@memkit` clones **the whole tracked tree** at the sha
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
-subset chosen for the hook. In this file's own tree that is **89 files, about
-1.7 MiB** *(from the next release — the pin in `.claude-plugin/marketplace.json`
+subset chosen for the hook. In this file's own tree that is **90 files, about
+1.8 MiB** *(from the next release — the pin in `.claude-plugin/marketplace.json`
 still names 0.2.1, whose tree is 63 files and about 1.3 MiB)*:
 
 | what | files | why it is there |

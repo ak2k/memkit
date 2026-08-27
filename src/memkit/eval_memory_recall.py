@@ -581,6 +581,11 @@ def over_cap_faults(hook, case: dict, got: dict) -> list[str]:
     subagent.
     """
     faults = []
+    if got["unanswerable"]:
+        # The index could not answer, which is already refused above by its own
+        # name. Reporting it here as well would say the corpus or the brief has
+        # moved, which is a wrong diagnosis of a right refusal.
+        return faults
     if got["eligible"] <= hook.TASK_MAX_HITS:
         faults.append(
             f"{case['name']} cleared the floor on {got['eligible']} "
@@ -637,7 +642,14 @@ def task_pointers(hook, brief: str, dirs: list[str]) -> list[str]:
 def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     """The one trip. See `task_pointers` above for why each stage is the task
     path's own."""
-    empty = {"names": [], "eligible": 0, "picks": 0, "truncated": 0, "delivered": ""}
+    empty = {
+        "names": [],
+        "eligible": 0,
+        "picks": 0,
+        "truncated": 0,
+        "delivered": "",
+        "unanswerable": 0,
+    }
     if hook.task_gate(brief) is not None:
         return empty
     query = hook.build_task_query(brief)
@@ -646,12 +658,25 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     # `--all-stores` the gate could wait for pointers production abandons and
     # report them as served. The fixture corpus is far too small for the two to
     # differ, which is why this only ever showed up by reading it.
+    # `stats`, for the reason production reads it. `recall` suppresses a
+    # per-dir failure and returns the other dirs' hits, so a corpus that could
+    # not ANSWER and a corpus with nothing to say arrive here identically — and
+    # production splits them, into `task:index-unavailable` and `task:nomatch`.
+    # A gate that does not split them scores an index that could not be read as
+    # a retriever that found nothing, which is a quality number reporting an
+    # infrastructure failure. That window is the normal case on this path:
+    # parallel spawns share one index, and every contender that loses a cold
+    # build's write-lock race meets an index with no committed rows.
+    rec: dict = {}
     hits = hook.recall(
         brief,
+        stats=rec,
         dirs=dirs,
         query=query,
         deadline=time.monotonic() + hook.TASK_BUDGET_SECONDS,
     )
+    unanswerable = int(rec.get("errs_lex") or 0)
+    empty = dict(empty, unanswerable=unanswerable)
     terms = list(dict.fromkeys((query or "").split()))
     # `_eligible` with the hook's own bars, not a comprehension with a copy of
     # them: this slice is the only automated gate over the task path's
@@ -705,6 +730,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "picks": len(picks),
         "truncated": truncated,
         "delivered": appended,
+        "unanswerable": unanswerable,
     }
 
 
@@ -1153,6 +1179,7 @@ def main() -> None:
     # two RATES rather than on the snapshot — see below for why it needs both.
     served_hit = leaked = 0
     cap_fail: list[str] = []
+    unanswered: list[str] = []
     briefs = None
     if not cfg.eval_long_briefs:
         if LONG_BRIEF_SLICE in gating:
@@ -1215,8 +1242,24 @@ def main() -> None:
                 got = task_delivery(hook, case["brief"], dirs)
                 shown = got["names"]
                 ok = case["file"] in shown
+                if got["unanswerable"] and not ok:
+                    # NOT a miss. An index that could not answer says nothing
+                    # about the retriever, and scoring it as a miss puts an
+                    # infrastructure failure into a coverage rate — quietly,
+                    # since the row and the rate look exactly like a gate that
+                    # stopped serving. Refused instead: the run says which
+                    # corpus could not answer and exits non-zero, which is what
+                    # production does with the same fact under another name.
+                    unanswered.append(
+                        f"{case['name']} scored against an index that could not "
+                        f"answer ({got['unanswerable']} dir(s) failed to search) "
+                        "— an unanswerable corpus is not a retrieval miss, and "
+                        "this run cannot say anything about coverage"
+                    )
                 served_hit += ok
                 mark = "BRIEF-SERVED" if ok else "BRIEF-MISS"
+                if got["unanswerable"] and not ok:
+                    mark = "BRIEF-NOINDEX"
                 moved = against_snapshot(
                     LONG_BRIEF_SLICE, case["name"], case_record(mark, case["file"])
                 )
@@ -1268,7 +1311,7 @@ def main() -> None:
     # serves none. The pair is what makes the numbers a calibration rather than
     # a count — "non-vacuous" bounds neither a gate too strict for real briefs
     # nor one too loose for irrelevant ones.
-    rate_fail: list[str] = list(cap_fail)
+    rate_fail: list[str] = list(cap_fail) + list(unanswered)
     if briefs is not None:
         # No `or 1` denominator guard: `long_brief_set` refuses a half that
         # cannot carry a rate, so an empty population is a refusal rather than
