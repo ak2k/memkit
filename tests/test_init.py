@@ -1597,6 +1597,11 @@ def test_a_regular_file_at_the_store_path_is_refused_before_any_write(profile):
     store.write_text("i am a file\n", encoding="utf-8")
     refusal = _refuses(profile, "not-a-directory", store=str(store))
     assert "notes" in refusal.message
+    # The STORE ROOT's own sentence, not the generic preflight's. The two
+    # refusals share a name and the plan-wide preflight now catches this case
+    # as well, so an assertion on the name alone stopped being able to tell
+    # which of them answered.
+    assert "A store is a directory of markdown" in refusal.message
 
 
 def test_two_stores_with_the_same_basename_are_refused(profile) -> None:

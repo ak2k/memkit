@@ -1789,3 +1789,64 @@ class RowLost(unittest.TestCase):
         ) is None
         errors, _ = mi.check(store, False, set())
         assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
+class BlameBaseShapeTest(unittest.TestCase):
+    def test_an_option_shaped_blame_base_is_refused_rather_than_passed_to_git(
+        self,
+    ) -> None:
+        """`citations.blame_base` is a config-supplied string that reaches
+        `git show f"{base}:{rel}"` and `git merge-base <base> HEAD`.
+
+        Git reads a leading `-` as an OPTION wherever a revision is expected,
+        and `git show` accepts `--output=<file>` — so a config could turn a
+        read into a write git performs on its behalf. No placement of `--`
+        fixes a `rev:path` argument, so the shape is refused.
+
+        The ledger sits at the REPOSITORY ROOT here, and that is the whole
+        difference between a live probe and a vacuous one: git makes the rest
+        of the argument part of the filename, so with a nested ledger the
+        write fails on a directory that does not exist and the case would pass
+        for the wrong reason.
+        """
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        ledger = repo / "SEARCH.md"
+        ledger.write_text("# x\n\n## Index\n", encoding="utf-8")
+        for args in (
+            ["init", "-q"],
+            ["-c", "user.email=a@b", "-c", "user.name=a", "add", "-A"],
+            ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x"],
+        ):
+            subprocess.run(
+                ["git", *args], cwd=repo, check=True, capture_output=True, timeout=60
+            )
+        base = f"--output={repo}/STOLEN.txt"
+        before = sorted(p.name for p in repo.iterdir())
+        assert mi._rows_at(ledger, repo, repo, base) is None
+        after = sorted(p.name for p in repo.iterdir())
+        assert after == before, [n for n in after if n not in before]
+        # And an ordinary ref is untouched by the guard.
+        assert mi._refuse_option_shaped_base("origin/main") == "origin/main"
+
+
+class GitArgvTest(unittest.TestCase):
+    def test_the_content_subcommand_is_found_past_the_options_that_take_a_value(
+        self,
+    ) -> None:
+        """`-C <dir>` puts a non-flag word in front of the subcommand.
+
+        A walk that stops at the first word not starting with `-` stops at the
+        DIRECTORY, so `git -C <dir> log -p` would keep its textconv and
+        external-diff drivers — both of which name a program the repository
+        gets to choose.
+        """
+        argv = hook._git_argv("/usr/bin/git", ["-C", "/some/dir", "log", "-p"])
+        assert argv[0] == "/usr/bin/git"
+        assert "--no-textconv" in argv and "--no-ext-diff" in argv
+        assert argv.index("--no-textconv") == argv.index("log") + 1
+        # `ls-files` renders no content, so it takes neither.
+        plain = hook._git_argv("/usr/bin/git", ["-C", "/d", "ls-files", "-z"])
+        assert "--no-textconv" not in plain, plain
+        # The neutralising `-c` settings are there in every shape.
+        assert "core.fsmonitor=" in plain
+        assert "--no-optional-locks" in plain

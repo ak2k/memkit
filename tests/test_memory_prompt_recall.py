@@ -7350,6 +7350,10 @@ def test_a_saturated_first_directory_does_not_starve_the_second(
     The caps are lowered rather than the fixture enlarged: what is under test
     is which directory gets a turn, and five thousand files would prove the
     same thing a hundred times slower.
+
+    The backlog sits in the FALLBACK because that is the directory visited
+    first — the order exists so an unspent share flows to the preferred cache
+    — which makes the fallback the one that can saturate.
     """
     monkeypatch.setattr(hook, "SWEEP_MAX_STATS", 8)
     monkeypatch.setattr(hook, "SWEEP_MAX_UNLINKS", 4)
@@ -7360,13 +7364,44 @@ def test_a_saturated_first_directory_does_not_starve_the_second(
     monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(preferred))
     monkeypatch.setattr(hook, "_TMP_STATE_DIR", str(fallback))
     old = time.time() - 30 * 86400
-    # Enough in the preferred directory to spend the whole run's budget twice
-    # over, and its names sort BEFORE the fallback's so it is walked first.
+    # Enough in the first directory walked to spend the whole run's budget
+    # twice over.
     for index in range(12):
-        _aged_session(preferred, index, old)
-    theirs = [_aged_session(fallback, 0xF00 + n, old) for n in range(2)]
+        _aged_session(fallback, index, old)
+    theirs = [_aged_session(preferred, 0xF00 + n, old) for n in range(2)]
     hook._sweep()
     assert not any(p.exists() for p in theirs), [p for p in theirs if p.exists()]
+
+
+def test_a_directory_that_will_not_be_walked_takes_no_share(
+    tmp_path, monkeypatch
+) -> None:
+    """The share goes to the directories that will actually be walked.
+
+    Visiting the fallback first hands its leftovers on, which covers the case
+    where the FALLBACK is the one that spends nothing. It does not cover the
+    other one: a preferred directory that will refuse at its own ownership
+    guard still counted as a claimant, so the fallback — the only directory
+    that would walk at all — got half a budget and the rest went to nobody.
+    `_sweep_admits` is the one predicate both the division and the pass read.
+    """
+    monkeypatch.setattr(hook, "SWEEP_MAX_STATS", 100)
+    monkeypatch.setattr(hook, "SWEEP_MAX_UNLINKS", 40)
+    aged = time.time() - 30 * 86400
+    victim = tmp_path / "victim"
+    (victim / "memory-recall").mkdir(parents=True)
+    link = tmp_path / "cachelink"
+    link.symlink_to(victim)
+    preferred = link / "memory-recall"
+    monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(preferred))
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    for index in range(60):
+        _aged_session(fallback, index, aged)
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", str(fallback))
+    hook._sweep()
+    collected = 60 - len(list(fallback.glob("*.json")))
+    assert collected == hook.SWEEP_MAX_UNLINKS, collected
 
 
 def test_the_preferred_cache_converges_at_the_same_rate_whatever_the_fallback_is(

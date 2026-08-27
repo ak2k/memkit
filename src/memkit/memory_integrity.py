@@ -93,6 +93,19 @@ WRITE_CLI = "memory-integrity --write"
 WRITE_RECIPE = f"run `{WRITE_CLI}`"
 
 
+def _refuse_option_shaped_base(blame_base: str) -> str:
+    """`blame_base` as a git argument, or "" when it may not be one.
+
+    `citations.blame_base` is a CONFIG-SUPPLIED string that reaches
+    `git show f"{base}:{rel}"` and `git merge-base <base> HEAD`. Git reads a
+    leading `-` as an option wherever a revision is expected, and `git show`
+    accepts `--output=<file>` — so a value beginning with one turns a read
+    into a write git performs on the config's behalf. No placement of `--`
+    fixes a `rev:path` argument, so the SHAPE is refused instead.
+    """
+    return "" if blame_base.startswith("-") else blame_base
+
+
 def _stale_base_hint(blame_base: str) -> str:
     """Printed under DEAD-PATH errors. A citation this change did not touch can
     only be blamed on it if the merge base is older than it should be, and that
@@ -677,7 +690,7 @@ def _changed_files(repo: Path, blame_base: str) -> tuple[set[str], str]:
     # blamed set and somebody else's drift blocks this build. No fetch is done
     # to prevent that — network in a gate that runs on every commit costs more
     # than the fault — so the DEAD-PATH text names it instead.
-    base = git("merge-base", blame_base, "HEAD")
+    base = git("merge-base", _refuse_option_shaped_base(blame_base), "HEAD")
     if base is not None and base.stdout.strip():
         names += paths(git("diff", "-z", "--name-only", base.stdout.strip(), "HEAD"))
     files = set(names)
@@ -788,6 +801,9 @@ def _rows_at(
     try:
         rel = ledger.resolve().relative_to(repo.resolve())
     except ValueError:
+        return None
+    base = _refuse_option_shaped_base(base)
+    if not base:
         return None
     try:
         out = _trusted_git(["show", f"{base}:{rel}"], cwd=repo, timeout=30)

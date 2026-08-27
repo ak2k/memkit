@@ -491,14 +491,25 @@ _GIT_NEUTRAL_CONFIG = (
 _GIT_CONTENT_SUBCOMMANDS = ("diff", "log", "show")
 
 
+# The git-level options that take a VALUE. Without them the walk below stops
+# at `<dir>` in `git -C <dir> log ...` and never reaches the subcommand.
+_GIT_VALUE_OPTIONS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace")
+
+
 def _git_argv(git: str, args: list) -> list:
     """`git` plus `args`, with every config key that names a program silenced."""
     flags = ["--no-optional-locks"]
     for setting in _GIT_NEUTRAL_CONFIG:
         flags += ["-c", setting]
     rest = list(args)
-    for i, word in enumerate(rest):
+    i = 0
+    while i < len(rest):
+        word = rest[i]
+        if word in _GIT_VALUE_OPTIONS:
+            i += 2
+            continue
         if word.startswith("-"):
+            i += 1
             continue
         if word in _GIT_CONTENT_SUBCOMMANDS:
             rest[i + 1 : i + 1] = ["--no-textconv", "--no-ext-diff"]
@@ -510,6 +521,14 @@ def _git_argv(git: str, args: list) -> list:
 # reach. `/dev/null` rather than an unset variable: unset means "look in the
 # usual place", and the usual place is a file whichever `$HOME` the session
 # exported points at.
+#
+# The `-c` overrides above already beat every config file, so this is the
+# second line rather than the first: what it buys is a key nobody enumerated.
+# What it costs is `core.excludesFile` — `git ls-files --others
+# --exclude-standard` in the checker no longer honours an adopter's GLOBAL
+# ignore file, so a file they ignore everywhere reads as untracked here. The
+# checker's blamed set is `.md` under a memory store, which is not what a
+# global ignore file is usually about.
 _GIT_NEUTRAL_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
