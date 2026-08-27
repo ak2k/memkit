@@ -65,7 +65,10 @@ def _which_git() -> str:
     `shutil.which` would answer for a git these cases then could not run,
     which is a skip that hides a real failure.
     """
-    return _exec._trusted_which("git")
+    try:
+        return _exec.resolve("git")
+    except _exec.Untrusted:
+        return ""
 
 
 def _args(**kw) -> argparse.Namespace:

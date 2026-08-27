@@ -58,11 +58,12 @@ import time
 from collections.abc import Callable
 
 from memkit._exec import (
+    Untrusted,
     _execute,
     _trusted_git,
-    _trusted_which,
     _under_cwd,
     _Untrusted,
+    resolve,
 )
 from memkit.memory_prompt_recall import (
     BUILD_BUSY,
@@ -1578,6 +1579,28 @@ def _installed_hook(machine: Machine) -> tuple:
     return [], "nothing registers a UserPromptSubmit hook for memkit", NO_HOOK_REMEDY
 
 
+# What the hook probe carries over from THIS session, named rather than
+# reached for inline. The child's environment is built from an allow-list, so
+# every one of these is a deliberate re-admission — and the probe's whole
+# purpose is to run the wrapper the way the harness runs it, which means the
+# harness's own plugin variables have to arrive. Declared as a tuple so the
+# check's detail can print what the run inherited: a probe whose environment
+# differs from a real invocation's is a probe whose result means something
+# else, and the difference has to be readable rather than argued.
+HOOK_PROBE_FORWARD = (
+    PLUGIN_DATA_ENV,
+    CONFIG_DIR_ENV,
+    "CLAUDE_PLUGIN_ROOT",
+    # The harness's own plugin option, which is how an install DELIVERS the
+    # config on the channel this probe exists to exercise. Dropping it would
+    # leave the probe testing a wrapper with no config to find and calling the
+    # silence a failed retrieval. `env_extra` sets the same name when
+    # `--config` was given, and is applied after this, so the flag still wins.
+    "CLAUDE_PLUGIN_OPTION_" + OPTION_KEY.upper(),
+    "XDG_CACHE_HOME",
+)
+
+
 def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
     """One real run of the installed hook. Returns (stdout, stderr, code, ms).
 
@@ -1603,9 +1626,9 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
         }
     )
     started = time.monotonic()
-    # The DELTA, not a copy of the environment: `_execute` builds the child's
-    # from `_child_env`, and handing it a snapshot of `os.environ` here would
-    # put back every variable that strips.
+    # The DELTA, not a copy of the environment: `_execute` BUILDS the child's
+    # from an allow-list, and there is no `env=` to hand it a snapshot of
+    # `os.environ` with.
     env = {DOCTOR_ENV: "1"}
     if machine.explicit_config:
         # `--config` says "diagnose THIS config", and the wrapper reads its own
@@ -1624,6 +1647,7 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
             input=payload,
             timeout=HOOK_PROBE_TIMEOUT,
             env_extra=env,
+            env_forward=HOOK_PROBE_FORWARD,
         )
     except subprocess.TimeoutExpired:
         return "", "", None, int((time.monotonic() - started) * 1000)
@@ -2309,17 +2333,18 @@ def _harness_stamp(machine: Machine) -> list[Check]:
     criterion that counted it would make all-green unreachable for almost
     everybody, which is how a report stops being read.
     """
-    binary = _trusted_which("claude") or None
-    if binary is None:
+    try:
+        binary = resolve("claude")
+    except Untrusted as exc:
         return [
             Check(
                 "harness-stamp",
                 UNKNOWN,
-                f"no `claude` this may run, so the running harness version "
-                f"is not knowable from here. memkit's claims were measured "
-                f"against {MEASURED_HARNESS}. A `claude` found only through "
-                "the session's own PATH is not asked: that lookup is one a "
-                "checkout steers",
+                f"no `claude` this may run ({exc}), so the running harness "
+                f"version is not knowable from here. memkit's claims were "
+                f"measured against {MEASURED_HARNESS}. A `claude` found only "
+                "through the session's own PATH is not asked: that lookup is "
+                "one a checkout steers",
             )
         ]
     try:
@@ -2563,8 +2588,9 @@ def _probe_checker_route() -> tuple:
     if sys.version_info[:2] >= CHECKER_FLOOR:
         return "python", [sys.executable, "-m", "memkit.memory_integrity"]
     for name in ("python3.14", "python3.13", "python3.12", "python3"):
-        found = _trusted_which(name)
-        if not found:
+        try:
+            found = resolve(name)
+        except Untrusted:
             continue
         with contextlib.suppress(
             OSError, subprocess.SubprocessError, ValueError, _Untrusted
@@ -2582,9 +2608,8 @@ def _probe_checker_route() -> tuple:
                 pair = out.stdout.strip().strip("()").split(",")
                 if (int(pair[0]), int(pair[1])) >= CHECKER_FLOOR:
                     return "python", [found, "-m", "memkit.memory_integrity"]
-    uvx = _trusted_which("uvx")
-    if uvx:
-        return "uvx", [uvx, "memory-integrity"]
+    with contextlib.suppress(Untrusted):
+        return "uvx", [resolve("uvx"), "memory-integrity"]
     return "none", []
 
 

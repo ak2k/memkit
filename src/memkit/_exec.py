@@ -44,13 +44,30 @@ def _under_cwd(path: str) -> bool:
     return target == cwd or target.startswith(cwd + os.sep)
 
 
-class _Untrusted(Exception):
-    """A program whose identity this package may not take from where it found
-    it."""
+class Untrusted(Exception):
+    """A program, a lookup or an environment this package may not act on.
+
+    Raised rather than answered, and that is the module's one structural rule:
+    NO function here returns a falsy value to mean "I could not decide."
+    `""`, `[]`, `False` and `None` are answers about the world, never about
+    the decider's confidence — every defect of this class was one function
+    spelling the second like the first and a caller downstream reading it as
+    the safe case.
+    """
 
 
-def _may_execute(path: str) -> bool:
+# The old name, for the `except` clauses that spell it. One class, so an
+# `except _Untrusted` and an `except Untrusted` cannot come apart.
+_Untrusted = Untrusted
+
+
+def require_executable(path: str) -> None:
     """THE ONE RULE for every program any module in this package starts.
+
+    Returns nothing and raises `Untrusted` naming the reason, because the
+    predicate it replaced answered "no" and "I have no idea" with the same
+    `False` — and a caller that gets a bool has nowhere to put the reason
+    even when there was one.
 
     Program identity comes from an adopter-owned settings scope, from the
     plugin's own payload, or from a pinned absolute path — never from
@@ -64,10 +81,14 @@ def _may_execute(path: str) -> bool:
     because the failure mode is a call site that does not apply it — a rule
     held in five places is a rule the sixth will not have.
     """
-    if not path or not os.path.isabs(path):
-        return False
-    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
-        return False
+    if not path:
+        raise Untrusted("no program was named")
+    if not os.path.isabs(path):
+        raise Untrusted(f"{path!r} is not an absolute path")
+    if not os.path.isfile(path):
+        raise Untrusted(f"{path!r} is not a file")
+    if not os.access(path, os.X_OK):
+        raise Untrusted(f"{path!r} is not executable")
     if path == sys.executable:
         # The interpreter ALREADY RUNNING is not a program anything chose
         # here — this code is what it is executing. The session-directory rule
@@ -75,12 +96,23 @@ def _may_execute(path: str) -> bool:
         # project they are standing in, which is where a python project puts
         # one by default, and would stop nothing: the process is already
         # theirs.
-        return True
-    return not _under_cwd(path)
+        return
+    if _under_cwd(path):
+        raise Untrusted(
+            f"{path!r} resolves inside the directory this session stands in"
+        )
 
 
-def _trusted_path_entries() -> list:
-    """The PATH entries a repository cannot steer.
+def trusted_path() -> list:
+    """The PATH entries a repository cannot steer, or `Untrusted`.
+
+    NEVER an empty list, and the reason is measured rather than argued: an
+    empty PATH is not "search nothing" to POSIX, it is the CURRENT DIRECTORY.
+    A child handed `PATH=""` from a directory holding `memkit-probe-target`
+    ran it; the same child with a PATH naming a directory that holds nothing
+    refused. So the filter's SUCCESS path — every entry rejected — was the one
+    that handed the lookup to the checkout, and the fix is not a better empty
+    value but a refusal.
 
     An EMPTY entry is the current directory, spelled the way every shell reads
     it, and a relative one is the same thing under another name — so a
@@ -93,12 +125,11 @@ def _trusted_path_entries() -> list:
     """
     try:
         cwd = os.path.realpath(os.getcwd())
-    except OSError:
-        # The session directory can be removed under this process. Nothing
-        # can then be said about which entries are inside it, and the safe
-        # direction for a rule about what may be EXECUTED is to admit
-        # nothing rather than to admit everything.
-        return []
+    except OSError as exc:
+        # The session directory can be removed under this process. Nothing can
+        # then be said about which entries are inside it, and a rule about what
+        # may be EXECUTED that cannot decide has to say so.
+        raise Untrusted(f"the session directory is unreadable: {exc}") from exc
     payload = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
     payload_real = os.path.realpath(payload) if payload else ""
     entries = []
@@ -116,11 +147,16 @@ def _trusted_path_entries() -> list:
         ):
             continue
         entries.append(entry)
+    if not entries:
+        raise Untrusted(
+            "no PATH entry survives the rule: every one is empty, relative, "
+            "inside this session's own directory, or inside the plugin payload"
+        )
     return entries
 
 
-def _trusted_which(name: str) -> str:
-    """`name` resolved against `_trusted_path_entries`, or "".
+def resolve(name: str) -> str:
+    """`name` resolved against `trusted_path`, or `Untrusted`.
 
     Never `shutil.which`: that reads the session's PATH, which is an input a
     repository steers through direnv, a checked-in venv or a
@@ -130,115 +166,95 @@ def _trusted_which(name: str) -> str:
 
     A NAME, never a path: a word carrying a separator is not a question a PATH
     lookup answers, and `shutil.which` would have returned such a word
-    unexamined. It is refused here and goes to `_may_execute` instead, which
-    is the predicate that can judge a path.
+    unexamined. It is refused here and goes to `require_executable` instead,
+    which is the rule that can judge a path.
     """
-    if not name or os.sep in name or (os.altsep and os.altsep in name):
-        return ""
-    for entry in _trusted_path_entries():
+    if not name:
+        raise Untrusted("no program name was given")
+    if os.sep in name or (os.altsep and os.altsep in name):
+        raise Untrusted(f"{name!r} carries a path separator, so it is not a name")
+    for entry in trusted_path():
         candidate = os.path.join(entry, name)
-        if _may_execute(candidate):
-            return candidate
-    return ""
+        try:
+            require_executable(candidate)
+        except Untrusted:
+            continue
+        return candidate
+    raise Untrusted(f"{name!r} is on no PATH entry this package may search")
 
 
-# The variables that make a trusted binary somebody else's program. Each one
-# names code the child loads before it reaches its own first instruction: a
-# dynamic loader preload, an interpreter's module path or startup file, the
-# file a POSIX shell sources for a non-interactive run, the program git runs
-# in place of a diff or a credential prompt. All of them arrive from whatever
-# launched this process, which on the pre-approved surfaces is a session a
-# checkout steers through direnv.
-_CHILD_ENV_DROP = (
-    "BASH_ENV",
-    "ENV",
-    "SHELLOPTS",
-    "LD_PRELOAD",
-    "LD_AUDIT",
-    "LD_LIBRARY_PATH",
-    "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "DYLD_FRAMEWORK_PATH",
-    "DYLD_FALLBACK_LIBRARY_PATH",
-    "DYLD_FALLBACK_FRAMEWORK_PATH",
-    "PYTHONPATH",
-    "PYTHONSTARTUP",
-    "PYTHONHOME",
-    "PYTHONEXECUTABLE",
-    "PYTHONUSERBASE",
-    "PYTHONINSPECT",
-    "NODE_OPTIONS",
-    "NODE_REPL_EXTERNAL_MODULE",
-    "PERL5OPT",
-    "PERL5LIB",
-    "RUBYOPT",
-    "RUBYLIB",
-    "GIT_CONFIG",
-    "GIT_CONFIG_COUNT",
-    "GIT_EXTERNAL_DIFF",
-    "GIT_SSH",
-    "GIT_SSH_COMMAND",
-    "GIT_PROXY_COMMAND",
-    "GIT_ASKPASS",
-    "SSH_ASKPASS",
-    "GIT_EDITOR",
-    "GIT_SEQUENCE_EDITOR",
-    "GIT_PAGER",
-    "PAGER",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_NAMESPACE",
-)
-
-# Whole families rather than names, because the family is what the variable
-# is: `GIT_CONFIG_KEY_7` is as good as `GIT_CONFIG_KEY_0`, and an exported
-# shell function is code that runs when the child's shell starts.
-_CHILD_ENV_DROP_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "BASH_FUNC_")
+# What a child of this package is GIVEN. An allow-list, and the polarity is
+# the whole of the decision.
+#
+# The list this replaces enumerated 41 dangerous names and 3 prefixes, which
+# is a bet that nobody will invent a 42nd. Measured on one developer machine,
+# 78 names survived it — `GIT_CONFIG_PARAMETERS`, which reopens git's entire
+# configuration discovery on its own, among them. Inverted, the question stops
+# being "what could a variable do to a child" and becomes "what does a child
+# need", which is a short and finite list.
+#
+# An incomplete deny-list ADMITS the thing nobody thought of. An incomplete
+# allow-list REFUSES it, visibly, and the adopter is told which name to add:
+# incompleteness stops being a vulnerability and becomes a support ticket.
+# `DYLD_*`, `LD_*`, `BASH_FUNC_x%%`, `PYTHON*` and every future member of those
+# families are excluded because they were never added.
+#
+# PATH is not here because it is not FORWARDED — it is rebuilt from the
+# entries `trusted_path` admits, so what the child resolves next is governed
+# by the same rule as what this process resolved.
+CHILD_ENV_KEEP = ("HOME", "LANG", "LC_ALL", "TMPDIR", "TZ")
 
 
-def _child_env(base: dict | None = None) -> dict:
-    """The environment a child of this package may be handed.
+def child_env(extra: dict = None, forward: tuple = ()) -> dict:  # noqa: RUF013
+    """The environment a child of this package is handed.
 
-    Program identity does not stop at the executable: the child reads its own
-    code out of the environment, and PATH decides what IT resolves next. So
-    the variables that name code are removed and PATH is replaced by the
-    entries `_trusted_path_entries` admits — the same rule applied one process
-    down, rather than the rule ending at the boundary this process controls.
+    `extra` is a route's own additions, values it computed. `forward` NAMES
+    session variables to carry over — a declared, printable tuple rather than
+    a call site reaching into `os.environ` inline, so what a route inherits is
+    something another part of the program can render for a reader.
 
-    A caller that genuinely needs one of these back sets it explicitly through
-    `env_extra`, which makes the exception visible at its own call site
-    instead of leaving the whole class admitted for everyone.
+    A forwarded name that is not set is ABSENT from the result, not empty: a
+    child reads `""` as a value and acts on it, and absence is the only
+    spelling of "this was not set".
     """
-    env = dict(os.environ if base is None else base)
-    for name in _CHILD_ENV_DROP:
-        env.pop(name, None)
-    for name in [n for n in env if n.startswith(_CHILD_ENV_DROP_PREFIXES)]:
-        env.pop(name, None)
-    env["PATH"] = os.pathsep.join(_trusted_path_entries())
+    env = {}
+    for name in CHILD_ENV_KEEP + tuple(forward):
+        value = os.environ.get(name)
+        if value is not None:
+            env[name] = value
+    env["PATH"] = os.pathsep.join(trusted_path())
+    if extra:
+        env.update(extra)
     return env
 
 
-def _execute(argv: list, *, env_extra: dict | None = None, **kw):
+def _execute(
+    argv: list,
+    *,
+    env_extra: dict = None,  # noqa: RUF013
+    env_forward: tuple = (),
+    **kw,
+) -> subprocess.CompletedProcess:
     """The one place any module in this package starts a process.
 
-    Raises `_Untrusted` rather than running anything whose program fails
-    `_may_execute`, so a call site that forgot the rule cannot silently
-    execute — the check that called it reports UNKNOWN with a remedy instead,
-    which is the answer a diagnostic owes when honouring the rule costs it its
-    signal.
+    Raises `Untrusted` rather than running anything `require_executable`
+    refuses, so a call site that forgot the rule cannot silently execute — the
+    check that called it reports UNKNOWN with the reason instead, which is the
+    answer a diagnostic owes when honouring the rule costs it its signal.
 
-    The environment goes through `_child_env` whether the caller supplied one
-    or not: a call site that builds its own `env` from `os.environ` would
-    otherwise hand the child every variable this gate exists to strip.
+    The environment is BUILT, never derived from the caller's: there is no
+    `env=` to pass, because a call site that assembles `dict(os.environ, …)`
+    is the whole class of defect this exists to remove.
     """
-    if not argv or not _may_execute(argv[0]):
-        raise _Untrusted(argv[0] if argv else "")
-    env = _child_env(kw.pop("env", None))
-    if env_extra:
-        env.update(env_extra)
+    if not argv:
+        raise Untrusted("no program was named")
+    require_executable(argv[0])
+    if "env" in kw:
+        raise Untrusted(
+            "a caller may not supply a child environment; name what the route "
+            "adds in env_extra and what it inherits in env_forward"
+        )
+    env = child_env(env_extra, env_forward)
     kw.setdefault("capture_output", True)
     kw.setdefault("text", True)
     return subprocess.run(argv, env=env, **kw)  # noqa: S603
@@ -322,21 +338,19 @@ _GIT_NEUTRAL_ENV = {
 }
 
 
-def _trusted_git(args: list, **kw):
+def _trusted_git(args: list, **kw) -> subprocess.CompletedProcess:
     """One `git` run: a trusted binary, told to read no configuration that
     names a program.
 
-    Both halves are the rule. `_trusted_which` settles WHICH git runs;
-    `_git_argv` and `_GIT_NEUTRAL_ENV` settle what it reads once it is
-    running — and the second half is not optional, because git standing in a
-    directory somebody else wrote is git being handed a program to run.
+    Both halves are the rule. `resolve` settles WHICH git runs; `_git_argv`
+    and `_GIT_NEUTRAL_ENV` settle what it reads once it is running — and the
+    second half is not optional, because git standing in a directory somebody
+    else wrote is git being handed a program to run.
 
-    Raises `_Untrusted` when no trusted git resolves, so a caller cannot get a
+    Raises `Untrusted` when no trusted git resolves, so a caller cannot get a
     silent "not a repository" answer out of a refusal.
     """
-    git = _trusted_which("git")
-    if not git:
-        raise _Untrusted("git")
+    git = resolve("git")
     extra = dict(_GIT_NEUTRAL_ENV)
     extra.update(kw.pop("env_extra", None) or {})
     return _execute(_git_argv(git, list(args)), env_extra=extra, **kw)

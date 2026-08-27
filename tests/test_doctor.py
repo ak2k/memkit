@@ -2381,12 +2381,33 @@ def test_the_gate_hands_a_child_no_variable_that_names_code(
         monkeypatch.setenv(name, str(hostile / "payload"))
     monkeypatch.setenv("HOME", str(profile / "home"))
     monkeypatch.setenv("PATH", os.pathsep.join([str(profile / "project"), "/usr/bin"]))
-    env = _exec._child_env()
+    # Names that were NEVER on the 41-entry drop list and reach a child's code
+    # anyway. `GIT_CONFIG_PARAMETERS` reopens git's whole configuration
+    # discovery on its own; the rest are the same families under later
+    # spellings. They are here to make the assertion below about the polarity
+    # of the rule rather than about the length of a list.
+    unlisted = (
+        "GIT_CONFIG_PARAMETERS",
+        "DYLD_VERSIONED_LIBRARY_PATH",
+        "DYLD_VERSIONED_FRAMEWORK_PATH",
+        "GIT_ATTR_SYSTEM",
+        "MEMKIT_A_NAME_NOBODY_HAS_THOUGHT_OF_YET",
+    )
+    for name in unlisted:
+        monkeypatch.setenv(name, str(hostile / "payload"))
+    env = _exec.child_env()
     # Each name that was really there, rather than a prefix sweep: the nix
     # build sandbox exports `PYTHONNOUSERSITE`, which hardens the child rather
     # than naming code for it, and a `startswith("PYTHON")` assertion made
     # this case pass locally and fail there.
     assert [n for n in planted if n in env] == [], sorted(n for n in planted if n in env)
+    assert [n for n in unlisted if n in env] == [], sorted(
+        n for n in unlisted if n in env
+    )
+    # The whole environment, not a sample of it: what a child gets is exactly
+    # what something declared, so the assertion can be an equality and stops
+    # depending on anybody having thought of the next variable.
+    assert set(env) <= set(_exec.CHILD_ENV_KEEP) | {"PATH"}, sorted(env)
     # PATH is rebuilt from the entries a checkout cannot steer, so what the
     # CHILD resolves next is governed by the same rule as what this process
     # resolved.
@@ -2395,16 +2416,24 @@ def test_the_gate_hands_a_child_no_variable_that_names_code(
     assert "HOME" in env
 
 
-def test_the_gate_scrubs_an_environment_a_call_site_built_itself(
+def test_a_call_site_may_not_hand_the_gate_an_environment_it_built_itself(
     profile, monkeypatch
 ) -> None:
-    """`env=` was the way around it.
+    """`env=` was the way around it, and it no longer has a spelling.
 
-    A call site that builds `dict(os.environ, ...)` and hands it over would
-    otherwise put back every variable the gate exists to strip, which is
-    exactly what the hook probe used to do.
+    A call site that builds `dict(os.environ, ...)` used to put back every
+    variable the scrub had just taken — which is exactly what the hook probe
+    did. Under a built environment there is nothing for such a call to mean,
+    so it is refused rather than scrubbed: what a route adds it names in
+    `env_extra`, and what it inherits it names in `env_forward`.
     """
     monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("LD_PRELOAD", "/x")
+    with pytest.raises(_exec.Untrusted):
+        _exec._execute(
+            [sys.executable, "-c", "pass"],
+            env=dict(os.environ, LD_PRELOAD="/x"),
+        )
     seen: dict = {}
     real = _exec.subprocess.run
 
@@ -2416,7 +2445,6 @@ def test_the_gate_scrubs_an_environment_a_call_site_built_itself(
     try:
         _exec._execute(
             [sys.executable, "-c", "pass"],
-            env=dict(os.environ, LD_PRELOAD="/x", PYTHONPATH="/y"),
             env_extra={"PYTHONPATH": "/kept"},
         )
     finally:
@@ -2430,7 +2458,13 @@ def test_the_execution_gate_refuses_what_it_is_there_to_refuse(
 ) -> None:
     """Absolute, a real executable file, and not inside the session's own
     directory — each on its own, because each was reachable without the
-    others."""
+    others.
+
+    And each refusal carries ITS OWN reason. The predicate this replaced
+    answered every one of them with the same `False`, which a caller cannot
+    put in a report and which spells "no" the same way it spells "I could not
+    tell".
+    """
     inside = profile / "project" / "prog"
     inside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     inside.chmod(0o755)
@@ -2438,18 +2472,24 @@ def test_the_execution_gate_refuses_what_it_is_there_to_refuse(
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     outside.chmod(0o755)
-    assert _exec._may_execute(str(outside))
-    assert not _exec._may_execute(str(inside))
-    assert not _exec._may_execute("prog")
-    assert not _exec._may_execute(str(profile / "elsewhere"))
-    assert not _exec._may_execute("")
+    assert _exec.require_executable(str(outside)) is None
+    for path, reason in (
+        (str(inside), "inside the directory"),
+        ("prog", "not an absolute path"),
+        (str(profile / "elsewhere"), "not a file"),
+        ("", "no program was named"),
+    ):
+        with pytest.raises(_exec.Untrusted) as caught:
+            _exec.require_executable(path)
+        assert reason in str(caught.value), (path, str(caught.value))
     for argv in ([], ["prog"], [str(inside)]):
-        with pytest.raises(_exec._Untrusted):
+        with pytest.raises(_exec.Untrusted):
             _exec._execute(argv)
     # A symlink out of the session directory is the case a prefix test misses.
     disguise = profile / "elsewhere" / "disguise"
     disguise.symlink_to(inside)
-    assert not _exec._may_execute(str(disguise))
+    with pytest.raises(_exec.Untrusted):
+        _exec.require_executable(str(disguise))
 
 
 def test_an_option_the_wrapper_refuses_by_shape_is_named_as_that(
@@ -2713,13 +2753,20 @@ def test_no_probe_resolves_its_program_through_the_session_path(
     for check_id in ("harness-stamp", "build", "interpreter"):
         doctor._PRODUCERS[check_id](machine)
     assert not marker.exists(), marker.read_text()
-    assert doctor._trusted_which("claude") != str(shim / "claude")
+    # "nothing answered" is a pass here as much as "something else answered" —
+    # the build sandbox has no `claude` at all, and the claim is about which
+    # program the lookup may return, not that one exists.
+    try:
+        found = doctor.resolve("claude")
+    except _exec.Untrusted:
+        found = ""
+    assert found != str(shim / "claude"), found
 
 
 def test_the_trusted_path_drops_every_entry_a_checkout_can_write(
     profile, monkeypatch
 ) -> None:
-    """The entry list is the rule; `_may_execute` is the second line.
+    """The entry list is the rule; `require_executable` is the second line.
 
     An EMPTY entry is the current directory, spelled the way every shell reads
     it; a relative one resolves against the directory this process stands in
@@ -2748,7 +2795,113 @@ def test_the_trusted_path_drops_every_entry_a_checkout_can_write(
             ]
         ),
     )
-    assert _exec._trusted_path_entries() == ["/usr/bin"]
+    assert _exec.trusted_path() == ["/usr/bin"]
+
+
+def test_a_filter_that_rejects_everything_may_not_answer_with_an_empty_path(
+    profile, monkeypatch
+) -> None:
+    """The SUCCESS path of the PATH filter was its worst path.
+
+    Every entry rejected leaves an empty list, and an empty list joined is
+    `""` — which POSIX does not read as "search nothing". It reads it as the
+    CURRENT DIRECTORY, so the filter's own success handed the child's next
+    lookup to whatever the session's directory ships. Measured below with a
+    positive control, because a case whose premise is false proves nothing.
+    """
+    session = profile / "project"
+    planted = session / "memkit-probe-target"
+    planted.write_text("#!/bin/sh\necho PWNED\n", encoding="utf-8")
+    planted.chmod(0o755)
+    monkeypatch.chdir(session)
+    # CONTROL: a PATH naming a directory that holds nothing refuses, so the
+    # case below cannot be an interpreter that ignores PATH altogether.
+    with pytest.raises(OSError):
+        subprocess.run(
+            ["memkit-probe-target"],
+            env={"PATH": str(profile / "nowhere")},
+            capture_output=True,
+            timeout=30,
+        )
+    ran = subprocess.run(
+        ["memkit-probe-target"],
+        env={"PATH": ""},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert ran.returncode == 0 and "PWNED" in ran.stdout, (ran.returncode, ran.stdout)
+
+    # So the filter refuses by name rather than answering with that string.
+    monkeypatch.setenv("PATH", os.pathsep.join(["", str(session), "relative/bin"]))
+    for call in (
+        _exec.trusted_path,
+        _exec.child_env,
+        lambda: _exec.resolve("memkit-probe-target"),
+    ):
+        with pytest.raises(_exec.Untrusted):
+            call()
+
+
+def test_a_route_declares_what_it_forwards_and_gets_nothing_else(
+    profile, monkeypatch
+) -> None:
+    """`env_extra` used to be applied AFTER the scrub, which made it the way to
+    put back anything the scrub had just taken. Under a built environment it is
+    one of the two ways anything arrives at all, so the exception IS the
+    declaration — and a route that inherits a session variable names it in a
+    tuple something else can print.
+    """
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/payload")
+    monkeypatch.setenv("LD_PRELOAD", "/evil")
+    env = _exec.child_env(
+        {"MEMKIT_X": "1"},
+        forward=("CLAUDE_PLUGIN_ROOT", "MEMKIT_NEVER_SET_ANYWHERE"),
+    )
+    assert env["MEMKIT_X"] == "1"
+    assert env["CLAUDE_PLUGIN_ROOT"] == "/payload"
+    # A declared name that is not set is ABSENT, not empty: a child reads `""`
+    # as a value and acts on it.
+    assert "MEMKIT_NEVER_SET_ANYWHERE" not in env
+    assert "LD_PRELOAD" not in env
+
+
+def test_nothing_in_the_executor_answers_a_question_with_a_falsy_unknown() -> None:
+    """The lint that replaces remembering.
+
+    Every structural defect of this class was one function spelling "I could
+    not decide" as a value its caller reads as an answer: `""` from the name
+    resolver, `[]` from the PATH filter, `False` from the gate. Twelve
+    functions in one small module is a scale at which a syntactic rule is
+    honest, unlike an AST walk over a whole package.
+    """
+    import ast
+
+    source = (REPO / "src" / "memkit" / "_exec.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = [
+        n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert len(functions) >= 6, len(functions)
+    assert [f.name for f in functions if f.returns is None] == []
+    empty = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        value = node.value
+        falsy = (
+            (isinstance(value, ast.Constant) and value.value in ("", None))
+            or (isinstance(value, (ast.List, ast.Tuple)) and not value.elts)
+            or (isinstance(value, ast.Dict) and not value.keys)
+        )
+        if falsy:
+            empty.append(ast.unparse(node))
+    assert empty == [], empty
+    # Anti-vacuity: the walk really does see this module's returns.
+    assert any(
+        isinstance(n, ast.Return) and n.value is not None for n in ast.walk(tree)
+    )
 
 
 def test_the_uninstall_story_says_when_the_config_goes_with_the_plugin(

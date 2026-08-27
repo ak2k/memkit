@@ -42,12 +42,13 @@ import sys
 import time
 
 from memkit._exec import (
+    Untrusted,
     _execute,
-    _may_execute,
     _trusted_git,
-    _trusted_which,
     _under_cwd,
     _Untrusted,
+    require_executable,
+    resolve,
 )
 from memkit.cli_doctor import (
     CANARY_NAME,
@@ -1665,30 +1666,34 @@ def _run_checker(machine: Machine, config_path: str) -> tuple:
     # and never this argv, so consent for the command is not consent for
     # whatever program the session's PATH happened to supply.
     first = command[0] if command else ""
-    if _checker_route_is_ambient():
-        # Only the NAME survives an environment variable. The DIRECTORY in it
-        # is the wrapper's `command -v` answer over the session's own PATH —
-        # and the variable is equally writable by anything else that reached
-        # this process's environment — so the path is re-resolved against the
-        # entries no checkout can steer, and an unresolvable name refuses.
-        resolved = _trusted_which(os.path.basename(first))
-    else:
-        # This process's own pin: `sys.executable`, or something
-        # `_trusted_which` already answered for.
-        resolved = first if _may_execute(first) else _trusted_which(first)
-    if not resolved:
-        return 1, (
-            "no trusted checker route: nothing outside this session's own "
-            f"directory resolves {first!r}"
-        )
+    try:
+        if _checker_route_is_ambient():
+            # Only the NAME survives an environment variable. The DIRECTORY in
+            # it is the wrapper's `command -v` answer over the session's own
+            # PATH — and the variable is equally writable by anything else
+            # that reached this process's environment — so the path is
+            # re-resolved against the entries no checkout can steer, and an
+            # unresolvable name refuses.
+            resolved = resolve(os.path.basename(first))
+        else:
+            # This process's own pin: `sys.executable`, or something `resolve`
+            # already answered for.
+            try:
+                require_executable(first)
+                resolved = first
+            except Untrusted:
+                resolved = resolve(first)
+    except Untrusted as exc:
+        return 1, f"no trusted checker route: {exc}"
     try:
         out = _execute(
             [resolved, *command[1:], "--config", config_path],
             timeout=300,
             # This package's own `src`, and `PYTHONSAFEPATH` so the session
             # directory is not the first place `-m` looks for the module named
-            # on it. Named explicitly because `_child_env` strips the whole
-            # class, which is what makes this one exception visible.
+            # on it. Named explicitly because the child's environment is built
+            # from an allow-list that has no PYTHON* name in it, which is what
+            # makes this one exception visible.
             env_extra={"PYTHONPATH": _package_path(), "PYTHONSAFEPATH": "1"},
         )
     except (OSError, subprocess.SubprocessError, _Untrusted) as exc:
@@ -1702,10 +1707,14 @@ def _package_path() -> str:
     The plugin channel never pip-installs memkit, so `python -m
     memkit.memory_integrity` finds nothing unless the tree is put in front of
     it — the same reason `bin/memkit` prepends it.
+
+    THIS TREE AND NOTHING ELSE. The session's own `PYTHONPATH` used to be
+    concatenated on the end, which put back the one variable most worth
+    removing at the one call site that most needed it removed: `python -m`
+    reads the module it runs out of this string, so a session that exported a
+    `PYTHONPATH` named the code the checker imported.
     """
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    existing = os.environ.get("PYTHONPATH", "")
-    return f"{here}{os.pathsep}{existing}" if existing else here
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:

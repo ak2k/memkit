@@ -4432,7 +4432,7 @@ def test_the_shell_and_the_python_agree_on_which_path_entries_are_trusted(
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload))
     monkeypatch.chdir(session)
     hook._cwd_in_root.cache_clear()
-    mine = os.pathsep.join(_exec._trusted_path_entries())
+    mine = os.pathsep.join(_exec.trusted_path())
     assert theirs == mine, (theirs, mine)
     # And it is not vacuous in either direction: something survives, and the
     # entries a checkout can write do not.
