@@ -9879,6 +9879,74 @@ def test_a_symlink_out_of_the_store_is_refused_and_counted(
         con.close()
 
 
+def test_a_store_root_the_filesystem_holds_as_undecodable_bytes_still_notes(
+    tmp_path, monkeypatch
+) -> None:
+    """The sidecar is an ENCODE no `.encode()` scan can see.
+
+    A store root is one of the three sources of a lone surrogate `_utf8`
+    exists for, and `_fts_db` one function above was fixed for exactly that.
+    `_fts_note_root` then wrote the SAME root through a text-mode stream,
+    which raised `UnicodeEncodeError` — a `ValueError`, so the `suppress(OSError)`
+    around it did not catch it, and the raise left `_fts_dir` before its try
+    block, costing that store every pointer for the invocation.
+
+    And the file had already been created by then, so the `os.path.exists`
+    retry guard froze it at zero bytes forever: the one diagnostic this
+    function exists to write, destroyed permanently for that root.
+    """
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path))
+    root = "/store/bad\udcff/personal"
+    sidecar = hook._fts_note_root(hook._fts_db(root), root)
+    assert os.path.getsize(sidecar) > 0
+    with open(sidecar, "rb") as f:
+        assert f.read().decode("utf-8", "surrogatepass") == root + "\n"
+
+    # A sidecar left empty by any earlier failure is rewritten rather than
+    # frozen: the guard is content, not existence.
+    with open(sidecar, "wb"):
+        pass
+    assert os.path.getsize(hook._fts_note_root(hook._fts_db(root), root)) > 0
+
+
+def test_a_filename_the_filesystem_holds_as_undecodable_bytes_is_declined(
+    corpus: Path, monkeypatch
+) -> None:
+    """The fifth encode site, and the one outside `_utf8`'s rule entirely.
+
+    `_fts_scan` builds every path with `os.path.join` off `os.walk` on a str
+    root, so a filename the filesystem holds as non-UTF-8 bytes arrives as a
+    str carrying surrogateescape codepoints. sqlite3 encodes str parameters
+    STRICTLY, and that path is bound directly — inside `BEGIN IMMEDIATE`, so
+    the raise rolls back the whole transaction and the store commits nothing.
+    The walk finds the same name every run, so the store is not
+    intermittently unsearchable, it is permanently unsearchable, with
+    `task:index-unavailable` on every spawn.
+
+    Driven through a synthetic `os.walk` because APFS refuses to create such a
+    name at all (`[Errno 92] Illegal byte sequence`); Linux, which
+    `_state_dir`'s own docstring names as where the adopters are, does not.
+    """
+    with pytest.raises(UnicodeEncodeError):
+        # The reason the decline exists, asserted rather than described.
+        sqlite3.connect(":memory:").execute("SELECT ?", ("/x/\udcff.md",))
+
+    _memo(corpus, "real.md", "## R\nsprocket backlash gearbox shim stack\n")
+    walk = os.walk
+
+    def with_a_bad_name(root, **kw):
+        for dirpath, dirnames, filenames in walk(root, **kw):
+            yield dirpath, dirnames, [*filenames, "bad\udcffname.md"]
+
+    monkeypatch.setattr(hook.os, "walk", with_a_bad_name)
+    hook._LEX_COUNTS["lex_undecodable"] = 0
+    disk, _spared, _unwalked, _oversize = hook._fts_scan(str(corpus))
+    assert hook._LEX_COUNTS["lex_undecodable"] == 1, hook._LEX_COUNTS
+    assert not any("\udcff" in p for p in disk), sorted(disk)
+    # Non-vacuity: declining that ONE name is not declining the store.
+    assert str(corpus / "real.md") in disk, sorted(disk)
+
+
 def test_the_symlinks_a_real_deployment_uses_still_index(
     corpus: Path, tmp_path: Path
 ) -> None:

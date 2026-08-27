@@ -1808,12 +1808,27 @@ def _fts_note_root(db: str, root: str) -> str:
     every failure is suppressed. Written where the root-to-digest mapping is
     defined rather than inside _fts_connect, which has no business knowing
     what the file it opens is for.
+
+    THE BYTES, not a str through a text stream. A store root is one of the
+    three sources of a lone surrogate `_utf8` exists for — `os.fsdecode` of a
+    filename the filesystem holds as undecodable bytes — and `_fts_db` one
+    function above was fixed for exactly that. A text-mode write is an encode
+    no `.encode()` scan can see, and it raised `UnicodeEncodeError`, which is
+    a `ValueError` and not an `OSError`: the suppress below did not cover it,
+    so the raise left `_fts_dir` before its try block and cost that store every
+    pointer for the invocation.
+
+    RETRIED ON CONTENT, not on existence. `open(..., "w")` creates the file
+    before the write fails, so the previous `if not os.path.exists` froze the
+    sidecar at zero bytes forever — destroying, permanently, the one
+    diagnostic this function exists to produce.
     """
     sidecar = db.removesuffix(".db") + ".root"
     with contextlib.suppress(OSError):
-        if not os.path.exists(sidecar):
-            with open(sidecar, "w", encoding="utf-8") as f:
-                f.write(root + "\n")
+        written = os.path.getsize(sidecar) if os.path.exists(sidecar) else 0
+        if not written:
+            with open(sidecar, "wb") as f:
+                f.write(_utf8(root + "\n"))
     return sidecar
 
 
@@ -2034,6 +2049,14 @@ _LEX_COUNTS: dict[str, int] = {
     # existing — and a non-zero value is worth looking at, since nothing a
     # normal store does produces one.
     "lex_outside": 0,
+    # Files whose NAME the filesystem holds as bytes that are not UTF-8.
+    # `os.walk` hands those back with surrogateescape codepoints in them, and
+    # sqlite3 encodes a str parameter strictly, so binding one raises inside
+    # `BEGIN IMMEDIATE` and the whole store commits nothing — every run,
+    # since the walk finds the same name every time. Declined here so it is a
+    # decision with a name, the way `lex_outside` and `lex_oversize` are,
+    # rather than an index that can never be built.
+    "lex_undecodable": 0,
 }
 
 # Where each hit came from INSIDE its file: path -> the heading of the
@@ -2157,6 +2180,15 @@ def _fts_scan(
         for name in filenames:
             path = os.path.join(dirpath, name)
             if not name.endswith(".md") or _excluded(path):
+                continue
+            if _SURROGATE.search(path):
+                # Before the stat, because this is a decision about the NAME:
+                # every use downstream binds it as a sqlite parameter, and
+                # sqlite3 encodes str parameters strictly. Reaching the binder
+                # aborts the transaction, so one such file makes the whole
+                # store permanently unsearchable rather than making itself
+                # unindexed.
+                _LEX_COUNTS["lex_undecodable"] += 1
                 continue
             try:
                 # NOT following the link, which is what makes the containment
