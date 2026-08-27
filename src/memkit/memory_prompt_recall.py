@@ -1325,9 +1325,21 @@ def _forged_spans(skeleton: str) -> list[tuple[int, int]]:
 def _bracket_before(skeleton: str, start: int, guard: int) -> int | None:
     """Where the delimiter a reader sees BEGINS, or None if nothing opens it.
 
-    Everything structural in front of the tag collapses into the one `(` the
-    defang leaves, so a respelled bracket defangs to the same shape an ASCII
-    one does and a reader of the transcript sees one rule rather than two.
+    Everything in front of the tag that a reader would take for part of the
+    delimiter collapses into the one `(` the defang leaves, so a respelled
+    bracket defangs to the same shape an ASCII one does and a reader of the
+    transcript sees one rule rather than two.
+
+    "Would take for part of the delimiter" is wider than "is punctuation", and
+    that is a cost rather than an oversight. U+1438 and U+140A are Canadian
+    Syllabics LETTERS that render as arrowheads, so no rule drawn on Unicode's
+    categories can tell either one from a letter of somebody's sentence — and
+    the case below where a lone non-ASCII character is taken as the bracket is
+    the case that catches them. It therefore also fires on a description that
+    writes the literal tag straight after a non-Latin word, and that
+    description loses the word's last character. Measured, on the attack
+    corpus: leaving the character instead delivers 308 of 3388 spellings with a
+    bracket confusable still standing beside the marker.
 
     The walk crosses the WHOLE run and decides which character was the bracket
     afterwards, because a backward walk cannot know at the time. Stopping at

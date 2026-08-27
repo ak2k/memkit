@@ -8426,6 +8426,38 @@ def test_the_forgery_rule_decides_both_populations_the_count_cannot(
     )
 
 
+def test_a_lone_letter_before_the_tag_is_the_bracket_and_the_cost_is_stated(
+) -> None:
+    """The over-defang that has to stay, with both halves of the trade pinned.
+
+    A non-ASCII character standing alone in front of the tag is taken as the
+    bracket and consumed. That is right for `ᐸ` and `ᐊ` — Canadian Syllabics
+    letters that render as arrowheads, which no rule drawn on Unicode's
+    categories can tell from prose — and it is wrong for a sentence that writes
+    the literal tag straight after a non-Latin word, which loses that word's
+    last character.
+
+    Narrowing it to leave the character costs 308 of the 3388 attack spellings,
+    each delivered with a bracket confusable still beside the marker. So the
+    behaviour stands and the docstring says what it costs; this case is what
+    keeps the two agreeing.
+    """
+    # The half that earns it: a letter-shaped bracket, consumed whole.
+    for bracket in ("ᐸ", "ᐊ"):
+        assert hook.strip_unsafe(f"note {bracket}memkit-pointers> AFTER") == (
+            f"note ({hook.FRAME_TAG}> AFTER"
+        ), bracket
+    # The half it costs: one character of prose, and only ever in a sentence
+    # that already spells the tag.
+    assert hook.strip_unsafe("プロセスはmemkit-pointersを見る") == (
+        f"プロセス({hook.FRAME_TAG}を見る"
+    )
+    # And nowhere else. The same sentence without the literal tag in it is
+    # untouched, which is what makes the cost bounded rather than general.
+    for sentence in ("プロセスはpointersを見る", "プロセスはmemkitを見る"):
+        assert hook.strip_unsafe(sentence) == sentence, sentence
+
+
 def test_the_boundary_the_defang_leaves_to_the_nonce_is_named(
 ) -> None:
     """What this rule gives up, pinned so it is read rather than discovered.
