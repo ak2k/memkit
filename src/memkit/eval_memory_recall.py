@@ -1447,7 +1447,15 @@ def main() -> None:
                     # this slice reports coverage.
                     entrypoint_checked = True
                     live, why = entrypoint_delivery(
-                        hook_file, cfg.path, repo, case["brief"]
+                        hook_file,
+                        # RESOLVED, because the child runs from `repo` and
+                        # `cfg.path` is as the operator typed it: a relative
+                        # `--config` names nothing from there, and the hook
+                        # answers that by being inert — which reads here as
+                        # the entry point being broken.
+                        pathlib.Path(cfg.path).resolve(),
+                        repo,
+                        case["brief"],
                     )
                     if why or not (live & set(shown)):
                         unanswered.append(
