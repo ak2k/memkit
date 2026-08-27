@@ -687,7 +687,10 @@ def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
 
 
 def entrypoint_delivery(
-    hook_file: pathlib.Path, config: pathlib.Path, cwd: pathlib.Path, brief: str
+    hook_file: pathlib.Path,
+    config: pathlib.Path | str,
+    cwd: pathlib.Path,
+    brief: str,
 ) -> tuple[set[str], str]:
     """What the REAL hook PROCESS delivers for one brief: (names, why-not).
 

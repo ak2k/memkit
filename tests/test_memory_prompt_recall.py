@@ -2540,7 +2540,7 @@ def _unhandled_encodes(source: str) -> list[str]:
     called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     found: list[str] = []
 
-    def report(node: ast.AST) -> None:
+    def report(node: ast.expr) -> None:
         holder = max(
             (
                 n
