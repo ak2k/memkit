@@ -1888,6 +1888,16 @@ def _md_sections(text: str) -> list[str]:
     return sections
 
 
+# How much of a heading line is read to build a sixty-character label.
+#
+# The number is `_description`'s: that function reads 4096 characters of a file
+# and takes its description line out of them, so a display string that has not
+# begun by character 4096 is not one this file was ever going to render. Sixty
+# eight times the display cap is room for whatever whitespace and invisible
+# codepoints `sanitize` collapses on the way.
+LABEL_SCAN_MAX_CHARS = 4096
+
+
 def _section_label(chunk: str) -> str:
     """The heading a chunk starts with, as a short display label; '' if it
     does not start with one.
@@ -1902,8 +1912,17 @@ def _section_label(chunk: str) -> str:
     if not _HEADING.match(first):
         return ""
     # A heading is file content too, and it reaches the same pointer line the
-    # description does.
-    label = sanitize(first.lstrip("#")).strip()
+    # description does — so it is sanitized BEFORE the cap, the way
+    # `_description` sanitizes before its cap and for the same reason: the
+    # other order lets an escape sequence spend the budget and then disappear.
+    #
+    # Over a BOUNDED read, also the way `_description` does it. `_md_sections`
+    # yields a whole file as one chunk when it holds no newline, so `first` is
+    # bounded by INDEX_FILE_MAX_BYTES and nothing else, and this runs once per
+    # ranked row inside a loop that had no clock in it. Slicing first is what
+    # makes the cost a constant; it costs no content, because a character past
+    # the slice could not have reached the sixty this returns.
+    label = sanitize(first.lstrip("#")[:LABEL_SCAN_MAX_CHARS]).strip()
     return label[:57] + "..." if len(label) > 60 else label
 
 

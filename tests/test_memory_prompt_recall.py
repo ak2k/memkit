@@ -1413,6 +1413,52 @@ def test_section_label_is_the_heading_text_capped(corpus: Path) -> None:
     assert len(long) == 60 and long.endswith("...")
 
 
+def _label_ms(chunk: str) -> float:
+    """The best of three, so a scheduler hiccup cannot decide the case."""
+    best = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        hook._section_label(chunk)
+        best = min(best, (time.perf_counter() - started) * 1000.0)
+    return best
+
+
+def test_the_ranking_label_is_bounded_by_what_it_can_ever_display() -> None:
+    """The one unbounded stage between two bounded ones.
+
+    `_fts_search` ranks up to `CANDIDATE_LIMIT` rows and calls `_section_label`
+    on each one's chunk text. `_md_sections` yields a whole file as ONE chunk
+    when it holds no newline, so that chunk is bounded only by
+    `INDEX_FILE_MAX_BYTES` — and the label sanitized the whole of it to display
+    sixty characters. Measured on a 4.6 MB non-ASCII heading: 2.0 s a call,
+    ten calls a dir, against a 7 s task budget and a 10 s harness kill. The
+    round that bounded the three sync loops and the description read missed
+    this one.
+
+    Bounded by a CAP rather than by a clock, because the two call sites obey
+    different rules and this is the ranking one. Nothing beyond the cap can
+    reach a reader — the label is sliced BEFORE it is sanitized, so what is
+    delivered is still scanned in full — which is why a cap here is not the
+    thing round 3 refused to do to `sanitize` itself.
+
+    Self-calibrating: the same call on a chunk at the cap and on one a
+    thousand times larger, in one process, so the bound is a ratio rather than
+    a number that means something different on another machine.
+    """
+    prose = "設定は再試行回数の上限値です"
+    at_cap = "# " + (prose * (hook.LABEL_SCAN_MAX_CHARS // len(prose) + 1))[
+        : hook.LABEL_SCAN_MAX_CHARS
+    ]
+    huge = "# " + (prose * (hook.INDEX_FILE_MAX_BYTES // len(prose) + 1))[
+        : hook.INDEX_FILE_MAX_BYTES
+    ]
+    # What reaches a reader is the same either way, which is the other half of
+    # the claim: the cap removes cost, not content.
+    assert hook._section_label(huge) == hook._section_label(at_cap)
+    small_ms, huge_ms = _label_ms(at_cap), _label_ms(huge)
+    assert huge_ms < 8 * small_ms + 5, (small_ms, huge_ms)
+
+
 # --- term evidence comes from the index, not from a regex -------------------
 
 
