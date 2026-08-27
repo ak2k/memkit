@@ -7369,49 +7369,121 @@ def test_a_saturated_first_directory_does_not_starve_the_second(
     assert not any(p.exists() for p in theirs), [p for p in theirs if p.exists()]
 
 
-def test_a_directory_that_will_not_be_walked_takes_no_share(
+def test_the_preferred_cache_converges_at_the_same_rate_whatever_the_fallback_is(
     tmp_path, monkeypatch
 ) -> None:
-    """The share goes to the directories that will actually be walked.
+    """Every state the fallback can really be in, with the RATE asserted.
 
     The fallback global is sticky for the life of a process that took it once,
-    and the directory it names may be gone or may have been swept within the
-    hour. Dividing the budget by how many directories are LISTED rather than by
-    how many will be walked halves the rate the real cache converges at, on
-    exactly the installs that met a transient unwritable home — which is the
-    case the two-directory sweep exists for.
+    and `_tmp_state_dir` builds it with `tempfile.mkdtemp` — so the directory
+    it names EXISTS, carries no stamp, and is empty. Dividing the budget by
+    how many directories are listed, or by a looser test than the pass itself
+    applies, hands a share to a directory that spends none of it and leaves
+    the adopter's real cache converging at half rate on exactly the installs
+    the two-directory sweep exists for.
+
+    The previous version of this case covered one shape — a fallback that is
+    ABSENT — which is the one `_tmp_state_dir` produces only when `mkdtemp`
+    itself failed. The three that spend nothing while passing `isdir` are the
+    ones that mattered, and every one of them was half rate.
     """
     monkeypatch.setattr(hook, "SWEEP_MAX_STATS", 100)
     monkeypatch.setattr(hook, "SWEEP_MAX_UNLINKS", 40)
     aged = time.time() - 30 * 86400
 
-    def one_run(fallback) -> dict:
-        """One sweep over a fresh directory of 60 collectible ledgers."""
-        state = tmp_path / f"state-{fallback or 'none'}".replace("/", "_")
+    def one_run(label: str, fallback) -> tuple:
+        state = tmp_path / f"state-{label}"
         state.mkdir()
-        monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(state))
-        monkeypatch.setattr(hook, "_TMP_STATE_DIR", fallback)
         for index in range(60):
             _aged_session(state, index, aged)
-        return hook._sweep()
+        monkeypatch.setattr(hook, "_state_dir_candidate", lambda: str(state))
+        monkeypatch.setattr(hook, "_TMP_STATE_DIR", fallback)
+        hook._sweep()
+        return 60 - len(list(state.glob("*.json")))
 
-    # A fallback that was taken once in this process and whose directory is not
-    # there, against no fallback at all. The preferred cache is the same in
-    # both, so its budget has to be.
-    with_absent = one_run(str(tmp_path / "gone"))
-    alone = one_run(None)
-    assert with_absent["unlink"] == alone["unlink"], (with_absent, alone)
-    assert alone["unlink"] == hook.SWEEP_MAX_UNLINKS, alone
+    def absent(label):
+        return str(tmp_path / f"gone-{label}")
 
-    # And a fallback that IS there still gets its share, which is the property
-    # the division exists for.
-    real = tmp_path / "fallback"
-    real.mkdir()
-    for index in range(20):
-        _aged_session(real, 0xF00 + index, aged)
-    shared = one_run(str(real))
-    assert shared["unlink"] == hook.SWEEP_MAX_UNLINKS, shared
-    assert len(list(real.glob("*.json"))) < 20, "the fallback got no turn"
+    def present_empty(label):
+        d = tmp_path / f"empty-{label}"
+        d.mkdir()
+        return str(d)
+
+    def present_populated(label):
+        d = tmp_path / f"full-{label}"
+        d.mkdir()
+        for index in range(20):
+            _aged_session(d, 0xF00 + index, aged)
+        return str(d)
+
+    def unreadable(label):
+        d = tmp_path / f"locked-{label}"
+        d.mkdir()
+        d.chmod(0o000)
+        return str(d)
+
+    def redirected(label):
+        victim = tmp_path / f"victim-{label}"
+        victim.mkdir()
+        link = tmp_path / f"link-{label}"
+        link.symlink_to(victim)
+        return str(link)
+
+    full = hook.SWEEP_MAX_UNLINKS
+    cases = [
+        # (label, fallback, what the preferred cache must collect)
+        ("unknown", lambda _l: None, full),
+        ("absent", absent, full),
+        ("present-empty", present_empty, full),
+        ("unowned-symlink", redirected, full),
+        # The one shape that legitimately shares: a fallback with real state
+        # of its own, which is what the second directory exists for.
+        ("present-populated", present_populated, full // 2),
+    ]
+    if os.geteuid() != 0:
+        # As root every directory is readable, so the EACCES row would measure
+        # the wrong thing rather than fail.
+        cases.insert(4, ("eacces", unreadable, full))
+    measured = {}
+    for label, make, _expected in cases:
+        measured[label] = one_run(label, make(label))
+    if os.geteuid() != 0:
+        (tmp_path / "locked-eacces").chmod(0o700)
+    assert measured == {label: expected for label, _m, expected in cases}, measured
+
+
+def test_a_link_at_the_cache_base_is_the_same_redirect_as_one_at_the_end(
+    tmp_path, monkeypatch
+) -> None:
+    """`islink` on the state directory answered about its LAST component.
+
+    The comment beside that guard named the input it misses: `$XDG_CACHE_HOME`
+    is an environment variable a checkout sets through direnv, and pointing it
+    at a link inside the checkout leaves `<link>/memory-recall` a perfectly
+    ordinary directory — so the guard never fired, the sweep walked the tree
+    on the other end and wrote its stamp into it.
+
+    Both components of the derivation are tested now, and only those two: a
+    machine where `/var` or `/home` is a system link must not stop sweeping
+    for a redirect nobody there chose.
+    """
+    victim = tmp_path / "victim"
+    (victim / "memory-recall").mkdir(parents=True)
+    link = tmp_path / "repo" / "cachelink"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(victim)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(link))
+    state = hook._state_dir_candidate()
+    assert not os.path.islink(state), "the last component is not the link here"
+    monkeypatch.setattr(hook, "_TMP_STATE_DIR", None)
+    out = hook._sweep()
+    assert out["stat"] == 0, out
+    assert not list((victim / "memory-recall").iterdir()), "the sweep wrote here"
+
+    # And the ownership hatch still opens: a cache memkit has really been
+    # writing to keeps a swept one, link or no link.
+    (victim / "memory-recall" / hook.SOAK_LOG_NAME).write_text("", encoding="utf-8")
+    assert hook._sweep()["skipped"] is False
 
 
 def test_a_directory_that_got_no_turn_is_not_stamped_as_swept(

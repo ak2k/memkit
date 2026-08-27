@@ -3237,17 +3237,25 @@ def _sweep(deadline: float | None = None) -> dict:
     state_dirs = [_state_dir_candidate()]
     if _TMP_STATE_DIR and _TMP_STATE_DIR not in state_dirs:
         state_dirs.append(_TMP_STATE_DIR)
-    # Shared among the directories that will actually be WALKED, not among the
-    # ones listed. The fallback global is sticky for the life of a process that
-    # took it once, and the directory it names is often gone or swept within
-    # the hour — so counting it would halve the rate the real cache converges
-    # at, on exactly the installs that met a transient unwritable home. A
-    # directory that becomes due between this test and its own loses one run's
-    # turn and takes the next; the alternative is a budget nothing spends.
-    walking = [d for d in state_dirs if os.path.isdir(d) and _sweep_due(d)]
+    # Shared among the directories that will actually be WALKED, decided by
+    # the same predicate `_sweep_dir` decides it by — a second, looser copy of
+    # the test was the defect: a directory that is there, is due, and is then
+    # refused at the ownership guard took half the budget and spent none of
+    # it, and so did one that is there, is due and is EMPTY, which is exactly
+    # what `_tmp_state_dir`'s `tempfile.mkdtemp` produces.
+    #
+    # The FALLBACK GOES FIRST, and that is what makes an unspent share flow
+    # rather than evaporate: `_fair_share` is recomputed from `stats` at each
+    # call, so whatever the first directory did not spend is divided among
+    # those still to come, and the last one gets all of it. The preferred
+    # cache is the one worth converging — the fallback holds only what this
+    # one process wrote, while the preferred may hold state from every run
+    # that could write it — so the preferred is the one that goes last.
+    order = list(reversed(state_dirs))
+    walking = [d for d in order if _sweep_admits(d)]
     remaining = len(walking)
     passes = []
-    for state_dir in state_dirs:
+    for state_dir in order:
         share = (0, 0)
         if state_dir in walking:
             share = _fair_share(stats, remaining)
@@ -3276,6 +3284,50 @@ def _fair_share(stats: dict, remaining: int) -> tuple:
     )
 
 
+def _sweep_admits(state_dir: str) -> bool:
+    """Whether this directory will be walked at all.
+
+    ONE PREDICATE, read both by the budget division and by the pass itself.
+    Two copies is what let a directory the pass would refuse still be counted
+    as a claimant on the budget — it took its share, spent none of it, and no
+    other directory could get it back.
+    """
+    if not os.path.isdir(state_dir):
+        # An install nobody configured has no state directory, and the sweep is
+        # not the thing that creates one.
+        return False
+    if _sweep_redirected(state_dir) and not _memkit_wrote_here(state_dir):
+        # `isdir` FOLLOWS A LINK, and what it reaches decides what is
+        # unlinked. `$XDG_CACHE_HOME` is an environment variable a checkout
+        # sets through direnv and `~/.cache/memory-recall` can itself be a
+        # link, so neither is evidence that the directory on the other end is
+        # memkit's. A cache memkit really has been writing to carries its own
+        # never-collected state; before that exists there is nothing here
+        # worth collecting anyway. The rule is ownership rather than a ban on
+        # links — an adopter who symlinks their cache keeps a swept one.
+        return False
+    return _sweep_due(state_dir)
+
+
+def _sweep_redirected(state_dir: str) -> bool:
+    """Whether a link decides where this directory really is.
+
+    BOTH components of the derivation, not the last one. The state directory
+    is `<base>/memory-recall` where the base is `$XDG_CACHE_HOME` or
+    `~/.cache`, and a link at the BASE — which is the component an environment
+    variable names — leaves `islink` on the directory itself answering False
+    while the sweep walks and writes into whatever is on the other end.
+
+    And only those two. Testing the whole resolved path against its own
+    spelling would refuse to sweep on any machine where an ancestor is a
+    system link — `/var` is one on macOS and `/home` can be one on Linux — so
+    the guard would be paid for by every adopter on those platforms to catch a
+    redirect nobody there chose.
+    """
+    literal = os.path.normpath(os.path.abspath(state_dir))
+    return os.path.islink(literal) or os.path.islink(os.path.dirname(literal))
+
+
 def _sweep_dir(
     state_dir: str, stats: dict, deadline: float | None, share: tuple
 ) -> bool:
@@ -3285,23 +3337,7 @@ def _sweep_dir(
     had not elapsed, or the budget was already gone.
     """
     max_stats, max_unlinks = share
-    if not os.path.isdir(state_dir):
-        # An install nobody configured has no state directory, and the sweep is
-        # not the thing that creates one.
-        return False
-    if os.path.islink(os.path.normpath(state_dir)) and not _memkit_wrote_here(
-        state_dir
-    ):
-        # `isdir` FOLLOWS A LINK, and what it reaches decides what is unlinked.
-        # `$XDG_CACHE_HOME` is an environment variable a checkout sets through
-        # direnv and `~/.cache/memory-recall` can itself be a link, so neither
-        # is evidence that the directory on the other end is memkit's. A cache
-        # memkit really has been writing to carries its own never-collected
-        # state; before that exists there is nothing here worth collecting
-        # anyway. The rule is ownership rather than a ban on links — an adopter
-        # who symlinks their cache keeps a swept one.
-        return False
-    if not _sweep_due(state_dir):
+    if not _sweep_admits(state_dir):
         return False
     if deadline is not None and time.monotonic() >= deadline:
         # BEFORE the stamp. A run whose budget is already spent would otherwise
