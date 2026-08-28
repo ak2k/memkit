@@ -1,8 +1,9 @@
 # memkit
 
-Injects pointers to your own memory files into every Claude Code prompt:
-lexical retrieval over a directory of markdown, plus a checker and an eval for
-it. It never injects file contents — the model decides what to open.
+Injects pointers to your own memory files into every Claude Code prompt, and —
+on a plugin install — into every subagent brief: lexical retrieval over a
+directory of markdown, plus a checker and an eval for it. It never injects file
+contents — the model decides what to open.
 
 When it fires, this is what lands in the prompt:
 
@@ -12,6 +13,7 @@ When it fires, this is what lands in the prompt:
 
 - [Quick start](#quick-start) — install to first pointer
 - [Your store](#your-store) — what a memory file is · [docs/STORE.md](docs/STORE.md) for the rest
+- [Subagents get pointers too](#subagents-get-pointers-too) — the second hook, and what it rewrites
 - [Why nothing appeared](#why-nothing-appeared) — every silent gate, in the order you hit them
 - [The four commands](#the-four-commands) · [Config](#config) · [Exit codes](#exit-codes)
 - [Install (details)](#install-details) — the other two channels, and every caveat
@@ -91,7 +93,7 @@ the mistyped case does not — so read the value back:
 
 ```
 claude plugin list                                   # memkit@memkit must be ✔ enabled
-claude plugin details memkit@memkit                  # must report Hooks (1)
+claude plugin details memkit@memkit                  # must report Hooks (2)
 python3 -c 'import json,os,sys;print(json.load(open(os.path.expanduser(
   sys.argv[1])))["pluginConfigs"]["memkit@memkit"]["options"])' \
   "${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json"
@@ -102,9 +104,14 @@ result, or a `KeyError`, is an install that skipped or mistyped `--config` —
 which is inert by design and says nothing at runtime, so this is the only place
 it surfaces.
 
-`Hooks (1)` says the hook is registered; it does **not** say the plugin is
-enabled — a disabled plugin still reports it — which is why `plugin list` comes
-first.
+`Hooks (2)` says both hooks are registered — the per-prompt one and the
+subagent one *(from the next release)*. It does **not** say the plugin is
+enabled: a disabled plugin still reports its hooks, which is why `plugin list`
+comes first. `Hooks (1)` is what the currently pinned release registers: the
+per-prompt hook alone, and a healthy install of it. Once the pin carries the
+subagent hook, `Hooks (1)` becomes its own failure — the harness took one
+registration and not the other, so prompts are served and subagent briefs are
+not.
 
 **Write the config.** Four lines is the whole minimum. Put it somewhere you
 would keep a dotfile — **not** under `~/.cache/`, which this page tells you
@@ -218,6 +225,56 @@ stores — what is searched and what is skipped, how a pointer gets chosen, the
 `CLAUDE.md` block for letting your agent write the memories — is in
 [docs/STORE.md](docs/STORE.md).
 
+## Subagents get pointers too
+
+memkit registers a second hook *(from the next release)*, on the `Agent` tool,
+and it behaves differently enough from the per-prompt one to be worth reading
+before you meet it. The marker is the whole of this section: until the
+marketplace pin moves, an install has the per-prompt hook and nothing here.
+
+**Which installs have it.** The second registration lives in
+[`hooks/hooks.json`](hooks/hooks.json), which is the plugin channel's manifest,
+so it ships with a plugin install and with nothing else: the nix module writes
+the hook script and its wordlist into `~/.claude/hooks/` and registers whatever
+your own `settings.json` names, and a pip install registers nothing at all. On
+those channels a `PreToolUse` entry matched on `Agent` is yours to write, and
+without one this whole section describes something that never runs — silently,
+because a hook that is not called records nothing.
+
+It fires when Claude Code is about to spawn a subagent, before the subagent
+runs. Rather than printing to the transcript, it **rewrites the tool call's
+input**: your brief comes back verbatim with a delimited block appended to it,
+and the subagent reads the whole thing as its instructions. Nothing is removed
+and nothing is reworded. If it has nothing to add, or anything at all goes
+wrong, it emits nothing and the spawn runs exactly as it would without memkit.
+
+What differs from the prompt path:
+
+- **No length ceiling.** The 4000-character paste gate is a prompt gate; a
+  four-kilobyte brief is a brief, and it is the population this exists for.
+  Every other shape gate still applies.
+- **Dedup is per tool call, not per session.** Two subagents spawned in one
+  turn are two ledgers, and neither is charged for what the parent's prompts
+  were shown. A retry of the same call is not served twice.
+- **A different relevance bar.** Share-of-the-query gets stricter the longer
+  the text is, which is backwards for a brief, so this path uses a plain count
+  of matched terms instead — see [Retrieval disclosures](#retrieval-disclosures).
+- **Up to three pointers**, in a block of 1636 bytes plus the pointer lines,
+  appended to the end of the brief.
+- **A 10-second timeout** with a 7-second internal budget, against the prompt
+  path's 15 and 12. A hook on this event stalls a spawn, so it is given less
+  room.
+- **A brief plus its block over 16 KiB gets nothing.** The brief is echoed back
+  inside the replacement, so there is nothing memkit may shed to make room, and
+  it refuses whole rather than trimming your text.
+- **Its own outcomes**, all prefixed `task:`, in the same `log.jsonl`.
+
+The block is marked as retrieved data rather than as instructions, and its
+delimiter carries a value generated at the moment it is written — so no text
+sitting in a memory store can spell the delimiter and put its own words outside
+the marked region. That matters more here than on the prompt path: a subagent
+acts on its brief unattended.
+
 ## Why nothing appeared
 
 You typed something and no pointer came back. Every gate below is silent by
@@ -249,20 +306,27 @@ is on your own `PATH`.
 
 | what stopped it | doctor check | how you can tell | what to do |
 |---|---|---|---|
-| **The plugin was installed mid-session** | `hook-ever-fired` | `plugin details` says `Hooks (1)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
-| **The plugin is disabled** | `plugin-enabled` | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (1)` | re-enable it |
+| **The plugin was installed mid-session** | `hook-ever-fired` | `plugin details` says `Hooks (2)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
+| **The plugin is disabled** | `plugin-enabled` | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (2)` | re-enable it |
+| **Only one hook registered** | `registrations-count` | `plugin details` says `Hooks (1)` | what the currently pinned release registers — the per-prompt hook alone, and healthy. Once the pin carries the subagent hook it is a half-registered failure instead: the harness took one entry and not the other, and reinstalling is the first thing to try |
+| **The install is not the plugin channel** | `subagent-delivery` | no `task:` record at all in `log.jsonl`, whatever the brief | the subagent hook is registered by `hooks/hooks.json`, which only a plugin install reads. A nix or pip install registers what its own `settings.json` names, so the `PreToolUse` entry is yours to add |
 | **No config reached the hook** | `config-route` | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Writing it by hand](#writing-it-by-hand) |
 | **The config path is wrong** | `config-route` | `--debug-config` says the path does not exist | fix the path and re-run the install command |
 | **The prompt was under three words** | `gate-outcomes` | `gate:short`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
 | **The prompt began with `/`** | `gate-outcomes` | no record at all — Claude Code resolves slash commands before the hook runs, so an empty `tail -1` is the tell | deliberate: a slash command is an instruction to Claude Code, not a question about your work |
-| **The prompt was over 4000 characters** | `gate-outcomes` | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste |
+| **The prompt was over 4000 characters** | `gate-outcomes` | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste. **Prompts only** — a subagent brief has no length ceiling, since a long brief is a brief |
 | **The prompt was all common words** | `gate-outcomes` | `gate:stopwords` | "is it the" leaves no term to search on |
-| **The same prompt already fired this session** | `gate-outcomes` | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session |
+| **The same prompt already fired this session** | `gate-outcomes` | `deduped`; the first identical prompt got pointers | deliberate: a memory is offered once per session. On the subagent path the same outcome is per TOOL CALL — a spawn is never charged for what the parent's prompts were shown |
 | **The prompt began with an editor or tool envelope** | `gate-outcomes` | `gate:envelope`; the prompt started with something like `<system-reminder>` | deliberate — that text is not what you asked |
-| **The hook ran out of time** | `hook-path` | `killed` | it is registered with a 15-second timeout and gives up rather than delaying your prompt. A first run on a large store builds the index; the next one is fast |
+| **The hook ran out of time** | `hook-path` | `killed`, or `task:killed` on the subagent path | the prompt hook is registered with a 15-second timeout and its own 12-second budget; the subagent hook with 10 and 7, because that one stalls a spawn. Either gives up rather than delaying you. A first run on a large store builds the index; the next one is fast |
 | **The corpus is not where you think** | `corpus-root` | `--debug-config` prints the corpus root, its file count, and a line naming any files stranded outside it | move them, or point `dir` at the right directory |
 | **Nothing matched well enough** | `canary-retrieval` | `--search` exits 1 and prints `no match in N files under <root>` | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
 | **The session budget is spent** | `gate-outcomes` | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
+| **A subagent got no pointers** | `subagent-delivery` | the last `task:` record in `log.jsonl` names the reason — `tail -1` it and read the `outcome` against the table in the outcome table under [Why nothing appeared](#why-nothing-appeared) | every row below is one of those reasons |
+| **The brief plus its pointers exceeded 16 KiB** | `subagent-delivery` | `task:oversize` | the brief is echoed back inside the replacement, so there is nothing memkit may shed to make room; the pointers are dropped whole rather than the brief being trimmed |
+| **The hook was called for another tool** | `subagent-delivery` | `task:notool`, naming the tool | the registration and the harness disagree — what a tool rename looks like from inside. Reinstall; if it persists, the entry needs its matcher changed |
+| **The tool call carried no brief** | `subagent-delivery` | `task:nobrief` | there was no `prompt` string in the tool's input to read |
+| **The event was renamed** | `subagent-delivery` | `task:event`, naming the event | the hook still records the call and deliberately does not rewrite it: the replacement names the event it answers, and one the harness rejects cancels the spawn. Reinstall; if it persists, this build is older than the harness |
 
 The prompt-shape gates — the three-word floor, the slash prefix, the paste
 ceiling, the all-stopword case and the envelope prefix — are the reason the hook
@@ -273,24 +337,46 @@ it asks its own fixed query — which is why a green `canary-retrieval` beside a
 silent session sends you to `gate-outcomes` rather than to your store.
 
 **The outcome vocabulary.** Each record's `outcome` names what happened, and
-these are all of them — the first thirteen in `log.jsonl`, the last two in the
-`trust.json` an unconfigured install writes instead:
+these are all of them — everything but the last two rows in `log.jsonl`, and
+those two in the `trust.json` an unconfigured install writes instead.
+
+Two prefixes, because there are two hooks. An unprefixed outcome is the
+per-prompt hook; a `task:` outcome is the subagent path, which runs before the
+Agent tool and appends pointers to the brief. They are separate vocabularies on
+purpose: the two serve different populations, and one name over both would make
+every rate you compute a rate over an unknown mixture.
 
 | outcome | meaning |
 |---|---|
 | `injected` | pointers were written into the prompt |
 | `gate:envelope` · `gate:empty` · `gate:slash` · `gate:short` · `gate:long` · `gate:stopwords` | the prompt's shape, per the table above. In releases before 0.2.0 the middle four were one value, **`gate:shape`** — a log written by 0.1.0 shows that instead |
 | `gate:nodirs` | nothing to search: no config, or no store on disk and in scope here |
+| `gate:event` | a prompt-shaped payload arrived under an event name this hook did not register for. Recorded and NOT served: what authorises the injection is the registration, not the presence of a `prompt` key. A payload with no event name at all is served, since that is how the hook is driven directly |
 | `nomatch` | the stores were searched and nothing came back |
+| `index-unavailable` | the stores were asked and at least one could not answer — an index mid-rebuild, a corpus that could not be read, or a query the budget ran out under. Distinct from `nomatch`, which means the search ran and found nothing |
 | `deduped` | every match had already been offered this session |
 | `floored` | matches existed and none cleared the relevance bar |
 | `gate:budget:weak` | the session's 30 pointers are spent and nothing beat the weakest |
 | `gate:budget` | the same, on a session ledger written before this build recorded per-pointer evidence — that budget cannot be reasoned about, so it is terminal |
 | `dup-registration` | two installs on one machine registered the same hook. Not a prompt outcome — it carries `"concludes": false` and is written beside the record the prompt makes for itself |
-| `killed` | the hook was stopped — timeout, or the session ended |
+| `killed` | the hook was stopped — timeout, the session ended, or Ctrl-C reached its process group. The record carries `signal`. SIGTERM, SIGHUP and SIGINT are all handled the same way: exit 0, leave a record, never a traceback |
 | `output-lost` | pointers were built and the write did not land |
 | `error` | an unexpected failure; the record names the exception type |
+| `main:badpayload` | stdin held no JSON object — empty, truncated, malformed, or valid JSON that is not an object. Written before the dispatch, so it is neither a prompt outcome nor a task one: the payload never said which it was. It exists because the alternative measured is worse — exit 0, nothing on either stream, and no line here at all, which is what a hook that was never registered looks like |
 | `cli:*` | written by `--search`, not by a prompt. `"concludes": false` marks these |
+| `task:injected` | pointers were appended to a subagent's brief |
+| `task:envelope` · `task:empty` · `task:slash` · `task:short` · `task:stopwords` | the brief's shape. The same five as the prompt path minus its 4000-character paste ceiling, which a brief is expected to exceed |
+| `task:nodirs` | nothing to search, as `gate:nodirs` |
+| `task:nomatch` · `task:deduped` · `task:floored` | as the unprefixed three, over a brief. `deduped` here is per tool call, not per session — a subagent is not charged for what the parent's prompts were shown |
+| `task:index-unavailable` | the stores were asked and at least one could not answer — an index mid-rebuild, or a corpus that could not be read. Distinct from `task:nomatch`, which means the search ran and found nothing: parallel spawns share one index, and a contender that loses the race to a cold build meets one holding no rows yet |
+| `task:oversize` | the brief plus its pointers would exceed the 16 KiB write bound. The brief is echoed back inside the emission, so nothing can be shed to make room and the pointers are dropped whole |
+| `task:unsafe` | the emission did not match the one permitted output shape, so nothing was written. This one is a defect report: the shape is built in one place and the check is over that place's output |
+| `state: "unkeyed"` on a `task:injected` record | the tool call carried no id to key a ledger on, so this spawn was served without one. Not an outcome — a field, and the fail-open direction: a shared ledger would serve the first spawn on the machine and dedup every one after it |
+| `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside. Also what a payload routed here by the event-name fallback records when it is for a tool this hook does not serve |
+| `task:event` | an `Agent` call arrived under an event name this build does not recognise — a renamed event, reaching the fallback dispatch. Recorded and NOT served: the replacement names the event it answers, and one the harness rejects cancels the tool call |
+| `task:nobrief` | the tool call carried no `prompt` string to read |
+| `task:unencodable` | the brief carried a lone surrogate, so the emission cannot be written as UTF-8 at all. Refused before the write rather than around it: a partial JSON object on this event is worse than none |
+| `task:killed` · `task:output-lost` · `task:error` | as the unprefixed three |
 | `trust:unconfigured` | **`trust.json`, not the soak log** — the install has no config on any route it reads, so the hook refused before it would have created the shared state directory |
 | `trust:config-error` | the same file: a config was found and could not be used — unreadable, unparseable, or a schema this build does not speak |
 
@@ -407,7 +493,8 @@ point.
   "eval": {
     "root": "checkout",
     "snapshot": "eval-expectations.json",
-    "gating_slices": ["suite", "noinject"],
+    "gating_slices": ["suite", "noinject", "longbrief"],
+    "long_briefs": "long-briefs",
     "cases": { "suite": [], "noinject": [], "vocab": [] }
   }
 }
@@ -481,6 +568,16 @@ point.
   assertion (`must be injected` becomes `must not be`) with no edit to the
   case. `noinject` prompts must inject nothing. `vocab` paraphrases suite
   cases in symptom words and is an instrument, not usually a gate.
+- **`eval.long_briefs`** — a directory of paired long briefs, and the only
+  automated gate over what a **subagent** receives. Its cases are files rather
+  than config entries, scored through the subagent path's own gate, query
+  builder and floor bars, and it gates on two rates as well as per-case: a
+  coverage floor over the briefs that must be served and an injection ceiling
+  over the ones that must not be. `tests/fixtures/long-briefs/` is a worked
+  example, `index.json` included. **Omit the key and there is no gate over
+  subagent delivery** — the run says so and exits 0. Name `longbrief` in
+  `gating_slices` and it becomes a gate: a run that then cannot score the
+  slice refuses instead of passing quietly.
 
 `tests/fixtures/` holds a small working example of all of it: an invented
 two-store corpus, a config, and the eval snapshot it produces.
@@ -519,13 +616,20 @@ only `ok` licenses reading `files` as the size of the corpus. Under every other
 outcome the count is a floor or absent (`null` when the run never got far
 enough to count). Those two together are what let the vocabulary grow without
 older readers mistaking a new failure state for a healthy one. Today it is
-`ok`, `partial` (part of the corpus was unreadable), `busy` (another session
-held the write lock, so nothing was counted), `unreadable` (the corpus could
-not be read at all) and `rebuilt` (the index was damaged and built again).
+`ok`, `partial` (part of the corpus was unreadable), `truncated` (the corpus is
+readable and indexing it ran out of the run's budget, so the next run carries
+on from here), `busy` (another session held the write lock, so nothing was
+counted), `unreadable` (the corpus could not be read at all) and `rebuilt` (the
+index was damaged and built again).
 
-One more file per session: `<session-uuid>.json`, holding the once-per-session
-dedup ledger. It is disposable — deleting it lets that session offer a memory
-again — and one is written per session.
+Two more kinds of file, both disposable dedup ledgers:
+
+- `<session-uuid>.json`, the once-per-session ledger — deleting it lets that
+  session offer a memory again. One per session.
+- `t-<tool-use-id>.json`, the per-tool-call ledger the subagent path writes.
+  One per served `Agent` spawn, so this directory grows with SPAWNS rather
+  than with sessions — an order of magnitude faster on an agent-orchestrated
+  workload.
 
 **memkit collects these itself, at most hourly.** For a long time it did not,
 and the author's own cache reached 16,319 files and 264 MiB before anything
@@ -577,7 +681,8 @@ this is not the thing that makes one.
 
 An index and its sidecars go **together**, whichever of them the sweep sees
 first: an orphaned `.build` outliving its index reads as a real record of a
-corpus that is no longer there.
+corpus that is no longer there. The two ledgers have no such pairing and are safe to
+collect on filename and mtime alone, which is what the `t-` prefix is for.
 
 #### `log.jsonl` — the soak log, and what a reader may assume of it
 
@@ -596,15 +701,24 @@ rule is a contract rather than an implementation note.
   it from both halves — a silently unclassified outcome is a rate computed over
   a denominator nobody checked.
 - **`"concludes": false` marks a record that is not a prompt outcome**, and it
-  is the ONLY filter that isolates the per-prompt population. Three kinds carry
+  is the ONLY filter that isolates the per-prompt population. Four kinds carry
   it: duplicate-registration detection, which is about the machine and is
   written beside the record the prompt produces for itself; every record the
   search CLI writes, since an agent running a command is not a prompt anyone
-  typed; and every record written while `memkit doctor` is driving the hook,
-  which additionally carries `"doctor": true` as a label. Exclude all three
-  from any per-prompt population. The rule has not changed and did not need
-  to: a new kind of non-prompt record joins the filter rather than needing a
-  new one.
+  typed; every record from the subagent path, which concludes a spawn rather
+  than a prompt; and every record written while `memkit doctor` is driving the
+  hook, which additionally carries `"doctor": true` as a label. Exclude all
+  four from any per-prompt population. The rule has not changed and did not
+  need to: a new kind of non-prompt record joins the filter rather than
+  needing a new one.
+- **`"population"` says which population a record DOES conclude.** Absent means
+  the per-prompt one, so nothing written before this field existed changes
+  shape; `"task"` is the subagent path. Group by this rather than by the
+  `task:` prefix — a prefix is a naming convention and a name is a thing each
+  new outcome teaches you, which is the coupling a discriminator exists to
+  remove. A consumer computing per-spawn rates wants
+  `population == "task"`, and one computing per-prompt rates wants
+  `concludes is not false`, which already excludes them.
 - **Do not filter on `prompt_sha` or `ms`.** The CLI's records carry both — it
   hashes the query the same way — so a consumer keying on them pulls a
   command-line search into the denominator of every injection rate. Keying on
@@ -617,7 +731,11 @@ rule is a contract rather than an implementation note.
   this ever injected HERE" and is admissible under the bound below. A reader
   must ignore keys it does not know rather than treating one as malformed.
 - **What a record may contain is bounded**: hashes, counts, basenames, and the
-  sanitized query terms. Never raw prompt text, and never file contents.
+  sanitized query terms. Never raw prompt text, and never file contents. The
+  query field is capped at 160 characters on both paths, but the two paths
+  build it at different widths — 80 words and 40 terms of a prompt, 4000 and
+  2000 of a brief — so on a `population: "task"` record those 160 characters
+  are the opening of a subagent brief.
 
 ## Exit codes
 
@@ -718,7 +836,8 @@ claude plugin install memkit@memkit --yes \
   --config memkitConfig="$HOME/.config/memkit/memkit.json"
 ```
 
-That registers the `UserPromptSubmit` hook and puts the plugin's `bin/` on the
+That registers the `UserPromptSubmit` and `PreToolUse` hooks *(the second from
+the next release)* and puts the plugin's `bin/` on the
 agent's `PATH`. It reads nothing and says nothing until you give it a config —
 see below.
 
@@ -746,7 +865,12 @@ is found, `memkit doctor` says so and names `uv python install 3.12`; retrieval
 is unaffected either way.
 
 **Check that it took.** `claude plugin details memkit@memkit` reports the hooks
-it registered: `Hooks (1)` is a working install and `Hooks (0)` is not. Worth
+it registered: `Hooks (2)` is a working install *(from the next release)*.
+`Hooks (0)` is the failure where nothing registered at all. `Hooks (1)` is what
+the currently pinned release registers and is healthy today; once the pin
+carries the subagent hook it is the quieter failure in between — one of the two
+entries was taken and the other was not, which serves prompts and leaves
+subagent briefs alone. Worth
 running once, because a memkit that installed correctly and has not been given
 a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.
@@ -997,19 +1121,42 @@ mutual information were each measured dead or inverted.
 **A relevance floor keyed on English word frequency does the work instead.** A
 hit whose matched terms are all common English is treated as conversational
 coincidence unless at least three terms matched *and* they are a real share of
-the prompt. The wordlist behind that floor is a committed artifact
+the prompt. That rule is **the prompt path's**; the subagent path uses a
+different one, and the reason is arithmetic rather than taste. Share-of-the-
+query is a bar that gets STRICTER as the text gets longer — a fifth of eight
+terms is two, a fifth of three hundred is sixty — which is backwards for a
+brief, so on that path the share bar is off and a plain count carries it: at
+least ten of the brief's terms matched, whatever they are. That count is what
+stops a four-kilobyte brief being carried into a spawn by one project name it
+happens to mention. The wordlist behind both floors is a committed artifact
 (`src/memkit/common-words.txt`), regenerated by `tools/generate-common-words.py`
 against a pinned corpus-frequency dataset. It is a floor calibrated on one
 corpus; the shape of the rule is likely to transfer, the exact thresholds are
 not.
 
 **What lands in the prompt, and what it costs.** The pointers arrive inside a
-`<memkit-pointers>` block whose preamble tells the model the lines are DATA and
-not instructions — paths and descriptions are file contents, and every one of
-them is sanitized before it is rendered, so a memory cannot close the block or
-smuggle control characters through it. The block is the frame plus one line per
-pointer: **559 bytes fixed** on any prompt that fires, plus the pointer lines
-themselves, which are as long as your descriptions. When the per-prompt cap cuts
+`<memkit-pointers-… lines=N>` block whose preamble tells the model the lines
+are DATA and not instructions — paths and descriptions are file contents, and
+every one of them is sanitized before it is rendered, so a memory cannot
+smuggle control characters through it. Nothing else is done to your text: a
+description that spells the block's own closing tag is delivered exactly as
+your file wrote it, because the boundary is not a judgement about what the
+text says. It is three facts about how the block is built, and each one settles
+it on its own. The delimiter is a whole LINE, and no retrieved text can begin a
+line — every line break is stripped, so a description sits at a non-zero column
+of a line that starts `- `. Its trailing digits are RANDOM, generated after
+every file in your store was written, and the block is checked against them
+before it is emitted. And the opening delimiter DECLARES how many lines the
+region holds, counted off the finished block, so nothing inside it can move the
+end. Both frames state all three in the prose the model reads, and say what to
+do if the closing line never arrives. The block is the frame plus one line
+per pointer: **1041 bytes fixed** on any prompt that fires, plus the pointer
+lines themselves, which are as long as your descriptions. The subagent block is
+the same shape and **1636 bytes fixed**, appended to the brief rather than
+printed;
+a brief plus its block over 16 KiB is refused whole rather than trimmed,
+because the brief is echoed back inside the replacement and none of it is
+memkit's to shed. When the per-prompt cap cuts
 matches, a truncation notice is added carrying the search command to see the
 rest — measured at **another ~460 bytes**, since it quotes your config path and
 the whole query. A prompt that retrieves nothing costs nothing: the hook writes

@@ -148,6 +148,23 @@ def _hook_count(details: subprocess.CompletedProcess[str]) -> int:
     return int(found.group(1))
 
 
+def _registered_hooks(root: Path) -> int:
+    """How many handlers the INSTALLED payload's `hooks.json` declares.
+
+    Read off the clone rather than written as a literal, and that is the whole
+    point: the marketplace pin names a released commit, so a literal here is a
+    snapshot of whichever release was current when it was typed. The moment the
+    pin moves to a release carrying a second registration, a literal goes red
+    on the release rather than in review — and `_hook_count` deliberately
+    raises rather than skips, so it goes red loudly and at the wrong moment.
+
+    Derived, this still fails on `Hooks (0)`: a payload-less clone has no
+    `hooks.json` to read and the open below raises.
+    """
+    registration = json.loads((root / "hooks" / "hooks.json").read_text())["hooks"]
+    return sum(len(group["hooks"]) for groups in registration.values() for group in groups)
+
+
 def _install_path(profile: Profile) -> Path:
     """Where the harness put the payload it cloned, from its OWN readback.
 
@@ -273,9 +290,11 @@ def test_the_real_marketplace_add_and_install_register_a_hook(
     # harness cannot run, and it fails as silence.
     assert os.access(root / "bin" / "memkit-hook", os.X_OK), root
 
-    # The readback that exit 0 cannot give.
+    # The readback that exit 0 cannot give, against what the clone declares
+    # rather than against a number typed when one release was current.
     details = profile.details(SPEC)
-    assert _hook_count(details) == 1, details.stdout
+    assert _hook_count(details) == _registered_hooks(root), details.stdout
+    assert _hook_count(details) > 0, details.stdout
 
     # And the option the install was given is what the harness recorded — the
     # config-delivery claim, on the remote payload rather than a staged one.
@@ -315,7 +334,10 @@ def test_a_turn_on_the_remote_install_injects_from_a_store_in_the_scratch_home(
         ),
     )
     details = profile.details(SPEC)
-    assert _hook_count(details) == 1, (
+    # This scenario only needs SOMETHING registered — the turn below is what
+    # it is about. The exact count is pinned in the scenario above, against
+    # the clone's own manifest rather than against a literal.
+    assert _hook_count(details) > 0, (
         "nothing registered, so the turn below would prove nothing",
         details.stdout,
     )

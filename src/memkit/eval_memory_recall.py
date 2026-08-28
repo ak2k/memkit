@@ -104,10 +104,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
+import os
 import pathlib
+import re
+import subprocess
 import sys
+import tempfile
+import time
 
+from memkit._exec import Untrusted, _execute
 from memkit.memory_prompt_recall import CONFIG_ENV, ConfigError, load_config
 
 # The packaged hook, and the default for --hook. `--repo` moves the STORES;
@@ -334,9 +341,578 @@ def pointers(hook, prompt: str, hits: list[str]) -> tuple[list[str], list[str]]:
     passed = [
         pathlib.Path(h).name
         for h in hits
-        if hook._passes_floor(*hook._relevance(terms, h))
+        if hook._passes_floor(*hook._relevance(terms, h, hook._LEX_ROOT.get(h, "")))
     ]
     return passed, passed[: hook.MAX_HITS]
+
+
+# The weakest this gate may be, whatever the brief set says, and the smallest
+# population a rate over it may be taken from.
+#
+# The thresholds live beside the briefs so a number travels with what it was
+# measured over — and that is exactly why they cannot be the only thing
+# deciding how strict the gate is. A fixture edit setting `min_served: 0.0` and
+# `max_injected: 1.0` leaves both comparisons unable to fail, and the run still
+# prints two rates and exits 0, which reads identically to a gate that held.
+# Same for the populations: delete the negative half and precision is a rate
+# over nothing, which the arithmetic reports as zero leakage.
+#
+# So the file may be STRICTER than these and never looser, and the bounds are
+# in code where loosening them is a diff somebody reads rather than a fixture
+# edit nobody does.
+LONG_BRIEF_MIN_SERVED_FLOOR = 0.6
+LONG_BRIEF_MAX_INJECTED_CEILING = 0.2
+LONG_BRIEF_MIN_CASES = 6
+# The slice's name in `eval.gating_slices` and in the snapshot. One spelling,
+# because a config naming it is what makes the per-case rows gate AND what
+# makes a missing brief directory a refusal rather than a note — two facts that
+# must not be able to disagree about which slice they are about.
+LONG_BRIEF_SLICE = "longbrief"
+
+
+def long_brief_set(root: pathlib.Path) -> dict:
+    """The paired brief set at `root`: briefs read off disk, plus the two rates
+    they gate on.
+
+    Files rather than config entries because a brief is kilobytes of prose, and
+    the rates sit beside them rather than in the config for the same reason the
+    corpus fingerprint sits in the snapshot: a number is only worth what it was
+    measured over, so it travels with the thing it was measured over.
+
+    Refuses rather than warns on a set that cannot gate. Every check below has
+    the same shape as the vacuity check further down — a run that gated nothing
+    and a run that gated everything and found nothing wrong must not print the
+    same exit code.
+    """
+    where = root / "index.json"
+    index = json.loads(where.read_text(encoding="utf-8"))
+    for key in ("min_served", "max_injected"):
+        value = index.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise RuntimeError(f"{where}: no {key} rate to gate on")
+        if value != value or value in (float("inf"), float("-inf")):
+            raise RuntimeError(f"{where}: {key} is not a finite rate")
+    if index["min_served"] < LONG_BRIEF_MIN_SERVED_FLOOR:
+        raise RuntimeError(
+            f"{where}: min_served {index['min_served']} is below the "
+            f"{LONG_BRIEF_MIN_SERVED_FLOOR} floor this gate is allowed to be "
+            "set at — a coverage bar this low cannot fail"
+        )
+    if index["max_injected"] > LONG_BRIEF_MAX_INJECTED_CEILING:
+        raise RuntimeError(
+            f"{where}: max_injected {index['max_injected']} is above the "
+            f"{LONG_BRIEF_MAX_INJECTED_CEILING} ceiling this gate is allowed "
+            "to be set at — an injection bar this high cannot fail"
+        )
+    # A CASE is a distinct brief, and the floors below count cases. Entries
+    # were counted instead, so twelve copies of one row satisfied a bar written
+    # to mean twelve briefs — a rate re-measuring one passing case, at full
+    # strength, while every regression in the rest of the corpus went unscored.
+    # Same for one brief in both halves: a case asserting two opposite outcomes
+    # and scoring whichever half asks.
+    seen: dict[str, str] = {}
+    texts: dict[str, tuple[str, str]] = {}
+    bodies: dict[str, str] = {}
+    for half in ("served", "unserved"):
+        entries = index.get(half, [])
+        if not isinstance(entries, list):
+            raise RuntimeError(f"{where}: the {half} half is not a list of cases")
+        for case in entries:
+            if not isinstance(case, dict) or not isinstance(case.get("brief"), str):
+                raise RuntimeError(
+                    f"{where}: a {half} case has no `brief` path: {case!r:.80}"
+                )
+            # Resolved against the root and required to stay under it: `brief`
+            # is joined onto this directory, so `..` or an absolute path reads
+            # a file nobody reviewing this directory can see.
+            rel = case["brief"]
+            full = (root / rel).resolve()
+            if not full.is_relative_to(root.resolve()):
+                raise RuntimeError(
+                    f"{where}: {half} case `{rel}` resolves outside {root}"
+                )
+            if not full.is_file():
+                raise RuntimeError(f"{where}: {half} case `{rel}` is not a file")
+            key = str(full)
+            if key in seen:
+                where_first = seen[key]
+                raise RuntimeError(
+                    f"{where}: `{rel}` is in both halves"
+                    if where_first != half
+                    else f"{where}: the {half} half names the same brief twice: {rel}"
+                )
+            seen[key] = half
+            # And by CONTENT, which is what the invariant above actually says.
+            # Uniqueness by resolved path counts two filenames holding one
+            # brief as two cases — the same population inflation the path check
+            # exists to prevent, one copy command away.
+            # VERBATIM. Production receives a brief exactly as the harness
+            # sent it, and `_task_emission` measures the whole payload against
+            # the hook's write bound — so a loader that quietly trimmed the
+            # fixture measured a brief the fixture does not contain, and near
+            # that bound could score served where production refuses. The
+            # committed file has to BE those bytes, which is a thing a fixture
+            # author can fix once rather than a difference the gate hides on
+            # every run.
+            bodies[key] = full.read_text(encoding="utf-8")
+            if bodies[key] != bodies[key].strip():
+                raise RuntimeError(
+                    f"{where}: `{rel}` has leading or trailing whitespace. The "
+                    "gate measures the bytes on disk, so the file has to be "
+                    "exactly the brief — strip it in the fixture, not here"
+                )
+            digest = hashlib.sha256(bodies[key].encode()).hexdigest()[:12]
+            if digest in texts:
+                first_rel, first_half = texts[digest]
+                raise RuntimeError(
+                    f"{where}: `{rel}` and `{first_rel}` are the same brief "
+                    f"under two names ({half}/{first_half})"
+                )
+            texts[digest] = (rel, half)
+        if len(entries) < LONG_BRIEF_MIN_CASES:
+            raise RuntimeError(
+                f"{where}: the {half} half has "
+                f"{len(entries)} case(s), under the "
+                f"{LONG_BRIEF_MIN_CASES} a rate can be taken over. A coverage "
+                "floor with no served briefs, or an injection ceiling with no "
+                "unserved ones, is a rate over an empty population"
+            )
+    def _read(case: dict) -> dict:
+        brief = bodies[str((root / case["brief"]).resolve())]
+        # The snapshot key carries a digest of the brief, so an EDITED brief
+        # reads as a new case and its old row as a stale one rather than
+        # quietly inheriting a recorded outcome. The config's own cases get
+        # this for free — their key is the prompt text — and a case keyed on a
+        # filename alone would be the one kind of drift nothing reports: the
+        # corpus fingerprint does not cover this directory, because these are
+        # the queries and not the corpus.
+        digest = hashlib.sha256(brief.encode()).hexdigest()[:12]
+        return {
+            "name": f"{case['brief']}#{digest}",
+            "file": case.get("file"),
+            "brief": brief,
+            # Whether this brief is the one that drives the cap. Carried
+            # through rather than dropped: the slice reads it to decide
+            # whether to assert the cap's consequence, and a key silently lost
+            # here is a gate that runs on nothing and says so nowhere.
+            "over_cap": bool(case.get("over_cap")),
+        }
+    return {
+        "min_served": float(index["min_served"]),
+        "max_injected": float(index["max_injected"]),
+        "served": [_read(c) for c in index.get("served", [])],
+        "unserved": [_read(c) for c in index.get("unserved", [])],
+    }
+
+
+# What `task_delivery` reaches for on the hook module. Named here rather than
+# probed for with one symbol, which is what the probe used to be: the surface
+# below it grew to nine names and a keyword, so a copy carrying `task_gate` and
+# nothing else — the immediately preceding commit of this branch qualified —
+# passed the probe and then died mid-run with an uncaught AttributeError, after
+# the suite slice had already printed its PASS lines. Exit 1 is reserved for a
+# gate failing, so a crash and a real regression were the same signal to CI.
+TASK_SURFACE = (
+    "task_gate",
+    "build_task_query",
+    "recall",
+    "_eligible",
+    "_task_floor",
+    "_task_framed",
+    "_pointer_line",
+    "_task_block",
+    "_task_emission",
+    "TASK_MAX_HITS",
+    "TASK_BUDGET_SECONDS",
+)
+
+
+def task_surface_gap(hook) -> str | None:
+    """The first thing `task_delivery` needs and this hook has not got.
+
+    None when the whole surface is there. A keyword is checked as well as a
+    name: a copy can carry `_pointer_line` without the `over_brief` argument
+    this slice passes it, and the failure is the same uncaught AttributeError
+    one call later.
+    """
+    for name in TASK_SURFACE:
+        if getattr(hook, name, None) is None:
+            return name
+    params = inspect.signature(hook._pointer_line).parameters
+    if "over_brief" not in params:
+        return "`over_brief` argument to _pointer_line"
+    return None
+
+
+# How much the non-brief part of a real Agent payload is assumed to weigh, in
+# characters. `_task_emission` measures the WHOLE serialized object against the
+# hook's write bound, and production echoes back whatever keys the harness
+# sent — so a gate whose payload is smaller than production's scores a brief as
+# served at a size production would refuse. The three keys below are the ones
+# the Agent tool requires; this pads them out so the gate's payload is no
+# SMALLER than a real one, which is the direction that keeps the gate
+# conservative. It cannot be exact — the harness owns that shape — so the
+# assumption is named here rather than left in the shape of a stub.
+TASK_INPUT_ASSUMED_OVERHEAD = 1024
+
+
+# A pointer line, up to the first field memkit renders AFTER the path.
+# Non-greedy, so it stops at the first of them: the path field is memkit's own
+# rendering of a filesystem path and everything past it is file content.
+#
+# TWO SEPARATORS, because the em-dash one is CONDITIONAL. `_pointer_line`
+# renders ` — {desc}` only when there is a description, and `_description`
+# returns "" for a memory with neither `description:` frontmatter nor a `# `
+# heading, and on OSError. Anchored on the em-dash alone such a line did not
+# parse and its name was dropped from the delivered set — which on the SERVED
+# half undercounts and fails loudly, and on the UNSERVED half, whose test is
+# `ok = not shown`, scored a pointer that really did reach an unattended
+# subagent as BRIEF-QUIET. A leak certified as clean. The ` [` evidence tag is
+# unconditional, so it is the anchor that always exists.
+_POINTER_PATH = re.compile("^- (?P<path>.+?) \u2014 ")
+# The fallback, tried only when the line has no em-dash at all. Separate
+# patterns rather than one alternation because a non-greedy `.+?` stops at
+# whichever alternative appears EARLIEST, so a path that itself contains
+# ` [` — a legal filename — would be cut short on a line that also has a
+# description. Anchored on `[matches `, which `_pointer_line` renders
+# unconditionally, rather than on a bare bracket.
+_POINTER_BARE = re.compile("^- (?P<path>.+?) \\[matches ")
+
+
+def _delivered_names(appended: str) -> set[str]:
+    """The basenames the block's pointer lines actually POINT AT.
+
+    Off the path field alone. Taking every whitespace token's basename made
+    any word of a surviving DESCRIPTION able to vouch for a pointer that was
+    shed or never emitted, and descriptions here are file contents — a memory
+    that names its neighbour is ordinary, not contrived. The gate would then
+    report subagent coverage for a pointer the subagent never received, which
+    is the single thing this slice exists to measure.
+
+    A line whose separator was consumed does not parse, and so does not count
+    as a delivery. That is the answer rather than a gap: the reader of such a
+    line is handed a filename with somebody's sentence welded to it, and
+    scoring it as delivered would be scoring the failure as a success.
+
+    STORE-RELATIVE, not the bare basename. Two configured stores may hold
+    different files under one name, and a basename comparison then lets a
+    pointer to the wrong store's file satisfy a case the target was never
+    delivered for — an incorrect memory selection scored as a correct one.
+    The name is kept alongside it because the expectations are written as
+    basenames; the caller decides which identity it is asking about.
+    """
+    return {pathlib.Path(p).name for p in _delivered_paths(appended)}
+
+
+def _delivered_paths(appended: str) -> set[str]:
+    """The PATH field of every pointer line, as rendered.
+
+    The identity the gate compares on, because a basename is not one: two
+    configured stores may hold different files under the same name, and a
+    pointer to the wrong store's file then satisfies a case whose target was
+    never delivered — an incorrect memory selection scored as a correct one.
+    """
+    paths = set()
+    for line in appended.splitlines():
+        match = _POINTER_PATH.match(line) or _POINTER_BARE.match(line)
+        if match is not None:
+            paths.add(match.group("path"))
+    return paths
+
+
+def _pad_to_overhead(tool_input: dict) -> dict:
+    """Weigh the non-brief part up to `TASK_INPUT_ASSUMED_OVERHEAD`, or raise.
+
+    The pad lands on the WHOLE serialized object rather than on one key's
+    value, because the whole object is what production weighs: an assumption
+    spelled as the length of `description` stops being the assumption the
+    moment this input grows a key.
+
+    RAISES rather than clipping, which is the half that was missing. The
+    clip's silence is the failure mode: `max(spare, 0)` turns "this shape has
+    outgrown the constant" into "no padding today", and the gate goes on
+    running, green, with a payload SMALLER than production's — which is
+    exactly the direction that lets a brief score `served` at a size
+    production refuses with `task:oversize`. This invariant has already
+    drifted once, and what caught it was a person reading the diff.
+
+    A gate is allowed to fail loudly; the hook it measures is not. Nothing
+    here runs on the every-prompt path.
+    """
+    weight = len(json.dumps(dict(tool_input, prompt=""), ensure_ascii=False))
+    spare = TASK_INPUT_ASSUMED_OVERHEAD - weight
+    if spare < 0:
+        raise ValueError(
+            f"the assumed Agent payload weighs {weight} characters, past "
+            f"TASK_INPUT_ASSUMED_OVERHEAD={TASK_INPUT_ASSUMED_OVERHEAD}; the "
+            "gate's payload would be smaller than production's, so it would "
+            "score briefs served at sizes production refuses"
+        )
+    tool_input["description"] += "." * spare
+    return tool_input
+
+
+def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
+    """Everything one brief's trip through the task path produced, as a
+    record — which is what a subagent WOULD ACTUALLY RECEIVE for this brief.
+
+    Every stage is the task path's own — its gate, its query builder, its floor
+    bars — because that is the whole subject: a slice scored through
+    `build_query` and the prompt path's bars would measure a retriever no
+    subagent ever meets, and would report the shape of the population this
+    exists to prove is served.
+
+    And it runs to the EMISSION rather than stopping at retrieval, which is the
+    difference between "the ranker found it" and "the subagent got it". The
+    task path can retrieve perfectly and deliver nothing: an `updatedInput`
+    that fails the output-shape allowlist is refused whole, and so is a brief
+    whose emission crosses the write bound — and a slice that stopped at the
+    floor would score both as served. Reading the names back OUT of the
+    emitted bytes rather than off the picks is what makes that true rather
+    than merely intended.
+
+    A gated brief returns nothing, which is the same answer as no hits and is
+    correct here: the question this slice asks is what reaches the subagent.
+
+    ONE RECORD RATHER THAN A LIST OF NAMES, and both halves of the slice
+    read it. The names are what was delivered; `unanswerable` is whether
+    the corpus could answer at all, and dropping it is how a broken index
+    came to satisfy the injection ceiling — on the leakage half an index
+    that could not answer and a brief that was correctly quiet produce the
+    same empty list. The cap's consequence is here too: how many hits
+    cleared the floor, how many the cap kept, and the bytes the emission
+    decided to write. All from ONE trip, because two trips is two
+    populations.
+    """
+    return _task_delivery(hook, brief, dirs)
+
+
+def entrypoint_delivery(
+    hook_file: pathlib.Path,
+    config: pathlib.Path | str,
+    cwd: pathlib.Path,
+    brief: str,
+) -> tuple[set[str], str]:
+    """What the REAL hook PROCESS delivers for one brief: (names, why-not).
+
+    Every other stage this slice drives is the task path's own function, which
+    is right and is not enough — none of them is the registered entry point.
+    `main`'s event dispatch, the tool-name check, the ledger write, the signal
+    handlers and the stdout delivery all sit between a correct `_task_block`
+    and a subagent that actually receives it, and a break in any of them
+    leaves the real hook emitting no `updatedInput` while this slice goes on
+    reporting served coverage.
+
+    ONE brief per run rather than all of them: the question is whether the
+    entry point still reaches the pipeline the rest of the slice measures, and
+    that is answered by one trip. The cost is one subprocess.
+
+    Isolated state and a fresh `tool_use_id`, so the run leaves no ledger
+    behind and cannot be deduped by one.
+    """
+    payload = {
+        "session_id": "memkit-eval-entrypoint",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_use_id": f"toolu_eval{os.getpid()}",
+        "tool_input": {
+            "prompt": brief,
+            "description": "score this brief",
+            "subagent_type": "general-purpose",
+        },
+    }
+    with tempfile.TemporaryDirectory() as state:
+        # Through `_exec._execute`, the package's one process start. The
+        # environment is BUILT there rather than inherited — `CHILD_ENV_KEEP`
+        # plus these three — which is what the boundary is for and costs this
+        # call nothing: the hook reads its config from `MEMKIT_CONFIG`, its
+        # state directory from `XDG_CACHE_HOME`, and `$HOME` is kept.
+        try:
+            out = _execute(
+                [sys.executable, "-B", str(hook_file)],
+                input=json.dumps(payload),
+                timeout=180,
+                cwd=str(cwd),
+                env_extra={
+                    "XDG_CACHE_HOME": state,
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    CONFIG_ENV: str(config),
+                },
+            )
+        except (OSError, subprocess.SubprocessError, Untrusted) as exc:
+            return set(), f"the hook process did not run ({type(exc).__name__})"
+    if out.returncode != 0:
+        return set(), f"the hook process exited {out.returncode}"
+    if not out.stdout.strip():
+        return set(), "the hook process emitted nothing"
+    try:
+        updated = json.loads(out.stdout)["hookSpecificOutput"]["updatedInput"]
+        delivered = updated["prompt"]
+    except (ValueError, KeyError, TypeError) as exc:
+        return set(), f"the emission was not an updatedInput ({exc})"
+    appended = (
+        delivered[len(brief) :] if delivered.startswith(brief) else delivered
+    )
+    return _delivered_names(appended), ""
+
+
+def over_cap_faults(hook, case: dict, got: dict) -> list[str]:
+    """What is wrong with the way the cap was applied to this brief, if
+    anything.
+
+    The one thing about the task path that only a brief of this shape can
+    exercise. `TASK_MAX_HITS` is 3 and every other fixture brief clears the
+    floor on one memory, so until this case existed the eval never drove the
+    cap at all: the truncation sentence and the block that carries it were
+    covered by production's own tests and by the eval and production sharing a
+    spelling, which is a source tripwire rather than a case. A future change
+    that keeps the spelling and stops writing the sentence — or writes the
+    wrong count into it — would pass everything else here.
+
+    Three claims, all read out of the bytes the emission decided to write
+    rather than off the picks: the cap bound, the count of what it dropped is
+    the difference it actually dropped, and the sentence saying so reached the
+    subagent.
+    """
+    faults = []
+    if got["unanswerable"]:
+        # The index could not answer, which is already refused above by its own
+        # name. Reporting it here as well would say the corpus or the brief has
+        # moved, which is a wrong diagnosis of a right refusal.
+        return faults
+    if got["eligible"] <= hook.TASK_MAX_HITS:
+        faults.append(
+            f"{case['name']} cleared the floor on {got['eligible']} "
+            f"memories, at or under the cap of {hook.TASK_MAX_HITS} — the case "
+            "exists to drive the cap and no longer does, so the corpus or the "
+            "brief has moved and the truncation path is ungated again"
+        )
+        return faults
+    if got["picks"] != hook.TASK_MAX_HITS:
+        faults.append(
+            f"{case['name']} showed {got['picks']} pointers with "
+            f"{got['eligible']} eligible; the cap is {hook.TASK_MAX_HITS}"
+        )
+    dropped = got["eligible"] - got["picks"]
+    if got["truncated"] != dropped:
+        faults.append(
+            f"{case['name']} reported {got['truncated']} truncated with "
+            f"{dropped} actually dropped"
+        )
+    plural = "match" if dropped == 1 else "matches"
+    sentence = f"{dropped} further {plural} not shown"
+    if sentence not in got["delivered"]:
+        faults.append(
+            f"{case['name']} delivered a block that does not say "
+            f"`{sentence}` — the cap bound and the subagent was not told"
+        )
+    return faults
+
+
+def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
+    """The one trip. See `task_delivery` above for why each stage is the task
+    path's own."""
+    empty = {
+        "names": [],
+        "eligible": 0,
+        "picks": 0,
+        "truncated": 0,
+        "delivered": "",
+        "unanswerable": 0,
+    }
+    # WHERE PRODUCTION'S CLOCK STARTS, which is before the gate and the query
+    # builder rather than at the search. `main` stamps `t0` and hands it down,
+    # so what those two stages spend comes out of the budget the search then
+    # runs under; a clock started at the search hands retrieval a budget
+    # production has already spent part of, and reports pointers production
+    # abandons. The measured divergence on the fixture corpus is 1.4-3.2 ms of
+    # 7,000, which is the number this stops depending on.
+    t0 = time.monotonic()
+    if hook.task_gate(brief) is not None:
+        return empty
+    query = hook.build_task_query(brief)
+    # THE BUDGET PRODUCTION RUNS UNDER. `recall`'s `deadline` defaults to None,
+    # which is unlimited — so against a consumer's own store under `--repo` or
+    # `--all-stores` the gate could wait for pointers production abandons and
+    # report them as served. The fixture corpus is far too small for the two to
+    # differ, which is why this only ever showed up by reading it.
+    # `stats`, for the reason production reads it. `recall` suppresses a
+    # per-dir failure and returns the other dirs' hits, so a corpus that could
+    # not ANSWER and a corpus with nothing to say arrive here identically — and
+    # production splits them, into `task:index-unavailable` and `task:nomatch`.
+    # A gate that does not split them scores an index that could not be read as
+    # a retriever that found nothing, which is a quality number reporting an
+    # infrastructure failure. That window is the normal case on this path:
+    # parallel spawns share one index, and every contender that loses a cold
+    # build's write-lock race meets an index with no committed rows.
+    rec: dict = {}
+    hits = hook.recall(
+        brief,
+        stats=rec,
+        dirs=dirs,
+        query=query,
+        deadline=t0 + hook.TASK_BUDGET_SECONDS,
+    )
+    unanswerable = int(rec.get("errs_lex") or 0)
+    empty = dict(empty, unanswerable=unanswerable)
+    terms = list(dict.fromkeys((query or "").split()))
+    # `_eligible` with the hook's own bars, not a comprehension with a copy of
+    # them: this slice is the only automated gate over the task path's
+    # relevance, so a second spelling of the floor here is a gate that can
+    # silently score a retriever no subagent meets.
+    eligible, _floored = hook._eligible(hits, terms, **hook._task_floor())
+    if not eligible:
+        return empty
+    # THE HOOK'S OWN CAP AND ITS CONSEQUENCE, not a second copy. This slice
+    # took its own slice of the eligible list and built the frame with the
+    # truncation count defaulted to zero, so on any brief the cap binds on it
+    # scored a block SMALLER than the one production writes — missing the
+    # truncation sentence, against the write bound this slice exists to gate.
+    block, picks, truncated = hook._task_block(eligible)
+    if not picks:
+        return empty
+    # The tool input a spawn actually carries: every key the Agent tool
+    # requires, so the allowlist is exercised on a realistic shape rather than
+    # on a one-key stub that could never fail it — and weighing at least what a
+    # real one weighs, so the byte budget this measures is not smaller than the
+    # budget production measures. See TASK_INPUT_ASSUMED_OVERHEAD.
+    tool_input = {
+        "prompt": brief,
+        "description": "score this brief",
+        "subagent_type": "general-purpose",
+    }
+    _pad_to_overhead(tool_input)
+    # THE HOOK'S OWN EMISSION DECISION, not a second copy of it. This slice
+    # re-derived it — `_task_payload`, then its own size test, and no
+    # encodability test at all — so a divergence between the two was invisible
+    # to the one gate over subagent delivery, and a brief the hook would refuse
+    # to write scored as served.
+    text, _verdict, _size = hook._task_emission(tool_input, block)
+    if text is None:
+        return empty
+    delivered = json.loads(text)["hookSpecificOutput"]["updatedInput"]["prompt"]
+    # ONLY THE APPENDED PART, and only its pointer lines. `updatedInput.prompt`
+    # is the brief this slice supplied plus the block, so `name in delivered`
+    # could be satisfied by the brief's own text — a gate its own input can
+    # pass. No shipped fixture names a corpus file today, which made that
+    # latent rather than wrong, and one edit to a fixture away from a gate that
+    # answers yes to an empty block.
+    appended = delivered[len(brief) :] if delivered.startswith(brief) else delivered
+    carried = _delivered_paths(appended)
+    return {
+        # Matched on the RENDERED path, which is the identity, and reported as
+        # a basename, which is how the expectations are written.
+        "names": [
+            pathlib.Path(path).name
+            for path, _, _ in picks
+            if hook._display_path(path) in carried
+        ],
+        "eligible": len(eligible),
+        "picks": len(picks),
+        "truncated": truncated,
+        "delivered": appended,
+        "unanswerable": unanswerable,
+    }
 
 
 def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:
@@ -540,7 +1116,8 @@ def main() -> None:
     # a gating run without this scores only the ungated cases and files the
     # rest as drift — a green earned by not looking.
     every = all_stores(cfg, repo)
-    roots = every if args.all_stores else stores(cfg, repo)
+    permitted = stores(cfg, repo)
+    roots = every if args.all_stores else permitted
     if args.all_stores and len(roots) != len(cfg.stores):
         sys.exit(
             f"--all-stores found {len(roots)} store(s) under {repo}, "
@@ -548,13 +1125,35 @@ def main() -> None:
         )
     dirs = search_dirs(hook, roots)
     unsearched = [p for p in every if p not in roots]
+    # Stores this run reads that PRODUCTION would refuse from this cwd. The
+    # long-brief slice is the only gate over subagent delivery, and it hands
+    # `dirs` straight to `recall` — so a target sitting in a cwd-gated store
+    # makes the served floor pass on a memory the real `_task_main` would
+    # answer `task:nodirs` for in the same environment. `--all-stores` is a
+    # reporting mode; it may not also be the thing that gates.
+    ungated = [p for p in roots if p not in permitted]
     snap_path = args.snapshot or repo / cfg.eval_snapshot
     corpus = corpus_fingerprint(cfg, repo)
     prior = read_snapshot(snap_path, require_fingerprint=not args.update_snapshot)
     # Whether this run can attribute anything to the tool. No snapshot at all
     # reads as "cannot": --update-snapshot is then the only legal next move.
     corpus_matches = prior is not None and prior["corpus"] == corpus
-    gating = cfg.eval_gating
+    # Annotated, because the long-brief slice narrows it below and the
+    # inferred type is a frozenset of whatever literals the default happened to
+    # carry.
+    gating: frozenset[str] = cfg.eval_gating
+    if ungated and LONG_BRIEF_SLICE in gating:
+        # Said out loud, because every way of not having this gate is
+        # otherwise silent and a green run has to name the gates it ran. The
+        # slice still RUNS and still prints its rates; what it stops doing is
+        # deciding the exit code, since it would be deciding it on a delivery
+        # production refuses from this cwd.
+        print(
+            "long briefs: --all-stores is reading "
+            + ", ".join(str(p) for p in ungated)
+            + ", which this cwd is gated out of — reporting only, not gating"
+        )
+        gating = frozenset(s for s in gating if s != LONG_BRIEF_SLICE)
     # Say what this run measured. Four of these lines are the difference
     # between "the hook missed" and "you ran the suite from somewhere the hook
     # does not look" or "you scored a corpus nobody baselined".
@@ -604,8 +1203,24 @@ def main() -> None:
     # file, so nothing about them is resolved from the stores.
     scored = {"search": [0, 0], "hot": [0, 0], "noinject": [0, 0]}
     skipped = 0
-    seen_cases: dict[str, dict[str, dict]] = {"suite": {}, "noinject": {}, "vocab": {}}
+    seen_cases: dict[str, dict[str, dict]] = {
+        "suite": {}, "noinject": {}, "vocab": {}, LONG_BRIEF_SLICE: {}
+    }
     tally = {"regression": 0, "drift": 0, "new": 0}
+    # A name nobody has is a refusal, not a KeyError. `gating_slices` is
+    # hand-typed — README tells an adopter to add `longbrief` to it — and the
+    # vacuity check below indexes `compared` with whatever the config carries,
+    # so a typo ended a fully green run with a traceback and exit 1, which CI
+    # reads as the regression that did not happen. Refused here rather than
+    # made lenient there: `compared.get(s, 0)` would stop the crash by counting
+    # a typo as a satisfied gate, which is the failure the vacuity check exists
+    # to prevent.
+    unknown = sorted(gating - set(seen_cases))
+    if unknown:
+        sys.exit(
+            f"{cfg.path}: eval.gating_slices names {', '.join(unknown)} — "
+            f"no such slice; the slices are {', '.join(sorted(seen_cases))}"
+        )
     # Per SLICE, how many cases actually met a recorded expectation. Counted
     # because "0 failures" and "0 comparisons" print the same exit code, and
     # the second is a gate that stopped looking — see the vacuity check below.
@@ -760,6 +1375,157 @@ def main() -> None:
             f"(retrieved {len(hits)}, distinctive overlap {n}){moved}"
         )
 
+    # The long-brief slice. Its cases are FILES rather than config entries, its
+    # scoring is the task path's rather than the prompt path's, and it gates on
+    # two RATES rather than on the snapshot — see below for why it needs both.
+    served_hit = leaked = 0
+    cap_fail: list[str] = []
+    unanswered: list[str] = []
+    briefs = None
+    if not cfg.eval_long_briefs:
+        if LONG_BRIEF_SLICE in gating:
+            # The config has SAID it wants subagent delivery gated, and there
+            # is nothing to run. Printing a line and exiting 0 made that state
+            # — a config predating the key, a typo in it, or a newer config
+            # read by an older memkit that drops what it does not know — a
+            # green eval over a task path that could be completely broken.
+            # Asking for a gate that cannot run is a refusal, not a note.
+            sys.exit(
+                f"{cfg.path}: eval.gating_slices names `{LONG_BRIEF_SLICE}` "
+                "and eval.long_briefs names no brief directory, so the only "
+                "gate over subagent delivery cannot run"
+            )
+        # Otherwise said out loud, because every way of not having this gate is
+        # otherwise silent, and a green run has to say which gates it ran.
+        print("\nlong briefs: eval.long_briefs is not configured — slice skipped")
+    else:
+        brief_root = repo / cfg.eval_long_briefs
+        if not (brief_root / "index.json").is_file():
+            sys.exit(
+                f"eval.long_briefs names {brief_root}, which has no index.json"
+            )
+        missing = task_surface_gap(hook)
+        if missing is not None:
+            # A hook with no task path, or with an older shape of it. That is a
+            # legitimate A/B subject — scoring an older build as "served
+            # nothing" would report the absence of a feature as a quality
+            # regression — and it is NOT a legitimate state for the hook this
+            # repo ships: a regression that deletes or renames any of it would
+            # otherwise skip the only gate over it and exit 0.
+            if hook_file == STOCK_HOOK.resolve():
+                sys.exit(
+                    f"{hook_file} has no `{missing}`, so the long-brief slice "
+                    "cannot run — and this is the shipped hook rather than a "
+                    "--hook copy, so the feature the slice gates is missing "
+                    "rather than merely older"
+                )
+            print(
+                f"\nlong briefs: this hook has no {missing} — slice skipped"
+            )
+            # An A/B subject that cannot RUN this slice is not a run that
+            # failed to gate it. The operator named another hook on purpose,
+            # and the vacuity check at the end would otherwise refuse every
+            # A/B against a build older than the task path — turning the
+            # documented `--hook` workflow into an error on the exact class of
+            # copy it exists for. The SHIPPED hook took the `sys.exit` above
+            # and never reaches this.
+            gating = frozenset(s for s in gating if s != LONG_BRIEF_SLICE)
+        else:
+            try:
+                briefs = long_brief_set(brief_root)
+            except RuntimeError as exc:
+                # A refusal rather than a traceback: exit 1 is documented as a
+                # gate failing or a refusal, and a stack trace makes a
+                # malformed fixture index look like a crash in the tool.
+                sys.exit(f"memory-eval: {exc}")
+            print()
+            entrypoint_checked = False
+            for case in briefs["served"]:
+                got = task_delivery(hook, case["brief"], dirs)
+                shown = got["names"]
+                ok = case["file"] in shown
+                if shown and not entrypoint_checked:
+                    # ONCE, on the first brief this slice actually delivered
+                    # for: everything above is the task path's own functions,
+                    # and none of them is the registered ENTRY POINT. A break
+                    # in the dispatch, the tool-name check or the stdout
+                    # delivery leaves the real hook emitting nothing while
+                    # this slice reports coverage.
+                    entrypoint_checked = True
+                    live, why = entrypoint_delivery(
+                        hook_file,
+                        # RESOLVED, because the child runs from `repo` and
+                        # `cfg.path` is as the operator typed it: a relative
+                        # `--config` names nothing from there, and the hook
+                        # answers that by being inert — which reads here as
+                        # the entry point being broken.
+                        pathlib.Path(cfg.path).resolve(),
+                        repo,
+                        case["brief"],
+                    )
+                    if why or not (live & set(shown)):
+                        unanswered.append(
+                            f"{case['name']}: the hook PROCESS delivered "
+                            f"{sorted(live) or '(nothing)'} where this slice's "
+                            f"own pipeline delivered {sorted(shown)} — "
+                            + (why or "the entry point and the pipeline it "
+                               "measures do not agree")
+                        )
+                if got["unanswerable"] and not ok:
+                    # NOT a miss. An index that could not answer says nothing
+                    # about the retriever, and scoring it as a miss puts an
+                    # infrastructure failure into a coverage rate — quietly,
+                    # since the row and the rate look exactly like a gate that
+                    # stopped serving. Refused instead: the run says which
+                    # corpus could not answer and exits non-zero, which is what
+                    # production does with the same fact under another name.
+                    unanswered.append(
+                        f"{case['name']} scored against an index that could not "
+                        f"answer ({got['unanswerable']} dir(s) failed to search) "
+                        "— an unanswerable corpus is not a retrieval miss, and "
+                        "this run cannot say anything about coverage"
+                    )
+                served_hit += ok
+                mark = "BRIEF-SERVED" if ok else "BRIEF-MISS"
+                if got["unanswerable"] and not ok:
+                    mark = "BRIEF-NOINDEX"
+                moved = against_snapshot(
+                    LONG_BRIEF_SLICE, case["name"], case_record(mark, case["file"])
+                )
+                print(
+                    f"[{mark:<12}] {case['name'][:58]:<58} -> "
+                    f"{case['file']} (got {shown or '(nothing)'}){moved}"
+                )
+                if case.get("over_cap"):
+                    cap_fail.extend(over_cap_faults(hook, case, got))
+            for case in briefs["unserved"]:
+                got = task_delivery(hook, case["brief"], dirs)
+                shown = got["names"]
+                ok = not shown
+                leaked += not ok
+                mark = "BRIEF-QUIET" if ok else "BRIEF-LEAK"
+                if got["unanswerable"] and ok:
+                    # The same refusal as the served half, on the OPPOSITE
+                    # outcome. An index that could not answer injects nothing,
+                    # and injecting nothing is exactly what a correctly quiet
+                    # brief looks like — so on this half the unattributable
+                    # result is the CLEAN one, and counting it certifies the
+                    # injection ceiling against a corpus that was never
+                    # searched. That ceiling is this suite's only bound on what
+                    # the task path says to an unattended subagent.
+                    unanswered.append(
+                        f"{case['name']} scored against an index that could not "
+                        f"answer ({got['unanswerable']} dir(s) failed to search) "
+                        "— an unanswerable corpus is not a quiet one, and this "
+                        "run cannot say anything about leakage"
+                    )
+                    mark = "BRIEF-NOINDEX"
+                moved = against_snapshot(
+                    LONG_BRIEF_SLICE, case["name"], case_record(mark)
+                )
+                saw = f"injected {shown}" if shown else "(nothing)"
+                print(f"[{mark:<12}] {case['name'][:58]:<58} -> {saw}{moved}")
+
     # A case deleted from a list up there leaves its expectation behind, and a
     # stale expectation is the one kind of drift no case line can report —
     # nothing iterates it any more.
@@ -785,6 +1551,38 @@ def main() -> None:
         f"vocab slice: {served}/{vocab_tot} symptom-worded prompts served by the "
         "lexical stage — an instrument, gated only if eval.gating_slices says so"
     )
+    # The rates, and whether they hold. Two of them, because either alone is
+    # met by a gate that does nothing: a coverage floor on its own is satisfied
+    # by a path that serves every brief, and an injection ceiling by one that
+    # serves none. The pair is what makes the numbers a calibration rather than
+    # a count — "non-vacuous" bounds neither a gate too strict for real briefs
+    # nor one too loose for irrelevant ones.
+    rate_fail: list[str] = list(cap_fail) + list(unanswered)
+    if briefs is not None:
+        # No `or 1` denominator guard: `long_brief_set` refuses a half that
+        # cannot carry a rate, so an empty population is a refusal rather than
+        # a division this has to survive. The guard was the bug — it turned
+        # "there are no negative briefs" into "nothing leaked".
+        served_rate = served_hit / len(briefs["served"])
+        leak_rate = leaked / len(briefs["unserved"])
+        print(
+            f"long briefs: {served_hit}/{len(briefs['served'])} served "
+            f"({served_rate:.3f}, floor {briefs['min_served']:.3f}); "
+            f"{leaked}/{len(briefs['unserved'])} leaked "
+            f"({leak_rate:.3f}, ceiling {briefs['max_injected']:.3f})"
+        )
+        if served_rate < briefs["min_served"]:
+            rate_fail.append(
+                f"long-brief coverage {served_rate:.3f} is under the "
+                f"{briefs['min_served']:.3f} floor — the task gate is refusing "
+                "briefs it was calibrated to serve"
+            )
+        if leak_rate > briefs["max_injected"]:
+            rate_fail.append(
+                f"long-brief injection {leak_rate:.3f} is over the "
+                f"{briefs['max_injected']:.3f} ceiling — the task gate is "
+                "rewriting spawns the corpus has nothing to say about"
+            )
     loose = tally["regression"] + tally["new"] - gate_fails
     parts = [f"{gate_fails} gating failure(s) in {'/'.join(sorted(gating))}"]
     if loose:
@@ -794,6 +1592,14 @@ def main() -> None:
     if tally["new"]:
         parts.append(f"{tally['new']} unrecorded (newer than the snapshot)")
     print("vs snapshot: " + ", ".join(parts))
+    if rate_fail and not args.update_snapshot:
+        # Ahead of the corpus-moved refusal, and deliberately: that refusal
+        # says nothing was attributable, which is true of every SNAPSHOT
+        # comparison and false of these. A rate is an absolute measurement of
+        # the corpus in front of it, so a moved corpus is exactly when it still
+        # answers — and exactly when a coverage collapse would otherwise be
+        # filed as drift and re-baselined away.
+        sys.exit("; ".join(rate_fail))
     if prior is not None and not corpus_matches and not args.update_snapshot:
         print(
             "             these stores are not the ones baselined, so every "
@@ -836,7 +1642,13 @@ def main() -> None:
         # the run reported, and a nonzero exit here would make the accepted
         # state indistinguishable from a refusal to write.
         print(f"wrote {snap_path}")
-        sys.exit(0)
+        # Except the rate floors, which a re-baseline may not accept. The
+        # snapshot records WHAT HAPPENED and accepting it is the whole point;
+        # the rates record what has to be true whatever happened, and a floor
+        # that `--update-snapshot` can silence is not a floor. The write still
+        # lands first, so the remedy for a moved corpus is not blocked by this
+        # — the run just does not report success.
+        sys.exit("; ".join(rate_fail) if rate_fail else 0)
     # A gating slice that compared nothing is the failure mode a green cannot
     # show: zero failures and zero comparisons print the same exit code, and
     # an empty or missing slice would otherwise buy a pass by having no

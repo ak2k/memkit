@@ -1431,14 +1431,54 @@ def test_no_refusals_and_no_duplicates_is_the_green_case(profile, monkeypatch):
     assert row.status == doctor.PASS
 
 
-def test_subagent_delivery_is_unknown_until_that_path_is_in_the_build(
+def test_subagent_delivery_answers_for_the_payload_this_repo_ships(
+    profile, monkeypatch
+) -> None:
+    """The shipped payload registers the subagent hook, so this check ANSWERS.
+
+    It asserted UNKNOWN against `REPO` while the subagent path was not in the
+    build — a true statement about a tree with no `PreToolUse` entry in its
+    `hooks/hooks.json`, and a stale one the moment that entry landed. Pointed
+    at the real payload rather than a fixture, because the thing worth pinning
+    is that the file this repository SHIPS is one doctor can read an answer
+    out of: a registration that stopped matching `Agent`, or a hooks.json that
+    stopped being where the check looks, would put this row back to "not in
+    this build" and tell every adopter their subagents are fine to get
+    nothing.
+    """
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO) + "/")
+    (row,) = _only(
+        doctor._PRODUCERS["subagent-delivery"](_machine(profile, monkeypatch, path)),
+        "subagent-delivery",
+    )
+    assert row.status != doctor.UNKNOWN, row.detail
+    assert "not in this build" not in row.detail, row.detail
+    assert doctor.verdict([row]) == "OK"
+
+
+def test_subagent_delivery_is_unknown_when_the_payload_registers_no_such_hook(
     profile, monkeypatch
 ) -> None:
     """A state the closed status set already has, and one that does not block
     green. Subagents getting no pointers is not a fault while nothing claims
-    they should."""
+    they should.
+
+    Reachable now only from a payload that does not register the entry — an
+    older pin, or an install whose hooks.json the harness rewrote — which is
+    what this builds rather than borrowing a tree that has since gained one.
+    """
     path = _store_config(profile, stores=["personal"])
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO) + "/")
+    payload = profile / "unregistered"
+    (payload / "hooks").mkdir(parents=True)
+    (payload / "hooks" / "hooks.json").write_text(
+        json.dumps(
+            {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command",
+                                                        "command": "x"}]}]}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload) + "/")
     checks = doctor.collect(_machine(profile, monkeypatch, path))
     (row,) = _only(checks, "subagent-delivery")
     assert row.status == doctor.UNKNOWN
@@ -3336,9 +3376,9 @@ def test_a_hook_that_prints_the_marker_and_fails_is_not_a_delivery(
     stub = _stub_hook(
         profile,
         "#!/bin/sh\n"
-        f'echo "<{hook.FRAME_TAG}>"\n'
+        f'echo "<{hook._PROMPT_FRAME_TAG}>"\n'
         f'echo "- {real} — a canary [matches 3/3 prompt terms: a, b, c]"\n'
-        f'echo "</{hook.FRAME_TAG}>"\n'
+        f'echo "</{hook._PROMPT_FRAME_TAG}>"\n'
         "exit 3\n",
     )
     _settings(
@@ -3366,9 +3406,9 @@ def test_a_hook_that_names_a_canary_that_is_not_there_is_not_a_delivery(
     stub = _stub_hook(
         profile,
         "#!/bin/sh\n"
-        f'echo "<{hook.FRAME_TAG}>"\n'
+        f'echo "<{hook._PROMPT_FRAME_TAG}>"\n'
         f'echo "- /nowhere/{doctor.CANARY_NAME} — hi [matches 1/3 prompt terms: x]"\n'
-        f'echo "</{hook.FRAME_TAG}>"\n',
+        f'echo "</{hook._PROMPT_FRAME_TAG}>"\n',
     )
     _settings(
         profile,
@@ -3479,9 +3519,9 @@ def test_a_tilde_rendered_pointer_still_resolves(profile, monkeypatch) -> None:
     rendered = hook._display_path(str(canary))
     assert rendered.startswith("~/"), rendered
     stdout = (
-        f"<{hook.FRAME_TAG}>\n"
+        f"<{hook._PROMPT_FRAME_TAG}>\n"
         f"- {rendered} — a canary [matches 3/3 prompt terms: a, b, c]\n"
-        f"</{hook.FRAME_TAG}>\n"
+        f"</{hook._PROMPT_FRAME_TAG}>\n"
     )
     monkeypatch.setenv("HOME", str(profile / "home"))
     ok, why = doctor._delivered_canary(stdout, 0, cfg)

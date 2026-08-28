@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "note": "Paired cases for the long-brief eval slice. Every brief here is longer than the prompt path's 4000-character shape ceiling, because that is the population the task path exists to serve and the prompt path refuses outright. `served` names the memory in the fixture corpus a brief of this shape ought to surface; `unserved` names none, and a pointer on one of those is an incorrect injection. Both halves are needed: a coverage rate alone is met by a gate that serves everything, and an injection rate alone by a gate that serves nothing. The `unserved` set has two classes on purpose: 8 briefs with no distinctive overlap at all, and 8 that carry one or two distinctive corpus tokens by coincidence \u2014 a street name, a club name, a conveyor part. Those 8 are themselves two halves and `note_holdout` says why: 4 written alongside the bar they calibrate, and 4 held out afterwards. Every count in this file is asserted against the data by `test_the_fixture_note_states_the_counts_it_has`, because both of these had drifted. The second class is what the floor's per-hit minimum is calibrated against, and without it the relevance floor's distinctive short-circuit is never exercised by a negative case.",
+  "note_thresholds": "The two rates this set gates on, and the measured values they were set from: 8 of 9 served (0.889) and 0 of 16 leaked (0.0), at the TASK_* floor bars in the hook. One case of slack each, and the slack is deliberate \u2014 these rates bound SYSTEMIC loosening. A single case moving is the snapshot's job, and `longbrief` is in the fixture config's `gating_slices` so that it is a job rather than a printed note: one new BRIEF-LEAK is 0.0625 over sixteen, under the ceiling, and fails the run on the per-case row instead. A rate is checked on every run INCLUDING --update-snapshot: the snapshot records what happened and a re-baseline accepts it, while these record what has to be true, and a floor a re-baseline can silence is not a floor.",
+  "min_served": 0.75,
+  "max_injected": 0.084,
+  "served": [
+    {
+      "brief": "served/firmware-fleet-rollout.md",
+      "file": "widget_calibration.md",
+      "note": "the brief never says `widget` or `trim`; it says what the reader is doing"
+    },
+    {
+      "brief": "served/readings-drift-investigation.md",
+      "file": "widget_calibration.md"
+    },
+    {
+      "brief": "served/vessel-reassembly.md",
+      "file": "flange_torque.md"
+    },
+    {
+      "brief": "served/warped-face-postmortem.md",
+      "file": "flange_torque.md"
+    },
+    {
+      "brief": "served/gearbox-acceptance.md",
+      "file": "sprocket_alignment.md"
+    },
+    {
+      "brief": "served/backlash-rig.md",
+      "file": "sprocket_alignment.md",
+      "note": "the 6KB case: past the shape ceiling by half again"
+    },
+    {
+      "brief": "served/rotor-swap-programme.md",
+      "file": "turbine_balancing.md"
+    },
+    {
+      "brief": "served/period-close-automation.md",
+      "file": "ledger_reconciliation.md"
+    },
+    {
+      "brief": "served/shutdown-readiness-review.md",
+      "file": "turbine_balancing.md",
+      "over_cap": true,
+      "note": "the only brief here that clears the floor on more memories than TASK_MAX_HITS keeps \u2014 four eligible, three shown. `over_cap` makes the slice assert the cap's consequence through the eval path: the picks are capped, the count of what was dropped is right, and the truncation sentence is in the bytes the emission wrote. Without a case of this shape the truncation sentence was only inferred from production and the gate sharing a spelling."
+    }
+  ],
+  "unserved": [
+    {
+      "brief": "unserved/accessibility-audit.md"
+    },
+    {
+      "brief": "unserved/warehouse-slotting.md"
+    },
+    {
+      "brief": "unserved/support-triage-rework.md"
+    },
+    {
+      "brief": "unserved/translation-pipeline.md"
+    },
+    {
+      "brief": "unserved/archive-digitisation.md"
+    },
+    {
+      "brief": "unserved/onboarding-portal.md"
+    },
+    {
+      "brief": "unserved/mobile-release-process.md"
+    },
+    {
+      "brief": "unserved/grant-reporting.md"
+    },
+    {
+      "brief": "unserved/conveyor-noise-complaint.md",
+      "note": "carries `sprocket` incidentally \u2014 a despatch conveyor, not a gearbox rebuild"
+    },
+    {
+      "brief": "unserved/kiosk-firmware-procurement.md",
+      "note": "carries `firmware` incidentally \u2014 a procurement question, not a trim table"
+    },
+    {
+      "brief": "unserved/rotor-club-sponsorship.md",
+      "note": "carries `rotor` incidentally \u2014 the name of a football club"
+    },
+    {
+      "brief": "unserved/flange-street-lease.md",
+      "note": "carries `flange` incidentally \u2014 the name of a street"
+    },
+    {
+      "brief": "unserved/rota-balancing-review.md",
+      "note": "held out; carries `balancing` and `alignment` incidentally \u2014 a shift rota, not a turbine"
+    },
+    {
+      "brief": "unserved/parish-ledger-transcription.md",
+      "note": "held out; carries `ledger` and `reconciliation` incidentally \u2014 parish records, not a month end"
+    },
+    {
+      "brief": "unserved/panel-calibration-workshop.md",
+      "note": "held out; carries `calibration` and `drift` incidentally \u2014 interview scoring, not a trim table"
+    },
+    {
+      "brief": "unserved/motoring-magazine-advert.md",
+      "note": "held out; carries `torque` incidentally \u2014 the name of a magazine"
+    }
+  ],
+  "note_holdout": "The last four `unserved` cases are a HELD-OUT set: authored after TASK_MIN_MATCHED was fixed, and never used to move it. The four before them (the incidental-token class) were written in the same commit as the bar they calibrate, so the slice's green on them is not independent evidence that the bar is right \u2014 it is the bar reproducing its own calibration set. These four each carry one or two distinctive corpus tokens by coincidence in the same way, and were scored once, as they stand. If a future change to the bar needs one of them edited to stay green, that is the finding rather than the fix."
+}

@@ -109,6 +109,20 @@ def _readme_section(heading: str) -> str:
     return text[start : nxt if nxt != -1 else len(text)]
 
 
+def _pinned_file_count() -> int | None:
+    """How many files the marketplace pin names, or None where that cannot be
+    read here.
+
+    `_git("ls-tree", ...)` against a sha this checkout does not carry exits
+    non-zero and prints nothing, and `len([])` is 0 — a number that reads like
+    an answer. Callers need the difference, because "the pin has 0 files" and
+    "this tree cannot see the pin" say opposite things about the note.
+    """
+    out = _git("ls-tree", "-r", "--name-only",
+               _json(MARKETPLACE)["plugins"][0]["source"]["sha"])
+    return len(out.stdout.split()) if out.returncode == 0 else None
+
+
 def _needs_checkout() -> None:
     """Skip only where a checkout genuinely cannot exist, and FAIL elsewhere.
 
@@ -451,7 +465,12 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     # that has stopped making the promise this section exists to make.
     assert "exactly two places" in boundary, boundary[:400]
     # And the inventory half keeps the one that is its own.
-    assert "UserPromptSubmit" in note[: note.index("## Where the trust")]
+    # And the inventory half keeps the ones that are its own. `PreToolUse` is
+    # one of them: it is a row in the `## What runs, and when` table, not a
+    # statement about the trust boundary.
+    inventory = note[: note.index("## Where the trust")]
+    for subject in ("UserPromptSubmit", "PreToolUse"):
+        assert subject in inventory, subject
     # The count it states is the count of THIS TREE, not of the currently
     # pinned sha, and the difference is the whole of how a release works here.
     #
@@ -476,11 +495,23 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     assert listed.returncode == 0, listed.stderr
     count = len(listed.stdout.split())
     assert f"**{count} files" in note, (count, "not the number the note states")
-    # ONCE. A second copy of the number is a second thing to keep in step, and
-    # the paragraph below the table says the two agree "by construction" — a
-    # claim a hard-coded repeat makes false the first time either moves.
+    # ONCE PER TREE. A second copy of the SAME number is a second thing to keep
+    # in step, and the paragraph below the table says the two agree "by
+    # construction" — a claim a hard-coded repeat makes false the first time
+    # either moves. Two trees are described here, so two counts are expected
+    # and a third, or either one twice, is the drift this convicts.
+    pinned = _pinned_file_count()
     stated = re.findall(r"\b(\d+) files\b", note)
-    assert stated == [str(count)], stated
+    if pinned is None:
+        # The pin cannot be read here, so the second count cannot be checked
+        # against anything — but its EXISTENCE still can. Two trees are
+        # described, so: this tree's count exactly once, and at most two
+        # counts in the note. A third is the drift this rule is for.
+        assert stated.count(str(count)) == 1, stated
+        assert len(stated) <= 2, stated
+    else:
+        expected = [str(count)] if pinned == count else [str(count), str(pinned)]
+        assert stated == expected, (stated, expected)
     # Stated ONCE. Both stale figures the final review found were second copies
     # of the total — one in the `.git` row ("on top of the 57"), one closing the
     # reproduce recipe ("returns the same 57") — sitting far from the headline
@@ -490,6 +521,95 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     assert note.count(f"{count} files") == 1, (
         count, [ln for ln in note.splitlines() if f"{count} files" in ln]
     )
+
+
+def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
+    """The rows are the argument. This page's opening line says the case
+    "rests on the exact ones", and a reader who does what it asks — count the
+    categories, check the arithmetic — got 89 against a stated 90, because a
+    commit updated the headline and left the `tests/` row two lines below it.
+
+    Every row is read off the tree here rather than compared to a literal, so
+    the drift that matters is the row disagreeing with what an install puts on
+    the machine, not with a number somebody typed twice.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    tracked = _git("ls-files").stdout.split()
+
+    def under(*prefixes: str) -> int:
+        return sum(1 for f in tracked if f.startswith(prefixes))
+
+    payload = under("bin/", "src/memkit/", "hooks/", ".claude-plugin/", "skills/")
+    tests = under("tests/")
+    prose = under("docs/") + sum(
+        1 for f in tracked if f in ("README.md", "LICENSE", "NOTICE")
+    )
+    rest = len(tracked) - payload - tests - prose
+    rows = {
+        "`bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`, `skills/`": payload,
+        "`tests/`": tests,
+        "`.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files":
+            rest,
+        "`README.md`, `LICENSE`, `NOTICE`, and all of `docs/`": prose,
+    }
+    for label, count in rows.items():
+        assert f"| {label} | {count} |" in note, (label, count, "row is stale")
+    # And the rows are the total, which is the arithmetic the page asks for.
+    assert sum(rows.values()) == len(tracked), rows
+    assert f"**{len(tracked)} files" in note, len(tracked)
+
+
+def test_the_admission_notes_recipe_returns_the_number_it_states() -> None:
+    """This page's whole claim on a reader is checkability: "every number here
+    is read out of the tree" plus a command to run.
+
+    The command resolved `marketplace.json` while the number described this
+    tree, so an adopter doing exactly what the trust document asks — in order
+    to decide whether to trust it — got a different number back from the
+    document's own recipe. The two describe two different trees, and both are
+    worth stating; what they cannot do is share one sentence.
+
+    Self-retiring, like the release markers: the moment the pin names this
+    tree, the two counts agree and the marked sentence about the pinned tree
+    is asserted to be gone.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    here = len(_git("ls-files").stdout.split())
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    pinned = len(_git("ls-tree", "-r", "--name-only", sha).stdout.split())
+
+    def mib(ref: str) -> str:
+        rows = _git("ls-tree", "-r", "-l", ref).stdout.splitlines()
+        total = sum(int(row.split()[3]) for row in rows)
+        return f"{total / 1048576:.1f} MiB"
+
+    # The size is a number of the same kind and had drifted the same way: the
+    # tree was 1.67 MiB while the page said 1.5, and nothing looked.
+    assert mib("HEAD") in note, (mib("HEAD"), "not the size the note states")
+
+    # The recipe that reproduces the headline runs against this tree, which is
+    # what the headline is about.
+    recipe = note.split("## Reproducing these numbers", 1)[1]
+    reproduces_here = recipe.split("```", 2)[1]
+    assert "ls-files" in reproduces_here or "HEAD" in reproduces_here, reproduces_here
+    assert "marketplace.json" not in reproduces_here, reproduces_here
+
+    assert mib(sha) in note, (mib(sha), "not the size the note states for the pin")
+    if here == pinned:
+        # The pin has caught up: one tree, one number, and the paragraph that
+        # existed to explain the gap has to go with it.
+        assert "still names" not in note, note
+        return
+    # While it has not: both numbers stated, the pinned one marked as what an
+    # install gives you today, and the recipe for it kept.
+    assert f"**{here} files" in note, here
+    assert f"{pinned} files" in note, pinned
+    assert "from the next release" in note, "the gap between the two trees is unmarked"
+    assert "marketplace.json" in recipe, "no recipe for the tree an install gets"
+
+
 
 
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:
@@ -862,13 +982,23 @@ def test_every_registered_timeout_matches_the_constant_it_is_paired_with() -> No
     constant pair — sharing the module's single budget would put an internal
     deadline above the harness's kill point.
     """
-    expected = {"UserPromptSubmit": hook.HARNESS_TIMEOUT}
+    expected = {
+        "UserPromptSubmit": (hook.HARNESS_TIMEOUT, hook.BUDGET_SECONDS),
+        "PreToolUse": (hook.TASK_HARNESS_TIMEOUT, hook.TASK_BUDGET_SECONDS),
+    }
     for event, handler in _entries():
         assert event in expected, f"{event} has no declared constant pair"
-        assert handler["timeout"] == expected[event], (event, handler["timeout"])
-    # Both halves of the relation, so this file cannot be edited into agreement
-    # with a budget that no longer sits beneath it.
-    assert hook.BUDGET_SECONDS < hook.HARNESS_TIMEOUT
+        assert handler["timeout"] == expected[event][0], (event, handler["timeout"])
+    # Both halves of the relation, per event, so neither file can be edited into
+    # agreement with a budget that no longer sits beneath it — and so that a
+    # second event cannot be registered against the first event's budget, which
+    # is the failure the pair exists to prevent: an internal deadline above the
+    # harness's kill point never fires, and a killed hook writes no record.
+    for event, (timeout, budget) in expected.items():
+        assert budget < timeout, (event, budget, timeout)
+    assert len({budget for _, budget in expected.values()}) == len(expected), (
+        "two events sharing one budget constant is the sharing this pins against"
+    )
 
 
 def test_the_registration_runs_the_wrapper_and_not_the_hook_directly() -> None:
@@ -2602,7 +2732,10 @@ COMMANDISH = re.compile(r"(?<![\w./-])(memkit|mem[a-z0-9]+-[a-z0-9-]+)(?![\w./-]
 # `memkit-init` turns the case below red, and one line added to a list turns it
 # green with the bad advice still printed. There is nothing to add a line to
 # now, and the equality below says so out loud.
-NOT_A_COMMAND = {hook.FRAME_TAG}
+# The frame's delimiter, which is not a command. Matched by STEM because both
+# frames now suffix it with a per-run nonce, so the exception cannot be a
+# literal without silently ceasing to excuse the thing it is for.
+NOT_A_COMMAND = re.compile(rf"{re.escape(hook.FRAME_TAG)}(-[0-9a-f]+)?")
 
 
 def _corpus(tmp_path: Path, **extra) -> Path:
@@ -2710,8 +2843,10 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
     # here, and the case would then go on passing by no longer looking at the
     # one thing it is for. Anything else that needs excusing is a defect in the
     # scrape's SHAPE, which is a change somebody has to argue for.
-    assert {hook.FRAME_TAG} == NOT_A_COMMAND, NOT_A_COMMAND
-    assert NOT_A_COMMAND.isdisjoint(shipped | {hook.SEARCH_BINARY}), NOT_A_COMMAND
+    assert NOT_A_COMMAND.fullmatch(hook.FRAME_TAG), NOT_A_COMMAND.pattern
+    assert NOT_A_COMMAND.fullmatch(hook._PROMPT_FRAME_TAG), hook._PROMPT_FRAME_TAG
+    excused = {n for n in shipped | {hook.SEARCH_BINARY} if NOT_A_COMMAND.fullmatch(n)}
+    assert not excused, excused
 
     # Three config states, because they reach the name through three different
     # routes and a fix can cover one without the others: a config that omits
@@ -2744,10 +2879,12 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         surfaces = _surfaces(root, tmp_path / state.split()[0], config, broken)
         named: set[str] = set()
         for surface, text in surfaces.items():
-            found = set(COMMANDISH.findall(text))
-            assert found <= shipped | NOT_A_COMMAND, (
-                state, surface, sorted(found - shipped - NOT_A_COMMAND), text
-            )
+            found = {
+                name
+                for name in COMMANDISH.findall(text)
+                if not NOT_A_COMMAND.fullmatch(name)
+            }
+            assert found <= shipped, (state, surface, sorted(found - shipped), text)
             named |= found
         # Anti-vacuity at the STATE rather than at each surface: with no
         # config the hook is inert by construction and `--debug-config` reports
@@ -4103,8 +4240,13 @@ def test_the_block_the_docs_show_is_the_block_the_hook_writes(tmp_path) -> None:
 
     Regenerated here rather than trusted: a pasted block is prose the moment
     the emitter moves, and this one is quoted as evidence about what an install
-    puts in front of a model. `<store>` stands in for the absolute path, which
-    is the only substitution.
+    puts in front of a model. `<store>` stands in for the absolute path, and
+    `XXXXXXXX` for the frame's nonce — the two substitutions, and the second
+    is forced: the delimiter carries eight hex digits drawn per RUN, so a
+    byte-for-byte quote of a real one is a block no later run can reproduce.
+    Normalising it keeps the comparison exact everywhere the emitter is
+    deterministic, which is everything the block says including the `lines=`
+    count the opener declares.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -4130,11 +4272,19 @@ def test_the_block_the_docs_show_is_the_block_the_hook_writes(tmp_path) -> None:
     assert out.returncode == 0, out.stderr
     corpus = str(REPO / "tests" / "fixtures" / "corpus" / "project")
     emitted = out.stdout.replace(corpus, "<store>").strip()
-    assert emitted.startswith("<" + hook.FRAME_TAG + ">"), emitted[:80]
+    drawn = re.search(r"<(" + hook.FRAME_TAG + r"-[0-9a-f]+)[ >]", emitted)
+    assert drawn, emitted[:80]
+    # Non-vacuity: the nonce really was drawn, so normalising it is not
+    # quietly erasing a delimiter that had stopped carrying one.
+    assert len(drawn.group(1)) == len(hook.FRAME_TAG) + 1 + hook.FRAME_NONCE_BYTES * 2
+    placeholder = hook.FRAME_TAG + "-" + "X" * (hook.FRAME_NONCE_BYTES * 2)
+    emitted = emitted.replace(drawn.group(1), placeholder)
+    assert emitted.startswith("<" + placeholder + " "), emitted[:80]
 
     admission = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
     shown = re.search(
-        r"```\n(<" + hook.FRAME_TAG + r">\n.*?</" + hook.FRAME_TAG + r">)\n```",
+        r"```\n(<" + re.escape(placeholder) + r"[^\n]*>\n.*?</"
+        + re.escape(placeholder) + r">)\n```",
         admission,
         re.S,
     )
@@ -4322,10 +4472,21 @@ def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
     # And the recipe names the tree the table counts, rather than one that
     # answers differently.
     assert "git ls-files | wc -l" in note
-    # ONCE. A second count in prose is a number nobody updates with the first,
-    # and this document's whole claim is that a reader can check it.
+    # ONCE PER TREE. A second count in prose is a number nobody updates with
+    # the first, and this document's whole claim is that a reader can check it.
+    # The pinned tree is the second one described, and it is a different tree
+    # rather than a repeat — see the note above the same rule in
+    # `test_the_admission_note_answers_what_it_claims_to`.
+    pinned = _pinned_file_count()
     counts = {int(n) for n in re.findall(r"\b(\d+) files\b", note)}
-    assert counts == {len(listed)}, counts
+    assert len(listed) in counts, counts
+    if pinned is None:
+        # Same reasoning as the sibling rule: the pinned tree's figure is a
+        # second TREE, not a second copy, and it cannot be verified from here.
+        assert len(counts) <= 2, counts
+    else:
+        expected = {len(listed)} if pinned == len(listed) else {len(listed), pinned}
+        assert counts == expected, (counts, expected)
 
     # The shell line count, which was the one number in this file that was
     # never re-derived: it said "about 550" while the two files held 658, and
@@ -4634,3 +4795,205 @@ def test_the_init_skill_says_where_dry_run_goes_in_the_argv() -> None:
     assert grant, skill[:200]
     assert grant.group(1).strip().endswith("init --dry-run:*)"), grant.group(1)
     assert "`--dry-run` goes first" in skill
+
+
+def test_the_task_registration_matches_the_subagent_tool_and_nothing_else() -> None:
+    """One `PreToolUse` entry, matched on the Agent tool by name.
+
+    `"Agent"` rather than `"^Agent$"`, and the difference is not cosmetic. The
+    harness picks its matching strategy from the CHARACTERS in the matcher
+    (measured on 2.1.238): a matcher of word characters, `|`, `,`, spaces and
+    hyphens takes an exact-equality branch that first canonicalizes the token
+    through the tool alias table, while anything carrying a regex metacharacter
+    compiles to a RegExp and is tested unanchored. So the plain form is the
+    exact one AND the one that survives a rename — `Task` still dispatches to
+    `Agent` through that table — whereas the anchored form is a literal string
+    that a rename leaves matching nothing, silently.
+
+    Measured both ways on the pinned binary: `Read` and `^Read$` fire, `Rea`
+    and `ead` do not, `Read.*` fires on NotebookEdit-shaped names too.
+    """
+    entries = [(event, h) for event, h in _entries() if event == "PreToolUse"]
+    assert len(entries) == 1, entries
+    groups = _json(HOOKS_JSON)["hooks"]["PreToolUse"]
+    assert len(groups) == 1, groups
+    assert groups[0]["matcher"] == hook.TASK_TOOL, groups[0]
+    assert hook.TASK_TOOL == "Agent"
+    # No metacharacter, or the harness takes the regex branch and the alias
+    # canonicalization that makes this survive a rename never runs.
+    assert re.fullmatch(r"[A-Za-z0-9_|, -]+", groups[0]["matcher"]), groups[0]
+    # And the prompt path's entry stays unmatched — a matcher there would scope
+    # a hook that must see every prompt.
+    for group in _json(HOOKS_JSON)["hooks"]["UserPromptSubmit"]:
+        assert "matcher" not in group, group
+
+
+def test_the_docs_count_the_hooks_the_registration_actually_declares() -> None:
+    """`plugin details` is the only surface that tells an adopter whether
+    registration took, and six places across README.md and docs/ROLLOUT.md
+    certify a number for it. The number moved with this registration and the
+    prose did not, so a correct install failed the reader's first verification
+    step while the install that half-failed passed it.
+
+    Pinned against `hooks.json` rather than against a literal, so the next
+    registration change cannot land without the documentation.
+    """
+    handlers = len(_entries())
+    assert handlers == 2, handlers
+    for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
+        text = path.read_text(encoding="utf-8")
+        assert f"Hooks ({handlers})" in text, path
+        # Every PRESCRIPTIVE statement — the ones a reader checks their own
+        # install against — names the live count. A stale one turns a correct
+        # install into a reported failure at the reader's first verification
+        # step, and certifies the half-registered one as healthy.
+        for stated in re.findall(r"must report Hooks \((\d+)\)", text):
+            assert int(stated) == handlers, (path, stated)
+        for stated in re.findall(r"Hooks \((\d+)\)` is a working install", text):
+            assert int(stated) == handlers, (path, stated)
+        # Every OTHER count that appears has to be talking about a failure —
+        # or about the RELEASE that is currently pinned, which is the second
+        # legitimate thing `Hooks (1)` can mean. `.claude-plugin/marketplace.json`
+        # pins v0.2.1, whose tree registers one hook, and the pin moves in its
+        # own release PR: for the whole window between that merge and this one,
+        # a healthy install reports `Hooks (1)` and this page used to call that
+        # its own failure, sending a correct install to `Reinstall` at the
+        # reader's first verification step. Both readings are here now, marked
+        # per `## Status`.
+        #
+        # Read over a window rather than a line, because the sentence that
+        # names either one wraps and a line-scoped check is a test of the line
+        # breaks.
+        for wrong in (f"Hooks ({n})" for n in range(4) if n != handlers):
+            start = 0
+            while (at := text.find(wrong, start)) != -1:
+                # Tight, because it has to be a claim about THIS mention: the
+                # words have to sit in the same clause, not merely on the same
+                # screen as some other count's explanation.
+                window = text[max(0, at - 90) : at + 90].lower()
+                assert "failure" in window or "pinned release" in window, (
+                    path, wrong, window
+                )
+                start = at + 1
+        # And the marker convention is actually used, or "from the next
+        # release" is a rule the page states and does not follow — which is
+        # how the six sites above came to describe a release that has not
+        # shipped as if it had.
+
+
+def test_the_docs_name_every_build_outcome_and_every_state_file() -> None:
+    """Two inventories a reader builds a sweeper and a dashboard against.
+
+    The `.build` vocabulary is a documented contract — "these are all of them",
+    with a stated rule for the unrecognised ones — and a new outcome that never
+    reaches the list leaves the reader classifying it by the rule instead of by
+    name. The derived-state list is the one an external sweeper is written
+    from: it enumerated one non-index file while this tree writes two, so a
+    sweeper built from it globbed the session ledgers and left every per-spawn
+    one behind.
+    """
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    outcomes = {
+        value
+        for name, value in vars(hook).items()
+        if name.startswith("BUILD_") and isinstance(value, str)
+    }
+    assert len(outcomes) >= 6, outcomes
+    for outcome in outcomes:
+        assert f"`{outcome}`" in text, outcome
+    # The per-spawn ledger, by the prefix a sweeper would glob for.
+    assert f"`{hook.TASK_STATE_PREFIX}<tool-use-id>.json`" in text
+    assert "`<session-uuid>.json`" in text
+
+
+def test_the_docs_state_the_frame_sizes_the_frames_actually_are() -> None:
+    """Both frames' fixed overhead is a documented number a reader subtracts
+    from the 16 KiB refusal bound to work out which of their briefs still get
+    served — and neither figure was pinned by anything, so the two sites
+    describing the subagent block drifted 226 bytes apart inside one commit
+    range while both stayed plausible.
+
+    Fixed part only: `_framed([])` and `_task_framed([])` are the block with no
+    pointer lines, which is what "plus the pointer lines" in each sentence
+    means.
+    """
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    prompt_bytes = len(hook._framed([]).encode())
+    task_bytes = len(hook._task_framed([]).encode())
+    assert f"**{prompt_bytes} bytes fixed**" in text, prompt_bytes
+    assert f"**{task_bytes} bytes fixed**" in text, task_bytes
+    # The subagent figure is stated twice, in the section a reader is pointed
+    # at and in the disclosures, and it is the pair that drifted.
+    assert text.count(str(task_bytes)) >= 2, task_bytes
+    # Anti-vacuity: the two frames are not the same size, so a check that
+    # matched one figure against both would not pass.
+    assert prompt_bytes != task_bytes, (prompt_bytes, task_bytes)
+
+
+def test_the_docs_mark_what_the_pinned_release_does_not_carry_yet() -> None:
+    """The window between merging a registration and shipping it.
+
+    `.claude-plugin/marketplace.json` pins the sha `/plugin install` clones,
+    and that pin moves in its own release PR — so for the whole window between
+    this merge and that one, every adopter who runs Quick start against a
+    marketplace install sees one fewer hook than this page describes. The page
+    defines a convention for exactly that (`## Status`: a behaviour that has
+    landed here and not in a release is marked *(from the next release)*) and
+    the subagent docs shipped without it, calling a correct install a failure
+    and sending the reader to `Reinstall`, which reinstalls the same sha.
+
+    Derived from the pin rather than asserted as a state: the pinned tree is in
+    this repo's own history, so its registration can be counted offline. When
+    the release PR moves the pin the counts agree, this case stops requiring
+    markers, and RELEASING.md item 4's sweep is free to remove them.
+    """
+    pinned = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
+    sha = pinned["plugins"][0]["source"]["sha"]
+    shown = subprocess.run(
+        ["git", "-C", str(REPO), "show", f"{sha}:hooks/hooks.json"],
+        capture_output=True, text=True,
+    )
+    if shown.returncode != 0:
+        pytest.skip(f"the pinned sha {sha[:12]} is not in this clone's history")
+    registered = sum(
+        len(group["hooks"])
+        for groups in json.loads(shown.stdout)["hooks"].values()
+        for group in groups
+    )
+    if registered == len(_entries()):
+        return  # the pin carries what this tree registers; nothing to mark
+    for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "from the next release" in text, (path, registered)
+
+
+def test_the_admission_note_names_both_events_it_registers() -> None:
+    """The note is what the README points at for 'what runs on my machine'.
+    Its subject list is asserted by name above; this is the half that a new
+    event silently escapes — the higher-consequence of the two, since it
+    rewrites a tool call rather than printing to a transcript."""
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    # The INVENTORY block, not the prose around it: a paragraph can mention an
+    # event while the list a reader counts stays one short, which is the shape
+    # this went wrong in.
+    after = note[note.index("## What runs, and when") :]
+    block = after[after.index("```") + 3 : after.index("```", after.index("```") + 3)]
+    for event, handler in _entries():
+        assert event in block, (event, block)
+        assert f"{handler['timeout']}s" in block, (event, block)
+    assert hook.TASK_TOOL in block, block
+
+
+def test_the_remote_tier_counts_hooks_from_the_manifest_it_installed() -> None:
+    """The remote tier asserts a hook count against a clone of the sha in
+    `.claude-plugin/marketplace.json`, and that sha is whichever release is
+    current — so a literal there is a snapshot that goes red on the release
+    that moves the pin, not in the review that changed the registration.
+
+    The tier itself is opt-in and needs the network, so what is checked here is
+    the derivation it now uses: over this tree, the manifest and the
+    registration agree.
+    """
+    from rig.test_remote_install import _registered_hooks
+
+    assert _registered_hooks(REPO) == len(_entries())

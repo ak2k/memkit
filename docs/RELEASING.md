@@ -51,7 +51,19 @@ Everything below has been missed at least once.
 4. **Sweep `(from the next release)`.** `grep -rn "from the next release"`.
    Every behaviour marker becomes a plain statement — the pin is about to carry
    it. Two occurrences are *not* markers and stay: the `## Status` sentence that
-   defines the convention, and the paragraph that refers to it.
+   defines the convention, and the paragraph that refers to it. A third is a
+   test string in `tests/test_plugin_surface.py` and stays as well.
+
+   The subagent registration's markers come with a second edit each: while the
+   pin is behind, `Hooks (1)` is what a healthy install reports, and the docs
+   say so beside every mention. When the pin moves, those sentences go back to
+   naming `Hooks (1)` as the half-registered failure. `README.md`'s Quick start,
+   its "Why nothing appeared" table, its Install (details) check and
+   `docs/ROLLOUT.md`'s step 2 are the four sites.
+   `test_the_docs_mark_what_the_pinned_release_does_not_carry_yet` counts the
+   registration in the pinned sha's own tree and stops asking for markers the
+   moment the pin agrees with `hooks/hooks.json`, so this step has a check
+   behind it in both directions.
 5. **The vocabulary table.** When a release changes an `outcome` value, the old
    one becomes a dated row rather than disappearing — a machine on the previous
    release is writing it now, and that table is what decodes its log. The pin

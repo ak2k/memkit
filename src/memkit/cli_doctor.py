@@ -80,6 +80,7 @@ from memkit.memory_prompt_recall import (
     DOCTOR_ENV,
     ERRLOG_NAME,
     EXCLUDE_BASENAMES,
+    FRAME_NONCE_BYTES,
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
     MARKER_NAME,
@@ -161,13 +162,35 @@ _LABEL_WIDTH = max(len(v) for v in LABELS.values())
 DETAIL_MAX_BYTES = 600
 
 
+# The frame's delimiters as a LITERAL, neutralised in doctor's own output.
+#
+# MERGE SEAM, and the reason this lives here rather than in the hook's
+# `strip_unsafe`. Track A defanged the frame inside the shared sanitizer with
+# a grapheme-skeleton match, so that `</memkit́-pointers>` — an accent on
+# the `t`, which a reader resolves as the tag anyway — was caught too. Track B
+# deleted that rule and the measurement is the argument: over five rounds each
+# widening or narrowing of a rule that READS text produced the sibling of the
+# defect it had just closed, because the spans an honest store writes and the
+# spans a forger writes overlap on every feature the text carries. What
+# replaced it is structural — a per-run nonce the writer of a store file
+# cannot see, and a line-position invariant no retrieved text can break.
+#
+# That settles the POINTER BLOCK, and it is not resurrected here. What this is
+# instead is a fixed-string substitution on a DIFFERENT surface: doctor's
+# report is relayed verbatim into a model's context and sits inside no frame
+# of memkit's own, so there is no delimiter for it to close and nothing here
+# has to judge whether a span resembles one. It replaces two literals and
+# reads no text, which is why it does not inherit Track B's finding.
+_FRAME_LITERAL = re.compile(r"</?" + re.escape(FRAME_TAG))
+
+
 def _bound(text: str) -> str:
     """One display string, sanitized and bounded, in that order.
 
     Sanitizing after bounding would let a truncation land inside an escape
     sequence and produce a string the sanitizer never saw whole.
     """
-    text = sanitize(text)
+    text = _FRAME_LITERAL.sub("(" + FRAME_TAG, sanitize(text))
     raw = text.encode("utf-8")
     if len(raw) <= DETAIL_MAX_BYTES:
         return text
@@ -1731,6 +1754,16 @@ def _forget_probe_session(session: str) -> None:
 # printing can all arrange.
 _POINTER = re.compile(r"^- (\S.*?) — ", re.MULTILINE)
 
+# The frame's opening delimiter, as `_frame_tag` draws it on both paths:
+# the shared tag, a `-`, FRAME_NONCE_BYTES bytes of hex, and the attributes
+# the opener declares (`lines=N`). Captured so
+# the closer can be built from the SAME draw — two frames in one output
+# would carry two nonces, and pairing an opener with another's closer is
+# how a probe reads a truncated frame as a closed one.
+_FRAME_OPEN = re.compile(
+    rf"<({re.escape(FRAME_TAG)}-[0-9a-f]{{{FRAME_NONCE_BYTES * 2}}})(?:\s[^>\n]*)?>"
+)
+
 
 def _delivered_canary(stdout: str, code, cfg) -> tuple:
     """(True, "") when this output really is a pointer to the canary.
@@ -1744,11 +1777,15 @@ def _delivered_canary(stdout: str, code, cfg) -> tuple:
     """
     if code != 0:
         return False, f"it exited {code}"
-    opened = f"<{FRAME_TAG}>"
-    closed = f"</{FRAME_TAG}>"
-    if opened not in stdout or closed not in stdout:
+    inside = None
+    for match in _FRAME_OPEN.finditer(stdout):
+        closed = f"</{match.group(1)}>"
+        rest = stdout[match.end():]
+        if closed in rest:
+            inside = rest.split(closed, 1)[0]
+            break
+    if inside is None:
         return False, "the output carries no closed pointer frame"
-    inside = stdout.split(opened, 1)[1].split(closed, 1)[0]
     paths = _POINTER.findall(inside)
     if not paths:
         return False, "the frame holds no pointer line"
@@ -1928,6 +1965,50 @@ OUTCOME_REASONS = {
     "prompt",
     "output-lost": "pointers were built and the write did not land",
     "dup-registration": "two installs on one machine registered the same hook",
+    "index-unavailable": "a store was asked and could not answer — an index "
+    "mid-rebuild, an unreadable corpus, or a query the budget ran out under",
+    "gate:event": "a prompt-shaped payload arrived under an event name this "
+    "hook did not register for",
+    # Written before the dispatch chose a path, so it belongs to neither
+    # vocabulary: the payload never said which one it was.
+    "main:badpayload": "stdin held no JSON object — empty, truncated, "
+    "malformed, or valid JSON that is not an object",
+    # --- the subagent path -----------------------------------------------
+    #
+    # A SEPARATE VOCABULARY, rendered in the same histogram. The two hooks
+    # serve different populations — one prompt each, one Agent spawn each —
+    # and the prefix is what keeps a rate computed over either from being a
+    # rate over an unknown mixture of both. Every name here has a row in the
+    # README's outcome table and the two are pinned to each other by
+    # `test_every_outcome_the_readme_publishes_has_a_reason_doctor_can_render`.
+    "task:injected": "pointers were appended to a subagent's brief",
+    "task:envelope": "the brief began with an editor or tool envelope",
+    "task:empty": "the brief was empty after stripping",
+    "task:slash": "the brief began with `/`",
+    "task:short": "the brief was under three words",
+    "task:stopwords": "the brief was all common words",
+    "task:nodirs": "nothing to search: no config, or no store on disk and in "
+    "scope here",
+    "task:nomatch": "the stores were searched and nothing came back",
+    "task:deduped": "every match had already been offered for this tool call",
+    "task:floored": "matches existed and none cleared the relevance bar",
+    "task:index-unavailable": "a store was asked and could not answer; "
+    "parallel spawns share one index and a contender can lose the race to a "
+    "cold build",
+    "task:oversize": "the brief plus its pointers would exceed the 16 KiB "
+    "write bound, so the pointers were dropped whole",
+    "task:unsafe": "the emission did not match the one permitted output "
+    "shape, so nothing was written — this one is a defect report",
+    "task:notool": "the hook was called for a tool other than `Agent`",
+    "task:event": "an `Agent` call arrived under an event name this build "
+    "does not recognise",
+    "task:nobrief": "the tool call carried no `prompt` string to read",
+    "task:unencodable": "the brief carried a lone surrogate, so the emission "
+    "cannot be written as UTF-8 at all",
+    "task:killed": "the subagent hook ran out of time and gave up rather than "
+    "stalling the spawn",
+    "task:output-lost": "pointers were built and the write did not land",
+    "task:error": "the subagent path raised; the turn was unaffected",
 }
 
 # How much of the log a histogram is built over. The file grows one line per
