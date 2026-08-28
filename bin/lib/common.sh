@@ -502,7 +502,17 @@ memkit_resolve_interpreter() {
 # The reader is doctor, which runs this wrapper directly and captures stderr.
 # In a live session it goes to the harness's debug log, because the wrapper
 # exits 0 whatever happens — see the exit contract in `memkit-hook`.
+#
+# The tried paths go in as one message EACH, and the splitting is the point.
+# The list is newline-separated, so interpolating it whole put five physical
+# lines into a single message — and the error log's rule is that every line
+# carries the wrapper's name, so four of them arrived owned by nothing. That
+# happened only where this message fires at all, which is a machine none of
+# the five paths exists on: a NixOS install, and this repo's own Linux build.
+# One path per line is also the shape the reader wants, since the question
+# they are answering is whether their python is on the list.
 memkit_no_interpreter_message() {
+    # shellcheck disable=SC2086  # unquoted so each path becomes its own word
     memkit_stderr \
         "no interpreter is recorded in the config and none of the pinned" \
         "system paths exists, so the recall hook cannot run. Record an" \
@@ -510,6 +520,7 @@ memkit_no_interpreter_message() {
         "config — \`memkit init\` writes that field for you. A python found" \
         "only through this session's PATH is deliberately not used: that" \
         "lookup is one a checkout steers, and what it returns would run on" \
-        "every prompt. Pinned paths tried: $MEMKIT_SYSTEM_PYTHONS." \
+        "every prompt. Pinned paths tried:" \
+        $MEMKIT_SYSTEM_PYTHONS \
         "Config in use: ${1:-<none resolved>}"
 }
