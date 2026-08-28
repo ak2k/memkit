@@ -1745,8 +1745,16 @@ def _probe_env_gap() -> list:
     )
 
 
-def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
+def _probe_hook(
+    machine: Machine, command: list, prompt: str, timeout: int
+) -> tuple:
     """One real run of the installed hook. Returns (stdout, stderr, code, ms).
+
+    `timeout` is PASSED IN rather than read here, because the caller reports
+    the elapsed time against the registration's own budget and the two numbers
+    have to come from one read. A second `_probe_budget()` call would agree
+    with the first in every run anyone can construct, and would let the row
+    quote a bound that was not the one governing the run.
 
     Against the REAL state directory and the REAL config, which is the whole
     value of it: a scratch cache would keep doctor's footprint at zero and
@@ -1789,7 +1797,7 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
         out = _execute(
             command,
             input=payload,
-            timeout=_probe_budget()[1],
+            timeout=timeout,
             env_extra=env,
             env_forward=HOOK_PROBE_FORWARD,
         )
@@ -1928,7 +1936,7 @@ def _hook_path(machine: Machine) -> list[Check]:
     allowed, waited = _probe_budget()
     if not nonce:
         stdout, stderr, code, ms = _probe_hook(
-            machine, command, "memkit doctor probe prompt"
+            machine, command, "memkit doctor probe prompt", waited
         )
         if code is None:
             return [
@@ -1952,7 +1960,9 @@ def _hook_path(machine: Machine) -> list[Check]:
             )
         ]
 
-    stdout, stderr, code, ms = _probe_hook(machine, command, canary_query(nonce))
+    stdout, stderr, code, ms = _probe_hook(
+        machine, command, canary_query(nonce), waited
+    )
     if code is None:
         return [
             Check(
