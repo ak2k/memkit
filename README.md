@@ -35,7 +35,9 @@ assuming any measured claim generalises to your corpus.
 releases this page can describe behaviour your copy does not have yet. Releases
 follow merged behaviour changes rather than a calendar, and each one re-aligns
 the two. Where a behaviour has landed here and not in a release, this page marks
-it *(from the next release)*.
+it *(from the next release)*. [CHANGELOG.md](CHANGELOG.md) says what each
+release changed, so "do I have this" is a question you can answer against the
+version you installed.
 
 Bugs, questions, and the second adopter's experience:
 [github.com/ak2k/memkit/issues](https://github.com/ak2k/memkit/issues). If you

@@ -569,7 +569,7 @@ def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
     payload = under("bin/", "src/memkit/", "hooks/", ".claude-plugin/", "skills/")
     tests = under("tests/")
     prose = under("docs/") + sum(
-        1 for f in tracked if f in ("README.md", "LICENSE", "NOTICE")
+        1 for f in tracked if f in ("README.md", "CHANGELOG.md", "LICENSE", "NOTICE")
     )
     rest = len(tracked) - payload - tests - prose
     rows = {
@@ -577,7 +577,8 @@ def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
         "`tests/`": tests,
         "`.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files":
             rest,
-        "`README.md`, `LICENSE`, `NOTICE`, and all of `docs/`": prose,
+        "`README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, and all of `docs/`":
+            prose,
     }
     for label, count in rows.items():
         assert f"| {label} | {count} |" in note, (label, count, "row is stale")
