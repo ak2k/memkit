@@ -4851,13 +4851,20 @@ def test_a_full_hook_invocation_starts_zero_processes(tmp_path: Path) -> None:
 
     # ANTI-VACUITY: the counter really does see a process start, so a zero
     # below is an observation.
+    #
+    # It starts THIS python rather than `/bin/echo`, and the difference is a
+    # whole platform: a Linux nix build sandbox carries `/bin/sh` and nothing
+    # else under `/bin`, so the control raised FileNotFoundError, never
+    # reached the line that reports what it saw, and failed for the absence of
+    # a program instead of for anything about the counter. `sys.executable` is
+    # the one binary a python process can be sure of.
     control = subprocess.run(
         [
             "python3", "-c",
             "import sys,json,subprocess\n"
             "s=[]\n"
             "sys.addaudithook(lambda e,a: s.append(e) if e=='subprocess.Popen' else None)\n"
-            "subprocess.run(['/bin/echo','x'],capture_output=True)\n"
+            "subprocess.run([sys.executable,'-c',''],capture_output=True)\n"
             "sys.stderr.write('MEMKIT-STARTS='+json.dumps(s))\n",
         ],
         capture_output=True, text=True, timeout=60,
