@@ -1194,7 +1194,18 @@ def test_the_hook_path_runs_the_installed_wrapper_and_a_pointer_comes_out(
     _installed(profile, monkeypatch, config=path)
     (row,) = _only(doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
                    "hook-path")
-    assert row.status == doctor.PASS, row.detail
+    # THE POINTER IS THE SUBJECT; its latency is not. The first wrapper start
+    # on a cold runner can spend twenty seconds paging an interpreter and its
+    # library in — measured at 22858ms against a 15s registration on a CI mac
+    # — and the probe's derived bound then reports INFO, which is the right
+    # answer about that machine and says nothing about this install. The
+    # comparison has its own case, and that one moves the clock rather than
+    # waiting for a slow machine: see
+    # `test_a_delivery_slower_than_the_registration_allows_is_not_a_pass`.
+    # What may never be admitted here is FAIL, which is no pointer at all.
+    assert row.status == doctor.PASS or (
+        row.status == doctor.INFO and "where the registration allows" in row.detail
+    ), row.detail
     assert doctor.CANARY_NAME in row.detail
 
 
