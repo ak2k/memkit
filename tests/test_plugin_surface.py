@@ -1102,6 +1102,15 @@ SHIM_BODY = """
   echo "MEMKIT_CHECKER_CMD=${MEMKIT_CHECKER_CMD-<unset>}"
   echo "PYTHONPATH=${PYTHONPATH-<unset>}"
 } > "$SHIM_OUT"
+# The same argv again, losslessly. `$*` joins on a space, so it cannot tell
+# `--search "flange torque"` from `--search flange torque` — and neither can
+# `sh -x`, on the shell that matters (see `Shim.argv`). NUL-separated because
+# it is the one byte an argument cannot contain. The backslash is DOUBLED
+# because this body is a python string before it is a script: a lone one is an
+# octal escape, and what reached the shim was a real NUL where the format
+# specifier should have been, so the loop wrote nothing at all.
+: > "$SHIM_OUT.argv"
+for _arg do printf '%s\\0' "$_arg" >> "$SHIM_OUT.argv"; done
 exit 0
 """
 
@@ -1167,6 +1176,20 @@ class Shim:
             if "=" in line
         )
 
+    def argv(self) -> list[str]:
+        """The argv the shim was handed, with its word boundaries intact.
+
+        Read from the CHILD rather than from `sh -x`, and the difference is
+        not stylistic: the trace cannot carry word boundaries on every shell.
+        bash quotes a traced word containing a space, dash does not, and dash
+        is `/bin/sh` on the Linux runners — so `--search "flange torque"` and
+        `--search flange torque` trace identically there, and a parser reading
+        either one back reports three words. MEASURED both ways: the child's
+        argv is the same two words under both shells.
+        """
+        raw = self.out.with_name(self.out.name + ".argv").read_bytes()
+        return raw.decode().split("\0")[:-1]
+
 
 @pytest.fixture
 def shimmed(tmp_path: Path) -> Shim:
@@ -1208,8 +1231,14 @@ class Decided:
             elif stripped.startswith("PY="):
                 self.interpreter = stripped[3:]
             elif stripped.startswith("exec "):
-                # `sh -x` quotes a word containing a space, so the trace is
-                # read with the shell's own splitting rather than on " ".
+                # Split the way a shell would, which is right only as far as
+                # the trace is quoted — and that is the shell's choice, not
+                # this file's. bash quotes a traced word containing a space;
+                # dash, which is `/bin/sh` on the Linux runners, prints it
+                # bare. So `handoff` reads word boundaries a multi-word
+                # argument does not survive, and a case that needs them exact
+                # observes the child instead (`Shim.argv`). Every case reading
+                # `handoff` therefore passes single-word arguments.
                 self.handoff = shlex.split(stripped[5:])
 
 
@@ -2573,7 +2602,7 @@ def test_what_argv0_a_shebang_script_receives_is_measured_not_assumed(
     ],
 )
 def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
-    root, shimmed, wrapper, args
+    root, tmp_path, shimmed, wrapper, args
 ) -> None:
     """`bin/` is on the agent's PATH while the plugin is enabled, so a bare
     `memkit …` has to find its own tree with no directory in argv[0] to walk up
@@ -2598,26 +2627,34 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
     answered with a different install on the same PATH would run that install's
     files, which is the wrong-tree failure this derivation exists to avoid, and
     it is invisible in an exit code.
+
+    Read off the SHIM, through a config, rather than off `sh -x`. Two things
+    the trace cannot do: it cannot carry the word boundaries of
+    `--search "flange torque"` on a shell whose xtrace does not quote, and it
+    left the case reaching for whichever pinned system python the host
+    happened to have — which is none of them inside a Linux build sandbox.
+    Recording an interpreter is what an install does, so the case reaches its
+    own python the way an adopter's does.
     """
-    env = shimmed()
+    env = shimmed(
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(_config_file(tmp_path / "byname.json"))
+    )
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     out = subprocess.run(
-        [SH, "-x", wrapper, *args],
+        [SH, wrapper, *args],
         capture_output=True, text=True, timeout=60, env=env,
         cwd=str(root / "bin"), stdin=subprocess.DEVNULL,
     )
-    # Any code from the wrapper's own vocabulary: the real interpreter now
-    # reaches the real subcommand, and an inert `--search` legitimately exits 3.
-    assert out.returncode in (0, 1, 3), out.stderr
-    handoff = Decided(out).handoff
+    assert out.returncode == 0, out.stderr
+    handed = shimmed.argv()
     if wrapper == "memkit":
         # The dispatcher runs the package rather than the hook file, so the
         # tree shows up as the PYTHONPATH it prepends.
-        assert handoff[1:] == ["-m", "memkit.cli", "doctor"], handoff
-        assert f"PYTHONPATH={root / 'src'}" in out.stderr, out.stderr[-400:]
+        assert handed == ["-m", "memkit.cli", "doctor"], handed
+        assert shimmed.read()["PYTHONPATH"] == str(root / "src"), shimmed.read()
     else:
         hook_file = root / "src" / "memkit" / "memory_prompt_recall.py"
-        assert handoff[1:] == [str(hook_file), *args], handoff
+        assert handed == [str(hook_file), *args], handed
 
 
 def test_the_search_wrapper_refuses_rather_than_blocking_on_stdin(root, shimmed):
