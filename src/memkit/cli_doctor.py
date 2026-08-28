@@ -1529,6 +1529,7 @@ def _probe_budget() -> tuple:
     allowed = _registered_timeout(PROBE_EVENT) or HARNESS_TIMEOUT
     return allowed, allowed + HOOK_PROBE_HEADROOM
 
+
 # The wrapper a plugin install puts the registration on. Read from
 # `CLAUDE_PLUGIN_ROOT` rather than from `hooks.json`, because that variable is
 # what the harness itself expands the registration against — and because the
