@@ -3584,11 +3584,31 @@ def test_a_hostile_checkout_runs_none_of_its_programs_through_doctor_or_init(
     # ANTI-VACUITY: the fixture's own programs really do run when nothing
     # stops them, so a clean marker file below is a refusal and not a fixture
     # that could never fire.
+    #
+    # WITHOUT THE DYNAMIC-LOADER VARIABLES, and only for this one invocation.
+    # The fixture points `DYLD_INSERT_LIBRARIES` and its siblings at a
+    # `/bin/sh` script, which is bait aimed at the code under test. macOS's
+    # dyld honours that variable for any binary it is permitted to, finds a
+    # file that is not a mach-o, and TERMINATES — so the control died with
+    # SIGABRT before git could run. MEASURED, with the same variable and the
+    # same script: exit 0 under Apple's signed `/usr/bin/git`, which strips
+    # the whole family, and SIGABRT under a `git` from the nix store, which
+    # does not. That is why this passes from a shell and dies inside the nix
+    # build, and it is about the loader rather than about anything memkit does.
+    #
+    # It costs the control nothing: what makes it fire is `core.fsmonitor` in
+    # the repository's own config, which this leaves alone, and every call
+    # below still runs under the whole hostile environment.
+    control_env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("DYLD_", "LD_"))
+    }
     control = subprocess.run(
         ["git", "ls-files", "--error-unmatch", ".gitattributes"],
-        cwd=session, capture_output=True, text=True, timeout=60,
+        cwd=session, capture_output=True, text=True, timeout=60, env=control_env,
     )
-    assert control.returncode in (0, 1)
+    assert control.returncode in (0, 1), (control.returncode, control.stderr)
     assert marker.exists(), "core.fsmonitor never fired, so this proves nothing"
     marker.unlink()
 
