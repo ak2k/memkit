@@ -12,6 +12,7 @@ anybody edits, and it read as green for most of this check's life.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
@@ -1140,3 +1141,52 @@ def test_a_pointer_path_holding_a_bracket_is_not_cut_short() -> None:
     assert ev._delivered_paths(with_desc) == {"/store/a [1].md"}
     without = "- /store/a [1].md [matches 1/1 prompt terms: a]"
     assert ev._delivered_paths(without) == {"/store/a [1].md"}
+
+
+def test_the_task_surface_declares_every_hook_name_the_slice_reaches() -> None:
+    """The gate over subagent delivery, held to the surface it actually uses.
+
+    `TASK_SURFACE` is what `task_surface_gap` walks before the long-brief
+    slice runs, and its own comment says why it is a list rather than one
+    probe: a copy carrying `task_gate` and nothing else passed the probe and
+    then died mid-run with an uncaught AttributeError, after the slice had
+    printed its PASS lines. Written out by hand, it had already drifted —
+    `_display_path` is reached at eval_memory_recall.py:908 and was not in it,
+    so a rename of that one name reproduced the exact failure the constant
+    exists to prevent, past a gap check reporting no gap.
+
+    DERIVED, by walking what the guarded block reaches rather than by
+    restating it. The roots are the two functions the block calls; everything
+    they reach transitively is inside the gate, so a `hook.` name added
+    anywhere under them joins this assertion by existing.
+    """
+    tree = ast.parse(Path(ev.__file__).read_text(encoding="utf-8"))
+    fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    reached: set[str] = set()
+    seen: set[str] = set()
+    stack = ["task_delivery", "over_cap_faults"]
+    assert set(stack) <= set(fns), sorted(set(stack) - set(fns))
+    while stack:
+        name = stack.pop()
+        if name in seen or name not in fns:
+            continue
+        seen.add(name)
+        for node in ast.walk(fns[name]):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "hook"
+            ):
+                reached.add(node.attr)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                stack.append(node.func.id)
+    # Non-vacuity in both directions: the walk really did enter the delivery
+    # pipeline, and it really did read attributes off the hook.
+    assert "_task_delivery" in seen, sorted(seen)
+    assert {"recall", "_task_block"} <= reached, sorted(reached)
+    assert reached <= set(ev.TASK_SURFACE), sorted(reached - set(ev.TASK_SURFACE))
+
+    # And every declared name is one the shipped hook has, or the gate refuses
+    # the hook this repo ships over a name nothing reaches any more.
+    absent = [n for n in ev.TASK_SURFACE if getattr(hook, n, None) is None]
+    assert not absent, absent

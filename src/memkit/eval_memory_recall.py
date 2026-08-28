@@ -505,13 +505,21 @@ def long_brief_set(root: pathlib.Path) -> dict:
     }
 
 
-# What `task_delivery` reaches for on the hook module. Named here rather than
-# probed for with one symbol, which is what the probe used to be: the surface
-# below it grew to nine names and a keyword, so a copy carrying `task_gate` and
-# nothing else — the immediately preceding commit of this branch qualified —
-# passed the probe and then died mid-run with an uncaught AttributeError, after
-# the suite slice had already printed its PASS lines. Exit 1 is reserved for a
-# gate failing, so a crash and a real regression were the same signal to CI.
+# What the long-brief slice reaches for on the hook module. Named here rather
+# than probed for with one symbol, which is what the probe used to be: the
+# surface below it grew to ten names and a keyword, so a copy carrying
+# `task_gate` and nothing else — the immediately preceding commit of this
+# branch qualified — passed the probe and then died mid-run with an uncaught
+# AttributeError, after the suite slice had already printed its PASS lines.
+# Exit 1 is reserved for a gate failing, so a crash and a real regression were
+# the same signal to CI.
+#
+# A HAND-WRITTEN LIST IS THE FAILURE MODE, so it is not trusted to be one:
+# the pin walks what the guarded block actually reaches and requires this
+# tuple to cover it. Two names here are reached in ways that walk cannot see
+# and are deliberate — `_pointer_line`, checked below for its `over_brief`
+# keyword rather than called, and `_task_framed`, which the hook's own
+# `_task_block` calls — so the relation is coverage rather than equality.
 TASK_SURFACE = (
     "task_gate",
     "build_task_query",
@@ -522,6 +530,13 @@ TASK_SURFACE = (
     "_pointer_line",
     "_task_block",
     "_task_emission",
+    # The one this list had already drifted past. `_task_delivery` calls it
+    # while reconciling what the emission carried against what it picked, so
+    # a hook whose copy renamed it took the gap check's "no gap" answer and
+    # died one call later with the AttributeError this constant is here to
+    # turn into a skip. Derived from the walk rather than trusted, by
+    # test_the_task_surface_declares_every_hook_name_the_slice_reaches.
+    "_display_path",
     "TASK_MAX_HITS",
     "TASK_BUDGET_SECONDS",
 )
