@@ -6556,8 +6556,35 @@ def main() -> None:
         _marker_append(refusal)
         return
 
+    # The session id, when there is one, bound before `done` is defined and
+    # rebound the moment the payload parses — `done` reads it at CALL time. A
+    # kill landing between the parse and whichever path installs its own
+    # handler has a session in hand, and used to throw it away for no reason
+    # but the order these two lines are written in.
+    session = ""
+
     def done(outcome: str, /, **kw) -> None:
         """The record for a death that reached neither path's own `done()`.
+
+        THE ACCOUNTING FIELDS ITS TWO SIBLINGS WRITE, because this record
+        lands in the same population they do. doctor answers "has anything
+        been injected HERE" by counting the records whose `cwd` matches this
+        directory against every record in the window, so a record without one
+        sits in that denominator while being structurally unable to reach the
+        numerator: every one of them deflates the ratio an adopter is shown.
+        Measured at "17 of the last 23 records are from here" over a window
+        holding five records this emitter had written.
+
+        `cwd` is digested HERE rather than at the top of `main()` so the hot
+        path does not pay a second `getcwd` for a field only a death writes;
+        `_cwd_digest` is total by construction, which is what lets it be
+        called from the kill handler.
+
+        No `concludes`. Its ABSENCE is the published spelling of "this record
+        concludes a prompt" — the prompt path writes nothing either, and
+        `_prompt_records` filters on `is not False` — so writing it here would
+        be a second spelling of a fact one of the three emitters already
+        states one way.
 
         Named `done` like the other two, and that is not cosmetic: the
         consumer's collector enumerates this vocabulary by reading `done(...)`
@@ -6574,7 +6601,15 @@ def main() -> None:
         `killed` machinery exists to make that outcome impossible, and it only
         covered the path where a record already existed.
         """
-        _soak_log(dict(kw, outcome=outcome, ms=int((time.monotonic() - t0) * 1000)))
+        _soak_log(
+            dict(
+                kw,
+                outcome=outcome,
+                session=session,
+                cwd=_cwd_digest(),
+                ms=int((time.monotonic() - t0) * 1000),
+            )
+        )
 
     _on_kill(lambda signum, _frame: (done("killed", signal=signum), os._exit(0)))
 
@@ -6592,6 +6627,9 @@ def main() -> None:
             raise ValueError(f"payload is {type(payload).__name__}, not an object")
     except (ValueError, OSError, RecursionError) as exc:
         return done("main:badpayload", err=type(exc).__name__)
+    # Bound the moment there is one to bind, so the window between here and
+    # the dispatch below records a session rather than an empty string.
+    session = _log_session(payload.get("session_id", ""))
 
     # THE DISPATCH. Everything the task path needs differs from here down —
     # the gate, the query builder, the floor bars, the ledger, the budget and
@@ -6624,7 +6662,37 @@ def main() -> None:
         # log and never a rewrite on an event nobody registered for.
         _task_main(payload, t0)
     else:
-        _prompt_main(payload, t0)
+        # THE ONE FIELD THE PROMPT PATH READS BEFORE IT HAS AN EMITTER.
+        # `_prompt_main` coalesces `payload.get("prompt", "") or ""` and then
+        # calls `.strip()` on the result, so a FALSY non-string becomes the
+        # empty prompt while a TRUTHY one — 123, 1.5, a list, a dict —
+        # survives the coalesce and raises there, three lines before `rec`
+        # and `done` exist. `cli()`'s fail-open suppression turns that raise
+        # into rc=0, zero bytes on both streams and no line in the log: the
+        # signature of a hook that was never registered, and verbatim the
+        # state `done`'s own docstring above says this machinery exists to
+        # prevent. The task path guards the same field with `isinstance`
+        # twice; this one never got it.
+        #
+        # HERE, and not in the two other places it could go. `_prompt_main`
+        # has no emitter at the line that raises. The payload check above is
+        # on the path the TASK dispatch also takes, and that path never reads
+        # this field — a subagent spawn must not be cancelled over a key it
+        # has nothing to do with.
+        #
+        # One answer for the whole class rather than for the truthy half: a
+        # mistyped prompt is not an empty one, and reporting it as `gate:empty`
+        # is the silence this guard exists to break wearing a plausible label.
+        prompt = payload.get("prompt", "")
+        if isinstance(prompt, str):
+            _prompt_main(payload, t0)
+        else:
+            # RECORDED AND DECLINED rather than returned. A `return` in this
+            # dispatch takes everything after it away from one of the two
+            # paths, which is the asymmetry the dispatch's shape is pinned
+            # against; nothing lives in that tail today and this branch is not
+            # the place to start depending on that.
+            done("main:badpayload", err=f"prompt is {type(prompt).__name__}")
 
     # Anything added below this point runs on every invocation, whichever
     # entry point served it. `cli()` is where the work that follows either
@@ -6669,7 +6737,7 @@ def _prompt_main(payload: dict, t0: float) -> None:
         # and not the path that serves pointers, and the record that run
         # appends is not a prompt anybody typed. Analyzers exclude it the same
         # way they exclude the CLI's records.
-        **({"doctor": True} if os.environ.get(DOCTOR_ENV) else {}),
+        **({"doctor": True} if _doctor_run else {}),
     }
 
     logged = False

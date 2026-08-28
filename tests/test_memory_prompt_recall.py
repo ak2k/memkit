@@ -6585,6 +6585,197 @@ def test_a_payload_that_is_not_an_object_still_leaves_a_record(
     assert _last_record(tmp_path)["outcome"] == "main:badpayload", tmp_path
 
 
+def test_the_prompt_path_reads_the_doctor_variable_exactly_once() -> None:
+    """The hoist's own claim, asserted rather than described.
+
+    `_doctor_run` exists so that a second read cannot disagree with the first
+    — the comment above it says so and names both consumers, the record's
+    `doctor` stamp and `done`'s `concludes` override — and one of the two
+    still went to the environment itself. Nothing between the reads mutates
+    it today, which is exactly why nothing would have noticed.
+
+    Counted over the source rather than driven, because the fault this pins is
+    a read that agrees with the hoist in every run anyone can construct.
+    """
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    (fn,) = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_prompt_main"
+    ]
+    reads = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, (ast.Name, ast.Constant))
+        and (
+            (isinstance(n, ast.Name) and n.id == "DOCTOR_ENV")
+            or (isinstance(n, ast.Constant) and n.value == hook.DOCTOR_ENV)
+        )
+    ]
+    assert len(reads) == 1, [ast.dump(n) for n in reads]
+    # Non-vacuity: the name is what a read of it looks like, so a rename that
+    # emptied this list would pass silently.
+    assert reads[0].lineno > fn.lineno
+
+
+@pytest.mark.parametrize(
+    "prompt", (123, 1.5, True, ["a"], {"k": "v"}), ids=repr
+)
+def test_a_prompt_that_is_not_a_string_still_leaves_a_record(
+    tmp_path, prompt
+) -> None:
+    """The last field on either path that could kill the hook silently.
+
+    `payload.get("prompt", "") or ""` coalesces a FALSY non-string and lets a
+    truthy one through to `.strip()`, which raises — before `rec` and `done`
+    exist on this path, so `cli()`'s fail-open suppression turns it into rc=0,
+    zero bytes on both streams and no line in the log. That is the state a
+    hook which was never registered produces, and it falsifies `cli()`'s own
+    claim that past the trust gate every death has a handler that does record.
+
+    The tell was an asymmetry rather than a crash: the task path guards the
+    same field with `isinstance` twice and this one never got it. Claude Code
+    always sends a string, so this arrives through the direct invocation the
+    README documents — the same harness-contract-drift class `gate:event` and
+    `task:notool` exist to make visible rather than silent.
+    """
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "s-mistyped", "prompt": prompt}),
+        capture_output=True, text=True, timeout=30, env=_env(tmp_path),
+    )
+    assert out.returncode == 0, out
+    assert out.stdout == "" and out.stderr == "", out
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "main:badpayload", record
+    # And it names WHICH field, or the record sends a reader at the whole
+    # payload for a fault in one key of it.
+    assert "prompt" in record["err"], record
+
+
+def test_a_falsy_non_string_prompt_takes_the_same_arm(tmp_path) -> None:
+    """The half `or ""` already handled, pinned so the guard does not quietly
+    become the only thing keeping it alive.
+
+    `0`, `[]`, `{}` and an explicit `null` are all falsy, so the coalesce
+    turned them into the empty string and the run recorded `gate:empty` — a
+    prompt nobody typed, reported as a prompt too short to search. One answer
+    for the whole class: the field is not a string, whatever its truthiness.
+
+    The payload with NO `prompt` key is the one case that stays `gate:empty`,
+    and it is a different fact — the key's DEFAULT is the empty string, so
+    nothing was mistyped and there is nothing to search.
+    """
+    for prompt in (0, [], {}, None):
+        out = subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps({"session_id": "s-falsy", "prompt": prompt}),
+            capture_output=True, text=True, timeout=30, env=_env(tmp_path),
+        )
+        assert out.returncode == 0, out
+        record = _last_record(tmp_path)
+        assert record["outcome"] == "main:badpayload", (prompt, record)
+
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "s-nokey"}),
+        capture_output=True, text=True, timeout=30, env=_env(tmp_path),
+    )
+    assert out.returncode == 0, out
+    assert _last_record(tmp_path)["outcome"] == "gate:empty", tmp_path
+
+
+def test_mains_own_records_carry_the_fields_the_per_directory_report_reads(
+    tmp_path,
+) -> None:
+    """The third emitter, held to the same record shape as its two siblings.
+
+    doctor answers "has anything been injected HERE" by counting the records
+    whose `cwd` matches this directory against every record in the window.
+    A record with no `cwd` is structurally incapable of reaching that
+    numerator while sitting in its denominator, so every one of them deflates
+    the ratio an adopter is shown — observed live as "17 of the last 23
+    records are from here" over a window holding five cwd-less ones.
+
+    `main()`'s pre-dispatch emitter wrote exactly those: it is the one that
+    runs before either path builds a record, so `main:badpayload` and a
+    `killed` landing in that window were the shapes that skewed it.
+
+    DERIVED from what the prompt path writes rather than from a list, because
+    a list is how the two earlier instances of this defect survived: the
+    accounting fields are whatever the sibling emitter puts in the same
+    population, and a fourth one added there is covered here by existing.
+    """
+    env = _env(tmp_path)
+    ordinary = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "s-shape-01", "prompt": "hi"}),
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert ordinary.returncode == 0, ordinary
+    prompt_record = _last_record(tmp_path)
+    # The fields doctor's per-directory and per-population accounting reads,
+    # as the sibling in the same population actually writes them.
+    accounting = {"cwd", "session"} & set(prompt_record)
+    assert accounting == {"cwd", "session"}, prompt_record
+
+    bad = subprocess.run(
+        ["python3", HOOK],
+        input="[1,2,3]",
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert bad.returncode == 0, bad
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "main:badpayload", record
+    assert accounting <= set(record), (sorted(accounting - set(record)), record)
+    # And the digest is this directory's, not a placeholder: the two records
+    # were written from the same cwd, so the numerator can reach them both.
+    assert record["cwd"] == prompt_record["cwd"], (record, prompt_record)
+
+
+def test_a_kill_before_the_dispatch_still_records_the_session_it_had(
+    tmp_path,
+) -> None:
+    """The other record `main()`'s own emitter writes, and the window where it
+    has a payload in hand.
+
+    Between `json.load` returning and whichever path installs its own handler,
+    a SIGTERM lands on `main()`'s handler with the payload already parsed.
+    Recording `killed` there without the session id throws away the field that
+    joins the record to a transcript, for no reason but that the emitter was
+    defined before the payload was read.
+
+    The signal is placed in that window rather than raced into it: the driver
+    replaces `_prompt_main`, so the handler that fires is the one `main()`
+    installed and nothing else about the path changes. Racing a real spawn
+    reaches the same handler at a rate too low to assert on.
+    """
+    driver = tmp_path / "drive.py"
+    driver.write_text(
+        "import os, signal, sys\n"
+        f"sys.path.insert(0, {os.path.dirname(os.path.dirname(HOOK))!r})\n"
+        "from memkit import memory_prompt_recall as hook\n"
+        "def _in_the_window(payload, t0):\n"
+        "    os.kill(os.getpid(), signal.SIGTERM)\n"
+        "    raise AssertionError('the handler main() installed did not fire')\n"
+        "hook._prompt_main = _in_the_window\n"
+        "hook.main()\n",
+        encoding="utf-8",
+    )
+    out = subprocess.run(
+        ["python3", str(driver)],
+        input=json.dumps({"session_id": "s-kill-w1", "prompt": "ledger"}),
+        capture_output=True, text=True, timeout=30, env=_env(tmp_path),
+    )
+    assert out.returncode == 0, out
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "killed", record
+    # main()'s emitter, not _prompt_main's: that one builds `prompt_sha`.
+    assert "prompt_sha" not in record, record
+    assert record["session"] == "s-kill-w1", record
+    assert record.get("cwd") not in (None, ""), record
+
+
 @pytest.mark.parametrize("signame", ("SIGTERM", "SIGHUP", "SIGINT"))
 def test_every_signal_that_can_end_this_process_leaves_a_record(
     tmp_path, signame: str
