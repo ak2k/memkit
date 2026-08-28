@@ -2096,10 +2096,22 @@ def test_a_wrapper_refusal_reaches_a_file_as_well_as_the_stderr_nobody_sees(
     assert "\nIgnoring it;" in out.stderr
 
     written = (state / hook.ERRLOG_NAME).read_text(encoding="utf-8").splitlines()
-    assert len(written) == 2
     # Every line owned, in the file: the lines are interleaved across
     # invocations there, so a continuation with no owner belongs to nothing.
     assert all(line.startswith("memkit-hook: ") for line in written), written
+    # The SAME message, in both channels, which is the claim — the file owning
+    # the continuation that stderr deliberately leaves bare.
+    assert written[:2] == [
+        f"memkit-hook: {out.stderr.splitlines()[0][len('memkit-hook: '):]}",
+        f"memkit-hook: {out.stderr.splitlines()[1]}",
+    ], written
+    # And nothing else, with one named exception. Where none of the pinned
+    # system pythons exists — a NixOS host, and this repo's own Linux build
+    # sandbox — the wrapper goes on to refuse for that too, correctly, in both
+    # channels. A bare count made that second correct refusal a failure.
+    assert len(written) == 2 or written[2].startswith(
+        "memkit-hook: no interpreter is recorded"
+    ), written
 
 
 def test_an_unconfigured_install_still_creates_no_state_directory(profile):
