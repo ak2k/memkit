@@ -84,6 +84,7 @@ from memkit.memory_prompt_recall import (
     FRAME_NONCE_BYTES,
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
+    HARNESS_TIMEOUT,
     INDEX_FILE_MAX_BYTES,
     MARKER_NAME,
     PLUGIN_CONFIG_ROUTES,
@@ -1473,13 +1474,60 @@ def _canary_retrieval(machine: Machine) -> list[Check]:
 # --- the path that actually serves pointers ----------------------------------
 
 
-# How long doctor waits for the installed hook. The registration's own timeout
-# is 15 seconds and a first run on a cold index spends most of it building, so
-# a bound at the registration's number would report a healthy install as a
-# hang. Longer, and the elapsed time is reported either way — a latency figure
-# on the adopter's own corpus is one of the things the field survey asked for
-# and the author's number cannot supply.
-HOOK_PROBE_TIMEOUT = 25
+# The event doctor drives the hook with, and therefore the registration whose
+# timeout its run has to be read against.
+PROBE_EVENT = "UserPromptSubmit"
+
+# How much longer than production doctor waits for the installed hook. A first
+# run on a cold index spends most of the registration's budget building, so a
+# bound AT the registration's number would report a healthy install as a hang.
+#
+# HEADROOM rather than a second timeout, and that is the whole of the change:
+# a flat 25 here was a number about the same deadline as the registration's 15
+# with nothing tying the two, so moving one left the other measuring against a
+# deadline that no longer existed. Worse, the check compared its elapsed time
+# against NEITHER, so a hook that took 20s — served, and killed by the harness
+# at 15 with the prompt going through empty — was reported as the path
+# working. The probe still finishes what production would have cut off,
+# because the elapsed time is worth having; it is no longer read as a pass.
+HOOK_PROBE_HEADROOM = 10
+
+
+def _registered_timeout(event: str) -> int | None:
+    """The timeout this payload's `hooks.json` registers for `event`.
+
+    None when there is no payload, no entry for the event, or nothing
+    well-formed to read: the caller falls back to the hook module's own copy
+    of the harness budget, which is the number the hook itself works to.
+    """
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if not root:
+        return None
+    with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+        with open(os.path.join(root, "hooks", "hooks.json"), encoding="utf-8") as f:
+            blob = json.load(f)
+        for entry in (blob.get("hooks") or {}).get(event) or []:
+            for registration in (entry or {}).get("hooks") or []:
+                timeout = (registration or {}).get("timeout")
+                # `bool` is an `int` and a `True` here is not a budget.
+                if (
+                    isinstance(timeout, int)
+                    and not isinstance(timeout, bool)
+                    and timeout > 0
+                ):
+                    return timeout
+    return None
+
+
+def _probe_budget() -> tuple:
+    """`(what production allows, what this probe waits)`, both in seconds.
+
+    Two values from ONE source. The first is what the adopter's own
+    registration gives the hook and is what a completed run is judged
+    against; the second is that plus the headroom above.
+    """
+    allowed = _registered_timeout(PROBE_EVENT) or HARNESS_TIMEOUT
+    return allowed, allowed + HOOK_PROBE_HEADROOM
 
 # The wrapper a plugin install puts the registration on. Read from
 # `CLAUDE_PLUGIN_ROOT` rather than from `hooks.json`, because that variable is
@@ -1740,7 +1788,7 @@ def _probe_hook(machine: Machine, command: list, prompt: str) -> tuple:
         out = _execute(
             command,
             input=payload,
-            timeout=HOOK_PROBE_TIMEOUT,
+            timeout=_probe_budget()[1],
             env_extra=env,
             env_forward=HOOK_PROBE_FORWARD,
         )
@@ -1872,6 +1920,11 @@ def _hook_path(machine: Machine) -> list[Check]:
         ]
     cfg = machine.config()
     nonce = cfg.canary_nonce if cfg is not None else ""
+    # Read once, and both from the registration: `allowed` is what production
+    # gives the hook and is what a COMPLETED run is judged against, `waited`
+    # is what this probe is willing to sit through so the elapsed time exists
+    # to judge.
+    allowed, waited = _probe_budget()
     if not nonce:
         stdout, stderr, code, ms = _probe_hook(
             machine, command, "memkit doctor probe prompt"
@@ -1881,8 +1934,9 @@ def _hook_path(machine: Machine) -> list[Check]:
                 Check(
                     "hook-path",
                     FAIL,
-                    f"{how} did not finish inside {HOOK_PROBE_TIMEOUT}s "
-                    f"({stderr[:120]})",
+                    f"{how} did not finish inside {waited}s, which is "
+                    f"already {HOOK_PROBE_HEADROOM}s past the {allowed}s "
+                    f"the registration allows it ({stderr[:120]})",
                     "On every prompt this is a turn delayed to the "
                     "registration's timeout and then abandoned.",
                 )
@@ -1903,7 +1957,9 @@ def _hook_path(machine: Machine) -> list[Check]:
             Check(
                 "hook-path",
                 FAIL,
-                f"{how} did not finish inside {HOOK_PROBE_TIMEOUT}s. {stderr[:120]}",
+                f"{how} did not finish inside {waited}s, which is already "
+                f"{HOOK_PROBE_HEADROOM}s past the {allowed}s the "
+                f"registration allows it. {stderr[:120]}",
                 "The registration gives up at its own timeout and your prompt "
                 "goes through without pointers. A first run on a large store "
                 "builds the index; if this repeats, the store is too large or "
@@ -1919,6 +1975,35 @@ def _hook_path(machine: Machine) -> list[Check]:
             if machine.explicit_config
             else ""
         )
+        if ms > allowed * 1000:
+            # DELIVERED, and too late to have been delivered. The probe
+            # outwaits production on purpose, so reaching here means the run
+            # finished in a window the harness would have ended: at this
+            # latency the prompt goes through with no pointers and the hook
+            # records `killed`. Reporting it as a pass is the one wrong green
+            # this check is least entitled to, since the adopter came here to
+            # ask whether the path serves.
+            #
+            # Not a FAIL: a first run on a cold index legitimately spends more
+            # than the budget building, once, and a red verdict for every
+            # fresh install would cost this report the reader it is written
+            # for. What repeats is visible in `gate-outcomes` as `killed`.
+            return [
+                Check(
+                    "hook-path",
+                    INFO,
+                    f"{how} emitted a framed pointer to {CANARY_NAME}, but "
+                    f"took {ms}ms where the registration allows {allowed}s — "
+                    "at this latency the harness ends the hook first and the "
+                    f"prompt goes through with no pointers{supplied}",
+                    "A first run on a cold index does this once and the next "
+                    "is warm. If it repeats, the corpus is too large for the "
+                    "budget or the index cannot be written — check "
+                    "gate-outcomes for `killed`, and index-state for a "
+                    "truncated sync.",
+                    actor=USER,
+                )
+            ]
         return [
             Check(
                 "hook-path",
@@ -2475,11 +2560,32 @@ def _subagent_delivery(machine: Machine) -> list[Check]:
         and r["outcome"].startswith(TASK_OUTCOME_PREFIX)
     ]
     if not task:
+        # WHAT WAS CHECKED, in the words of what was read. The evidence behind
+        # this row is one file inside the payload, so what it establishes is
+        # that the payload DECLARES the hook — not that the harness registered
+        # it. An install where the harness accepted `UserPromptSubmit` and
+        # dropped `PreToolUse` produces this row too, and is indistinguishable
+        # from a healthy install nobody has spawned a subagent in.
+        #
+        # The second state is by far the commoner one, so the first would hide
+        # behind it indefinitely. Hence a remedy: the ambiguity is cheap to
+        # resolve once a reader knows there is one, and `plugin details`
+        # separates the two in one line.
         return [
             Check(
                 "subagent-delivery",
                 INFO,
-                "registered, and it has never fired here",
+                "this payload declares the PreToolUse/Agent hook, and no "
+                "subagent has fired here yet — which is also what a harness "
+                "that registered only the per-prompt hook looks like from "
+                "inside the payload",
+                "Run `claude plugin details " + PLUGIN_KEY + "`: `Hooks (2)` "
+                "means both are registered and this row is simply waiting for "
+                "a spawn, `Hooks (1)` means the harness took one entry and "
+                "not the other and the plugin needs reinstalling. Either way, "
+                "spawning a subagent and re-running this makes the answer "
+                "positive rather than absent.",
+                actor=USER,
             )
         ]
     last = task[-1]["outcome"]

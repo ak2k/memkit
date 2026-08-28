@@ -1186,6 +1186,84 @@ def test_the_hook_path_runs_the_installed_wrapper_and_a_pointer_comes_out(
     assert doctor.CANARY_NAME in row.detail
 
 
+def test_the_probes_budget_derives_from_the_timeout_the_registration_gives(
+    profile, monkeypatch
+) -> None:
+    """Two numbers about the same deadline may not be independent constants.
+
+    The probe waited a flat 25s while the registration gives the hook 15, and
+    nothing tied the two: moving the registration's timeout left the probe
+    measuring against the old one, silently. Derived now — the probe still
+    gets headroom, because a first run on a cold index legitimately spends
+    most of the registration's budget building, but the headroom is over a
+    number read from the payload rather than beside one.
+    """
+    payload = profile / "payload"
+    (payload / "hooks").mkdir(parents=True)
+    (payload / "hooks" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "timeout": 7}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload))
+    allowed, waited = doctor._probe_budget()
+    assert allowed == 7, (allowed, waited)
+    assert waited == 7 + doctor.HOOK_PROBE_HEADROOM, (allowed, waited)
+
+    # No payload, or one that says nothing about this event: the module's own
+    # copy of the harness timeout, which is what the hook itself budgets to.
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    allowed, waited = doctor._probe_budget()
+    assert allowed == hook.HARNESS_TIMEOUT, allowed
+    assert waited == hook.HARNESS_TIMEOUT + doctor.HOOK_PROBE_HEADROOM, waited
+
+
+def test_a_delivery_slower_than_the_registration_allows_is_not_a_pass(
+    profile, monkeypatch
+) -> None:
+    """A wrong green, and the one this check is least entitled to.
+
+    The probe waited 25s and compared its elapsed time against neither
+    registered timeout, so a hook that took 20s to serve — which the harness
+    kills at 15, leaving the prompt to go through with no pointers — was
+    reported as the path working. On a large cold corpus, the case where a
+    first sync is slowest, an adopter could be told the path serves pointers
+    while production terminates it before the output exists.
+
+    The run underneath is a REAL delivery: only the clock is moved, so what
+    this asserts is the comparison and not a broken hook.
+    """
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _installed(profile, monkeypatch, config=path)
+    machine = _machine(profile, monkeypatch, path)
+
+    # Non-vacuity: this same probe, at its real speed, is a PASS.
+    (fast,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert fast.status == doctor.PASS, fast.detail
+
+    allowed, _ = doctor._probe_budget()
+    real = doctor._probe_hook
+
+    def slow(*a, **kw):
+        stdout, stderr, code, _ms = real(*a, **kw)
+        return stdout, stderr, code, allowed * 1000 + 1
+
+    monkeypatch.setattr(doctor, "_probe_hook", slow)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status != doctor.PASS, row.detail
+    # It names both numbers, or the reader cannot tell how far over it was.
+    assert str(allowed) in row.detail, row.detail
+    assert row.remedy, row
+
+
 def test_a_broken_installed_hook_fails_while_the_store_still_answers(
     profile, monkeypatch
 ) -> None:
@@ -1603,7 +1681,18 @@ def test_subagent_delivery_reads_the_entry_and_the_last_task_outcome(
     machine = _machine(profile, monkeypatch, path)
     (row,) = _only(doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery")
     assert row.status == doctor.INFO
-    assert "never fired" in row.detail
+    assert "no subagent has fired here yet" in row.detail
+    # WHAT IT CHECKED, in the words of what it read. The evidence behind this
+    # row is one file in the payload — it says the payload DECLARES the hook,
+    # not that the harness registered it — and an install where the harness
+    # took `UserPromptSubmit` and dropped `PreToolUse` is identical from here
+    # to a healthy install nobody has spawned a subagent in. The second state
+    # is the common one, so the first hides behind it indefinitely unless the
+    # row names its own way out.
+    assert "declares" in row.detail, row.detail
+    assert "plugin details" in row.remedy, row.remedy
+    assert "Hooks (1)" in row.remedy and "Hooks (2)" in row.remedy, row.remedy
+    assert row.actor == doctor.USER, row.actor
 
     _soak(profile, {"ts": 5, "outcome": hook.TASK_OUTCOME_PREFIX + "gate:budget"})
     (row,) = _only(doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery")
