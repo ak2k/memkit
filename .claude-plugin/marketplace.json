@@ -10,7 +10,7 @@
     {
       "name": "memkit",
       "description": "Injects pointers to your own memory files into every prompt: lexical retrieval over a tiered markdown store, plus a checker and an eval for it.",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "category": "productivity",
       "source": {
         "source": "url",
