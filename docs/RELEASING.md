@@ -54,16 +54,36 @@ Everything below has been missed at least once.
    defines the convention, and the paragraph that refers to it. A third is a
    test string in `tests/test_plugin_surface.py` and stays as well.
 
-   The subagent registration's markers come with a second edit each: while the
-   pin is behind, `Hooks (1)` is what a healthy install reports, and the docs
-   say so beside every mention. When the pin moves, those sentences go back to
-   naming `Hooks (1)` as the half-registered failure. `README.md`'s Quick start,
-   its "Why nothing appeared" table, its Install (details) check and
-   `docs/ROLLOUT.md`'s step 2 are the four sites.
-   `test_the_docs_mark_what_the_pinned_release_does_not_carry_yet` counts the
-   registration in the pinned sha's own tree and stops asking for markers the
-   moment the pin agrees with `hooks/hooks.json`, so this step has a check
-   behind it in both directions.
+   **The sweep belongs in A even though A's own pin still lags**, which is the
+   one place this reads backwards. A's tree is what B pins, so it is the tree
+   adopters install: a marker left in it tells every reader of this release
+   that this release does not have the thing they are running. Waiting for the
+   pin to agree ships that sentence for the whole release window rather than
+   for the minutes between the two merges.
+
+   The marker tests ask the pin, which is the right question everywhere except
+   here. `_is_release_state()` in `tests/test_plugin_surface.py` is the
+   discriminator — the pinned tree's `plugin.json` version against this tree's,
+   equal in every state but a release PR — and the two pin-derived cases
+   (`test_a_claim_about_a_command_the_pin_cannot_serve_carries_the_marker`,
+   `test_the_docs_mark_what_the_pinned_release_does_not_carry_yet`) switch on
+   it: markers required while `main` runs ahead of a current pin, and the
+   positive claim — both pages naming the live hook count — required in their
+   place here. Both directions have a check.
+
+   Write the sentences keyed to a release rather than to the pin — "on 0.3.0
+   and later `Hooks (1)` is a failure; on 0.2.x it is the whole registration
+   and healthy" — and they stay true in both windows and at the next release
+   without being flipped again. `README.md`'s Quick start, its "Why nothing
+   appeared" table, its Install (details) check and `docs/ROLLOUT.md`'s step 2
+   are the four sites that used to need that flip.
+
+   **`docs/ADMISSION.md`'s marker is not in this class and stays.** It marks
+   the gap between this tree's file count and the pinned tree's, and that gap
+   is real for an adopter of this release: their copy carries the previous
+   pin, by construction, and the note says which number goes with which tree.
+   `test_the_admission_notes_recipe_returns_the_number_it_states` retires it
+   when the counts agree, which is after B.
 5. **The vocabulary table.** When a release changes an `outcome` value, the old
    one becomes a dated row rather than disappearing — a machine on the previous
    release is writing it now, and that table is what decodes its log. The pin
