@@ -745,9 +745,21 @@ NONCE = "zq7v4k2mxr"
 
 
 def _store_config(profile, *, stores, nonce=None, gate=None) -> str:
-    """A config over real directories under the scratch profile."""
+    """A config over real directories under the scratch profile.
+
+    It RECORDS AN INTERPRETER, which is what `memkit init` writes and what the
+    wrapper's own refusal tells an adopter to add. Without one the wrapper
+    falls through to its pinned list of five absolute system paths, and
+    whether any of those exists is a fact about the machine: a mac has
+    `/usr/bin/python3`, a hermetic Linux build sandbox has none of them, and
+    the hook-path probe there got a correct refusal where the case wanted a
+    delivery. Recording the field puts these cases on the rung a configured
+    install actually uses — the same rung a NixOS adopter is told to use —
+    rather than on whatever the runner happens to carry.
+    """
     blob = {
         "schema": 1,
+        "interpreter": sys.executable,
         "roots": {"home": {"kind": "path", "path": str(profile)}},
         "stores": [
             {
