@@ -74,6 +74,7 @@ from memkit.memory_prompt_recall import (
     BUILD_OK,
     BUILD_PARTIAL,
     BUILD_REBUILT,
+    BUILD_TRUNCATED,
     BUILD_UNREADABLE,
     CONFIG_ENV,
     CONFIG_ROUTES,
@@ -83,6 +84,7 @@ from memkit.memory_prompt_recall import (
     FRAME_NONCE_BYTES,
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
+    INDEX_FILE_MAX_BYTES,
     MARKER_NAME,
     PLUGIN_CONFIG_ROUTES,
     PLUGIN_DATA_ENV,
@@ -1347,6 +1349,32 @@ def _index_state(machine: Machine) -> list[Check]:
                     "last index, so the index holds nothing for it",
                     "Check the permissions on the store directory. Retrieval "
                     "answers nothing here and reports no error.",
+                    actor=USER,
+                )
+            )
+        elif outcome == BUILD_TRUNCATED:
+            # ITS OWN ARM, because it is the only outcome that means "this
+            # corpus is indexed INCOMPLETELY" — the rest describe how the run
+            # went, this one describes what is missing from retrieval — and
+            # that is the sentence an adopter whose memory stopped coming back
+            # is here to read. Both of the emitter's causes are named, because
+            # the reason string it builds names both and they send a reader to
+            # different places: over the per-file byte cap is a file to split,
+            # out of the run's budget resolves itself on the next run.
+            out.append(
+                Check(
+                    "index-state",
+                    INFO,
+                    f"{store.id}: last index truncated — part of the corpus "
+                    "was not indexed, either over the per-file byte cap or "
+                    "out of the run's budget, so retrieval here is INCOMPLETE "
+                    "and the file count is a floor rather than a census. The "
+                    "next run carries on from where this one stopped",
+                    "If this outcome persists, look for a memory over the "
+                    f"{INDEX_FILE_MAX_BYTES}-byte file cap: budget truncation "
+                    "converges over the following runs and the file cap never "
+                    "does, so a file above it is never retrievable until it is "
+                    "split.",
                     actor=USER,
                 )
             )

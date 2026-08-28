@@ -3963,6 +3963,48 @@ def test_every_outcome_the_readme_publishes_has_a_reason_doctor_can_render(
     )
 
 
+def test_every_index_outcome_the_emitter_defines_has_a_row_in_the_readme() -> None:
+    """The index-state vocabulary's third pin, and the one an adopter reads.
+
+    Same defect as the one above, in a second vocabulary: `truncated` shipped
+    with a doctor arm missing and the README carrying it, so the README was
+    the superset and the machine-readable half the stale one. Equality in both
+    directions, derived from the emitter's constants — a name in the code and
+    not in the prose is an outcome an adopter meets with no explanation
+    anywhere; a name in the prose and not in the code is a state nothing can
+    produce.
+
+    `BUILD_SCHEMA` is the record's version rather than an outcome, and it is
+    an int, which is the discriminator: an outcome is a string.
+    """
+    from memkit import memory_prompt_recall as hook
+
+    defined = {
+        value
+        for name, value in vars(hook).items()
+        if name.startswith("BUILD_") and isinstance(value, str)
+    }
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("Today it is", readme.index("**Two rules for anything"))
+    para = readme[start : readme.index("\n\n", start)]
+    published = set(re.findall(r"`([a-z]+)`", para))
+    assert defined == published, (
+        sorted(defined - published),
+        sorted(published - defined),
+    )
+
+    # And the one outcome that means "indexed INCOMPLETELY" names BOTH of the
+    # causes the emitter can raise it for. It builds two different reason
+    # strings under this one name and they send a reader to different places:
+    # out of budget converges over the following runs, over the per-file cap
+    # never does. A gloss naming only the budget sends the owner of a single
+    # oversize memory hunting a corpus that is too large.
+    gloss = para[para.index("`truncated`") :]
+    gloss = gloss[: gloss.index("`busy`")].lower()
+    assert "budget" in gloss, gloss
+    assert "cap" in gloss, gloss
+
+
 # --- the two skills ----------------------------------------------------------
 
 SKILLS = REPO / "skills"

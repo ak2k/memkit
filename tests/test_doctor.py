@@ -925,6 +925,24 @@ def _sidecar(profile, root: str, blob) -> None:
         json.dump(blob, f)
 
 
+def _build_outcomes() -> set[str]:
+    """Every index outcome the EMITTER can write, read off its own constants.
+
+    Derived rather than listed. This vocabulary's published growth rule is that
+    it grows without a version bump — `BUILD_SCHEMA` moves only for a SHAPE
+    change — so any consumer pinned to a hand-maintained copy of it is pinned
+    to the day it was written. `BUILD_SCHEMA` is the version and is an int,
+    which is the discriminator here: an outcome is a string.
+    """
+    names = {
+        value
+        for name, value in vars(hook).items()
+        if name.startswith("BUILD_") and isinstance(value, str)
+    }
+    assert names, sorted(vars(hook))
+    return names
+
+
 def _one_store(profile, monkeypatch):
     path = _store_config(profile, stores=["personal"])
     root = profile / "stores" / "personal"
@@ -970,11 +988,86 @@ def test_an_unreadable_corpus_is_a_fail_and_a_partial_one_is_not(
     (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
     assert row.status == doctor.FAIL
 
-    for outcome in ("partial", "busy", "rebuilt"):
+    # DERIVED from the emitter's own constants, not from the implementation's
+    # branch list. Enumerating the three names this check happened to handle is
+    # what let `truncated` ship unbranched for a release: the loop agreed with
+    # the bug. Everything the emitter can write that is neither `ok` (its own
+    # PASS arm) nor `unreadable` (its own FAIL arm) is a floor-not-a-census
+    # outcome, and a seventh added tomorrow joins this loop by existing.
+    floors = _build_outcomes() - {hook.BUILD_OK, hook.BUILD_UNREADABLE}
+    assert len(floors) >= 4, sorted(floors)
+    for outcome in sorted(floors):
         _sidecar(profile, root, {"v": 1, "ts": 1, "outcome": outcome, "files": 2})
         (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
         assert row.status == doctor.INFO, outcome
         assert "floor rather than a census" in row.detail
+        assert "does not recognise" not in row.detail, outcome
+
+
+def test_every_outcome_the_emitter_can_write_has_a_branch_in_index_state(
+    profile, monkeypatch
+) -> None:
+    """The vocabulary, pinned to the EMITTER rather than to a second list.
+
+    `truncated` shipped with no arm here for a release: the sixth outcome the
+    hook can write, and the only one that means "this corpus is indexed
+    INCOMPLETELY", rendered as UNKNOWN under a branch whose comment blames a
+    newer build for a record this build wrote seconds earlier. The one state
+    that explains a memory that stopped coming back was the one state doctor
+    could not name.
+
+    Deriving the subjects is the whole point. The test that should have caught
+    it looped the three names the implementation handled, and the only case
+    reaching the fallback fed a fictional outcome — so it proved the fallback
+    worked while the real sixth outcome took it unnoticed.
+    """
+    machine, root = _one_store(profile, monkeypatch)
+    outcomes = _build_outcomes()
+    assert hook.BUILD_TRUNCATED in outcomes and len(outcomes) >= 6, sorted(outcomes)
+    for outcome in sorted(outcomes):
+        _sidecar(profile, root, {"v": 1, "ts": 1, "outcome": outcome, "files": 2})
+        (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+        assert "does not recognise" not in row.detail, outcome
+        assert row.status != doctor.UNKNOWN, (outcome, row.detail)
+
+
+def test_a_corpus_indexed_incompletely_says_so_rather_than_unknown(
+    profile, monkeypatch
+) -> None:
+    """The real thing, end to end: a store whose memory is over the file cap.
+
+    Not a hand-written sidecar. The record this asserts against is written by
+    this build's own indexer, seconds earlier, from a corpus of two files one
+    of which exceeds `INDEX_FILE_MAX_BYTES` — the exact state an adopter is in
+    when a memory silently stops being retrieved, and the state doctor exists
+    to name.
+    """
+    machine, root = _one_store(profile, monkeypatch)
+    big = pathlib.Path(root) / "big.md"
+    big.write_text(
+        "---\nname: big\ndescription: a memory\ntype: reference\n---\n\n"
+        + "ledger reconciliation before close\n" * 140_000,
+        encoding="utf-8",
+    )
+    assert big.stat().st_size > hook.INDEX_FILE_MAX_BYTES, big.stat().st_size
+
+    # The indexer, for real. The small memory indexes, the oversize one is
+    # declined, and the run records what it declined.
+    hook._fts_dir("ledger reconciliation", root, None)
+    build = pathlib.Path(hook._fts_db(root).removesuffix(".db") + ".build")
+    record = json.loads(build.read_text(encoding="utf-8"))
+    assert record["outcome"] == hook.BUILD_TRUNCATED, record
+
+    (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
+    assert row.status != doctor.UNKNOWN, row.detail
+    assert "does not recognise" not in row.detail, row.detail
+    # And it names what the adopter needs: that retrieval here is incomplete,
+    # BOTH of the emitter's causes — the two send a reader to different places
+    # — and that the next run carries on rather than repeating this one.
+    detail = row.detail.lower()
+    assert "incomplete" in detail, row.detail
+    assert "cap" in detail and "budget" in detail, row.detail
+    assert "next run carries on" in detail, row.detail
 
 
 def test_a_sidecar_that_cannot_be_read_is_unknown_and_never_a_fail(

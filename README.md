@@ -617,10 +617,12 @@ outcome the count is a floor or absent (`null` when the run never got far
 enough to count). Those two together are what let the vocabulary grow without
 older readers mistaking a new failure state for a healthy one. Today it is
 `ok`, `partial` (part of the corpus was unreadable), `truncated` (the corpus is
-readable and indexing it ran out of the run's budget, so the next run carries
-on from here), `busy` (another session held the write lock, so nothing was
-counted), `unreadable` (the corpus could not be read at all) and `rebuilt` (the
-index was damaged and built again).
+readable and part of it was not indexed, for either of two reasons the emitter
+tells apart in its own message: indexing ran out of the run's budget, which the
+next run carries on from, or a file is over the per-file byte cap, which no
+later run will index until the file is split), `busy` (another session held the
+write lock, so nothing was counted), `unreadable` (the corpus could not be read
+at all) and `rebuilt` (the index was damaged and built again).
 
 Two more kinds of file, both disposable dedup ledgers:
 
