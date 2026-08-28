@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -1043,13 +1044,27 @@ def root(tmp_path: Path) -> Path:
     their own tree with `cd "$(dirname $0)/.." && pwd -P`, and `pwd -P` walks
     through a symlinked *directory* component — so a `bin` symlink would send
     every wrapper back to the real repo and quietly test the wrong tree.
+
+    THE PINNED INTERPRETER LIST IS THE CASE'S, not the machine's. The shipped
+    list names five absolute system paths, and whether any of them exists is a
+    fact about the host: a mac has `/usr/bin/python3`, a Linux nix build
+    sandbox has none of the five, and the whole fallback rung therefore
+    refused there while every case that reaches it passed here. Repinned to
+    the python running this suite, an assertion that the fallback answered
+    with a pinned path says the RUNG was consulted rather than that the runner
+    happened to be a mac. Cases that need another pinned state — none at all,
+    or a directory ahead of a file — repin again over this.
+
+    The SHIPPED list is not left unread: `_pinned_pythons()` with no argument
+    is it, and `test_the_shipped_pinned_list_is_absolute_paths_only` holds its
+    shape.
     """
     plugin = tmp_path / "plugin"
     for rel in PAYLOAD:
         dest = plugin / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.symlink_to(REPO / rel)
-    return plugin
+    return _repinned(plugin, [sys.executable])
 
 
 def _repinned(root: Path, pythons: list) -> Path:
@@ -1109,8 +1124,17 @@ SHIM_BODY = """
 # because this body is a python string before it is a script: a lone one is an
 # octal escape, and what reached the shim was a real NUL where the format
 # specifier should have been, so the loop wrote nothing at all.
-: > "$SHIM_OUT.argv"
-for _arg do printf '%s\\0' "$_arg" >> "$SHIM_OUT.argv"; done
+#
+# Guarded on the variable being SET, unlike the block above, and the
+# difference is one this file paid for: `> "$SHIM_OUT"` with nothing in it
+# fails and writes nothing, while `> "$SHIM_OUT.argv"` succeeds against a
+# file called `.argv` in whatever directory the case put the shim's cwd —
+# which was the repository. A shim reached by a case that sets no SHIM_OUT
+# records nothing rather than leaving a file behind.
+if [ -n "${SHIM_OUT:-}" ]; then
+  : > "$SHIM_OUT.argv"
+  for _arg do printf '%s\\0' "$_arg" >> "$SHIM_OUT.argv"; done
+fi
 exit 0
 """
 
@@ -1196,15 +1220,37 @@ def shimmed(tmp_path: Path) -> Shim:
     return Shim(tmp_path)
 
 
-def _pinned_pythons() -> list[str]:
+def _pinned_pythons(root: Path | None = None) -> list[str]:
     """The wrapper's fallback list, read out of the wrapper rather than typed
-    a second time here."""
-    text = COMMON_SH.read_text(encoding="utf-8")
+    a second time here.
+
+    With a `root`, the list of the tree the case actually ran — which the
+    `root` fixture repins to this build's own python, so `in _pinned_pythons(
+    root)` means the fallback rung answered rather than that the host owns one
+    of the five shipped paths. With none, the shipped list an adopter gets.
+    """
+    common = COMMON_SH if root is None else root / "bin" / "lib" / "common.sh"
+    text = common.read_text(encoding="utf-8")
     body = re.search(r'MEMKIT_SYSTEM_PYTHONS="([^"]+)"', text)
     assert body, "the pinned interpreter list is not assigned a literal"
     found = [line.strip() for line in body.group(1).splitlines() if line.strip()]
     assert all(p.startswith("/") for p in found), found
     return found
+
+
+def test_the_shipped_pinned_list_is_absolute_paths_only() -> None:
+    """What an adopter's install falls back to, read from the shipped file
+    rather than from the copy the cases repin.
+
+    Absolute on every entry is the property the whole rung rests on: a
+    slashless word sends `exec` to the session's PATH and a relative one to
+    the session's directory, which is the lookup this list exists to replace.
+    """
+    shipped = _pinned_pythons()
+    assert len(shipped) >= 2, shipped
+    # And the refusal advertises them, so an adopter can see whether their
+    # python is simply somewhere this list does not reach.
+    assert all(p in COMMON_SH.read_text(encoding="utf-8") for p in shipped)
 
 
 class Decided:
@@ -1476,7 +1522,7 @@ def test_the_interpreter_the_hook_runs_is_never_found_by_searching(
     env = shimmed()
     env["PATH"] = os.pathsep.join([str(hostile.parent), str(shimmed.dir)])
     decided = _decide(root, "memkit-hook", env)
-    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
     assert str(hostile) != decided.interpreter
 
     # And the list is not an environment input. Exporting the name is the
@@ -1534,7 +1580,7 @@ def test_an_unusable_recorded_interpreter_falls_back_to_a_pinned_python(
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
     decided = _decide(root, "memkit-hook", env)
     assert decided.config == str(config)
-    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
     # The shim is on PATH and is NOT what answered, which is the whole point.
     assert str(shimmed.dir) not in decided.interpreter, decided.interpreter
     assert not shimmed.out.exists()
@@ -1560,7 +1606,7 @@ def test_a_relative_recorded_interpreter_is_not_a_path_into_the_session_dir(
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
     decided = _decide(root, "memkit-hook", env, cwd=session)
     assert not marker.exists(), "a config named an interpreter inside the cwd"
-    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
     assert decided.handoff[1:] == [
         str(root / "src" / "memkit" / "memory_prompt_recall.py")
     ], decided.handoff
@@ -1599,7 +1645,7 @@ def test_a_recorded_interpreter_the_path_cannot_answer_still_exits_zero(
     # from, and where a `python3` sitting in the session's own directory would
     # have been found instead.
     assert not marker.exists(), "the session directory's python3 answered"
-    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
     assert "is not an absolute path" in decided.stderr, decided.stderr[-400:]
     assert "pinned system python" in decided.stderr, decided.stderr[-400:]
 
@@ -1624,7 +1670,7 @@ def test_a_directory_recorded_as_the_interpreter_is_not_exec_d(
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
     decided = _decide(root, "memkit-hook", env)
     # The pinned fallback answered, which is what the refusal promises.
-    assert decided.interpreter in _pinned_pythons(), decided.interpreter
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
     assert decided.handoff[1:] == [
         str(root / "src" / "memkit" / "memory_prompt_recall.py")
     ], decided.handoff
@@ -2056,7 +2102,7 @@ def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> N
         assert (
             "session stands in" in decided.stderr or "canonical" in decided.stderr
         ), (value, decided.stderr)
-        assert decided.interpreter in _pinned_pythons(), decided.interpreter
+        assert decided.interpreter in _pinned_pythons(root), decided.interpreter
     # And a canonical absolute path is still honoured, or the guard above is
     # just "refuse everything".
     honoured = _shim(tmp_path / "real", "python3", "exit 0")
