@@ -114,7 +114,7 @@ import sys
 import tempfile
 import time
 
-from memkit._exec import Untrusted, _execute
+from memkit._exec import Untrusted, _execute, enforce_execution_boundary
 from memkit.memory_prompt_recall import CONFIG_ENV, ConfigError, load_config
 
 # The packaged hook, and the default for --hook. `--repo` moves the STORES;
@@ -1684,6 +1684,20 @@ def main() -> None:
 
 
 def cli() -> None:
+    """The console script, which is where this process's own rules belong.
+
+    `memory-eval` is on the adopter's PATH — a consumer's CI check runs it
+    from the installed package — and this module starts a process through
+    `_execute`, so it is a memkit command in exactly the sense the other two
+    are. It shipped without this call because the pin that installs the
+    guarantee named its subjects by hand; it derives them from
+    `[project.scripts]` now.
+
+    Not in `main()`: an audit hook cannot be removed once installed, so an
+    in-process `main()` would put this process's rules on every later caller
+    in the same interpreter.
+    """
+    enforce_execution_boundary()
     main()
 
 

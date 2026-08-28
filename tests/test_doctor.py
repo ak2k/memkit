@@ -3166,9 +3166,52 @@ def test_the_gate_governs_the_invocation_the_interpreter_makes(tmp_path) -> None
     assert "REFUSED=Untrusted" in out.stdout, (out.stdout, out.stderr[-400:])
 
 
+def test_the_executors_own_prose_names_only_symbols_it_has() -> None:
+    """The one file whose stated value is that it can be AUDITED BY READING.
+
+    `_exec.py` opens by claiming the zero-process property is "a fact a reader
+    can check by looking at its imports rather than a claim to be audited call
+    site by call site", and then described its chokepoint as resolving every
+    program name through `_trusted_which` — a symbol that exists nowhere in
+    this package except that sentence and a must-not-exist list two thousand
+    lines away in this file. Somebody auditing memkit's execution boundary was
+    reading a description of a mechanism the project deliberately rejected.
+
+    Private names only. A `_`-prefixed identifier in this module's prose is a
+    thing a reader will look for in this module, and a name that is not there
+    sends them to a mechanism that is not either.
+    """
+    import ast
+    import re
+
+    from memkit import _exec
+
+    source = (REPO / "src" / "memkit" / "_exec.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    named: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            continue
+        doc = ast.get_docstring(node)
+        if not doc:
+            continue
+        owner = getattr(node, "name", "<module>")
+        for token in re.findall(r"`([^`]+)`", doc):
+            if re.fullmatch(r"_[A-Za-z][A-Za-z0-9_]*", token):
+                named.setdefault(token, []).append(owner)
+    # Anti-vacuity: the scrape really does find this module's own private
+    # names in its own prose, so an empty result cannot pass for a clean one.
+    assert "_execute" in named, sorted(named)
+    absent = {n: o for n, o in named.items() if not hasattr(_exec, n)}
+    assert not absent, absent
+
+
 def test_the_boundary_is_installed_by_the_entry_point_and_not_by_an_import(
 ) -> None:
-    """Where it goes is as load-bearing as what it does.
+    """Where it goes is as load-bearing as what it does, and WHICH entry
+    points get it is discovered rather than remembered.
 
     An audit hook cannot be removed, so a module that installed one at import
     would put this process's rules on every later caller in the same
@@ -3176,15 +3219,38 @@ def test_the_boundary_is_installed_by_the_entry_point_and_not_by_an_import(
     else's business. It belongs to "this process IS a memkit command", which is
     what a console script and a `-m` invocation are and what a function call is
     not.
+
+    DERIVED FROM `[project.scripts]`. This pin named two of its subjects as
+    literals, and `memory-eval` — a third console script, on the adopter's
+    PATH, whose module starts a process through `_exec._execute` — shipped
+    without the arming call because a hand-written list cannot notice a name
+    nobody added to it. That is the same defect as a consumer keeping its own
+    copy of an emitter's vocabulary, in the place that decides whether a
+    runtime guarantee is installed at all.
+
+    The split is derived too. A module that cannot start a process has nothing
+    to arm: `_exec` is the package's only way out — asserted package-wide by
+    the AST walk above — so importing it is what puts a script in the armed
+    set, and the hook's NON-import of it is its own pinned claim rather than
+    an exception written down here.
     """
     import ast
 
-    for rel, entry in (
-        ("cli.py", "cli"),
-        ("memory_integrity.py", "cli"),
-    ):
-        source = (REPO / "src" / "memkit" / rel).read_text(encoding="utf-8")
-        tree = ast.parse(source)
+    import tomllib
+
+    manifest = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = manifest["project"]["scripts"]
+    assert len(scripts) >= 4, scripts
+
+    armed: list[tuple[str, bool]] = []
+    exempt: list[tuple[str, bool]] = []
+    for script, target in sorted(scripts.items()):
+        module, _, entry = target.partition(":")
+        assert module.startswith("memkit.") and entry, target
+        rel = module.split(".", 1)[1] + ".py"
+        tree = ast.parse(
+            (REPO / "src" / "memkit" / rel).read_text(encoding="utf-8")
+        )
         module_level = [
             n.value for n in tree.body
             if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
@@ -3198,15 +3264,24 @@ def test_the_boundary_is_installed_by_the_entry_point_and_not_by_an_import(
             n for n in tree.body
             if isinstance(n, ast.FunctionDef) and n.name == entry
         )
-        assert any(
+        arms = any(
             isinstance(node, ast.Name) and node.id == "enforce_execution_boundary"
             for node in ast.walk(fn)
-        ), rel
-    # The console scripts name those shims, so the boundary really is on the
-    # process every channel starts.
-    pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'memkit = "memkit.cli:cli"' in pyproject
-    assert 'memory-integrity = "memkit.memory_integrity:cli"' in pyproject
+        )
+        can_start = any(
+            isinstance(n, ast.ImportFrom) and (n.module or "").endswith("_exec")
+            for n in ast.walk(tree)
+        )
+        (armed if can_start else exempt).append((script, arms))
+
+    assert [s for s, arms in armed if not arms] == [], armed
+    # And the exempt one does NOT arm: it may not import the executor at all,
+    # which is what makes "the every-prompt path starts no process" checkable
+    # from its import list rather than auditable call site by call site.
+    assert [s for s, arms in exempt if arms] == [], exempt
+    # Anti-vacuity in both directions: the derivation found real subjects on
+    # each side, so neither assertion above can pass over an empty set.
+    assert len(armed) >= 3 and len(exempt) >= 1, (armed, exempt)
 
 
 def test_a_refusal_that_stops_a_check_reports_its_own_reason(

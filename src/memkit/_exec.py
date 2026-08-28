@@ -9,7 +9,10 @@ claim to be audited call site by call site.
 ONE CHOKEPOINT, package-wide, for the same reason each rule below is one
 predicate: a rule held at each call site is a rule the next call site will
 not have. Every module in this package starts its processes through
-`_execute` and resolves every program NAME through `_trusted_which`, and
+`_execute`, which runs nothing `require_executable` has not approved: an
+absolute path to a real executable, named by an adopter-owned scope or the
+payload, and NEVER resolved by a PATH lookup — the child's own PATH is what
+`trusted_path` leaves after dropping every entry a checkout can steer. And
 `tests/test_doctor.py` walks the AST of every file under `src/memkit` to
 assert there is no second way out — a module added later is covered by
 discovery rather than by somebody remembering to add it to a list.
