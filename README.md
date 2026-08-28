@@ -64,7 +64,7 @@ when a session starts, so the session you installed from has neither. This step
 is numbered because leaving it out makes step 4 fail in a way that looks like a
 broken install.
 
-**3. Run `/memkit:init`** *(from the next release)*. It prints a manifest of every path it would write
+**3. Run `/memkit:init`.** It prints a manifest of every path it would write
 and a digest, and writes nothing until you approve it in a reply. What it
 creates: the store — laid out with `search/` from the first file, which is the
 one decision that cannot be corrected later without moving everything — the
@@ -105,13 +105,12 @@ which is inert by design and says nothing at runtime, so this is the only place
 it surfaces.
 
 `Hooks (2)` says both hooks are registered — the per-prompt one and the
-subagent one *(from the next release)*. It does **not** say the plugin is
-enabled: a disabled plugin still reports its hooks, which is why `plugin list`
-comes first. `Hooks (1)` is what the currently pinned release registers: the
-per-prompt hook alone, and a healthy install of it. Once the pin carries the
-subagent hook, `Hooks (1)` becomes its own failure — the harness took one
-registration and not the other, so prompts are served and subagent briefs are
-not.
+subagent one. It does **not** say the plugin is enabled: a disabled plugin
+still reports its hooks, which is why `plugin list` comes first. On 0.3.0 and
+later `Hooks (1)` is a failure: the harness took one registration and not the
+other, so prompts are served and subagent briefs are not. On 0.2.x it is a
+healthy install, because that release registers the per-prompt hook alone — so
+read the number against the version you installed, not on its own.
 
 **Write the config.** Four lines is the whole minimum. Put it somewhere you
 would keep a dotfile — **not** under `~/.cache/`, which this page tells you
@@ -227,10 +226,10 @@ stores — what is searched and what is skipped, how a pointer gets chosen, the
 
 ## Subagents get pointers too
 
-memkit registers a second hook *(from the next release)*, on the `Agent` tool,
-and it behaves differently enough from the per-prompt one to be worth reading
-before you meet it. The marker is the whole of this section: until the
-marketplace pin moves, an install has the per-prompt hook and nothing here.
+memkit registers a second hook, on the `Agent` tool, and it behaves differently
+enough from the per-prompt one to be worth reading before you meet it. It
+arrived in 0.3.0: on 0.2.x an install has the per-prompt hook and nothing in
+this section.
 
 **Which installs have it.** The second registration lives in
 [`hooks/hooks.json`](hooks/hooks.json), which is the plugin channel's manifest,
@@ -308,7 +307,7 @@ is on your own `PATH`.
 |---|---|---|---|
 | **The plugin was installed mid-session** | `hook-ever-fired` | `plugin details` says `Hooks (2)` and `--search` answers, but no prompt injects and no record is written | Claude Code registers hooks when a session starts — start a new session |
 | **The plugin is disabled** | `plugin-enabled` | `claude plugin list` shows `✘ disabled`; `plugin details` still says `Hooks (2)` | re-enable it |
-| **Only one hook registered** | `registrations-count` | `plugin details` says `Hooks (1)` | what the currently pinned release registers — the per-prompt hook alone, and healthy. Once the pin carries the subagent hook it is a half-registered failure instead: the harness took one entry and not the other, and reinstalling is the first thing to try |
+| **Only one hook registered** | `registrations-count` | `plugin details` says `Hooks (1)` | on 0.3.0 and later, a half-registered failure: the harness took one entry and not the other, and reinstalling is the first thing to try. On 0.2.x it is the whole registration and healthy — that release has the per-prompt hook alone |
 | **The install is not the plugin channel** | `subagent-delivery` | no `task:` record at all in `log.jsonl`, whatever the brief | the subagent hook is registered by `hooks/hooks.json`, which only a plugin install reads. A nix or pip install registers what its own `settings.json` names, so the `PreToolUse` entry is yours to add |
 | **No config reached the hook** | `config-route` | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Writing it by hand](#writing-it-by-hand) |
 | **The config path is wrong** | `config-route` | `--debug-config` says the path does not exist | fix the path and re-run the install command |
@@ -426,7 +425,7 @@ one surface that reads the settings value directly, which is what lets it tell
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
   data, supplied in config; memkit ships none.
 - **`memkit`** — the dispatcher setup and diagnosis hang off, and the two
-  subcommands the plugin exposes as skills *(from the next release)*:
+  subcommands the plugin exposes as skills:
   - `memkit doctor [--json]` — one envelope, one line per check. Read-only in
     the sense that matters — no store write, no config write, no settings
     write — and not in the sense of touching nothing: it runs the installed
@@ -868,21 +867,28 @@ is found, `memkit doctor` says so and names `uv python install 3.12`; retrieval
 is unaffected either way.
 
 **Check that it took.** `claude plugin details memkit@memkit` reports the hooks
-it registered: `Hooks (2)` is a working install *(from the next release)*.
-`Hooks (0)` is the failure where nothing registered at all. `Hooks (1)` is what
-the currently pinned release registers and is healthy today; once the pin
-carries the subagent hook it is the quieter failure in between — one of the two
-entries was taken and the other was not, which serves prompts and leaves
-subagent briefs alone. Worth
+it registered: `Hooks (2)` is a working install. `Hooks (0)` is the failure
+where nothing registered at all. `Hooks (1)` is the quieter failure in between —
+one of the two entries was taken and the other was not, which serves prompts
+and leaves subagent briefs alone — unless you are on 0.2.x, which registers one
+entry and is healthy with it. Worth
 running once, because a memkit that installed correctly and has not been given
 a config is *also* silent by design (see below) — so from the outside it looks
 exactly like one that installed nothing.
 
-**What the installed copy is.** The pin names the release commit itself, so what
-you install carries this release's version and its copy of these documents. That takes two pull requests to arrange — a commit cannot name its
-own sha, so one carries the release and a second moves the pin to it — and
-[docs/RELEASING.md](docs/RELEASING.md) explains why. The only commit missing
-from your copy is that second one, which is the pin and nothing else.
+**What the installed copy is.** The pin names a release commit, so what you
+install is that release's whole tree — its version, its code and its copy of
+these documents — rather than a build or a subset. Arranging that takes two
+pull requests, because a commit cannot name its own sha: one carries the
+release state and a second moves the pin onto it. So the pin recorded *inside*
+your copy is the one from the release before yours, which is a clean install
+and not tampering, and [docs/ADMISSION.md](docs/ADMISSION.md) says which of the
+two manifests to compare against. [docs/RELEASING.md](docs/RELEASING.md)
+explains the ordering.
+
+The commits your copy does not have are therefore that second one and whatever
+`main` has merged since — nothing on the day a release ships, and most of what
+this page describes by the end of a window.
 
 `main` then moves ahead of the pin until the next release, and any behaviour
 described here that a release has not carried yet is marked
@@ -989,7 +995,7 @@ lives outside every plugin-managed path by design. Retrieval still works
 without Claude Code, and with no install:
 
 ```
-uvx --from git+https://github.com/ak2k/memkit@v0.2.1 memory-recall \
+uvx --from git+https://github.com/ak2k/memkit@v0.3.0 memory-recall \
   --search "<terms>" --config ~/.config/memkit/memkit.json
 ```
 
