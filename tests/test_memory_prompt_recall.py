@@ -8131,6 +8131,11 @@ def test_the_pointer_caps_the_budget_rests_on_are_still_the_caps() -> None:
     assert hook.MAX_HITS == 3
     assert hook.DESC_MAX_CHARS == 160 and hook.DESC_KEEP_CHARS == 157
     assert hook.PIPE_BUFFER_BOUND == 16384
+    # The per-SESSION half of the pair, unpinned while its per-prompt sibling
+    # above was pinned. `docs/STORE.md` states both to an adopter as the two
+    # caps that bound what memkit costs a session, and this was the one a
+    # local change could move with every test still green.
+    assert hook.POINTER_BUDGET == 30
 
 
 def test_a_hostile_description_is_sanitized_on_the_way_out_of_the_hook(
@@ -8450,6 +8455,78 @@ def test_a_digest_suffixed_task_ledger_is_actually_collected(state) -> None:
     # admits nothing.
     assert fresh.is_file()
     assert hook._collectible(str(state), fresh.name, time.time()) == ""
+
+
+_TMP_ORPHANS = (
+    # The three writers, each spelled as it spells itself: a sidecar written
+    # beside and renamed over, and the two ledgers.
+    "fts5-abcdef012345.build.4242.tmp",
+    # UPPERCASE hex, which `_SESSION_NAME` admits and the fixture-id tripwire
+    # at the end of this file cannot mistake for a real session.
+    "9F6C2B1E-EEE1-4222-8333-44BB55556666.json.4242.tmp",
+    f"{hook.TASK_STATE_PREFIX}{_DIGESTED}.json.4242.tmp",
+)
+
+
+def test_an_orphaned_temp_file_is_collected_and_a_live_one_is_not(state) -> None:
+    """A name class three writers create and nothing could ever collect.
+
+    Every writer of state in this directory writes `<name>.<pid>.tmp` and
+    renames it over the real file, and the sweep's allowlist admitted no such
+    name — so a leaked one stayed for the life of the machine. Bounding this
+    directory is the sweep's whole reason for existing: the author's own cache
+    reached 16,319 files and 264 MiB before anything collected one.
+
+    Normal operation does not leak. All three unlink on `OSError` and the two
+    ledger writes sit inside `_sigterm_masked()`, so this needs a SIGKILL, an
+    OOM, or a crash in a microsecond window — which is why the AGE FLOOR is
+    what makes the rule safe rather than the name. A writer's whole life is
+    bounded by the harness timeout; anything still here an hour later belongs
+    to no process that is going to rename it.
+    """
+    aged = {name: _aged(state / name, days=30) for name in _TMP_ORPHANS}
+    for name in _TMP_ORPHANS:
+        assert hook._collectible(str(state), name, time.time()) == "orphan-tmp", name
+    hook._sweep()
+    for name, path in aged.items():
+        assert not path.exists(), name
+
+    # Non-vacuity, and the property that keeps this safe: a temp file young
+    # enough to belong to a live writer is left alone. Without this the rule
+    # would race every write in the directory it is meant to protect.
+    live = {name: _aged(state / name, days=0) for name in _TMP_ORPHANS}
+    for name in _TMP_ORPHANS:
+        assert hook._collectible(str(state), name, time.time()) == "", name
+    hook._sweep()
+    for name, path in live.items():
+        assert path.is_file(), name
+
+
+def test_a_temp_name_whose_stem_is_not_ours_is_never_collected(state) -> None:
+    """A suffix is not ownership, and this directory holds other people's
+    files — the same rule the task-ledger allowlist already states. Aged past
+    every floor, so what spares these is the stem failing to match and nothing
+    else."""
+    for name in (
+        "somebody-elses.json.4242.tmp",       # a .json, but no id shape
+        "notes.txt.4242.tmp",                 # not a name memkit writes
+        "fts5-abcdef012345.build.tmp",        # no pid segment
+        "fts5-abcdef012345.build.abc.tmp",    # a pid that is not digits
+        "t-notatoolid.json.4242.tmp",         # the prefix without the shape
+        ".4242.tmp",                          # nothing before the pid
+    ):
+        _aged(state / name, days=400)
+        assert hook._collectible(str(state), name, time.time()) == "", name
+    hook._sweep()
+    for name in (
+        "somebody-elses.json.4242.tmp",
+        "notes.txt.4242.tmp",
+        "fts5-abcdef012345.build.tmp",
+        "fts5-abcdef012345.build.abc.tmp",
+        "t-notatoolid.json.4242.tmp",
+        ".4242.tmp",
+    ):
+        assert (state / name).is_file(), name
 
 
 def test_the_sweep_respects_its_own_interval(state) -> None:

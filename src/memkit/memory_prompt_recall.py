@@ -3871,6 +3871,25 @@ _FTS_LEGACY_PREFIXES = ("fts5-2-",)
 # tells operators.
 _FTS_SUFFIXES = (".db", ".db-wal", ".db-shm", ".root", ".build")
 
+# `<name>.<pid>.tmp`: what every writer of state in this directory writes
+# beside the real file before renaming over it. Three of them do — the `.build`
+# sidecar and the two ledgers — and the sweep's allowlist admitted no such
+# name, so a leaked one stayed for the life of the machine in the one directory
+# whose growth this pass exists to bound.
+#
+# The digits are required and are not read. A pid identifies nothing across a
+# reboot and checking liveness would be a race with a worse failure than the
+# leak; what makes the rule safe is the AGE, below.
+_TMP_NAME = re.compile(r"^(?P<base>.+)\.[0-9]+\.tmp$")
+
+# How long a temp file has to sit before it is read as abandoned. A writer's
+# whole life is bounded by the harness timeout — fifteen seconds — and the two
+# ledger writes are inside `_sigterm_masked()`, so an hour is a margin of two
+# orders of magnitude over the longest window in which a rename is still
+# coming. Deliberately not one of the retention constants: those bound state
+# somebody may still want, and this bounds a file that is already garbage.
+TMP_RETENTION = SWEEP_INTERVAL
+
 
 def _fts_stem(name: str) -> str:
     """The index stem a state-dir filename belongs to, or "".
@@ -3937,6 +3956,24 @@ def _root_state(state_dir: str, stem: str) -> str:
     return ROOT_LIVE
 
 
+def _own_state_name(name: str) -> bool:
+    """Whether this is a filename memkit writes into the state directory.
+
+    The SHAPE only — it says nothing about whether the file is collectible,
+    which is `_collectible`'s question and depends on age and on what the
+    index's root turned out to be. Split out because the temp-file rule needs
+    to ask about a base name that is not itself a file on disk.
+    """
+    if _fts_stem(name):
+        return True
+    if not name.endswith(".json"):
+        return False
+    stem = name[: -len(".json")]
+    if stem.startswith(TASK_STATE_PREFIX):
+        return bool(_TASK_NAME.match(stem[len(TASK_STATE_PREFIX) :]))
+    return bool(_SESSION_NAME.match(stem))
+
+
 def _collectible(state_dir: str, name: str, now: float) -> str:
     """Why this file may be collected, or "" for keep.
 
@@ -3952,6 +3989,17 @@ def _collectible(state_dir: str, name: str, now: float) -> str:
         # should already spare it; this is the line that does not depend on
         # them being right, because the cost of being wrong is an install that
         # goes inert with no record of why.
+        return ""
+    orphan = _TMP_NAME.match(name)
+    if orphan:
+        # A SUFFIX IS NOT OWNERSHIP, the same rule the task allowlist states:
+        # this directory holds other people's files, so the base has to be a
+        # name memkit itself writes before its age means anything.
+        if not _own_state_name(orphan.group("base")):
+            return ""
+        age = _age(state_dir, name, now)
+        if age is not None and age > TMP_RETENTION:
+            return "orphan-tmp"
         return ""
     stem = _fts_stem(name)
     if stem:

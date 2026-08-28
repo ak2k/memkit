@@ -644,6 +644,7 @@ looked. What the sweep takes, and on what evidence:
 | an index whose name is from a **superseded generation** | a naming change strands files under both rules above at once: the old names have live sidecars naming roots that still exist |
 | `<session-uuid>.json` older than 14 days, with its `.dup-*` claim | **only** when the name really is a UUID — the shape the harness produces. A `.json` here under any other name is not memkit's and is kept, whatever its age. The claim is named after the state, so whatever sweeps one sweeps the other |
 | `t-<tool_use_id>.json` older than 7 days | **only** when the id really is one memkit writes, the same rule as the line above; on filename and mtime, never on a parse, since these exist in more than one shape and a reader would leave the older ones behind |
+| `<one of the names above>.<pid>.tmp` older than an hour | every writer here writes beside the real file and renames over it, so a SIGKILL or a full disk in that window strands the temp copy — and nothing could collect it. The base name has to be one of the names above, because a suffix is not ownership; the hour is what separates an abandoned file from one a live writer is about to rename, whose whole life is bounded by the 15-second hook timeout |
 
 This directory is swept where it is memkit's own. Reached through a symlink —
 `$XDG_CACHE_HOME` set by something in your environment, or `memory-recall`
