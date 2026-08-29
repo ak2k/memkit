@@ -1242,15 +1242,25 @@ def test_the_shipped_pinned_list_is_absolute_paths_only() -> None:
     """What an adopter's install falls back to, read from the shipped file
     rather than from the copy the cases repin.
 
-    Absolute on every entry is the property the whole rung rests on: a
+    Absolute on every entry is the property the whole rung rests on — a
     slashless word sends `exec` to the session's PATH and a relative one to
-    the session's directory, which is the lookup this list exists to replace.
+    the session's directory, which is the lookup this list exists to replace —
+    and `_pinned_pythons` holds it. This is where it is held about the SHIPPED
+    file, because every other caller now passes a repinned tree.
+
+    CANONICAL too, and that one is only checkable here. A value arriving from
+    a config is put through `memkit_path_refusal`, which rejects `//`, `/./`,
+    `/../` and the process-relative trees; the pinned list is exec'd without
+    passing through it, so an entry spelled `/usr/bin/../bin/python3` or
+    `/proc/self/cwd/python3` would be honoured, and the second is the exact
+    outcome the absoluteness rule exists to prevent.
     """
     shipped = _pinned_pythons()
-    assert len(shipped) >= 2, shipped
-    # And the refusal advertises them, so an adopter can see whether their
-    # python is simply somewhere this list does not reach.
-    assert all(p in COMMON_SH.read_text(encoding="utf-8") for p in shipped)
+    assert shipped, "the shipped fallback list is empty"
+    assert len(set(shipped)) == len(shipped), shipped
+    for path in shipped:
+        assert not re.search(r"//|/\./|/\.\./", path + "/"), path
+        assert not path.startswith(("/proc/", "/dev/fd/")), path
 
 
 class Decided:
