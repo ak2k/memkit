@@ -304,6 +304,31 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _is_release_state() -> bool:
+    """True when this tree is a release PR's own tree rather than `main`.
+
+    The marker convention keys off the pin, and for the ordinary between-
+    releases state that is the same question as "does the copy an adopter has
+    carry this". In a release PR it is not. The pin moves in its own PR one
+    commit later, so the tree that PR A produces is the tree the next pin names
+    and the tree adopters install — while its own `marketplace.json` still
+    names the release before it. Asking the pin there marks the release's
+    behaviour as absent from the very payload that carries it, and the marked
+    sentence then ships to every adopter of that release for its whole window.
+    That is the failure the markers exist to prevent, aimed one release later
+    at a larger audience.
+
+    The version is the discriminator because it is the one field the release
+    edits and the pin cannot yet reflect: equal versions mean the pin describes
+    this tree's release, so the pin is the right question to ask.
+    """
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    shown = _git("show", f"{sha}:.claude-plugin/plugin.json")
+    if shown.returncode != 0:
+        return False  # the pin is not readable here; fall back to marking
+    return json.loads(shown.stdout)["version"] != _json(PLUGIN_MANIFEST)["version"]
+
+
 def test_the_pinned_sha_is_a_commit_in_this_history() -> None:
     _needs_checkout()
     sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
@@ -544,7 +569,7 @@ def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
     payload = under("bin/", "src/memkit/", "hooks/", ".claude-plugin/", "skills/")
     tests = under("tests/")
     prose = under("docs/") + sum(
-        1 for f in tracked if f in ("README.md", "LICENSE", "NOTICE")
+        1 for f in tracked if f in ("README.md", "CHANGELOG.md", "LICENSE", "NOTICE")
     )
     rest = len(tracked) - payload - tests - prose
     rows = {
@@ -552,7 +577,8 @@ def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
         "`tests/`": tests,
         "`.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files":
             rest,
-        "`README.md`, `LICENSE`, `NOTICE`, and all of `docs/`": prose,
+        "`README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, and all of `docs/`":
+            prose,
     }
     for label, count in rows.items():
         assert f"| {label} | {count} |" in note, (label, count, "row is stale")
@@ -4441,7 +4467,10 @@ def test_a_claim_about_a_command_the_pin_cannot_serve_carries_the_marker() -> No
     with.
 
     Self-retiring: once the pin carries the skill, the marker must go, and this
-    is what says so.
+    is what says so. It also goes one PR before the pin moves, because a
+    release PR's own tree is the tree the pin is about to name —
+    `_is_release_state` is what tells that case apart from a pin that lags
+    because `main` has run ahead of it.
     """
     _needs_checkout()
     sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
@@ -4451,9 +4480,15 @@ def test_a_claim_about_a_command_the_pin_cannot_serve_carries_the_marker() -> No
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     start = readme.index("**3. Run `/memkit:init`")
     first_mention = readme[start : start + 200]
-    if at_pin:
+    if at_pin or _is_release_state():
+        # In the release state the licence for dropping the marker is the file
+        # itself, not the pin: the tree being described has to carry the skill
+        # it stops marking as absent.
+        assert (REPO / "skills" / "init" / "SKILL.md").exists(), (
+            "the marker may only go where the skill is"
+        )
         assert FROM_THE_NEXT_RELEASE not in first_mention, (
-            "the pin now carries the skill — the marker is stale"
+            "this tree ships the skill — the marker is stale"
         )
     else:
         assert FROM_THE_NEXT_RELEASE in first_mention, first_mention
@@ -5097,6 +5132,17 @@ def test_the_docs_mark_what_the_pinned_release_does_not_carry_yet() -> None:
     )
     if registered == len(_entries()):
         return  # the pin carries what this tree registers; nothing to mark
+    if _is_release_state():
+        # The pin lags because it always does here: this tree is what the next
+        # pin names, so the registration these pages describe is one their own
+        # readers will have. Marking it absent would ship that sentence to
+        # every adopter of this release. The positive claim stands in its
+        # place — both pages name the live count, which is what the hook-count
+        # case above asserts against `hooks.json` for the healthy reading.
+        for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
+            text = path.read_text(encoding="utf-8")
+            assert f"Hooks ({len(_entries())})" in text, (path, "live count unstated")
+        return
     for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
         text = path.read_text(encoding="utf-8")
         assert "from the next release" in text, (path, registered)
