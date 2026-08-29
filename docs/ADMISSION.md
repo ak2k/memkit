@@ -13,14 +13,16 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in**, which is the tree the
-next pin will name: **99 files, about 2.7 MiB** *(from the next release — the
-pin in `.claude-plugin/marketplace.json` still names 0.2.1, whose tree is
-63 files and about 1.3 MiB)*. Between releases `main` carries files the pin does
-not, so a count taken at today's pin is smaller by exactly those files — run
-the recipe at the bottom against either and it reproduces that one exactly.
-The release procedure re-derives the table at the tag, which is when the two
-agree and this parenthesis goes.
+The table below counts **the tree this file ships in** — **99 files, about 2.7 MiB**
+— and that is also the tree `.claude-plugin/marketplace.json` pins as this is
+written, so there is one tree here and one set of numbers. The recipe at the
+bottom reproduces them against either the repository or your own installed copy.
+
+It does not stay that way. `main` grows files the pin does not carry, and from
+the first such merge until the next release a count taken at the pin is smaller
+by exactly those files — at which point this paragraph states both counts and
+says which tree each belongs to. The release procedure re-derives the table at
+the tag, which is what brings them back together.
 
 | what | files | why it is there |
 |---|---|---|
@@ -231,8 +233,9 @@ wc -l bin/memkit-hook bin/lib/common.sh
 ```
 
 And against the sha the marketplace entry names, which is what an adopter
-installing today receives. Between releases it is the smaller of the two, by
-exactly the files `main` has added since:
+installing today receives. It answers the same as the block above while the pin
+names this tree, and smaller once `main` has moved on — by exactly the files it
+has added since:
 
 ```
 sha=$(python3 -c 'import json;print(json.load(open(".claude-plugin/marketplace.json"))["plugins"][0]["source"]["sha"])')
