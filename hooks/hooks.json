@@ -11,6 +11,19 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/memkit-hook",
+            "args": [],
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

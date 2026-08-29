@@ -8,8 +8,8 @@ Four console scripts over one config file:
   (3.12+).
 - `memory-eval`  snapshot-gated retrieval eval, whose cases are the consumer's
   data and never ship here.
-- `memkit`  the dispatcher the setup and diagnosis subcommands hang off; a
-  skeleton until those land.
+- `memkit`  the dispatcher `memkit init` and `memkit doctor` hang off, which
+  is what a plugin install puts on the agent's PATH.
 
 `memkit.memory_prompt_recall` owns the config reader, because it is the module
 with the hardest constraints — stdlib only, 3.9-importable, and usable as a

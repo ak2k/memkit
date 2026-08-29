@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shutil
 import stat
@@ -28,6 +29,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from memkit import _exec
 from memkit import eval_memory_recall as ev
 from memkit import memory_integrity as mi
 from memkit import memory_prompt_recall as hook
@@ -799,6 +801,47 @@ class ConfigDrivenStores(unittest.TestCase):
         self.assertTrue(
             any(w.startswith("CITED-PATHS-UNCONFIGURED") for w in warnings), warnings
         )
+
+    def test_a_store_that_never_declared_citations_is_not_told_off_for_it(self):
+        # The other half, and it is the commonest store there is: a config that
+        # never mentions `citations` has opted OUT of the feature. Both
+        # findings above were the first thing a fresh adopter's checker run
+        # said, about a check they never asked for — and a report whose first
+        # two lines are noise is a report they learn to skim.
+        #
+        # Declared-and-empty keeps the warning, because that IS a citation
+        # check configured to match nothing.
+        store = mi._store(self.tmp, STORE_DIR, cited_roots=(), citations_declared=False)
+        for sub in ("hot", "search"):
+            (store["dir"] / sub).mkdir(parents=True)
+        (store["dir"] / "MEMORY.md").write_text(MEMORY_HEAD)
+        (store["dir"] / "SEARCH.md").write_text(SEARCH_HEAD)
+        _, warnings = mi.check(store, False, set())
+        self.assertEqual([w for w in warnings if w.startswith("CITED-PATHS")], [])
+
+    def test_whether_citations_were_declared_survives_the_config_read(self):
+        # Absent-or-empty collapses the two states away, and the checker needs
+        # the difference. Read off the config rather than asserted about the
+        # store dict alone, because the store is built FROM it.
+        declared = self.load(
+            [{"id": "s", "dir": STORE_DIR, "live_root": "home"}], cited=False
+        )
+        self.assertTrue(declared.citations_declared)
+        path = self.tmp / "nocit.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": hook.SCHEMA,
+                    "roots": {"home": {"kind": "path", "path": str(self.tmp)}},
+                    "stores": [{"id": "s", "dir": STORE_DIR, "live_root": "home"}],
+                }
+            )
+        )
+        silent = hook.load_config(str(path))
+        assert silent is not None
+        self.assertFalse(silent.citations_declared)
+        stores, _ = mi.stores_from_config(silent)
+        self.assertFalse(stores[0]["citations_declared"])
 
     def test_a_newer_schema_is_refused_rather_than_half_read(self) -> None:
         # A reader that met a higher number and carried on would be reading
@@ -1622,3 +1665,457 @@ class FixtureEvalSensitivity(unittest.TestCase):
         self.assertIn("REGRESSION", done.stdout)
         self.assertIn("5/5 retrieved", self.run_eval().stdout)  # and it is the copy
         self.assertIn("search tier: 0/5 retrieved", done.stdout)
+
+
+class RowLost(unittest.TestCase):
+    """A ledger row a machine write took away.
+
+    Every other ledger finding describes drift that `--write` settles. This one
+    describes evidence that `--write` erases, which is why it survives it: a
+    tool may fix what it can describe, and may not make what it cannot describe
+    disappear.
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@t")
+        self._git("config", "user.name", "t")
+        self.store = mi._store(self.repo, STORE_DIR, blame_base="HEAD")
+        for sub in ("hot", "search"):
+            (self.store["dir"] / sub).mkdir(parents=True)
+        (self.store["dir"] / "MEMORY.md").write_text(MEMORY_HEAD)
+
+    def _git(self, *args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=self.repo, check=True, capture_output=True, timeout=60
+        )
+
+    def _memory(self, name: str, description: str = "a memory about widgets"):
+        path = self.store["search"] / name
+        path.write_text(
+            f"---\nname: {name[:-3]}\ndescription: {description}\n"
+            "type: reference\n---\n\nbody\n"
+        )
+        return path
+
+    def _ledger(self, *rows: str) -> None:
+        (self.store["dir"] / "SEARCH.md").write_text(
+            SEARCH_HEAD + "\n" + "\n".join(rows) + "\n"
+        )
+
+    def _commit(self) -> None:
+        self._git("add", "-A")
+        self._git("commit", "-qm", "base")
+
+    def test_a_row_that_vanished_while_its_file_stayed_is_reported(self) -> None:
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        # The rewrite a machine would do after the description stopped being
+        # readable: the file is still there and its row is not.
+        self._ledger()
+        errors, _ = mi.check(self.store, False, set())
+        assert any(e.startswith("ROW-LOST") for e in errors), errors
+        assert any("widget.md" in e for e in errors if e.startswith("ROW-LOST"))
+
+    def test_write_does_not_settle_it(self) -> None:
+        """The whole point. `--write` regenerating the row would erase the
+        evidence rather than the cause, and every other ledger finding is
+        suppressed under it precisely because the rewrite settles them."""
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        self._ledger()
+        errors, _ = mi.check(self.store, True, set())
+        assert any(e.startswith("ROW-LOST") for e in errors), errors
+
+    def test_a_row_whose_memory_was_deleted_is_not_lost(self) -> None:
+        """The carve-out, and it is what makes this a finding rather than
+        noise: an author removing a memory is the ledger working."""
+        path = self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        path.unlink()
+        self._ledger()
+        errors, _ = mi.check(self.store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
+    def test_a_row_that_moved_into_a_sub_index_is_not_lost(self) -> None:
+        # The workflow the consuming store's own MEMORY.md documents as
+        # "hand-seed one row, then --write": a memory's row moves from
+        # SEARCH.md into a domain sub-index while the file stays put. Reading
+        # only SEARCH.md on both sides made that read as a row a machine took
+        # away — and `--write` deliberately will not settle it, so the pre-push
+        # hook blocks until the sub-index change is reverted. There is no move
+        # at all.
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+
+        # The FILE STAYS PUT and only the row moves, which is the shape the
+        # carve-out for a deleted memory does not cover: sub-index links
+        # resolve against the sub-index's own directory, so `../widget.md`
+        # names the same file `search/widget.md` did.
+        index = self.store["search"] / "domain" / "INDEX.md"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text(
+            SEARCH_HEAD + "\n- [widget](../widget.md) — a memory about widgets\n"
+        )
+        self._ledger()
+        store = mi._store(
+            self.repo, STORE_DIR, sub_indexes=("search/domain/INDEX.md",),
+            blame_base="HEAD",
+        )
+        errors, _ = mi.check(store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
+    def test_a_row_that_is_still_there_is_not_lost(self) -> None:
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        self._commit()
+        errors, _ = mi.check(self.store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
+    def test_a_tree_with_no_such_base_says_nothing_rather_than_everything(self):
+        """A repo without the ref, without git, or a ledger that did not exist
+        then all produce "no rows at base" — and reading that as "every row was
+        lost" would fail every fresh checkout."""
+        self._memory("widget.md")
+        self._ledger("- [widget](search/widget.md) — a memory about widgets")
+        store = mi._store(self.repo, STORE_DIR, blame_base="no-such-ref")
+        assert mi._rows_at(
+            store["search_ledger"], store["dir"], store["root"], "no-such-ref"
+        ) is None
+        errors, _ = mi.check(store, False, set())
+        assert not [e for e in errors if e.startswith("ROW-LOST")], errors
+
+class BlameBaseShapeTest(unittest.TestCase):
+    def test_an_option_shaped_blame_base_is_refused_rather_than_passed_to_git(
+        self,
+    ) -> None:
+        """`citations.blame_base` is a config-supplied string that reaches
+        `git show f"{base}:{rel}"` and `git merge-base <base> HEAD`.
+
+        Git reads a leading `-` as an OPTION wherever a revision is expected,
+        and `git show` accepts `--output=<file>` — so a config could turn a
+        read into a write git performs on its behalf. No placement of `--`
+        fixes a `rev:path` argument, so the shape is refused.
+
+        The ledger sits at the REPOSITORY ROOT here, and that is the whole
+        difference between a live probe and a vacuous one: git makes the rest
+        of the argument part of the filename, so with a nested ledger the
+        write fails on a directory that does not exist and the case would pass
+        for the wrong reason.
+        """
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        ledger = repo / "SEARCH.md"
+        ledger.write_text("# x\n\n## Index\n", encoding="utf-8")
+        for args in (
+            ["init", "-q"],
+            ["-c", "user.email=a@b", "-c", "user.name=a", "add", "-A"],
+            ["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x"],
+        ):
+            subprocess.run(
+                ["git", *args], cwd=repo, check=True, capture_output=True, timeout=60
+            )
+        base = f"--output={repo}/STOLEN.txt"
+        before = sorted(p.name for p in repo.iterdir())
+        assert mi._rows_at(ledger, repo, repo, base) is None
+        after = sorted(p.name for p in repo.iterdir())
+        assert after == before, [n for n in after if n not in before]
+        # The shape is refused where the revision is CONSTRUCTED, so there is
+        # no `""` for one call site to check for and the other to pass on.
+        for refused in (base, "", "-x", "  HEAD"):
+            with self.assertRaises(_exec.Untrusted):
+                _exec.Rev(refused)
+        # And an ordinary ref is untouched.
+        assert str(_exec.Rev("origin/main")) == "origin/main"
+
+
+class GitRouteTableTest(unittest.TestCase):
+    """The case this replaces walked a caller-assembled argv looking for the
+    subcommand, because `-C <dir>` puts a non-flag word in front of it and a
+    walk that stopped at the first such word left `log -p` with its textconv
+    and external-diff drivers — both of which name a program the repository
+    chooses.
+
+    There is no walk now, because there is no assembly: a caller names a route
+    and its template is fixed. So what these pin is that every member HAS one,
+    that the content routes carry the two flags, that the `log` routes decline
+    signature verification, and that the path routes carry `--`.
+    """
+
+    HOLES = {"path": "a.md", "paths": ["a.md"], "limit": 5}
+
+    def test_every_route_has_a_template_and_the_flags_its_shape_needs(self) -> None:
+        holes = dict(self.HOLES, rev=_exec.Rev("HEAD"))
+        content = {
+            _exec.GitRoute.CHANGED_VS_HEAD,
+            _exec.GitRoute.CHANGED_SINCE,
+            _exec.GitRoute.BLOB_AT,
+            _exec.GitRoute.LAST_TOUCH,
+            _exec.GitRoute.ROW_TOUCH,
+        }
+        takes_path = {
+            _exec.GitRoute.LAST_TOUCH,
+            _exec.GitRoute.ROW_TOUCH,
+            _exec.GitRoute.TRACKED,
+        }
+        seen_log = 0
+        for route in _exec.GitRoute:
+            argv = _exec._git_template(route, holes)
+            assert argv, route
+            if route in content:
+                assert "--no-textconv" in argv and "--no-ext-diff" in argv, route
+            else:
+                assert "--no-textconv" not in argv, route
+            if "log" in argv:
+                seen_log += 1
+                assert "log.showSignature=false" in argv, route
+            if route in takes_path:
+                assert "--" in argv, route
+        # Anti-vacuity: there really are `log` routes for the rule above to be
+        # about, and there really are content routes.
+        assert seen_log == 2, seen_log
+        assert len(content) == 5
+
+    def test_an_unrecognised_route_is_a_refusal_and_not_an_argv(self) -> None:
+        # The type says a route is a route; this is about what happens when
+        # one arrives from somewhere the type checker never saw, which is the
+        # case a closed enum has to answer for.
+        for bad in ("toplevel", None, 0):
+            with self.assertRaises(_exec.Untrusted):
+                _exec._git_template(bad, {})  # type: ignore[arg-type]
+        # A hole the route needs and did not get is the same kind of refusal,
+        # rather than an argv with a gap in it.
+        for route in (
+            _exec.GitRoute.MERGE_BASE,
+            _exec.GitRoute.CHANGED_SINCE,
+            _exec.GitRoute.BLOB_AT,
+            _exec.GitRoute.LAST_TOUCH,
+            _exec.GitRoute.ROW_TOUCH,
+            _exec.GitRoute.TRACKED,
+        ):
+            with self.assertRaises(_exec.Untrusted):
+                _exec._git_template(route, {})
+        # And a `rev` hole will not take a bare string, however innocent — the
+        # validation is the type, so it cannot be skipped at one call site.
+        with self.assertRaises(_exec.Untrusted):
+            _exec._git_template(_exec.GitRoute.MERGE_BASE, {"rev": "HEAD"})
+
+    def test_the_neutralising_settings_are_in_every_shape(self) -> None:
+        seen: list = []
+        real = _exec.subprocess.run
+
+        def watched(argv, *a, **kw):
+            seen.append(list(argv))
+            return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
+
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        _exec.subprocess.run = watched
+        try:
+            _exec.run_git(_exec.GitRoute.UNTRACKED, repo=str(repo))
+        except _exec.Untrusted:  # no trusted git here at all
+            self.skipTest("no trusted git")
+        finally:
+            _exec.subprocess.run = real
+        assert seen, "no git invocation was observed, so this proves nothing"
+        assert "--no-optional-locks" in seen[0]
+        assert "core.fsmonitor=" in seen[0]
+
+    def test_the_log_routes_do_not_ask_git_to_verify_a_signature(self) -> None:
+        """`gpg.<format>.program` names a program git runs, and the FORMAT half
+        is the repository's choice — so no fixed `-c` covers the family and
+        `gpg.program=` silences only the OpenPGP one.
+
+        The answer is to stop ASKING: signature verification is requested by
+        `log` and by nothing else here, so the two `log` templates carry
+        `log.showSignature=false`. Driven through the real `_row_touch`, with a
+        positive control first — a case whose fixture cannot fire the program
+        proves nothing at all.
+        """
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("no git")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        repo = root / "repo"
+        repo.mkdir()
+        marker = root / "PWNED-gpg.txt"
+        evil = root / "evil"
+        evil.write_text(
+            f'#!/bin/sh\necho pwned >> "{marker}"\nexit 0\n', encoding="utf-8"
+        )
+        evil.chmod(0o755)
+        signers = root / "allowed"
+        signers.write_text(
+            "nobody@example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB0"
+            + "0" * 40 + "\n",
+            encoding="utf-8",
+        )
+
+        def g(*args: str, **kw) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [git, *args], cwd=repo, capture_output=True, text=True,
+                timeout=60, **kw,
+            )
+
+        g("init", "-q")
+        (repo / "a.md").write_text("x\n", encoding="utf-8")
+        for args in (
+            ("-c", "user.email=a@b", "-c", "user.name=a", "add", "a.md"),
+            ("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x"),
+            ("config", "gpg.format", "ssh"),
+            ("config", "gpg.ssh.program", str(evil)),
+            ("config", "gpg.ssh.allowedSignersFile", str(signers)),
+            ("config", "log.showSignature", "true"),
+        ):
+            g(*args)
+        # A commit carrying a signature header, so there is something to
+        # verify. Written by hand: signing it for real needs a key.
+        raw = g("cat-file", "commit", "HEAD").stdout.split("\n")
+        at = next(n for n, line in enumerate(raw) if line.startswith("committer"))
+        raw[at + 1 : at + 1] = [
+            "gpgsig -----BEGIN SSH SIGNATURE-----", " bogus",
+            " -----END SSH SIGNATURE-----",
+        ]
+        sha = g(
+            "hash-object", "-t", "commit", "-w", "--stdin", input="\n".join(raw)
+        ).stdout.strip()
+        g("update-ref", "HEAD", sha)
+
+        # POSITIVE CONTROL, without the hardening.
+        g("log", "-2", "--format=%ct", "-p", "--no-color", "--", "a.md")
+        assert marker.is_file(), (
+            "gpg.ssh.program never fired, so this fixture proves nothing"
+        )
+        marker.unlink()
+
+        # The route, which must still ANSWER — a refusal here would pass this
+        # case for the wrong reason.
+        out = _exec.run_git(
+            _exec.GitRoute.ROW_TOUCH, repo=str(repo), limit=2, path="a.md"
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip(), "the log route returned nothing"
+        assert not marker.exists(), marker.read_text()
+        assert mi._row_touch(repo, repo / "SEARCH.md") == {}
+        assert not marker.exists(), marker.read_text()
+
+    def test_the_adopters_safe_directory_survives_the_neutralisation(self) -> None:
+        """`GIT_CONFIG_GLOBAL=/dev/null` closes a config-discovery level and
+        takes `safe.directory` with it. Without that key git refuses a
+        repository it considers to have dubious ownership — a shared machine, a
+        container bind-mount, a store owned by another uid — and the checker's
+        every git route then answers nothing for a store that is fine.
+
+        Driven with a control, because a case whose fixture cannot lose the key
+        proves nothing: the same read under the full neutralisation returns
+        rc=1 and no values.
+        """
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("no git")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        home = root / "home"
+        home.mkdir()
+        (home / ".gitconfig").write_text(
+            "[safe]\n\tdirectory = /some/other/path\n\tdirectory = /another\n",
+            encoding="utf-8",
+        )
+        base = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+
+        def read(**extra: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [git, "config", "--get-all", "safe.directory"],
+                capture_output=True, text=True, timeout=60,
+                env={**base, **extra},
+            )
+
+        assert read().returncode == 0, "the fixture never had the key"
+        control = read(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
+        assert control.returncode != 0, control.stdout
+
+        old_home = os.environ.get("HOME")
+        _exec._SAFE_DIRECTORIES.clear()
+        os.environ["HOME"] = str(home)
+        try:
+            flags = _exec._safe_directory_flags()
+        finally:
+            _exec._SAFE_DIRECTORIES.clear()
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+        assert flags == [
+            "-c", "safe.directory=/some/other/path",
+            "-c", "safe.directory=/another",
+        ], flags
+
+        # AND THAT THEY REACH A ROUTE. The reader answering is half of it; the
+        # repair is the values arriving on the invocation that would otherwise
+        # be refused.
+        seen: list = []
+        real = _exec.subprocess.run
+
+        def watched(argv, *a, **kw):
+            seen.append(list(argv))
+            return real([sys.executable, "-c", "raise SystemExit(0)"], *a, **kw)
+
+        _exec._SAFE_DIRECTORIES.clear()
+        os.environ["HOME"] = str(home)
+        try:
+            # The reader runs for REAL and caches, then the route's own
+            # invocation is the one observed — patching first would make the
+            # read answer nothing and the assertion below vacuous.
+            assert _exec._safe_directory_flags(), "the reader answered nothing"
+            _exec.subprocess.run = watched
+            _exec.run_git(_exec.GitRoute.UNTRACKED, repo=str(root))
+        except _exec.Untrusted:
+            self.skipTest("no trusted git")
+        finally:
+            _exec.subprocess.run = real
+            _exec._SAFE_DIRECTORIES.clear()
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+        assert seen, "no route invocation was observed"
+        assert "safe.directory=/some/other/path" in seen[-1], seen[-1]
+        assert "safe.directory=/another" in seen[-1], seen[-1]
+
+    def test_an_option_shaped_safe_directory_is_not_re_supplied(self) -> None:
+        """A value beginning with `-` would be re-supplied as an option, not as
+        a value: `-c safe.directory=--output=x` is one word, but a config that
+        can write `~/.gitconfig` can write the key however it likes, and the
+        rule that refuses an option-shaped revision has to hold here too.
+        """
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("no git")
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        home = root / "home"
+        home.mkdir()
+        (home / ".gitconfig").write_text(
+            "[safe]\n\tdirectory = -x\n\tdirectory = /ok\n", encoding="utf-8"
+        )
+        old_home = os.environ.get("HOME")
+        _exec._SAFE_DIRECTORIES.clear()
+        os.environ["HOME"] = str(home)
+        try:
+            flags = _exec._safe_directory_flags()
+        finally:
+            _exec._SAFE_DIRECTORIES.clear()
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+        assert flags == ["-c", "safe.directory=/ok"], flags
+

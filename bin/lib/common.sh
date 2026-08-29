@@ -66,6 +66,111 @@
 # wrapper.
 MEMKIT_SELF=${MEMKIT_SELF:-memkit}
 
+# --- where the messages below actually go ------------------------------------
+#
+# THE SINGLE MOST REPEATED DEAD END ACROSS EVERY REVIEW OF THIS PROJECT: the
+# refusals in this file are among the clearest text it contains, and in the
+# product they are unreachable. Claude Code swallows hook stderr, and
+# `claude --debug -p` showed zero hook lines in three separate attempts across
+# two walkthroughs. So the same message goes to two places — stderr, which a
+# terminal caller and doctor's own probe both see, and a bounded file doctor
+# can tail.
+#
+# WRITTEN ONLY IF THE STATE DIRECTORY ALREADY EXISTS, and that rule is forced
+# twice over. `mkdir` is not a shell builtin, so this file could not create it
+# without breaking the dependency contract at the top; and an install nobody
+# has configured deliberately creates no state directory, so writing one here
+# would be a mutation on behalf of somebody who has not consented to anything.
+# What it costs is the never-configured case, which is the one state doctor's
+# `config-route` can already separate by reading the settings value directly.
+# What it buys is the was-working-and-broke case, where the directory is there
+# because the install used to serve.
+#
+# NO TIMESTAMP PER LINE, because there is no builtin clock: `date` is a
+# command, and the floor here is a bash 3.2 with no `EPOCHSECONDS` and no
+# `printf %(...)T`. The file's own mtime is when it was last written, and
+# doctor reports it.
+MEMKIT_ERRLOG_NAME=hook-errors.log
+# Lines. Bounded the way the trust marker is, so the thing that reports on a
+# cache never becomes the thing it reports on. Eviction reads and rewrites the
+# whole file, which is affordable only because nothing reaches here unless
+# something is already wrong.
+MEMKIT_ERRLOG_MAX=200
+
+# The shared derived-state directory, resolved the same way the hook resolves
+# it: `$XDG_CACHE_HOME` when it is set to an ABSOLUTE path, else `~/.cache`. A
+# relative value is ignored rather than honoured, because the directory an
+# every-prompt hook writes into is not the session's to choose.
+memkit_state_dir() {
+    case ${XDG_CACHE_HOME:-} in
+        /*) printf '%s\n' "${XDG_CACHE_HOME}/memory-recall" ;;
+        *) printf '%s\n' "$HOME/.cache/memory-recall" ;;
+    esac
+}
+
+memkit_errlog() {
+    _dir=$(memkit_state_dir)
+    [ -d "$_dir" ] || return 0
+    _errlog=$_dir/$MEMKIT_ERRLOG_NAME
+    # A file that exists and cannot be READ skips rotation, so repeated
+    # refusals grow it without bound — the file that reports on a cache
+    # becoming the thing it reports on. Nothing here can read it to keep the
+    # newest half, so the bound is kept the only way left: start again. What is
+    # lost is a log this process could not have shown anybody anyway.
+    if [ -e "$_errlog" ] && [ ! -r "$_errlog" ]; then
+        : > "$_errlog" 2>/dev/null || return 0
+    fi
+    if [ -r "$_errlog" ]; then
+        _lines=0
+        # `read` reports failure on a final line with no newline, which is a
+        # line like any other — hence the second test, the same one the
+        # interpreter scrape uses.
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _lines=$((_lines + 1))
+        done < "$_errlog"
+        if [ "$_lines" -ge "$MEMKIT_ERRLOG_MAX" ]; then
+            _skip=$((_lines - MEMKIT_ERRLOG_MAX / 2))
+            _seen=0
+            _kept=""
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                _seen=$((_seen + 1))
+                if [ "$_seen" -gt "$_skip" ]; then
+                    _kept=$_kept$_line'
+'
+                fi
+            done < "$_errlog"
+            printf '%s' "$_kept" > "$_errlog" 2>/dev/null || return 0
+        fi
+    fi
+    for _message do
+        printf '%s: %s\n' "$MEMKIT_SELF" "$_message" >> "$_errlog" 2>/dev/null \
+            || return 0
+    done
+}
+
+# Say something the adopter needs and cannot otherwise reach. Both channels,
+# every time: a message that went only to the file would be invisible to the
+# terminal caller, and one that went only to stderr is the state this exists
+# to end.
+memkit_stderr() {
+    # The wrapper's name on the FIRST line and not on the continuations, which
+    # is the shape every message here already had: the name is there so an
+    # agent looks the exit code up in the right table, and repeating it down a
+    # four-line refusal reads as four refusals. The file prefixes every line
+    # instead, because there the lines are interleaved across invocations and a
+    # continuation with no owner belongs to nothing.
+    _first=1
+    for _message do
+        if [ "$_first" = 1 ]; then
+            printf '%s: %s\n' "$MEMKIT_SELF" "$_message" >&2
+            _first=0
+        else
+            printf '%s\n' "$_message" >&2
+        fi
+    done
+    memkit_errlog "$@"
+}
+
 # `~/x` as a person types it. The option value is a string the adopter typed
 # into an install command, not a shell word the shell ever expanded, so a
 # config named `~/.cache/...` arrives with a literal tilde and every rung below
@@ -167,9 +272,9 @@ memkit_resolve_config() {
     if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITCONFIG:-}" ]; then
         _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")
         if _why=$(memkit_path_refusal "$_candidate"); then
-            printf '%s\n' \
-                "$MEMKIT_SELF: the memkitConfig option names \"$_candidate\", which $_why." \
-                "Ignoring it; this install will behave as if no config was given." >&2
+            memkit_stderr \
+                "the memkitConfig option names \"$_candidate\", which $_why." \
+                "Ignoring it; this install will behave as if no config was given."
             _candidate=""
         fi
         # A path that is merely WRONG passes every shape rule above, so
@@ -185,9 +290,9 @@ memkit_resolve_config() {
             else
                 _why="does not exist"
             fi
-            printf '%s\n' \
-                "$MEMKIT_SELF: the memkitConfig option names \"$_candidate\", which $_why." \
-                "Ignoring it; this install will behave as if no config was given." >&2
+            memkit_stderr \
+                "the memkitConfig option names \"$_candidate\", which $_why." \
+                "Ignoring it; this install will behave as if no config was given."
             _candidate=""
         fi
         [ -n "$_candidate" ] && [ -r "$_candidate" ] && {
@@ -212,11 +317,12 @@ memkit_resolve_config() {
 
 # The interpreter, preferring the one the config recorded.
 #
-# PATH probing alone hands the process that reads every prompt to whatever
-# direnv/mise/venv shim the launching shell happened to carry, and the nix
-# channel pins its interpreter absolutely — the plugin channel must not
-# silently drop that guarantee. So init records what it resolved, and this
-# prefers it.
+# A lookup over the session's PATH hands the process that reads every prompt to
+# whatever direnv/mise/venv shim the launching shell happened to carry, and the
+# nix channel pins its interpreter absolutely — the plugin channel must not
+# silently drop that guarantee. So init records what it resolved, this prefers
+# it, and what it falls back to is a fixed list of absolute paths rather than a
+# search.
 #
 # "Unusable" is `not an executable file`, deliberately not `fails to run`:
 # establishing the second costs a fork on every prompt, and the failure it
@@ -248,10 +354,33 @@ memkit_resolve_config() {
 # these wrappers directly and captures it; in a live session it reaches the
 # harness's debug log.
 memkit_interpreter_refused() {
-    printf '%s\n' \
-        "$MEMKIT_SELF: the config records \"interpreter\": \"$1\", which $2." \
-        "Falling back to the python3 on PATH; retrieval is unaffected." >&2
+    memkit_stderr \
+        "the config records \"interpreter\": \"$1\", which $2." \
+        "Falling back to a pinned system python; retrieval is unaffected."
 }
+
+# The pinned fallback, for an install whose config records no interpreter — a
+# fresh one, before `memkit init` has written the field it writes.
+#
+# ABSOLUTE PATHS, NOT A LOOKUP. `command -v python3` reads the session's own
+# PATH, which a checkout steers through direnv, a checked-in venv or a
+# `node_modules/.bin`; what came back was exec'd on every prompt, before any
+# rule in this package existed to have an opinion about it. There is no way to
+# filter that lookup correctly here: POSIX sh under this project's own
+# zero-external-command rule has no `realpath`, so a filter is a string prefix
+# test against a logical `$PWD`, and its success path — every entry rejected —
+# prints the empty string, which POSIX reads as the current directory.
+#
+# So this is an ALLOW-LIST, and its incompleteness is a support ticket rather
+# than a vulnerability: an install it does not cover REFUSES, visibly, and the
+# refusal names the repair — record an absolute `interpreter` in the config,
+# which is what `memkit init` does unprompted. The alternative failure is
+# silence plus somebody else's python.
+MEMKIT_SYSTEM_PYTHONS="/usr/bin/python3
+/opt/homebrew/bin/python3
+/usr/local/bin/python3
+/run/current-system/sw/bin/python3
+/nix/var/nix/profiles/default/bin/python3"
 
 # ABSOLUTE, or it does not count. A slashless or relative value is two
 # different files depending on who resolves it: `[ -x ]` below tests it against
@@ -352,81 +481,13 @@ memkit_resolve_interpreter() {
         fi
         memkit_interpreter_refused "$_recorded" "is not an executable file"
     fi
-    for _candidate in python3 python; do
-        _path=$(command -v "$_candidate" 2>/dev/null) || continue
-        [ -x "$_path" ] && {
-            printf '%s\n' "$_path"
+    for _candidate in $MEMKIT_SYSTEM_PYTHONS; do
+        if [ -f "$_candidate" ] && [ -x "$_candidate" ]; then
+            printf '%s\n' "$_candidate"
             return 0
-        }
-    done
-    return 1
-}
-
-# Where the fallback checker comes from when this machine has no python new
-# enough to run the one in this tree. `uvx` provisions its own interpreter,
-# which is what makes a stock-python mac (3.9.6) able to run a 3.12 checker at
-# all.
-#
-# Pinned at the release TAG, which closes the hole this used to be: unpinned,
-# it resolved whatever `main` held, so an adopter on an older release routed
-# checker work through a newer checker with nothing saying so.
-#
-# The tag is a forward reference at the moment it is written — `v0.2.1` is
-# created on the commit this file ships in, right after it merges — and that is
-# safe in a way an unpinned rev is not, because the name is one we control and
-# a tag that does not exist yet fails loudly rather than resolving to something
-# else. Until it is created, `uvx` refuses; nothing on the every-prompt path
-# reaches this, so the state is a subcommand that cannot run, not a hook that
-# misbehaves.
-#
-# The residual skew is bounded rather than open-ended. The marketplace pin names
-# the commit before the release and this names the release, so a checker
-# provisioned here is one commit ahead of the hook that asked for it — the
-# release commit, which moves pins and prose and no code the checker runs.
-MEMKIT_UVX_SPEC="git+https://github.com/ak2k/memkit@v0.2.1"
-
-# The checker's floor, which is NOT the hook's. Kept as two numbers rather than
-# a string so the test that scrapes `sys.version_info < (3, 12)` out of
-# memory_integrity.py has something to compare against: the number lives in two
-# files by necessity — one of them cannot import the other — and a floor that
-# drifted would route a 3.11 python straight into the guard it exists to avoid.
-MEMKIT_CHECKER_FLOOR_MAJOR=3
-MEMKIT_CHECKER_FLOOR_MINOR=12
-
-memkit_python_meets_checker_floor() {
-    "$1" -c "import sys; sys.exit(0 if sys.version_info[:2] >= ($MEMKIT_CHECKER_FLOOR_MAJOR, $MEMKIT_CHECKER_FLOOR_MINOR) else 1)" \
-        >/dev/null 2>&1
-}
-
-# Resolve the route for checker-backed work and export it. Three states, and
-# every caller has to be able to tell them apart:
-#
-#   python  a local interpreter meets the floor, so the checker that runs is
-#           THIS tree's — same release as the hook, by construction.
-#   uvx     no local interpreter does, but uvx can provision one.
-#   none    neither. The operation that needs it refuses by name and writes
-#           nothing; a seeded memory with no ledger row is a broken store, so
-#           half-completing is worse than not starting.
-memkit_resolve_checker() {
-    _base=$1
-    MEMKIT_CHECKER_ROUTE=none
-    MEMKIT_CHECKER_CMD=""
-    # The already-resolved interpreter first: on a machine where it is new
-    # enough, that is the whole probe and it costs one fork.
-    for _cand in "$_base" python3.14 python3.13 python3.12 python3; do
-        [ -n "$_cand" ] || continue
-        _path=$(command -v -- "$_cand" 2>/dev/null) || continue
-        if memkit_python_meets_checker_floor "$_path"; then
-            MEMKIT_CHECKER_ROUTE=python
-            MEMKIT_CHECKER_CMD="$_path -m memkit.memory_integrity"
-            break
         fi
     done
-    if [ "$MEMKIT_CHECKER_ROUTE" = none ] && command -v uvx >/dev/null 2>&1; then
-        MEMKIT_CHECKER_ROUTE=uvx
-        MEMKIT_CHECKER_CMD="uvx --from $MEMKIT_UVX_SPEC memory-integrity"
-    fi
-    export MEMKIT_CHECKER_ROUTE MEMKIT_CHECKER_CMD
+    return 1
 }
 
 # What the adopter is told when no interpreter resolves. Named rather than
@@ -441,10 +502,25 @@ memkit_resolve_checker() {
 # The reader is doctor, which runs this wrapper directly and captures stderr.
 # In a live session it goes to the harness's debug log, because the wrapper
 # exits 0 whatever happens — see the exit contract in `memkit-hook`.
+#
+# The tried paths go in as one message EACH, and the splitting is the point.
+# The list is newline-separated, so interpolating it whole put five physical
+# lines into a single message — and the error log's rule is that every line
+# carries the wrapper's name, so four of them arrived owned by nothing. That
+# happened only where this message fires at all, which is a machine none of
+# the five paths exists on: a NixOS install, and this repo's own Linux build.
+# One path per line is also the shape the reader wants, since the question
+# they are answering is whether their python is on the list.
 memkit_no_interpreter_message() {
-    printf '%s\n' \
-        "$MEMKIT_SELF: no python3 on PATH and none recorded in the config, so the" \
-        "recall hook cannot run. Install python 3.9 or newer, or record an" \
-        "absolute interpreter path as \"interpreter\" in the memkit config." \
+    # shellcheck disable=SC2086  # unquoted so each path becomes its own word
+    memkit_stderr \
+        "no interpreter is recorded in the config and none of the pinned" \
+        "system paths exists, so the recall hook cannot run. Record an" \
+        "absolute python 3.9-or-newer path as \"interpreter\" in the memkit" \
+        "config — \`memkit init\` writes that field for you. A python found" \
+        "only through this session's PATH is deliberately not used: that" \
+        "lookup is one a checkout steers, and what it returns would run on" \
+        "every prompt. Pinned paths tried:" \
+        $MEMKIT_SYSTEM_PYTHONS \
         "Config in use: ${1:-<none resolved>}"
 }

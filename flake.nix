@@ -142,6 +142,8 @@
             "test_packaging.py" = "packaging-tests";
             "test_eval.py" = "eval-tests";
             "test_plugin_surface.py" = "plugin-tests";
+            "test_doctor.py" = "doctor-tests";
+            "test_init.py" = "init-tests";
           };
           # Top-level FILES only, which quietly excludes `tests/rig/` — and
           # that exclusion is deliberate rather than incidental. Those
@@ -200,21 +202,57 @@
             # scripts entry naming a callable that does not exist installs a
             # binary that fails for the adopter and for nobody else.
             memkit-dispatcher = pkgs.runCommand "memkit-dispatcher" { } ''
-              ${memkit}/bin/memkit --help > $out
-              grep -q 'NOT IN THIS BUILD YET' $out
+              export HOME=$PWD/home
+              mkdir -p "$HOME"
 
-              # The EXACT code, not merely non-zero. A skill branches on this
-              # number, and "declared but not shipped" has to stay separable
-              # from "you invoked this wrongly" (2) or the caller retries with
-              # different arguments forever.
+              ${memkit}/bin/memkit --help > $out
+              grep -q 'doctor' $out
+              grep -q 'init' $out
+              # The heading only when there is something under it. An empty
+              # "Not in this build yet:" reads as a list that failed to render,
+              # on the cheapest probe an agent runs.
+              ! grep -q 'Not in this build yet' $out
+
+              # Three facts, from one derivation. This is the precondition for
+              # reading any other answer this binary gives.
+              ${memkit}/bin/memkit --version | grep -q 'hook:'
+
+              # Doctor runs on this machine and answers with its own exit
+              # vocabulary — 0 or 1 and nothing else. A skill branches on this
+              # before it reads a byte of the report.
               rc=0
-              ${memkit}/bin/memkit doctor 2> refusal || rc=$?
-              [ "$rc" = 4 ] || {
-                echo "memkit doctor exited $rc, wanted 4 (EXIT_NOT_IN_BUILD)"
+              ${memkit}/bin/memkit doctor > report || rc=$?
+              case "$rc" in
+                0|1) : ;;
+                *) echo "memkit doctor exited $rc, wanted 0 or 1"; exit 1 ;;
+              esac
+              grep -q 'VERDICT:' report
+
+              # A mutating command with no mode is a usage error, not a
+              # default: a default mode is one an agent runs by accident.
+              rc=0
+              ${memkit}/bin/memkit init 2> /dev/null || rc=$?
+              [ "$rc" = 2 ] || {
+                echo "a modeless init exited $rc, wanted 2 (usage)"
                 exit 1
               }
-              grep -q 'not in this build' refusal
 
+              # And the first turn prints a manifest and a digest and writes
+              # nothing. Asserted against the whole scratch HOME rather than
+              # against the config it would have written.
+              before=$(find "$HOME" | sort)
+              rc=0
+              ${memkit}/bin/memkit init --dry-run > manifest || rc=$?
+              [ "$rc" = 0 ] || { cat manifest; echo "dry-run exited $rc"; exit 1; }
+              grep -q 'digest: ' manifest
+              [ "$before" = "$(find "$HOME" | sort)" ] || {
+                echo "the dry-run wrote something"
+                exit 1
+              }
+
+              # The EXACT code, not merely non-zero. "You invoked this wrongly"
+              # has to stay separable from every state a subcommand can reach,
+              # or a caller retries with different arguments forever.
               rc=0
               ${memkit}/bin/memkit frobnicate 2> /dev/null || rc=$?
               [ "$rc" = 2 ] || {

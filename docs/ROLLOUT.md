@@ -210,9 +210,26 @@ are the only remaining copies of what those tracked files used to hold.
 
 ## Per-host verify, plugin channel
 
-The checks above read paths a plugin install does not have. These five were run
-against a real scratch install before being written here, which is the whole
-point of a verify procedure.
+The checks above read paths a plugin install does not have. Run
+`memkit doctor` first — it is the machine reader for every one of the five
+below, and it additionally exercises the installed hook, which none of them
+do:
+
+```
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+PLUGIN="$CFG/plugins/cache/memkit/memkit"
+MEMKIT="$(ls -d "$PLUGIN"/*/bin/memkit 2>/dev/null | sort -V | tail -1)"
+"$MEMKIT" doctor --json
+```
+
+Zero `FAIL` is the bar; `INFO`, `ASSUMPTIONS-UNVERIFIED` and `UNKNOWN` do not
+block, and the harness version stamp mismatches on almost every host. The five
+manual checks stay below it as the fallback for a host where doctor cannot run
+— no interpreter, no payload — which is precisely the state its own
+`interpreter` check would have reported if it could.
+
+These five were run against a real scratch install before being written here,
+which is the whole point of a verify procedure.
 
 The sections before this one are a NIX-FLEET rollout, written from a mixed
 darwin and NixOS estate. A colleague adopting through the plugin channel — the
@@ -229,14 +246,20 @@ moved it will have.
 `memkit@memkit` must appear with `Status: ✔ enabled`. Absent means the install
 did not land; present-and-disabled means somebody turned it off.
 
-**2. It registered its hook.**
+**2. It registered its hooks.**
 
     claude plugin details memkit@memkit
 
-`Hooks (1)` and `UserPromptSubmit`. **`Hooks (0)` is the failure this check
-exists for** — it is what an install from a marketplace pin whose commit
-carries no payload looks like, and every other signal on that host says
-success.
+`Hooks (2)`: `UserPromptSubmit` and `PreToolUse` *(from the next release —
+until the marketplace pin moves, a healthy host reports `Hooks (1)`)*.
+**`Hooks (0)` is the failure this check exists for** — it is what an install
+from a marketplace pin whose commit carries no payload looks like, and every
+other signal on that host says success. Once the pin carries both entries,
+**`Hooks (1)` is a second, quieter failure**: one registered and one did not,
+so the host serves prompts and silently stops serving subagent briefs. Record
+which number each host reported, not just that the command ran, and record the
+pin the fleet is on beside it — the same number means different things either
+side of that release.
 
 **3. The option reached Claude Code.**
 
@@ -351,11 +374,44 @@ that is not gating reports without blocking.
 
 **Runtime is not gated, and that is a known posture, not an oversight.** The
 hook fails open by contract; a host whose hook has been silently inert for a
-week emits nothing that distinguishes it from a quiet week. Nothing in this
-milestone changes that — the per-host checks above are the only detector, and
-they run when a human runs them. An agent-invocable doctor that answers "is
-retrieval actually working here" is deferred; until it exists, treat the verify
-recipe as mandatory per host rather than as a spot check.
+week emits nothing that distinguishes it from a quiet week.
+
+`memkit doctor --json` is the agent-invocable detector that answers "is
+retrieval actually working here", and it is what the per-host verify above
+leads with. It changes what a check COSTS, not when one happens: it still runs
+when something runs it. What it removes is the reason a per-host check used to
+be skipped — five commands whose output somebody had to read — and what it adds
+is a run of the installed hook, which no manual check in this document ever
+did.
+
+Nothing in this milestone polls it. Until something does, treat the verify as
+mandatory per host rather than as a spot check; `--json` and the exit code make
+it a thing a cron or a deploy step can gate on when somebody wants that.
+
+### The soak log's degradation keys, and the reader that drops them
+
+The hook omits a `lex_*` key when nothing happened, so absence in the log means
+none of it happened — which is a contract only as good as the reader holding up
+its end. The known external reader,
+`~/.config/nix/scripts/memory-recall-report.py`, sums a fixed four-key tuple
+(`lex_spared`, `lex_unwalked`, `lex_busy_skip`, `lex_rebuilds`) written before
+this branch, so every key added since is silently dropped from its health
+summary — `lex_note_unwritten`, which predates this branch, and `lex_deadline`,
+`lex_oversize` and `lex_unswept`, which say a sync hit the budget, refused a
+file for size, or ran out of budget mid-sweep, plus four that name a file the
+store owner can see in their tree and retrieval is not searching:
+`lex_outside` (a `*.md` symlink whose target leaves the store),
+`lex_unnameable` (a filename this hook cannot render, so a pointer to it would
+name a path that does not exist), `lex_undecodable` (a filename the filesystem
+holds as bytes that are not UTF-8) and `lex_linkdir` (a symlinked
+subdirectory, which `os.walk` never descends).
+
+The consequence is an operator reading "no lex degradation" while stores are
+actively hitting those paths, which is exactly the observability an oversize
+file's permanent staleness depends on. The fix is in another repository and
+belongs there: widen that tuple to the full `_LEX_COUNTS` key set, or derive it
+from `hook._LEX_COUNTS.keys()` if the collector can import memkit, so the next
+key added here does not need a matching hand-edit there.
 
 ## The edit-to-live loop
 

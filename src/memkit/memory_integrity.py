@@ -60,11 +60,19 @@ if sys.version_info < (3, 12):  # noqa: UP036 — the guard IS the old-version p
     )
 
 import argparse  # noqa: E402 — everything below the version guard, by design
+import contextlib  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+from memkit._exec import (  # noqa: E402
+    GitRoute,
+    Rev,
+    Untrusted,
+    enforce_execution_boundary,
+    run_git,
+)
 from memkit.memory_prompt_recall import (  # noqa: E402
     CONFIG_ENV,
     ConfigError,
@@ -110,6 +118,7 @@ def _store(
     link_roots: tuple[Path, ...] = (),
     cited_roots: tuple[str, ...] = (),
     cited_suffixes: tuple[str, ...] = (),
+    citations_declared: bool = True,
     blame_base: str = DEFAULT_BLAME_BASE,
 ) -> dict:
     """One store, fully described — nothing below reads a module-level tree.
@@ -126,6 +135,13 @@ def _store(
     layout memkit was never told about — and check() reports it rather than
     passing quietly, because a citation check that silently matches nothing is
     the vacuous green this whole file exists to refuse.
+
+    `citations_declared` is the other half of that, and without it the report
+    is wrong for the commonest store there is. A config that never mentions
+    `citations` has opted OUT of the feature, and a checker that answered a
+    fresh adopter's first run with two warnings about a check they never asked
+    for is one they will learn to skim. Declared-and-empty keeps the warning;
+    never-declared says nothing, because there is nothing to say.
     """
     d = root / mem_dir
     return {
@@ -142,6 +158,7 @@ def _store(
         "link_roots": tuple(link_roots) or (root,),
         "cited_roots": tuple(cited_roots),
         "cited_suffixes": tuple(cited_suffixes),
+        "citations_declared": citations_declared,
         "blame_base": blame_base,
     }
 
@@ -192,6 +209,7 @@ def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
                 link_roots=link_roots,
                 cited_roots=cfg.cited_roots,
                 cited_suffixes=cfg.extra_suffixes,
+                citations_declared=cfg.citations_declared,
                 blame_base=cfg.blame_base,
             )
         )
@@ -638,27 +656,23 @@ def _changed_files(repo: Path, blame_base: str) -> tuple[set[str], str]:
     from a check that passed.
     """
 
-    def git(*args: str) -> subprocess.CompletedProcess[str] | None:
+    def git(route: GitRoute, **holes) -> subprocess.CompletedProcess[str] | None:
         try:
-            out = subprocess.run(
-                ["git", *args], capture_output=True, text=True, cwd=repo, timeout=30
-            )
-        except (OSError, subprocess.SubprocessError):
+            out = run_git(route, repo=str(repo), timeout=30, **holes)
+        except (OSError, subprocess.SubprocessError, Untrusted):
             return None
         return out if out.returncode == 0 else None
 
     def paths(proc: subprocess.CompletedProcess[str] | None) -> list[str]:
         return [n for n in proc.stdout.split("\0") if n] if proc else []
 
-    top = git("rev-parse", "--show-toplevel")
+    top = git(GitRoute.TOPLEVEL)
     if top is None or Path(top.stdout.strip()).resolve() != repo.resolve():
         return set(), f"{repo} is not a git toplevel"
-    changed = git("diff", "-z", "--name-only", "HEAD")
+    changed = git(GitRoute.CHANGED_VS_HEAD)
     if changed is None:
         return set(), "no HEAD to diff against"
-    names = paths(changed) + paths(
-        git("ls-files", "-z", "--others", "--exclude-standard")
-    )
+    names = paths(changed) + paths(git(GitRoute.UNTRACKED))
     # A branch with no merge base — blame_base unfetched, a repo without that
     # ref at all, a fixture — simply contributes nothing here. The working tree
     # still answers, so the check degrades to what it did before rather than to
@@ -667,9 +681,17 @@ def _changed_files(repo: Path, blame_base: str) -> tuple[set[str], str]:
     # blamed set and somebody else's drift blocks this build. No fetch is done
     # to prevent that — network in a gate that runs on every commit costs more
     # than the fault — so the DEAD-PATH text names it instead.
-    base = git("merge-base", blame_base, "HEAD")
+    # A `blame_base` that is not a revision refuses AT CONSTRUCTION, so there
+    # is no empty argument for git to fail on for an incidental reason and no
+    # second call site to disagree about what a refusal meant.
+    base = None
+    with contextlib.suppress(Untrusted):
+        base = git(GitRoute.MERGE_BASE, rev=Rev(blame_base))
     if base is not None and base.stdout.strip():
-        names += paths(git("diff", "-z", "--name-only", base.stdout.strip(), "HEAD"))
+        with contextlib.suppress(Untrusted):
+            names += paths(
+                git(GitRoute.CHANGED_SINCE, rev=Rev(base.stdout.strip()))
+            )
     files = set(names)
     return files, "" if files else "working tree is clean and no commits on this branch"
 
@@ -765,6 +787,103 @@ def _rows(ledger: Path, store_dir: Path) -> dict[str, Path]:
     return out
 
 
+def _rows_at(
+    ledger: Path, store_dir: Path, repo: Path, base: str
+) -> dict | None:
+    """The rows a ledger carried at `base`, or None when that cannot be read.
+
+    None rather than an empty dict, and the difference is the whole safety of
+    the finding built on this: a repo with no such ref, no git at all, or a
+    ledger that did not exist then all produce "no rows", and treating that as
+    "every row was lost" would fail every fresh checkout.
+    """
+    try:
+        rel = ledger.resolve().relative_to(repo.resolve())
+    except ValueError:
+        return None
+    try:
+        out = run_git(
+            GitRoute.BLOB_AT, repo=str(repo), rev=Rev(base), path=str(rel)
+        )
+    except (OSError, subprocess.SubprocessError, Untrusted):
+        return None
+    if out.returncode != 0:
+        return None
+    found: dict = {}
+    for link in LINK_RE.findall(out.stdout):
+        if "://" in link:
+            continue
+        target = (ledger.parent / link).resolve()
+        if target.name in LEDGER_NAMES:
+            continue
+        try:
+            found[str(target.relative_to(store_dir.resolve()))] = ledger
+        except ValueError:
+            continue
+    return found
+
+
+def _row_lost(store: dict, write: bool) -> list:
+    """Rows a MACHINE WRITE took away, named so the loss is not silent.
+
+    `SEARCH.md` is generated, and a generated ledger is a file a tool rewrites
+    wholesale. That is fine while every live memory produces a row; when one
+    stops — a description that became unreadable, a memory moved under a
+    directory that is not a tier — the rewrite drops its row and the memory
+    goes on existing, retrievable by the hook and invisible to every ledger
+    anybody reads.
+
+    THE CARVE-OUT, and it is what makes this a real finding rather than noise:
+    a row whose memory is no longer on disk is not lost, it was deleted, and
+    that is an author doing their job. Only a row that had a file at the base
+    and still has one now can have been taken by a machine.
+
+    `--write` DOES NOT RESOLVE IT. Every other ledger finding is drift a
+    rewrite settles, and this one is evidence a rewrite erases: regenerating
+    the ledger either puts the row back or leaves it out, and either way the
+    fact that a row went missing is gone. That is the agent-access posture
+    applied to the checker's own repair path — a tool may fix what it can
+    describe, and may not make what it cannot describe disappear.
+    """
+    del write  # deliberately unused; see the docstring
+    ledger = store["search_ledger"]
+    base = store["blame_base"]
+    at_base = _rows_at(ledger, store["dir"], store["root"], base)
+    if at_base is None:
+        return []
+    # EVERY ledger a search-tier memory may legitimately be rowed in, as
+    # found. Reading only `SEARCH.md` on both sides made the documented
+    # "start a new domain" move — hand-seed one row in a sub-index, then
+    # `--write` — read as a row a machine took away; and since `--write`
+    # deliberately does not settle this finding, the operator was left with no
+    # move at all, the push blocked until the sub-index change was reverted.
+    #
+    # As FOUND rather than from the caller's earlier scan, which is what makes
+    # the call's POSITION load-bearing: after the rewrite below the row is
+    # back, and this finding would report nothing — precisely the erasure it
+    # exists to describe.
+    current: dict = {}
+    for owner in (ledger, *store["sub_indexes"]):
+        current.update(_rows(owner, store["dir"]))
+    lost = []
+    for rel in sorted(at_base):
+        if rel in current:
+            continue
+        if not (store["dir"] / rel).is_file():
+            # Deleted, not lost. An author removing a memory is the ledger
+            # working.
+            continue
+        lost.append(
+            f"ROW-LOST: {store['dir'].name}/{rel} had a row at {base} and has "
+            "none now, and the file is still there. A generated ledger is "
+            "rewritten wholesale, so a memory that stops producing a row goes "
+            "on existing with nothing pointing at it. --write does not settle "
+            "this: regenerating the ledger erases the evidence rather than the "
+            "cause."
+        )
+    return lost
+
+
 def _live(store: dict) -> list[Path]:
     """Every live memory file, hot and search, sorted."""
     files: list[Path] = []
@@ -799,13 +918,12 @@ def _last_touch(repo: Path, paths: list[str]) -> dict[str, int]:
     """path -> unix time of the newest commit touching it (0 if untracked)."""
     if not paths:
         return {}
-    out = subprocess.run(
-        ["git", "log", "--format=%ct", "--name-only", "--no-renames", "--", *paths],
-        capture_output=True,
-        text=True,
-        cwd=repo,
-        timeout=60,
-    )
+    try:
+        out = run_git(
+            GitRoute.LAST_TOUCH, repo=str(repo), paths=list(paths), timeout=60
+        )
+    except (OSError, subprocess.SubprocessError, Untrusted):
+        return {}
     seen: dict[str, int] = {}
     ts = 0
     for line in out.stdout.splitlines():
@@ -824,13 +942,12 @@ def _row_touch(repo: Path, ledger: Path, limit: int = 400) -> dict[str, int]:
         rel = str(ledger.relative_to(repo))
     except ValueError:
         return {}
-    out = subprocess.run(
-        ["git", "log", f"-{limit}", "--format=%ct", "-p", "--no-color", "--", rel],
-        capture_output=True,
-        text=True,
-        cwd=repo,
-        timeout=60,
-    )
+    try:
+        out = run_git(
+            GitRoute.ROW_TOUCH, repo=str(repo), limit=limit, path=rel, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError, Untrusted):
+        return {}
     seen: dict[str, int] = {}
     ts = 0
     for line in out.stdout.splitlines():
@@ -972,6 +1089,11 @@ def check(
     def _survives(owner: Path) -> bool:
         return not write or owner == store["hot_ledger"]
 
+    # BEFORE the generated ledgers are rewritten below, because after them the
+    # question cannot be asked: `--write` is about to make the ledger agree
+    # with the tree, and what this reports is a row that stopped agreeing.
+    errors.extend(_row_lost(store, write))
+
     on_disk = {str(p.relative_to(d)) for p in live}
     errors.extend(
         f"STALE: {rel_dir}/{owner.name} rows missing {rel}"
@@ -1069,7 +1191,11 @@ def check(
     # along with the world's. `scan` is what gets read; `changed` is what this
     # commit is answerable for.
     audit = all_citations or bool(os.environ.get("MEMORY_INTEGRITY_ALL_CITATIONS"))
-    if not store["cited_roots"]:
+    # A store whose config never mentions citations has opted out, and neither
+    # of the two findings below has anything to report about a feature nobody
+    # asked for. Both were the first thing a fresh adopter's checker run said.
+    declared = store.get("citations_declared", True)
+    if declared and not store["cited_roots"]:
         # Say it. With no configured top-level trees the citation regex matches
         # nothing at all, so every memory in the store passes the check without
         # a single path being looked at — a green that means "not configured"
@@ -1097,7 +1223,7 @@ def check(
     # this store was read, NOT on whether the tree was clean: "clean tree" was
     # the only case named before, so a single unrelated dirty file — a README,
     # a flake.nix — silently put the run back into passing without looking.
-    if not audit and not _read_any(store, changed):
+    if declared and not audit and not _read_any(store, changed):
         # "none to read" rather than "none changed": a deleted memory IS in the
         # changed set and still lands here, having nothing left to open.
         reason = degraded or f"no {rel_dir}/ memory in the changed set is readable"
@@ -1218,6 +1344,9 @@ def main() -> int:
 
 
 def cli() -> None:
+    # See `memkit.cli.cli`: the process's own rules go on the process, not on
+    # a function the suite calls in-process.
+    enforce_execution_boundary()
     sys.exit(main())
 
 

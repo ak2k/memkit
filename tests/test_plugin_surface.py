@@ -19,15 +19,18 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
 REPO = Path(__file__).resolve().parent.parent
@@ -50,7 +53,18 @@ PAYLOAD = [
     "bin/lib/common.sh",
     "src/memkit/memory_prompt_recall.py",
     "src/memkit/common-words.txt",
+    # The package's executor. Not reached from the hook — that path starts no
+    # process and imports nothing from here — but the dispatcher's two
+    # subcommands both import it at module scope, so it is on the 3.9 floor
+    # and in the payload for the same reason `cli_doctor.py` is.
+    "src/memkit/_exec.py",
     "src/memkit/cli.py",
+    # Imported by the dispatcher at module scope, so it is on the 3.9 floor and
+    # in the payload for the same reason `cli.py` is: `bin/memkit` runs the
+    # dispatcher, and a dispatcher whose import fails is a plugin that installs
+    # and answers nothing.
+    "src/memkit/cli_doctor.py",
+    "src/memkit/cli_init.py",
     "src/memkit/__init__.py",
     # The checker `bin/memkit` routes to when a local python meets the 3.12
     # floor: `MEMKIT_CHECKER_CMD` is `<python> -m memkit.memory_integrity`, run
@@ -58,6 +72,12 @@ PAYLOAD = [
     # a module the adopter does not have. Safe to add — its only first-party
     # import is `memkit.memory_prompt_recall`, already here.
     "src/memkit/memory_integrity.py",
+    # The two skills. Not reached by any import, so the closure assertion below
+    # cannot find them; they are payload in the sense that matters — a plugin
+    # install without them registers `Skills (0)` and every command an agent
+    # was told to reach for is unreachable.
+    "skills/doctor/SKILL.md",
+    "skills/init/SKILL.md",
 ]
 
 
@@ -88,6 +108,20 @@ def _readme_section(heading: str) -> str:
     start = text.index(heading)
     nxt = text.find("\n## ", start + len(heading))
     return text[start : nxt if nxt != -1 else len(text)]
+
+
+def _pinned_file_count() -> int | None:
+    """How many files the marketplace pin names, or None where that cannot be
+    read here.
+
+    `_git("ls-tree", ...)` against a sha this checkout does not carry exits
+    non-zero and prints nothing, and `len([])` is 0 — a number that reads like
+    an answer. Callers need the difference, because "the pin has 0 files" and
+    "this tree cannot see the pin" say opposite things about the note.
+    """
+    out = _git("ls-tree", "-r", "--name-only",
+               _json(MARKETPLACE)["plugins"][0]["source"]["sha"])
+    return len(out.stdout.split()) if out.returncode == 0 else None
 
 
 def _needs_checkout() -> None:
@@ -144,39 +178,45 @@ def test_the_option_key_is_one_the_harness_will_accept() -> None:
         assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key), key
 
 
-def test_the_option_is_required_and_says_what_it_is_for() -> None:
-    """`required` is what makes a forgotten `--config` loud.
+def test_the_option_is_optional_and_says_what_it_is_for() -> None:
+    """`required: false`, and it is a trade rather than a relaxation.
 
-    It does not block the install (measured: a warning naming the option and
-    the two ways to set it), which is the right severity — the plugin is inert
-    without it, not broken. A silently optional one would leave an adopter with
-    a plugin that installed cleanly and will never say anything.
+    A required option produces a typed prompt at enable, which is friction on
+    exactly the no-TTY path the install story promises — and it was never a
+    guarantee: a declared default is NOT exported to hook processes when the
+    option is unset (measured), so a required-but-skipped install reached the
+    hook with nothing on either rung anyway. What it bought was a warning; what
+    it cost was a prompt on every scripted install.
 
-    A `default` is declared for the interactive flow, and the wrapper must not
-    depend on it: a declared default is NOT exported to hook processes when the
-    option is unset (measured), so an install that skipped `--config` reaches
-    the hook with nothing on either rung. That state is inert, which is why the
-    warning is the right severity — and it is why the default is a suggestion
-    to the person installing rather than an input to the wrapper.
+    MEASURED on 2.1.241, and the whole decision rests on it: with
+    `required: false`, a value passed as `--config memkitConfig=<path>` still
+    arrives as `CLAUDE_PLUGIN_OPTION_MEMKITCONFIG` in the hook process. If that
+    ever stops being true this option has to go back to required, because the
+    unset case is silent by design and there would be nothing left to make the
+    set case loud.
     """
     option = _json(PLUGIN_MANIFEST)["userConfig"]["memkitConfig"]
-    assert option["required"] is True
+    assert option["required"] is False
     assert option["type"] == "string"
+    assert option["default"].startswith("~/"), option["default"]
     for field in ("title", "description"):
         assert option[field].strip(), field
     # The description is rendered by the harness during `/plugin install`, so
     # it is the first screen a cold adopter reads — and it named
-    # `/memkit:init`, which this payload ships no `commands/` directory for and
-    # `cli.py` lists in `_PENDING`. The adopter runs it, gets nothing, has no
-    # config, and the plugin stays silently inert.
+    # `/memkit:init` while `cli.py` still listed init in `_PENDING`. The
+    # adopter ran it, got nothing, had no config, and the plugin stayed
+    # silently inert.
     #
     # So any command it names in the present tense must exist.
     from memkit.cli import _HANDLERS, _PENDING
 
     described = option["description"]
     named = {n for n in (*_PENDING, *_HANDLERS) if f"/memkit:{n}" in described}
+    assert named, described
     assert named <= set(_HANDLERS), sorted(named - set(_HANDLERS))
-    assert "manual in this build" in described, described
+    # And the sentence that told an adopter to write it by hand is gone, since
+    # a command now does it.
+    assert "manual in this build" not in described, described
 
 
 def test_the_marketplace_entry_pins_a_commit_rather_than_a_branch() -> None:
@@ -241,6 +281,21 @@ def test_the_source_is_one_an_adopter_without_ssh_keys_can_clone() -> None:
 # unbolded to describe what the INSTALLED copy still says — so emphasising that
 # sentence would fail this case with a message about the marketplace pin.
 NOT_YET_INSTALLABLE = "**Not yet installable from this marketplace.**"
+# The other half of the same convention, for the state a repo that HAS shipped
+# is normally in: the pin serves a working plugin and `main` has grown payload
+# since. The README's own Status section defines this marker and uses it.
+FROM_THE_NEXT_RELEASE = "*(from the next release)*"
+# What has to be at the pinned sha for the marketplace to serve an install at
+# all. A payload file `main` added afterwards makes the pin INCOMPLETE, which
+# is a different claim from the pin carrying no plugin.
+INSTALLABLE_CORE = (
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "hooks/hooks.json",
+    "bin/memkit-hook",
+    "bin/lib/common.sh",
+    "src/memkit/memory_prompt_recall.py",
+)
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
@@ -272,6 +327,13 @@ def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
 
     Green today by naming the state we are actually in, and the release commit
     that moves the pin is the one whose own test forces the paragraph out.
+
+    THREE states, not two, because a repo that has shipped once is normally in
+    the third and the two-state version reads it as the first. A pin carrying
+    no plugin at all is "not yet installable"; a pin carrying a working plugin
+    plus a `main` that has grown payload since is the ordinary between-releases
+    state, and the README marks that one *(from the next release)* rather than
+    telling an adopter the marketplace cannot serve them.
     """
     _needs_checkout()
     sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
@@ -280,39 +342,48 @@ def test_the_readme_and_the_pinned_payload_say_the_same_thing() -> None:
         for path in PAYLOAD
     }
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    if all(at_sha.values()):
+    missing = sorted(path for path, ok in at_sha.items() if not ok)
+    if not missing:
         assert NOT_YET_INSTALLABLE not in readme, (
             "the pin now carries the whole payload — the README still says it "
             "does not"
         )
+    elif all(at_sha[path] for path in INSTALLABLE_CORE):
+        assert NOT_YET_INSTALLABLE not in readme, (
+            f"the pin serves a working plugin; {missing} is main moving ahead "
+            "of it, which is not the same claim"
+        )
+        assert FROM_THE_NEXT_RELEASE in readme, (
+            f"main carries payload the pin does not ({missing}) and the README "
+            "no longer marks the divergence"
+        )
     else:
         assert NOT_YET_INSTALLABLE in readme, (
             "the pin carries no plugin payload and the README no longer says "
-            f"so: {sorted(p for p, ok in at_sha.items() if not ok)}"
+            f"so: {missing}"
         )
 
 
-def test_the_uvx_spec_and_the_readme_name_the_same_rev() -> None:
-    """The one route that resolves code from GitHub at run time, and the
-    sentence an adopter reads about it.
+def test_the_docs_quote_the_release_this_payload_is() -> None:
+    """The no-install recipes an adopter TYPES, held to the version this tree
+    ships.
 
-    Unpinned, it resolved whatever `main` held, so a machine on an older
-    release routed checker work through a newer checker with nothing saying so.
-    The README describes it as pinned; that description is only true while the
-    shell agrees, and the two are edited by different hands at different times.
+    Unpinned, `uvx --from git+…/memkit` resolves whatever `main` holds, so
+    somebody checking their store survives an uninstall gets a different build
+    than the one they were running. The rev used to be pinned against a shell
+    constant, which was one of four copies of a spec that had already drifted
+    once. There is no constant now — nothing in `bin/` or `src/` names a rev,
+    because nothing memkit runs is fetched — so the manifest's own version is
+    what the docs are held to, and it is already the thing a release bumps.
+
+    NOT a route this package takes: `--from` names the source and the trailing
+    word names a console script inside it, so no name is resolved from any
+    public index by either line.
     """
-    shell = COMMON_SH.read_text(encoding="utf-8")
-    match = re.search(r'^MEMKIT_UVX_SPEC="([^"]+)"', shell, re.M)
-    assert match, "MEMKIT_UVX_SPEC is not assigned a literal"
-    spec = match.group(1)
-    # A rev, not a bare repository URL — `git+…/memkit` means main.
-    assert "@" in spec.rsplit("/", 1)[-1], spec
-    # EVERY rev the docs quote for this repository, not merely one of them.
-    # Requiring a single match was enough while the README named the spec once;
-    # pinning the `Leaving` recipe gave it a second call site, and a rev can now
-    # go stale in one place while the other keeps the case green. `docs/STORE.md`
-    # carries a third.
-    rev = spec.rsplit("@", 1)[1]
+    manifest = json.loads(
+        (REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    rev = "v" + manifest["version"]
     quoted = {}
     for rel in ("README.md", "docs/STORE.md"):
         text = (REPO / rel).read_text(encoding="utf-8")
@@ -379,14 +450,28 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     quietly losing the half about admission while keeping the inventory.
     """
     note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
-    for subject in (
-        "memkitConfig",
-        "$CLAUDE_PLUGIN_DATA",
-        "MEMKIT_CONFIG",
-        "interpreter",
-        "UserPromptSubmit",
-    ):
-        assert subject in note, subject
+    # IN THE SECTION THAT OWES THE ANSWER, not anywhere in the file. A subject
+    # pinned against the whole document is defeated by a second mention of the
+    # word somewhere else — which is exactly what happened: a sentence about
+    # `memkitConfig` added two sections earlier let the trust-boundary half
+    # drop its own.
+    start = note.index("## Where the trust boundary sits")
+    boundary = note[start : note.index("\n## ", start + 10)]
+    for subject in ("memkitConfig", "$CLAUDE_PLUGIN_DATA", "MEMKIT_CONFIG",
+                    "interpreter"):
+        assert subject in boundary, subject
+    # The COUNT, which is the claim rather than the wording: rung 3 was deleted
+    # because a file in the payload tree is a file the repository can ship, and
+    # a note saying the config is admitted from "a number of places" is a note
+    # that has stopped making the promise this section exists to make.
+    assert "exactly two places" in boundary, boundary[:400]
+    # And the inventory half keeps the one that is its own.
+    # And the inventory half keeps the ones that are its own. `PreToolUse` is
+    # one of them: it is a row in the `## What runs, and when` table, not a
+    # statement about the trust boundary.
+    inventory = note[: note.index("## Where the trust")]
+    for subject in ("UserPromptSubmit", "PreToolUse"):
+        assert subject in inventory, subject
     # The count it states is the count of THIS TREE, not of the currently
     # pinned sha, and the difference is the whole of how a release works here.
     #
@@ -411,6 +496,23 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     assert listed.returncode == 0, listed.stderr
     count = len(listed.stdout.split())
     assert f"**{count} files" in note, (count, "not the number the note states")
+    # ONCE PER TREE. A second copy of the SAME number is a second thing to keep
+    # in step, and the paragraph below the table says the two agree "by
+    # construction" — a claim a hard-coded repeat makes false the first time
+    # either moves. Two trees are described here, so two counts are expected
+    # and a third, or either one twice, is the drift this convicts.
+    pinned = _pinned_file_count()
+    stated = re.findall(r"\b(\d+) files\b", note)
+    if pinned is None:
+        # The pin cannot be read here, so the second count cannot be checked
+        # against anything — but its EXISTENCE still can. Two trees are
+        # described, so: this tree's count exactly once, and at most two
+        # counts in the note. A third is the drift this rule is for.
+        assert stated.count(str(count)) == 1, stated
+        assert len(stated) <= 2, stated
+    else:
+        expected = [str(count)] if pinned == count else [str(count), str(pinned)]
+        assert stated == expected, (stated, expected)
     # Stated ONCE. Both stale figures the final review found were second copies
     # of the total — one in the `.git` row ("on top of the 57"), one closing the
     # reproduce recipe ("returns the same 57") — sitting far from the headline
@@ -420,6 +522,95 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     assert note.count(f"{count} files") == 1, (
         count, [ln for ln in note.splitlines() if f"{count} files" in ln]
     )
+
+
+def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
+    """The rows are the argument. This page's opening line says the case
+    "rests on the exact ones", and a reader who does what it asks — count the
+    categories, check the arithmetic — got 89 against a stated 90, because a
+    commit updated the headline and left the `tests/` row two lines below it.
+
+    Every row is read off the tree here rather than compared to a literal, so
+    the drift that matters is the row disagreeing with what an install puts on
+    the machine, not with a number somebody typed twice.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    tracked = _git("ls-files").stdout.split()
+
+    def under(*prefixes: str) -> int:
+        return sum(1 for f in tracked if f.startswith(prefixes))
+
+    payload = under("bin/", "src/memkit/", "hooks/", ".claude-plugin/", "skills/")
+    tests = under("tests/")
+    prose = under("docs/") + sum(
+        1 for f in tracked if f in ("README.md", "LICENSE", "NOTICE")
+    )
+    rest = len(tracked) - payload - tests - prose
+    rows = {
+        "`bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`, `skills/`": payload,
+        "`tests/`": tests,
+        "`.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files":
+            rest,
+        "`README.md`, `LICENSE`, `NOTICE`, and all of `docs/`": prose,
+    }
+    for label, count in rows.items():
+        assert f"| {label} | {count} |" in note, (label, count, "row is stale")
+    # And the rows are the total, which is the arithmetic the page asks for.
+    assert sum(rows.values()) == len(tracked), rows
+    assert f"**{len(tracked)} files" in note, len(tracked)
+
+
+def test_the_admission_notes_recipe_returns_the_number_it_states() -> None:
+    """This page's whole claim on a reader is checkability: "every number here
+    is read out of the tree" plus a command to run.
+
+    The command resolved `marketplace.json` while the number described this
+    tree, so an adopter doing exactly what the trust document asks — in order
+    to decide whether to trust it — got a different number back from the
+    document's own recipe. The two describe two different trees, and both are
+    worth stating; what they cannot do is share one sentence.
+
+    Self-retiring, like the release markers: the moment the pin names this
+    tree, the two counts agree and the marked sentence about the pinned tree
+    is asserted to be gone.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    here = len(_git("ls-files").stdout.split())
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    pinned = len(_git("ls-tree", "-r", "--name-only", sha).stdout.split())
+
+    def mib(ref: str) -> str:
+        rows = _git("ls-tree", "-r", "-l", ref).stdout.splitlines()
+        total = sum(int(row.split()[3]) for row in rows)
+        return f"{total / 1048576:.1f} MiB"
+
+    # The size is a number of the same kind and had drifted the same way: the
+    # tree was 1.67 MiB while the page said 1.5, and nothing looked.
+    assert mib("HEAD") in note, (mib("HEAD"), "not the size the note states")
+
+    # The recipe that reproduces the headline runs against this tree, which is
+    # what the headline is about.
+    recipe = note.split("## Reproducing these numbers", 1)[1]
+    reproduces_here = recipe.split("```", 2)[1]
+    assert "ls-files" in reproduces_here or "HEAD" in reproduces_here, reproduces_here
+    assert "marketplace.json" not in reproduces_here, reproduces_here
+
+    assert mib(sha) in note, (mib(sha), "not the size the note states for the pin")
+    if here == pinned:
+        # The pin has caught up: one tree, one number, and the paragraph that
+        # existed to explain the gap has to go with it.
+        assert "still names" not in note, note
+        return
+    # While it has not: both numbers stated, the pinned one marked as what an
+    # install gives you today, and the recipe for it kept.
+    assert f"**{here} files" in note, here
+    assert f"{pinned} files" in note, pinned
+    assert "from the next release" in note, "the gap between the two trees is unmarked"
+    assert "marketplace.json" in recipe, "no recipe for the tree an install gets"
+
+
 
 
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:
@@ -792,13 +983,23 @@ def test_every_registered_timeout_matches_the_constant_it_is_paired_with() -> No
     constant pair — sharing the module's single budget would put an internal
     deadline above the harness's kill point.
     """
-    expected = {"UserPromptSubmit": hook.HARNESS_TIMEOUT}
+    expected = {
+        "UserPromptSubmit": (hook.HARNESS_TIMEOUT, hook.BUDGET_SECONDS),
+        "PreToolUse": (hook.TASK_HARNESS_TIMEOUT, hook.TASK_BUDGET_SECONDS),
+    }
     for event, handler in _entries():
         assert event in expected, f"{event} has no declared constant pair"
-        assert handler["timeout"] == expected[event], (event, handler["timeout"])
-    # Both halves of the relation, so this file cannot be edited into agreement
-    # with a budget that no longer sits beneath it.
-    assert hook.BUDGET_SECONDS < hook.HARNESS_TIMEOUT
+        assert handler["timeout"] == expected[event][0], (event, handler["timeout"])
+    # Both halves of the relation, per event, so neither file can be edited into
+    # agreement with a budget that no longer sits beneath it — and so that a
+    # second event cannot be registered against the first event's budget, which
+    # is the failure the pair exists to prevent: an internal deadline above the
+    # harness's kill point never fires, and a killed hook writes no record.
+    for event, (timeout, budget) in expected.items():
+        assert budget < timeout, (event, budget, timeout)
+    assert len({budget for _, budget in expected.values()}) == len(expected), (
+        "two events sharing one budget constant is the sharing this pins against"
+    )
 
 
 def test_the_registration_runs_the_wrapper_and_not_the_hook_directly() -> None:
@@ -809,17 +1010,27 @@ def test_the_registration_runs_the_wrapper_and_not_the_hook_directly() -> None:
         assert handler["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/memkit-hook", handler
 
 
-def test_the_checker_floor_in_the_probe_matches_the_checkers_own_guard() -> None:
-    """KTD13's probe exists to avoid the checker's version guard, so a floor
-    that drifted would route an interpreter straight into the refusal it was
-    picked to avoid. The number lives in two files by necessity: one of them
-    cannot import the other."""
+def test_the_checker_floor_lives_in_one_file_now_that_the_shell_holds_none(
+) -> None:
+    """The floor used to live in two files, because a POSIX-sh probe cannot
+    import python — so the number was written twice and a test held the copies
+    equal.
+
+    The shell no longer probes anything: which interpreter runs the checker is
+    python's own question, answered where the floor already is. So the second
+    copy is gone rather than kept in agreement, and what is pinned now is that
+    it did not come back.
+    """
     guard = (REPO / "src" / "memkit" / "memory_integrity.py").read_text()
     match = re.search(r"sys\.version_info < \((\d+), (\d+)\)", guard)
     assert match, "the checker's version guard moved — this pin cannot see it"
-    probe = COMMON_SH.read_text(encoding="utf-8")
-    assert f"MEMKIT_CHECKER_FLOOR_MAJOR={match.group(1)}" in probe
-    assert f"MEMKIT_CHECKER_FLOOR_MINOR={match.group(2)}" in probe
+    floor = (int(match.group(1)), int(match.group(2)))
+    assert floor == doctor.CHECKER_FLOOR, (doctor.CHECKER_FLOOR, floor)
+    shell = COMMON_SH.read_text(encoding="utf-8")
+    for gone in ("MEMKIT_CHECKER_FLOOR", "MEMKIT_UVX_SPEC", "MEMKIT_CHECKER_CMD",
+                 "MEMKIT_CHECKER_ROUTE", "memkit_resolve_checker",
+                 "memkit_trusted_path", "uvx"):
+        assert gone not in shell, gone
 
 
 # --- the wrappers, as processes ----------------------------------------------
@@ -833,13 +1044,57 @@ def root(tmp_path: Path) -> Path:
     their own tree with `cd "$(dirname $0)/.." && pwd -P`, and `pwd -P` walks
     through a symlinked *directory* component — so a `bin` symlink would send
     every wrapper back to the real repo and quietly test the wrong tree.
+
+    THE PINNED INTERPRETER LIST IS THE CASE'S, not the machine's. The shipped
+    list names five absolute system paths, and whether any of them exists is a
+    fact about the host: a mac has `/usr/bin/python3`, a Linux nix build
+    sandbox has none of the five, and the whole fallback rung therefore
+    refused there while every case that reaches it passed here. Repinned to
+    the python running this suite, an assertion that the fallback answered
+    with a pinned path says the RUNG was consulted rather than that the runner
+    happened to be a mac. Cases that need another pinned state — none at all,
+    or a directory ahead of a file — repin again over this.
+
+    The SHIPPED list is not left unread: `_pinned_pythons()` with no argument
+    is it, and `test_the_shipped_pinned_list_is_absolute_paths_only` holds its
+    shape.
     """
     plugin = tmp_path / "plugin"
     for rel in PAYLOAD:
         dest = plugin / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.symlink_to(REPO / rel)
-    return plugin
+    return _repinned(plugin, [sys.executable])
+
+
+def _repinned(root: Path, pythons: list) -> Path:
+    """`root` with the wrapper's pinned interpreter list replaced.
+
+    A REAL EDIT to a copy of `bin/lib/common.sh`, not an environment override,
+    because the list is deliberately not readable from the environment: it is
+    assigned unconditionally when the library is sourced, so an exported value
+    of the same name is overwritten before anything reads it. That is the
+    property the whole change rests on, and a test knob that punched through it
+    would be the ambient channel back under another name.
+
+    What this buys is the two states a machine with `/usr/bin/python3` on it
+    cannot otherwise be put into: no interpreter anywhere, and an interpreter
+    that is the case's own.
+    """
+    real = (root / "bin" / "lib" / "common.sh").resolve()
+    text = real.read_text(encoding="utf-8")
+    body = "\n".join(str(p) for p in pythons)
+    swapped = re.sub(
+        r'MEMKIT_SYSTEM_PYTHONS="[^"]+"',
+        f'MEMKIT_SYSTEM_PYTHONS="{body}"',
+        text,
+        count=1,
+    )
+    assert swapped != text, "the pinned list was not found to replace"
+    copy = root / "bin" / "lib" / "common.sh"
+    copy.unlink()
+    copy.write_text(swapped, encoding="utf-8")
+    return root
 
 
 def _shim(directory: Path, name: str, body: str) -> Path:
@@ -862,6 +1117,24 @@ SHIM_BODY = """
   echo "MEMKIT_CHECKER_CMD=${MEMKIT_CHECKER_CMD-<unset>}"
   echo "PYTHONPATH=${PYTHONPATH-<unset>}"
 } > "$SHIM_OUT"
+# The same argv again, losslessly. `$*` joins on a space, so it cannot tell
+# `--search "flange torque"` from `--search flange torque` — and neither can
+# `sh -x`, on the shell that matters (see `Shim.argv`). NUL-separated because
+# it is the one byte an argument cannot contain. The backslash is DOUBLED
+# because this body is a python string before it is a script: a lone one is an
+# octal escape, and what reached the shim was a real NUL where the format
+# specifier should have been, so the loop wrote nothing at all.
+#
+# Guarded on the variable being SET, unlike the block above, and the
+# difference is one this file paid for: `> "$SHIM_OUT"` with nothing in it
+# fails and writes nothing, while `> "$SHIM_OUT.argv"` succeeds against a
+# file called `.argv` in whatever directory the case put the shim's cwd —
+# which was the repository. A shim reached by a case that sets no SHIM_OUT
+# records nothing rather than leaving a file behind.
+if [ -n "${SHIM_OUT:-}" ]; then
+  : > "$SHIM_OUT.argv"
+  for _arg do printf '%s\\0' "$_arg" >> "$SHIM_OUT.argv"; done
+fi
 exit 0
 """
 
@@ -878,7 +1151,17 @@ def _run(
 
 
 class Shim:
-    """A PATH holding one fake `python3`, and a reader for what it saw.
+    """One fake `python3`, and a reader for what it saw.
+
+    Reached the way a real install reaches its own interpreter — recorded in
+    the config, which is what `memkit init` writes — because the wrappers no
+    longer search the session's PATH for one. `_config_file` puts the record
+    in for every case that has a shim beside it. A case with no config
+    therefore cannot observe through this at all, and reads the wrapper's own
+    decision off `sh -x` instead (`_decided_config`).
+
+    Its directory is still the whole of PATH in every case, which keeps the
+    other claim honest: the wrappers need no external command.
 
     A class rather than attributes bolted onto a returned function: the shim's
     directory and its output file are things a case reaches for, and hanging
@@ -917,15 +1200,161 @@ class Shim:
             if "=" in line
         )
 
+    def argv(self) -> list[str]:
+        """The argv the shim was handed, with its word boundaries intact.
+
+        Read from the CHILD rather than from `sh -x`, and the difference is
+        not stylistic: the trace cannot carry word boundaries on every shell.
+        bash quotes a traced word containing a space, dash does not, and dash
+        is `/bin/sh` on the Linux runners — so `--search "flange torque"` and
+        `--search flange torque` trace identically there, and a parser reading
+        either one back reports three words. MEASURED both ways: the child's
+        argv is the same two words under both shells.
+        """
+        raw = self.out.with_name(self.out.name + ".argv").read_bytes()
+        return raw.decode().split("\0")[:-1]
+
 
 @pytest.fixture
 def shimmed(tmp_path: Path) -> Shim:
     return Shim(tmp_path)
 
 
+def _pinned_pythons(root: Path | None = None) -> list[str]:
+    """The wrapper's fallback list, read out of the wrapper rather than typed
+    a second time here.
+
+    With a `root`, the list of the tree the case actually ran — which the
+    `root` fixture repins to this build's own python, so `in _pinned_pythons(
+    root)` means the fallback rung answered rather than that the host owns one
+    of the five shipped paths. With none, the shipped list an adopter gets.
+    """
+    common = COMMON_SH if root is None else root / "bin" / "lib" / "common.sh"
+    text = common.read_text(encoding="utf-8")
+    body = re.search(r'MEMKIT_SYSTEM_PYTHONS="([^"]+)"', text)
+    assert body, "the pinned interpreter list is not assigned a literal"
+    found = [line.strip() for line in body.group(1).splitlines() if line.strip()]
+    assert all(p.startswith("/") for p in found), found
+    return found
+
+
+def test_the_shipped_pinned_list_is_absolute_paths_only() -> None:
+    """What an adopter's install falls back to, read from the shipped file
+    rather than from the copy the cases repin.
+
+    Absolute on every entry is the property the whole rung rests on — a
+    slashless word sends `exec` to the session's PATH and a relative one to
+    the session's directory, which is the lookup this list exists to replace —
+    and `_pinned_pythons` holds it. This is where it is held about the SHIPPED
+    file, because every other caller now passes a repinned tree.
+
+    CANONICAL too, and that one is only checkable here. A value arriving from
+    a config is put through `memkit_path_refusal`, which rejects `//`, `/./`,
+    `/../` and the process-relative trees; the pinned list is exec'd without
+    passing through it, so an entry spelled `/usr/bin/../bin/python3` or
+    `/proc/self/cwd/python3` would be honoured, and the second is the exact
+    outcome the absoluteness rule exists to prevent.
+    """
+    shipped = _pinned_pythons()
+    assert shipped, "the shipped fallback list is empty"
+    assert len(set(shipped)) == len(shipped), shipped
+    for path in shipped:
+        assert not re.search(r"//|/\./|/\.\./", path + "/"), path
+        assert not path.startswith(("/proc/", "/dev/fd/")), path
+
+
+class Decided:
+    """What a wrapper DECIDED, read off `sh -x`.
+
+    `config` is the value it settled `MEMKIT_CONFIG` to (or `<unset>`),
+    `interpreter` the path it settled on, `handoff` the argv it exec'd.
+    """
+
+    __slots__ = ("config", "interpreter", "handoff", "returncode", "stderr")
+
+    def __init__(self, out) -> None:
+        self.returncode = out.returncode
+        self.stderr = out.stderr
+        self.config = "<unset>"
+        self.interpreter = ""
+        self.handoff: list = []
+        for line in out.stderr.splitlines():
+            stripped = line.lstrip("+ ")
+            if stripped == "unset MEMKIT_CONFIG":
+                self.config = "<unset>"
+            elif stripped.startswith("MEMKIT_CONFIG="):
+                self.config = stripped.split("=", 1)[1]
+            elif stripped.startswith("PY="):
+                self.interpreter = stripped[3:]
+            elif stripped.startswith("exec "):
+                # Split the way a shell would, which is right only as far as
+                # the trace is quoted — and that is the shell's choice, not
+                # this file's. bash quotes a traced word containing a space;
+                # dash, which is `/bin/sh` on the Linux runners, prints it
+                # bare. So `handoff` reads word boundaries a multi-word
+                # argument does not survive, and a case that needs them exact
+                # observes the child instead (`Shim.argv`). Every case reading
+                # `handoff` therefore passes single-word arguments.
+                self.handoff = shlex.split(stripped[5:])
+
+
+def _decide(
+    root: Path, wrapper: str, env: dict, *args, cwd=None, expect_rc: int | None = 0
+) -> Decided:
+    """Run one wrapper under `sh -x` and read the decisions it made.
+
+    The shim cannot answer this question any more when NO config resolves. The
+    wrappers stopped searching the session's PATH for an interpreter — a lookup
+    a checkout steers, whose answer was exec'd on every prompt — and a config
+    is what records one, so a case with no config has no way to put its own
+    python in front of the wrapper. That is the point of the change, not a gap
+    in it.
+
+    So the decision is read where it is MADE. `sh -x` traces every command the
+    shell evaluated, `export` and `unset` alike, which is a stronger reading
+    than the shim's: it sees the wrapper's own act rather than the environment
+    a child happened to receive.
+    """
+    out = _run(root / "bin" / wrapper, *args, env=env, shell_trace=True, cwd=cwd)
+    if expect_rc is not None:
+        assert out.returncode == expect_rc, out.stderr
+    assert "MEMKIT_CONFIG" in out.stderr, (
+        "the trace never mentions the variable, so this reads nothing"
+    )
+    return Decided(out)
+
+
+def _decided_config(
+    root: Path, wrapper: str, env: dict, *args, cwd=None, expect_rc: int | None = 0
+) -> str:
+    decided = _decide(
+        root, wrapper, env, *args, cwd=cwd, expect_rc=expect_rc
+    )
+    # The wrapper reached the hand-off, so the decision is the one it acted on
+    # rather than one it made before refusing for another reason.
+    assert decided.handoff, decided.stderr[-600:]
+    return decided.config
+
+
 def _config_file(path: Path, **extra) -> Path:
+    """A config the wrappers can act on, shaped like one `memkit init` wrote.
+
+    That means it RECORDS AN INTERPRETER. The wrappers no longer resolve one
+    over the session's PATH — a lookup a checkout steers, whose answer was
+    exec'd on every prompt — so the shim fixture's python is reachable only
+    the way a real install reaches its own: written into the config. Found by
+    walking up from the config's own directory rather than passed at
+    thirty-odd call sites, because every case that has a shim keeps it in the
+    same place under `tmp_path`.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     blob = {"schema": hook.SCHEMA, "roots": {}, "stores": []}
+    if "interpreter" not in extra:
+        for parent in path.parents:
+            shim = parent / "shimbin" / "python3"
+            if shim.is_file():
+                blob["interpreter"] = str(shim)
+                break
     blob.update(extra)
     path.write_text(json.dumps(blob))
     return path
@@ -974,15 +1403,16 @@ def test_a_config_inside_the_payload_is_not_a_rung(root, tmp_path, shimmed) -> N
     poisons what is served, and the interpreter half decides what runs at all,
     before anything has parsed a byte of JSON.
     """
-    _config_file(root / "memkit.json", interpreter=str(tmp_path / "evil"))
+    evil = tmp_path / "evil"
+    evil.write_text("#!/bin/sh\ntouch " + str(tmp_path / "EVIL-RAN") + "\n")
+    evil.chmod(0o755)
+    _config_file(root / "memkit.json", interpreter=str(evil))
     env = shimmed()
     assert "CLAUDE_PLUGIN_ROOT" not in env and "CLAUDE_PLUGIN_DATA" not in env
-    assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
-    seen = shimmed.read()
-    assert seen["MEMKIT_CONFIG"] == "<unset>", seen["MEMKIT_CONFIG"]
-    # The shim on PATH answered, i.e. the payload's file named no interpreter
-    # either. A rung reading it would have made this run the other one.
-    assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    assert _decided_config(root, "memkit-hook", env) == "<unset>"
+    # And the interpreter half: the payload's file named one and it did not
+    # run, so the file was not read as a config at all.
+    assert not (tmp_path / "EVIL-RAN").exists()
 
 
 def test_the_rungs_are_tried_in_order(root, tmp_path, shimmed) -> None:
@@ -1031,13 +1461,18 @@ def test_every_wrapper_answers_the_config_question_identically(
         CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
         MEMKIT_CONFIG=str(tmp_path / "ambient.json"),
     )
-    assert _run(root / "bin" / wrapper, *args, env=answered).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == str(config), wrapper
+    # No return code here: two of the three wrappers reach a real subcommand
+    # under a real interpreter now, and `memkit doctor` on a fixture profile
+    # legitimately exits 1. What is asserted is the wrapper's own decision and
+    # that it got as far as making the hand-off.
+    assert _decided_config(
+        root, wrapper, answered, *args, expect_rc=None
+    ) == str(config), wrapper
 
-    shimmed.out.unlink()
     ambient = shimmed(MEMKIT_CONFIG=str(_config_file(tmp_path / "ambient.json")))
-    assert _run(root / "bin" / wrapper, *args, env=ambient).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", wrapper
+    assert _decided_config(
+        root, wrapper, ambient, *args, expect_rc=None
+    ) == "<unset>", wrapper
 
 
 def test_no_rung_leaves_the_config_unset_rather_than_inherited(
@@ -1049,8 +1484,7 @@ def test_no_rung_leaves_the_config_unset_rather_than_inherited(
     inheriting it would make the plugin serve stores nobody pointed it at.
     """
     env = shimmed(MEMKIT_CONFIG=str(_config_file(tmp_path / "ambient.json")))
-    assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+    assert _decided_config(root, "memkit-hook", env) == "<unset>"
 
 
 def test_an_unset_data_dir_never_becomes_a_root_level_path(
@@ -1076,7 +1510,49 @@ def test_an_unset_data_dir_never_becomes_a_root_level_path(
         # builds is prefixed by an absolute directory, so the bare root-level
         # path can only appear through the empty expansion.
         assert not re.search(r"(?<![\w/])/memkit\.json\b", out.stderr), out.stderr
-        assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+        assert _decided_config(root, "memkit-hook", env, cwd=cwd) == "<unset>"
+
+
+def test_the_interpreter_the_hook_runs_is_never_found_by_searching(
+    root, tmp_path, shimmed
+) -> None:
+    """The every-prompt path's LAST process start, and who chooses it.
+
+    With no config, or with one that records no interpreter, the wrapper used
+    to exec whatever `command -v python3` returned over the session's own
+    unfiltered PATH — on every prompt, before any rule in this package existed
+    to have an opinion. A checkout that exports a `.direnv/bin` or ships a
+    `node_modules/.bin` therefore named the program that read every prompt.
+
+    Three claims, and the third is the one that makes the other two hold:
+    a python on PATH is not consulted; a pinned absolute path is; and the
+    pinned list itself is not readable from the environment.
+    """
+    hostile = _shim(tmp_path / "hostile", "python3", "echo pwned")
+    env = shimmed()
+    env["PATH"] = os.pathsep.join([str(hostile.parent), str(shimmed.dir)])
+    decided = _decide(root, "memkit-hook", env)
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
+    assert str(hostile) != decided.interpreter
+
+    # And the list is not an environment input. Exporting the name is the
+    # obvious way to try to steer it, and the assignment in the library runs
+    # unconditionally when it is sourced, so an inherited value never survives
+    # to be read.
+    steered = dict(env, MEMKIT_SYSTEM_PYTHONS=str(hostile))
+    assert _decide(root, "memkit-hook", steered).interpreter == decided.interpreter
+
+    # And a pinned candidate that is a DIRECTORY is skipped, not exec'd.
+    # `[ -x ]` alone is true of one — the execute bit means "searchable" — and
+    # `exec` on it dies 126, which on UserPromptSubmit hands the user their
+    # prompt back. The list is a list of files.
+    a_directory = tmp_path / "libexec-bin"
+    a_directory.mkdir()
+    real = _shim(tmp_path / "real", "python3", "exit 0")
+    skipped = _decide(
+        _repinned(root, [a_directory, real]), "memkit-hook", shimmed()
+    )
+    assert skipped.interpreter == str(real), skipped.interpreter
 
 
 def test_a_recorded_interpreter_wins_over_the_path(root, tmp_path, shimmed) -> None:
@@ -1096,18 +1572,28 @@ def test_a_recorded_interpreter_wins_over_the_path(root, tmp_path, shimmed) -> N
     assert marker.is_file(), "the PATH interpreter answered instead of the recorded one"
 
 
-def test_an_unusable_recorded_interpreter_falls_back_to_the_path(
+def test_an_unusable_recorded_interpreter_falls_back_to_a_pinned_python(
     root, tmp_path, shimmed
 ) -> None:
     """An interpreter recorded at init and gone by now — a venv deleted, a
     homebrew python upgraded out from under its path — must not take retrieval
-    down with it."""
+    down with it.
+
+    What it falls back TO is a fixed list of absolute system paths, not a
+    lookup: the fallback used to be `command -v python3` over the session's own
+    PATH, so an install whose recorded interpreter had moved handed the process
+    that reads every prompt to whatever the checkout put in front.
+    """
     config = _config_file(
         tmp_path / "gone.json", interpreter=str(tmp_path / "no" / "such" / "python3")
     )
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-    assert _run(root / "bin" / "memkit-hook", env=env).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == str(config)
+    decided = _decide(root, "memkit-hook", env)
+    assert decided.config == str(config)
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
+    # The shim is on PATH and is NOT what answered, which is the whole point.
+    assert str(shimmed.dir) not in decided.interpreter, decided.interpreter
+    assert not shimmed.out.exists()
 
 
 def test_a_relative_recorded_interpreter_is_not_a_path_into_the_session_dir(
@@ -1128,12 +1614,12 @@ def test_a_relative_recorded_interpreter_is_not_a_path_into_the_session_dir(
     _shim(session / "interp", "python3", f'echo ran > "{marker}"')
     config = _config_file(tmp_path / "rel.json", interpreter="./interp/python3")
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, out.stderr
+    decided = _decide(root, "memkit-hook", env, cwd=session)
     assert not marker.exists(), "a config named an interpreter inside the cwd"
-    assert shimmed.read()["argv"] == str(
-        root / "src" / "memkit" / "memory_prompt_recall.py"
-    )
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
+    assert decided.handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], decided.handoff
 
 
 def test_a_recorded_interpreter_the_path_cannot_answer_still_exits_zero(
@@ -1155,16 +1641,23 @@ def test_a_recorded_interpreter_the_path_cannot_answer_still_exits_zero(
         assert found, name
         (tools / name).symlink_to(found)
     session = tmp_path / "session"
-    _shim(session, "python3", "exit 0")
+    marker = tmp_path / "session-python-ran.txt"
+    _shim(session, "python3", f'echo ran > "{marker}"')
     config = _config_file(tmp_path / "bare.json", interpreter="python3")
     env = {
         "PATH": str(tools),
         "HOME": str(tmp_path / "home"),
         "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config),
     }
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, (out.returncode, out.stderr)
-    assert "no python3" in out.stderr
+    decided = _decide(root, "memkit-hook", env, cwd=session)
+    # The field is refused BY SHAPE and the pinned fallback answers, so the
+    # slashless word never reaches `exec` at all — which is where the 127 came
+    # from, and where a `python3` sitting in the session's own directory would
+    # have been found instead.
+    assert not marker.exists(), "the session directory's python3 answered"
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
+    assert "is not an absolute path" in decided.stderr, decided.stderr[-400:]
+    assert "pinned system python" in decided.stderr, decided.stderr[-400:]
 
 
 def test_a_directory_recorded_as_the_interpreter_is_not_exec_d(
@@ -1185,12 +1678,12 @@ def test_a_directory_recorded_as_the_interpreter_is_not_exec_d(
     a_directory.mkdir()
     config = _config_file(tmp_path / "dir.json", interpreter=str(a_directory))
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-    out = _run(root / "bin" / "memkit-hook", env=env)
-    assert out.returncode == 0, (out.returncode, out.stderr)
-    # The PATH probe answered, which is the fallback the refusal promises.
-    assert shimmed.read()["argv"] == str(
-        root / "src" / "memkit" / "memory_prompt_recall.py"
-    )
+    decided = _decide(root, "memkit-hook", env)
+    # The pinned fallback answered, which is what the refusal promises.
+    assert decided.interpreter in _pinned_pythons(root), decided.interpreter
+    assert decided.handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], decided.handoff
     # And every wrapper, because each one has its own exit vocabulary and 126
     # is in none of them.
     for wrapper, args in (
@@ -1220,10 +1713,8 @@ def test_a_relative_config_path_is_not_a_path_into_the_session_dir(
     _shim(session, "python3", f'echo used > "{marker}"')
     _config_file(session / "memkit.json", interpreter=str(session / "python3"))
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG="memkit.json")
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, out.stderr
+    assert _decided_config(root, "memkit-hook", env, cwd=session) == "<unset>"
     assert not marker.exists(), "the session directory named the interpreter"
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
 
 
 # --- the dependency contract -------------------------------------------------
@@ -1470,18 +1961,18 @@ def test_a_config_this_process_cannot_open_says_so_rather_than_going_quiet(
     """
     shut = _config_file(tmp_path / "shut.json")
     shut.chmod(0o000)
+    env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(shut))
     try:
-        out = _run(
-            root / "bin" / "memkit-hook",
-            env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(shut)),
-        )
+        out = _run(root / "bin" / "memkit-hook", env=env)
+        # The hook did not go on to use it — the rung was abandoned, not
+        # retried.
+        decided = _decided_config(root, "memkit-hook", env)
     finally:
         shut.chmod(0o644)
     assert out.returncode == 0, (out.returncode, out.stderr)
     assert "cannot be read" in out.stderr, out.stderr
     assert "does not exist" not in out.stderr, out.stderr
-    # The hook did not go on to use it — the rung was abandoned, not retried.
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
+    assert decided == "<unset>"
 
 
 def test_a_relative_plugin_data_dir_is_not_a_path_into_the_session_dir(
@@ -1505,10 +1996,8 @@ def test_a_relative_plugin_data_dir_is_not_a_path_into_the_session_dir(
         session / "reldata" / "memkit.json", interpreter=str(session / "python3")
     )
     env = shimmed(CLAUDE_PLUGIN_DATA="reldata")
-    out = _run(root / "bin" / "memkit-hook", env=env, cwd=session)
-    assert out.returncode == 0, out.stderr
+    assert _decided_config(root, "memkit-hook", env, cwd=session) == "<unset>"
     assert not marker.exists(), "the session directory named the interpreter"
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>"
 
     # And a tilde is expanded rather than refused, exactly as rung 1 does it —
     # the value is typed by a person or written by a harness, not expanded by
@@ -1574,26 +2063,19 @@ def test_a_config_rung_admits_only_what_the_interpreter_rule_admits(
         ("option", shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=noncanonical)),
         ("data dir", shimmed(CLAUDE_PLUGIN_DATA=f"{tmp_path}/./data")),
     ):
-        out = _run(root / "bin" / "memkit-hook", env=env)
-        assert out.returncode == 0, (rung, out.stderr)
-        assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", rung
+        assert _decided_config(root, "memkit-hook", env) == "<unset>", rung
 
     # The class itself, one spelling per run, through the option.
-    out = _run(
-        root / "bin" / "memkit-hook",
-        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=value),
-    )
-    assert out.returncode == 0, out.stderr
-    assert shimmed.read()["MEMKIT_CONFIG"] == "<unset>", value
+    assert _decided_config(
+        root, "memkit-hook", shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=value)
+    ) == "<unset>", value
 
     # And a canonical absolute path is still served, or this is "refuse
     # everything" wearing a rule's clothes.
     good = _config_file(tmp_path / "good" / "memkit.json")
-    assert _run(
-        root / "bin" / "memkit-hook",
-        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(good)),
-    ).returncode == 0
-    assert shimmed.read()["MEMKIT_CONFIG"] == str(good)
+    assert _decided_config(
+        root, "memkit-hook", shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(good))
+    ) == str(good)
 
 
 def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> None:
@@ -1625,15 +2107,12 @@ def test_a_process_relative_interpreter_is_refused(root, tmp_path, shimmed) -> N
     ):
         config = _config_file(tmp_path / "proc.json", interpreter=value)
         env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
-        out = _run(root / "bin" / "memkit-hook", env=env)
-        assert out.returncode == 0, out.stderr
-        assert value in out.stderr, (value, out.stderr)
+        decided = _decide(root, "memkit-hook", env)
+        assert value in decided.stderr, (value, decided.stderr)
         assert (
-            "session stands in" in out.stderr or "canonical" in out.stderr
-        ), (value, out.stderr)
-        assert shimmed.read()["argv"] == str(
-            root / "src" / "memkit" / "memory_prompt_recall.py"
-        )
+            "session stands in" in decided.stderr or "canonical" in decided.stderr
+        ), (value, decided.stderr)
+        assert decided.interpreter in _pinned_pythons(root), decided.interpreter
     # And a canonical absolute path is still honoured, or the guard above is
     # just "refuse everything".
     honoured = _shim(tmp_path / "real", "python3", "exit 0")
@@ -1692,12 +2171,13 @@ def test_every_shared_message_names_the_wrapper_that_is_running(
     produced by the name in the message rather than by the code.
     """
     empty = {"PATH": str(tmp_path / "nothing"), "HOME": str(tmp_path)}
+    bare = _repinned(root, [tmp_path / "nowhere"])
     for wrapper, args in (
         ("memkit-hook", ()),
         ("memkit-recall", ("--search", "x")),
         ("memkit", ("doctor",)),
     ):
-        out = _run(root / "bin" / wrapper, *args, env=empty)
+        out = _run(bare / "bin" / wrapper, *args, env=empty)
         assert out.stderr.startswith(f"{wrapper}: "), (wrapper, out.stderr)
 
 
@@ -1711,10 +2191,14 @@ def test_no_interpreter_is_a_named_refusal_that_still_exits_zero(
     runs this wrapper directly — reads it.
     """
     env = {"PATH": str(tmp_path / "empty"), "HOME": str(tmp_path)}
-    out = _run(root / "bin" / "memkit-hook", env=env)
+    out = _run(_repinned(root, [tmp_path / "nowhere"]) / "bin" / "memkit-hook", env=env)
     assert out.returncode == 0, out.stderr
     assert out.stdout == ""
-    assert "no python3" in out.stderr and "3.9" in out.stderr
+    assert "no interpreter is recorded" in out.stderr, out.stderr
+    assert "3.9" in out.stderr and "memkit init" in out.stderr, out.stderr
+    # The refusal names the paths it tried, so an adopter can see whether their
+    # python is simply somewhere this list does not reach.
+    assert str(tmp_path / "nowhere") in out.stderr, out.stderr
 
 
 def _code_only(line: str) -> str:
@@ -1798,8 +2282,8 @@ def test_the_sourced_library_can_end_no_wrapper() -> None:
     Measured: a top-level `[ … ] && exit 1` planted in the library made
     `bin/memkit-hook` return 1 — the non-zero `UserPromptSubmit` exit the hook
     wrapper's whole contract is about, which blocks the turn — and the entire
-    suite stayed green. The library is also where this round put new refusal
-    paths, so it is exactly the file gaining reasons to want one.
+    suite stayed green. The library is also where the refusal paths live, so
+    it is exactly the file that keeps gaining reasons to want an exit.
 
     A NEGATIVE pin rather than `_exit_literals`, which asserts a non-empty set:
     the right number of exits here is none.
@@ -2050,7 +2534,11 @@ def test_the_search_wrapper_says_it_could_not_start_rather_than_that_you_erred(
     empty = {"PATH": str(tmp_path / "nothing"), "HOME": str(tmp_path)}
     cannot_start = [
         # no interpreter anywhere
-        (root / "bin" / "memkit-recall", empty, ("--search", "x")),
+        (
+            _repinned(root, [tmp_path / "nowhere"]) / "bin" / "memkit-recall",
+            empty,
+            ("--search", "x"),
+        ),
         # cannot locate the tree
         (_half_delivered(tmp_path, "memkit-recall", library=False) / "bin"
          / "memkit-recall", shimmed(), ("--search", "x")),
@@ -2064,7 +2552,14 @@ def test_the_search_wrapper_says_it_could_not_start_rather_than_that_you_erred(
             wrapper, out.returncode, out.stderr
         )
     # And the one branch that really is a wrong invocation keeps saying so.
-    bare = _run(root / "bin" / "memkit-recall", env=shimmed())
+    # A config, because the wrapper reaches the shim through the field an
+    # install records rather than through a lookup — and without one, the real
+    # interpreter would answer and report inertness, which is a third thing.
+    config = _config_file(tmp_path / "recall.json")
+    bare = _run(
+        root / "bin" / "memkit-recall",
+        env=shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config)),
+    )
     assert bare.returncode == hook.EXIT_ERROR, bare.stderr
 
 
@@ -2077,12 +2572,11 @@ def test_arguments_to_the_hook_wrapper_are_ignored_not_forwarded(
     hook into a CLI whose argparse exits 2 — a blocked turn, every turn.
     """
     env = shimmed()
-    out = _run(root / "bin" / "memkit-hook", "--search", "anything", env=env)
-    assert out.returncode == 0
-    assert shimmed.read()["argv"] == str(
-        root / "src" / "memkit" / "memory_prompt_recall.py"
-    )
-    assert "ignoring 2 argument" in out.stderr
+    decided = _decide(root, "memkit-hook", env, "--search", "anything")
+    assert decided.handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], decided.handoff
+    assert "ignoring 2 argument" in decided.stderr
 
 
 def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
@@ -2100,12 +2594,14 @@ def test_the_wrapper_resolves_its_tree_through_a_doubled_separator(
     """
     doubled = f"{root}//bin/memkit-hook"
     out = subprocess.run(
-        [doubled], capture_output=True, text=True, timeout=60,
+        [SH, "-x", doubled], capture_output=True, text=True, timeout=60,
         env=shimmed(), stdin=subprocess.DEVNULL,
     )
     assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["argv"] == str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    handoff = Decided(out).handoff
+    assert handoff[1:] == [
+        str(root / "src" / "memkit" / "memory_prompt_recall.py")
+    ], handoff
 
 
 def test_what_argv0_a_shebang_script_receives_is_measured_not_assumed(
@@ -2162,7 +2658,7 @@ def test_what_argv0_a_shebang_script_receives_is_measured_not_assumed(
     ],
 )
 def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
-    root, shimmed, wrapper, args
+    root, tmp_path, shimmed, wrapper, args
 ) -> None:
     """`bin/` is on the agent's PATH while the plugin is enabled, so a bare
     `memkit …` has to find its own tree with no directory in argv[0] to walk up
@@ -2187,8 +2683,18 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
     answered with a different install on the same PATH would run that install's
     files, which is the wrong-tree failure this derivation exists to avoid, and
     it is invisible in an exit code.
+
+    Read off the SHIM, through a config, rather than off `sh -x`. Two things
+    the trace cannot do: it cannot carry the word boundaries of
+    `--search "flange torque"` on a shell whose xtrace does not quote, and it
+    left the case reaching for whichever pinned system python the host
+    happened to have — which is none of them inside a Linux build sandbox.
+    Recording an interpreter is what an install does, so the case reaches its
+    own python the way an adopter's does.
     """
-    env = shimmed()
+    env = shimmed(
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(_config_file(tmp_path / "byname.json"))
+    )
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     out = subprocess.run(
         [SH, wrapper, *args],
@@ -2196,15 +2702,15 @@ def test_a_wrapper_invoked_by_name_from_the_path_still_finds_its_tree(
         cwd=str(root / "bin"), stdin=subprocess.DEVNULL,
     )
     assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
+    handed = shimmed.argv()
     if wrapper == "memkit":
         # The dispatcher runs the package rather than the hook file, so the
         # tree shows up as the PYTHONPATH it prepends.
-        assert seen["argv"] == "-m memkit.cli doctor", seen["argv"]
-        assert seen["PYTHONPATH"].split(":")[0] == str(root / "src")
+        assert handed == ["-m", "memkit.cli", "doctor"], handed
+        assert shimmed.read()["PYTHONPATH"] == str(root / "src"), shimmed.read()
     else:
         hook_file = root / "src" / "memkit" / "memory_prompt_recall.py"
-        assert seen["argv"] == " ".join((str(hook_file), *args)), seen["argv"]
+        assert handed == [str(hook_file), *args], handed
 
 
 def test_the_search_wrapper_refuses_rather_than_blocking_on_stdin(root, shimmed):
@@ -2232,76 +2738,42 @@ def test_the_dispatcher_runs_the_package_from_this_tree(root, shimmed) -> None:
     with it.
     """
     inherited = "/opt/an/adopters/own/packages"
-    out = _run(root / "bin" / "memkit", "doctor", env=shimmed(PYTHONPATH=inherited))
-    assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["argv"] == "-m memkit.cli doctor"
-    assert seen["PYTHONPATH"] == f"{root / 'src'}:{inherited}"
-    assert seen["MEMKIT_PLUGIN"] == "1"
+    out = _run(
+        root / "bin" / "memkit", "doctor",
+        env=shimmed(PYTHONPATH=inherited), shell_trace=True,
+    )
+    assert Decided(out).handoff[1:] == ["-m", "memkit.cli", "doctor"], out.stderr[-400:]
+    assert f"PYTHONPATH={root / 'src'}:{inherited}" in out.stderr, out.stderr[-400:]
+    assert "MEMKIT_PLUGIN=1" in out.stderr
 
     # And with nothing inherited it is just this tree, or the wrapper is
     # prepending to an empty string and leaving a stray separator.
-    plain = _run(root / "bin" / "memkit", "doctor", env=shimmed())
-    assert plain.returncode == 0, plain.stderr
-    assert shimmed.read()["PYTHONPATH"] == str(root / "src")
+    plain = _run(root / "bin" / "memkit", "doctor", env=shimmed(), shell_trace=True)
+    assert f"\n+ PYTHONPATH={root / 'src'}\n" in plain.stderr, plain.stderr[-400:]
 
 
-def test_the_checker_route_is_python_when_one_meets_the_floor(
+def test_the_dispatcher_exports_no_checker_route_for_anything_to_read(
     root, tmp_path, shimmed
 ) -> None:
-    env = shimmed()
-    # A `python3` that claims 3.12 by exiting 0 for the floor probe, and
-    # records for the shim contract otherwise.
-    _shim(
-        shimmed.dir, "python3",
-        'case "$*" in *version_info*) exit 0 ;; esac\n' + SHIM_BODY,
-    )
-    out = _run(root / "bin" / "memkit", "doctor", env=env)
-    assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["MEMKIT_CHECKER_ROUTE"] == "python"
-    assert seen["MEMKIT_CHECKER_CMD"].endswith("-m memkit.memory_integrity")
-    # THIS tree's checker, so the checker and the hook are one release.
-    assert seen["MEMKIT_CHECKER_CMD"].startswith(str(shimmed.dir))
+    """The three cases this replaces asserted the VALUES of two variables the
+    dispatcher exported — a route name and a whitespace-joined argv — and the
+    second of those was a command a subcommand then ran. An environment
+    variable choosing the code that runs is not a thing to validate; it is a
+    channel, and this asserts it is closed.
 
-
-def test_the_checker_route_falls_back_to_uvx_below_the_floor(
-    root, tmp_path, shimmed
-) -> None:
-    """The stock-python mac in the success criteria: 3.9.6 everywhere, and a
-    checker that hard-refuses below 3.12. uvx provisions its own interpreter,
-    which is what makes that machine able to run the checker at all."""
-    env = shimmed()
-    _shim(
-        shimmed.dir, "python3",
-        'case "$*" in *version_info*) exit 1 ;; esac\n' + SHIM_BODY,
-    )
-    _shim(shimmed.dir, "uvx", "exit 0")
-    out = _run(root / "bin" / "memkit", "doctor", env=env)
-    assert out.returncode == 0, out.stderr
-    seen = shimmed.read()
-    assert seen["MEMKIT_CHECKER_ROUTE"] == "uvx"
-    assert "git+https://github.com/ak2k/memkit" in seen["MEMKIT_CHECKER_CMD"]
-
-
-def test_no_checker_route_is_a_state_the_dispatcher_reports_rather_than_dies_on(
-    root, tmp_path, shimmed
-) -> None:
-    """`none` must not be fatal HERE. Refusing at this level would take out
-    `--help` and diagnosis — the two things an adopter in that state most needs
-    — on behalf of a subcommand they did not run. The operation that cannot
-    proceed without a checker is the one that refuses by name.
+    The probe that produced them is gone too: it EXECUTED each candidate python
+    it found, over a PATH the session steers, before any python-side rule
+    existed to have an opinion.
     """
-    env = shimmed()
-    _shim(
-        shimmed.dir, "python3",
-        'case "$*" in *version_info*) exit 1 ;; esac\n' + SHIM_BODY,
-    )
-    out = _run(root / "bin" / "memkit", "doctor", env=env)
+    shim = _shim(shimmed.dir, "python3", SHIM_BODY)
+    out = _run(_repinned(root, [shim]) / "bin" / "memkit", "doctor", env=shimmed())
     assert out.returncode == 0, out.stderr
     seen = shimmed.read()
-    assert seen["MEMKIT_CHECKER_ROUTE"] == "none"
-    assert seen["MEMKIT_CHECKER_CMD"] == ""
+    for gone in ("MEMKIT_CHECKER_ROUTE", "MEMKIT_CHECKER_CMD"):
+        assert seen[gone] == "<unset>", (gone, seen[gone])
+    # ANTI-VACUITY: the recorder really does report a variable that IS set, so
+    # `<unset>` above is an observation and not a broken shim.
+    assert seen["MEMKIT_PLUGIN"] == "1", seen["MEMKIT_PLUGIN"]
 
 
 def test_the_dispatcher_refuses_by_name_when_nothing_can_run_it(
@@ -2315,9 +2787,10 @@ def test_the_dispatcher_refuses_by_name_when_nothing_can_run_it(
     """
     from memkit.cli import EXIT_NO_RUNTIME, EXIT_NOT_IN_BUILD, EXIT_USAGE
 
-    out = _run(root / "bin" / "memkit", "doctor", env={"PATH": str(tmp_path / "none")})
+    bare = _repinned(root, [tmp_path / "nowhere"])
+    out = _run(bare / "bin" / "memkit", "doctor", env={"PATH": str(tmp_path / "none")})
     assert out.returncode == EXIT_NO_RUNTIME
-    assert "no python3" in out.stderr
+    assert "no interpreter is recorded" in out.stderr, out.stderr
 
     # Every non-zero code this wrapper can produce, against the table an agent
     # reads. A shell script is the one place a new exit code can appear with
@@ -2352,7 +2825,10 @@ COMMANDISH = re.compile(r"(?<![\w./-])(memkit|mem[a-z0-9]+-[a-z0-9-]+)(?![\w./-]
 # `memkit-init` turns the case below red, and one line added to a list turns it
 # green with the bad advice still printed. There is nothing to add a line to
 # now, and the equality below says so out loud.
-NOT_A_COMMAND = {hook.FRAME_TAG}
+# The frame's delimiter, which is not a command. Matched by STEM because both
+# frames now suffix it with a per-run nonce, so the exception cannot be a
+# literal without silently ceasing to excuse the thing it is for.
+NOT_A_COMMAND = re.compile(rf"{re.escape(hook.FRAME_TAG)}(-[0-9a-f]+)?")
 
 
 def _corpus(tmp_path: Path, **extra) -> Path:
@@ -2430,7 +2906,7 @@ def _surfaces(
             CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(tmp_path / "absent.json"),
         ),
         "dispatcher help": run(dispatcher, "--help"),
-        "dispatcher refusal": run(dispatcher, "doctor"),
+        "dispatcher init manifest": run(dispatcher, "init", "--dry-run"),
     }
 
 
@@ -2460,8 +2936,10 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
     # here, and the case would then go on passing by no longer looking at the
     # one thing it is for. Anything else that needs excusing is a defect in the
     # scrape's SHAPE, which is a change somebody has to argue for.
-    assert {hook.FRAME_TAG} == NOT_A_COMMAND, NOT_A_COMMAND
-    assert NOT_A_COMMAND.isdisjoint(shipped | {hook.SEARCH_BINARY}), NOT_A_COMMAND
+    assert NOT_A_COMMAND.fullmatch(hook.FRAME_TAG), NOT_A_COMMAND.pattern
+    assert NOT_A_COMMAND.fullmatch(hook._PROMPT_FRAME_TAG), hook._PROMPT_FRAME_TAG
+    excused = {n for n in shipped | {hook.SEARCH_BINARY} if NOT_A_COMMAND.fullmatch(n)}
+    assert not excused, excused
 
     # Three config states, because they reach the name through three different
     # routes and a fix can cover one without the others: a config that omits
@@ -2494,10 +2972,12 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         surfaces = _surfaces(root, tmp_path / state.split()[0], config, broken)
         named: set[str] = set()
         for surface, text in surfaces.items():
-            found = set(COMMANDISH.findall(text))
-            assert found <= shipped | NOT_A_COMMAND, (
-                state, surface, sorted(found - shipped - NOT_A_COMMAND), text
-            )
+            found = {
+                name
+                for name in COMMANDISH.findall(text)
+                if not NOT_A_COMMAND.fullmatch(name)
+            }
+            assert found <= shipped, (state, surface, sorted(found - shipped), text)
             named |= found
         # Anti-vacuity at the STATE rather than at each surface: with no
         # config the hook is inert by construction and `--debug-config` reports
@@ -2515,11 +2995,16 @@ def test_every_command_this_channel_prints_is_one_it_ships(root, tmp_path) -> No
         else:
             # PRE-INIT, and the command must still name `--config`. A bare
             # `memkit-recall --search` answers `inert`, exit 3, in the shell
-            # the dispatcher runs in — and the refusal beside it says exit 3
+            # the dispatcher runs in — and the exit table beside it says exit 3
             # means "no config", which is the one conclusion the `--config`
             # interpolation exists to prevent. There is no path to fill in
             # yet, so it carries the placeholder the README uses.
-            refusal = surfaces["dispatcher refusal"]
+            #
+            # The DISPATCHER HELP is where that lands now. It used to be a
+            # pending subcommand's refusal; with both subcommands landed, the
+            # description `--help` prints is the surface a pre-init adopter
+            # meets a command name on, and it is built by the same helper.
+            refusal = surfaces["dispatcher help"]
             assert "memkit-recall" in refusal, refusal
             if config is None:
                 # The pre-init state specifically. A config that RAISES cannot
@@ -2608,10 +3093,12 @@ def test_the_advertised_command_runs_from_the_agents_bash_tool(
     assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr, advertised[0])
     assert "flange_torque_" in out.stdout, out.stdout
 
-    # And EVERY backticked command the dispatcher's two surfaces hand out —
-    # not the one that was fixed. These are the first things an agent probing a
-    # fresh install touches, and each of them is a command it will paste.
-    for args in (("doctor",), ("--help",)):
+    # And EVERY backticked command the dispatcher hands out — not the one that
+    # was fixed. `--help` is the surface: it is the cheapest probe an agent
+    # makes of a fresh install, and every command it prints is one that will be
+    # pasted. The pending-subcommand refusals used to be a second such surface
+    # and are gone with the last pending name.
+    for args in (("--help",),):
         surface = _run(
             root / "bin" / "memkit", *args, env={**env, "PATH": os.environ["PATH"]}
         )
@@ -2738,7 +3225,7 @@ def test_the_release_procedure_is_written_down_and_reachable() -> None:
     """
     note = (REPO / "docs" / "RELEASING.md").read_text(encoding="utf-8")
     for subject in ("two pull requests", "cannot name its own sha", "squash",
-                    "marketplace.json", "MEMKIT_UVX_SPEC", "from the next release",
+                    "marketplace.json", "plugin.json", "from the next release",
                     "gate:shape", "hatch-vcs"):
         assert subject in note, subject
     # The tag goes on the release-state commit, which is the instruction the
@@ -2902,7 +3389,7 @@ def test_the_silent_gates_section_names_every_gate_the_hook_applies() -> None:
     # The cross-check command is reachable where the reader is standing, and
     # the section says plainly that the CLI is not subject to the prompt gates.
     assert '"$RECALL" --config <your config> --search' in section
-    assert "applies fewer\ngates than the hook" in section
+    assert "applies\nfewer gates than the hook" in section
 
 
 def _number_word(n: int) -> str:
@@ -3083,10 +3570,11 @@ def test_the_verification_block_checks_the_installed_path() -> None:
 def test_the_config_location_is_not_a_cache_directory() -> None:
     """The config is the one file in this design that nothing regenerates.
 
-    `memkit init` is not in this build, so a purged cache directory returns the
-    install to inert permanently — and the README tells the reader, two
-    sections from where it used to put the file, that everything under
-    `~/.cache/memory-recall/` is disposable.
+    `memkit init` can write one again, but only where the adopter consents to
+    it a second time — and the README tells the reader, two sections from where
+    the file used to live, that everything under `~/.cache/memory-recall/` is
+    disposable. A config under a purged cache directory is an install that goes
+    inert on a cache clear with nothing on screen to say why.
     """
     default = _json(PLUGIN_MANIFEST)["userConfig"]["memkitConfig"]["default"]
     assert "/.cache/" not in default, default
@@ -3332,18 +3820,21 @@ def test_a_whitespace_only_search_cli_does_not_take_down_the_dispatcher(
     real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")}
     for value in ("   ", "\t", " \n "):
         config = _config_file(tmp_path / "ws.json", search_cli=value)
-        for args in (("--help",), ("doctor",)):
+        for args in (("--help",), ("doctor", "--check", "platform")):
             out = _run(
                 root / "bin" / "memkit", *args,
                 env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config)},
             )
             assert "IndexError" not in out.stderr, (value, args, out.stderr)
-            assert "memkit-recall" in (out.stdout + out.stderr), (value, args)
-
-            # And OFF the plugin channel, which is where the value is actually
-            # honoured: on the plugin channel the advertised command is this
-            # channel's own, so the config's whitespace never reaches the
-            # split that raised.
+        # The command NAME is rendered by the description, which is what every
+        # invocation builds and what `--help` prints. A whitespace-only value
+        # is truthy, so the config keeps it and the default is never applied —
+        # and a description that interpolated it would tell an agent to run
+        # nothing at all, which is worse than naming the wrong binary.
+            # And OFF the plugin channel, which is where the value is
+            # actually honoured: on the plugin channel the advertised command
+            # is this channel's own, so the config's whitespace never reaches
+            # the split that raised.
             direct = subprocess.run(
                 ["python3", "-m", "memkit.cli", *args],
                 capture_output=True, text=True, timeout=120,
@@ -3354,7 +3845,23 @@ def test_a_whitespace_only_search_cli_does_not_take_down_the_dispatcher(
                 },
             )
             assert "IndexError" not in direct.stderr, (value, args, direct.stderr)
-            assert "memory-recall" in (direct.stdout + direct.stderr), (value, args)
+
+        # The command NAME is rendered by the description, which every
+        # invocation builds and which `--help` prints. A whitespace-only value
+        # is truthy, so the config keeps it and the default is never applied —
+        # and a description that interpolated it would tell an agent to run
+        # nothing at all, which is worse than naming the wrong binary.
+        helped = _run(
+            root / "bin" / "memkit", "--help",
+            env={**real, "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG": str(config)},
+        )
+        assert "memkit-recall" in helped.stdout, (value, helped.stdout)
+        off_channel = subprocess.run(
+            ["python3", "-m", "memkit.cli", "--help"],
+            capture_output=True, text=True, timeout=120,
+            env={**real, "MEMKIT_CONFIG": str(config), "PYTHONPATH": str(REPO / "src")},
+        )
+        assert "memory-recall" in off_channel.stdout, (value, off_channel.stdout)
 
 
 def test_the_help_epilog_carries_every_exit_code_this_binary_can_produce(
@@ -3372,8 +3879,8 @@ def test_the_help_epilog_carries_every_exit_code_this_binary_can_produce(
     real = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
     rendered = _run(root / "bin" / "memkit-recall", "--help", env=real).stdout
     # OVER the constants, which is what the epilog's own comment claims of
-    # itself — a hand-written list of five is the drift it says it prevents,
-    # and it is what let the code this round added go unlisted.
+    # itself. A hand-written list is the drift it says it prevents, and it is
+    # how a code an agent branches on comes to have no row to look up.
     codes = {
         value
         for name, value in vars(hook).items()
@@ -3510,3 +4017,1118 @@ def test_the_plugin_marker_is_absent_without_the_wrapper(tmp_path) -> None:
     )
     assert out.returncode == hook.EXIT_INERT
     assert "MEMKIT_PLUGIN" not in out.stdout
+
+
+def test_every_outcome_the_readme_publishes_has_a_reason_doctor_can_render(
+) -> None:
+    """The two halves of the *Why nothing appeared* triage, pinned together.
+
+    The prose table is the best-tested writing in the project and two
+    walkthroughs verified every row; doctor's `gate-outcomes` renders the same
+    names as counts, with the same reasons, out of the adopter's own log. A
+    name that arrived in one and not the other is a histogram row nobody can
+    read, or a documented outcome the mechanized table silently omits — and the
+    vocabulary grows without a version bump, so the drift is the normal case
+    rather than the exceptional one.
+
+    `dup-registration` is in both, and the two `trust:` outcomes are in
+    neither: they are the marker's vocabulary, not the log's.
+    """
+    from memkit.cli_doctor import OUTCOME_REASONS
+
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("**The outcome vocabulary.**")
+    table = readme[start : readme.index("\n## ", start)]
+    published = {
+        name
+        for row in re.findall(r"^\| (.+?) \|", table, re.M)
+        for name in re.findall(r"`([a-z][a-z:-]*)`", row)
+        if not name.startswith("trust:")
+    }
+    assert "injected" in published and "gate:short" in published, sorted(published)
+    # EQUALITY, in both directions. A name in the prose and not in the
+    # histogram is a documented outcome doctor silently omits; a name in the
+    # histogram and not in the prose is a row an adopter meets with no
+    # explanation anywhere.
+    assert published == set(OUTCOME_REASONS), (
+        sorted(published - set(OUTCOME_REASONS)),
+        sorted(set(OUTCOME_REASONS) - published),
+    )
+
+
+def test_every_index_outcome_the_emitter_defines_has_a_row_in_the_readme() -> None:
+    """The index-state vocabulary's third pin, and the one an adopter reads.
+
+    Same defect as the one above, in a second vocabulary: `truncated` shipped
+    with a doctor arm missing and the README carrying it, so the README was
+    the superset and the machine-readable half the stale one. Equality in both
+    directions, derived from the emitter's constants — a name in the code and
+    not in the prose is an outcome an adopter meets with no explanation
+    anywhere; a name in the prose and not in the code is a state nothing can
+    produce.
+
+    `BUILD_SCHEMA` is the record's version rather than an outcome, and it is
+    an int, which is the discriminator: an outcome is a string.
+    """
+    from memkit import memory_prompt_recall as hook
+
+    defined = {
+        value
+        for name, value in vars(hook).items()
+        if name.startswith("BUILD_") and isinstance(value, str)
+    }
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("Today it is", readme.index("**Two rules for anything"))
+    para = readme[start : readme.index("\n\n", start)]
+    published = set(re.findall(r"`([a-z]+)`", para))
+    assert defined == published, (
+        sorted(defined - published),
+        sorted(published - defined),
+    )
+
+    # And the one outcome that means "indexed INCOMPLETELY" names BOTH of the
+    # causes the emitter can raise it for. It builds two different reason
+    # strings under this one name and they send a reader to different places:
+    # out of budget converges over the following runs, over the per-file cap
+    # never does. A gloss naming only the budget sends the owner of a single
+    # oversize memory hunting a corpus that is too large.
+    gloss = para[para.index("`truncated`") :]
+    gloss = gloss[: gloss.index("`busy`")].lower()
+    assert "budget" in gloss, gloss
+    assert "cap" in gloss, gloss
+
+
+# --- the two skills ----------------------------------------------------------
+
+SKILLS = REPO / "skills"
+
+
+def _frontmatter(path: Path) -> dict:
+    """The SKILL.md frontmatter as a flat mapping. Deliberately not a YAML
+    parser: these files are hand-written and small, and a dependency to read
+    two of them is a dependency in the payload."""
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("---\n"), path
+    block = text.split("---\n", 2)[1]
+    out: dict = {}
+    key = ""
+    for line in block.splitlines():
+        if line.startswith(" ") and key:
+            out[key] += " " + line.strip()
+        elif ":" in line:
+            key, _, value = line.partition(":")
+            key = key.strip()
+            out[key] = value.strip()
+    return out
+
+
+def test_both_skills_are_there_and_declare_what_the_harness_reads(root) -> None:
+    """`Skills (2)` on a real install, measured on 2.1.241. A skill the harness
+    does not register is a command an agent was told to reach for and cannot.
+
+    Against the STAGED payload rather than the repository, because that is what
+    an adopter receives: a skill in the working tree and not in the payload
+    list is a skill the install does not carry, and `Skills (0)` is what the
+    harness then reports.
+    """
+    for name in ("doctor", "init"):
+        assert (root / "skills" / name / "SKILL.md").is_file(), name
+        path = SKILLS / name / "SKILL.md"
+        assert path.is_file(), path
+        front = _frontmatter(path)
+        assert front["name"] == name
+        assert len(front["description"]) > 80, front["description"]
+        # The description is what a model matches on, so it has to say when to
+        # reach for it and not only what it is.
+        assert "Use " in front["description"], front["description"]
+
+
+def test_init_is_not_model_invocable_and_doctor_is() -> None:
+    """init writes files. A model may not decide to run it, and the harness key
+    that enforces that is the one thing standing between a two-turn consent
+    handshake and a one-turn mutation."""
+    assert _frontmatter(SKILLS / "init" / "SKILL.md")[
+        "disable-model-invocation"
+    ] == "true"
+    assert "disable-model-invocation" not in _frontmatter(
+        SKILLS / "doctor" / "SKILL.md"
+    )
+
+
+def test_every_allowed_tools_entry_pins_an_exact_argument_shape() -> None:
+    """An open-ended prefix over `memkit` pre-approves `init --confirm` from a
+    doctor grant. `:*` is the narrowest form that admits a digest and nothing
+    else, and it is used on exactly the one entry that needs it.
+    """
+    grants = {}
+    for name in ("doctor", "init"):
+        raw = _frontmatter(SKILLS / name / "SKILL.md")["allowed-tools"]
+        grants[name] = [entry.strip() for entry in raw.split("), Bash(")]
+    doctor_entries = _frontmatter(SKILLS / "doctor" / "SKILL.md")["allowed-tools"]
+    # A prefix over `memkit doctor` and not over `memkit`: it admits `--json`,
+    # `--config <path>` and `--check <id>` — the two follow-ups the report's
+    # own remedies ask for — and cannot reach `init`, which is the subcommand
+    # that writes. An exact-string grant left the one agent-actor remedy that
+    # names a next command naming one this skill could not issue.
+    assert doctor_entries == (
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit doctor:*)"
+    ), doctor_entries
+    assert "init" not in doctor_entries
+
+    init_entries = _frontmatter(SKILLS / "init" / "SKILL.md")["allowed-tools"]
+    # ONE entry, and it is the turn that writes nothing.
+    #
+    # `--confirm` is deliberately absent. A prefix grant over it let the whole
+    # handshake happen inside one turn — run the dry-run, read the digest out
+    # of the model's own tool result, and apply it with `--wire-claude-md` and
+    # `--auto-dream-off` attached — writing to the user's `CLAUDE.md` and
+    # `settings.json` with no message they ever saw. The permission prompt on
+    # the writing call is the only part of this consent the harness enforces
+    # rather than the model observing.
+    #
+    # The read-only turn IS a prefix match, and the asymmetry used to run the
+    # other way: the body tells the agent to pass four flags, and an exact
+    # grant dropped it into a prompt for using one of them on the turn that
+    # writes nothing.
+    assert init_entries == (
+        "Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*)"
+    ), init_entries
+    assert "--confirm" not in init_entries, init_entries
+    # No bare prefix anywhere: `Bash(.../memkit:*)` or `Bash(.../memkit *)`
+    # would make the doctor grant cover every subcommand this binary has.
+    for name, entries in grants.items():
+        for entry in entries:
+            assert "/bin/memkit doctor" in entry or "/bin/memkit init" in entry, (
+                name, entry
+            )
+            assert not entry.rstrip(")").endswith("/bin/memkit"), (name, entry)
+
+
+def test_the_doctor_skill_says_to_relay_the_report_rather_than_re_derive_it():
+    """The most reliable way to produce a confident wrong answer about an
+    install is to attach a plausible summary to a correct report: the reader
+    then has two accounts and no way to tell which was measured."""
+    body = (SKILLS / "doctor" / "SKILL.md").read_text(encoding="utf-8")
+    assert "verbatim" in body
+    assert "summarise it" in body
+    assert "re-derive" in body
+    # The branching rule, in the fields an agent actually reads.
+    assert "actor" in body and "terminal" in body
+    assert "zero `FAIL`" in body
+    for status in doctor.STATUSES:
+        assert status in body, status
+
+
+def test_every_flag_the_init_skill_documents_is_inside_a_grant() -> None:
+    """A skill that tells the agent to pass a flag and then leaves it outside
+    the pre-approval is a handshake with a permission prompt in the middle of
+    it — on the one skill where the two turns are the whole of the consent."""
+    body = (SKILLS / "init" / "SKILL.md").read_text(encoding="utf-8")
+    grants = [
+        entry.strip().removeprefix("Bash(").rstrip(")")
+        for entry in _frontmatter(SKILLS / "init" / "SKILL.md")[
+            "allowed-tools"
+        ].split("), Bash(")
+    ]
+    prefixes = [g[: -len(":*")] for g in grants if g.endswith(":*")]
+    assert prefixes, grants
+    documented = set(re.findall(r"^- `(--[a-z-]+)(?: [A-Z]+)?`", body, re.M))
+    assert documented >= {"--store", "--config", "--wire-claude-md"}, documented
+    for flag in documented:
+        # Every documented flag has to be reachable from at least one prefix
+        # grant: appended to it, the command is still inside the pattern.
+        assert any(
+            f"{prefix} {flag}".startswith(prefix) for prefix in prefixes
+        ), flag
+    # And the read-only turn is one of the prefixes, which is the half that was
+    # missing.
+    assert any(p.endswith("init --dry-run") for p in prefixes), prefixes
+
+
+def test_the_init_skill_describes_both_turns_and_the_codes_it_can_return():
+    """A two-turn handshake a skill does not describe is one an agent will
+    collapse into a single turn."""
+    body = (SKILLS / "init" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--dry-run" in body and "--confirm" in body
+    assert "new message" in body or "new turn" in body or "in a new" in body
+    assert "writes nothing" in body
+    # And the writing turn says why it will ask, so an agent meeting the
+    # prompt does not read it as a misconfiguration to route around.
+    assert "not pre-approved" in body
+    assert "Do not work around the prompt" in body
+    from memkit import cli_init
+
+    for code in (cli_init.EXIT_OK, cli_init.EXIT_USAGE, cli_init.EXIT_REFUSED,
+                 cli_init.EXIT_INCOMPLETE):
+        assert f"| {code} |" in body, code
+
+
+def _doctor_remedies() -> list[str]:
+    """Every `remedy` string doctor can emit, read out of the source.
+
+    Statically rather than by running it, because a run only reaches the
+    states that machine is in — and the remedies that matter most belong to
+    the states an adopter's machine is in and this one is not.
+    """
+    import ast
+
+    tree = ast.parse((REPO / "src" / "memkit" / "cli_doctor.py").read_text())
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else ""
+        if name != "Check":
+            continue
+        remedy = None
+        if len(node.args) >= 4:
+            remedy = node.args[3]
+        for keyword in node.keywords:
+            if keyword.arg == "remedy":
+                remedy = keyword.value
+        if remedy is None:
+            continue
+        # Only the literal parts. An f-string's interpolations are paths and
+        # counts, not command names, and this is a check about command names.
+        pieces = []
+        for part in (
+            remedy.values if isinstance(remedy, ast.JoinedStr) else [remedy]
+        ):
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                pieces.append(part.value)
+        if pieces:
+            out.append("".join(pieces))
+    return out
+
+
+def test_no_doctor_remedy_tells_a_terminal_to_run_a_plugin_binary(root) -> None:
+    """The channel-correct-command invariant, on the third reader-facing
+    surface.
+
+    `memkit-recall` exists — it is in the plugin's `bin/` — so a scrape that
+    checks a command against what the plugin SHIPS passes it happily. The
+    failure is about WHERE: that directory is added to the agent's PATH and to
+    nothing else, so the same command typed into a terminal exits 127. Doctor's
+    remedies are relayed to a person, which puts them under the same rule as
+    the README's own terminal-facing sections.
+    """
+    plugin_binaries = {
+        entry.name
+        for entry in (root / "bin").iterdir()
+        if entry.is_file() and os.access(entry, os.X_OK)
+    }
+    assert "memkit-recall" in plugin_binaries
+
+    remedies = _doctor_remedies()
+    # Non-vacuity: there ARE remedies, and enough of them that a scrape reading
+    # none would be visibly wrong.
+    assert len(remedies) >= 10, len(remedies)
+    offenders = []
+    for remedy in remedies:
+        for command in re.findall(r"`([^`\n]+)`", remedy):
+            head = command.split()[0] if command.split() else ""
+            if head in plugin_binaries:
+                offenders.append((command, remedy))
+    assert not offenders, offenders
+    # And the scrape really does see backticked commands in remedy text.
+    assert any("`" in remedy for remedy in remedies), remedies
+
+
+def test_every_doctor_check_id_appears_in_the_readmes_triage_table() -> None:
+    """The mechanized table and the prose table, pinned to each other.
+
+    `## Why nothing appeared` is the best-tested writing in this project — two
+    walkthroughs verified every row — and doctor is the thing that runs it for
+    you. A check id renamed on one side and not the other leaves an adopter
+    reading a report whose rows the page does not explain, or a page citing a
+    check that no longer exists.
+
+    Not every id has a triage row and that is deliberate: `channel`, `build`
+    and `uninstall-story` answer questions the table is not about. What may
+    never happen is a row citing an id that is not real.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("## Why nothing appeared")
+    section = readme[start : readme.index("\n## ", start + 10)]
+    cited = set(re.findall(r"`([a-z][a-z-]*)`", section)) & set(doctor.CHECK_IDS)
+    assert cited, section[:400]
+    # Every id the table cites is one doctor really emits.
+    bogus = {
+        name
+        for name in re.findall(r"^\| \*\*[^|]+\| `([a-z-]+)` \|", section, re.M)
+    } - set(doctor.CHECK_IDS)
+    assert not bogus, sorted(bogus)
+    # And the rows that carry an id are all of them: a row with none is a
+    # silent state the report cannot name.
+    rows = re.findall(r"^\| \*\*[^|]+\|([^|]*)\|", section, re.M)
+    assert len(rows) >= 12, len(rows)
+    assert all(row.strip().startswith("`") for row in rows), [
+        row for row in rows if not row.strip().startswith("`")
+    ]
+    # The line that told a reader doctor was not in this build is gone.
+    assert "would run this list for you, is not in this build" not in readme
+
+
+def test_the_block_the_docs_show_is_the_block_the_hook_writes(tmp_path) -> None:
+    """The 559-byte thing that enters every prompt was described three times
+    across these pages and never shown once.
+
+    Regenerated here rather than trusted: a pasted block is prose the moment
+    the emitter moves, and this one is quoted as evidence about what an install
+    puts in front of a model. `<store>` stands in for the absolute path, and
+    `XXXXXXXX` for the frame's nonce — the two substitutions, and the second
+    is forced: the delimiter carries eight hex digits drawn per RUN, so a
+    byte-for-byte quote of a real one is a block no later run can reproduce.
+    Normalising it keeps the comparison exact everywhere the emitter is
+    deterministic, which is everything the block says including the `lines=`
+    count the opener declares.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    out = subprocess.run(
+        ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py")],
+        input=json.dumps(
+            {
+                "session_id": "docblock",
+                "prompt": "why do sprocket backlash and flange torque matter "
+                "after a gearbox rebuild",
+            }
+        ),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": str(home),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "MEMKIT_CONFIG": str(REPO / "tests" / "fixtures" / "memkit.json"),
+        },
+    )
+    assert out.returncode == 0, out.stderr
+    corpus = str(REPO / "tests" / "fixtures" / "corpus" / "project")
+    emitted = out.stdout.replace(corpus, "<store>").strip()
+    drawn = re.search(r"<(" + hook.FRAME_TAG + r"-[0-9a-f]+)[ >]", emitted)
+    assert drawn, emitted[:80]
+    # Non-vacuity: the nonce really was drawn, so normalising it is not
+    # quietly erasing a delimiter that had stopped carrying one.
+    assert len(drawn.group(1)) == len(hook.FRAME_TAG) + 1 + hook.FRAME_NONCE_BYTES * 2
+    placeholder = hook.FRAME_TAG + "-" + "X" * (hook.FRAME_NONCE_BYTES * 2)
+    emitted = emitted.replace(drawn.group(1), placeholder)
+    assert emitted.startswith("<" + placeholder + " "), emitted[:80]
+
+    admission = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    shown = re.search(
+        r"```\n(<" + re.escape(placeholder) + r"[^\n]*>\n.*?</"
+        + re.escape(placeholder) + r">)\n```",
+        admission,
+        re.S,
+    )
+    assert shown, "no pointer block in the admission note"
+    assert shown.group(1) == emitted, (
+        "the block in docs/ADMISSION.md is not what the hook writes",
+        shown.group(1),
+        emitted,
+    )
+
+
+def test_a_claim_about_a_command_the_pin_cannot_serve_carries_the_marker() -> None:
+    """The `## Status` convention, enforced where it matters most.
+
+    This page describes `main`; the marketplace installs a release. An adopter
+    who reads "run /memkit:init" and installs the pin gets a plugin with no
+    such skill and no way to know why — which is the exact failure the marker
+    convention exists to prevent, on the one command the quick start now leads
+    with.
+
+    Self-retiring: once the pin carries the skill, the marker must go, and this
+    is what says so.
+    """
+    _needs_checkout()
+    sha = _json(MARKETPLACE)["plugins"][0]["source"]["sha"]
+    at_pin = (
+        _git("cat-file", "-e", f"{sha}:skills/init/SKILL.md").returncode == 0
+    )
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("**3. Run `/memkit:init`")
+    first_mention = readme[start : start + 200]
+    if at_pin:
+        assert FROM_THE_NEXT_RELEASE not in first_mention, (
+            "the pin now carries the skill — the marker is stale"
+        )
+    else:
+        assert FROM_THE_NEXT_RELEASE in first_mention, first_mention
+
+
+def test_no_doctor_remedy_names_a_slash_command_off_the_plugin_channel() -> None:
+    """Skills ship only in the plugin payload, so `/memkit:init` is a command a
+    nix or pip adopter's harness does not have — and the rollout runbook sends
+    the nix operator to doctor first.
+
+    The sibling scrape above matches command HEADS that are plugin binary
+    names, so it never saw a slash command. This is the same invariant on the
+    surface the channel split was built for: a remedy that guessed would send
+    an adopter to a command their channel cannot run.
+
+    Over the REMEDY strings, like its sibling — a docstring naming the command
+    it is explaining is prose, and a scrape that could not tell the two apart
+    would be one somebody silences.
+    """
+    hardcoded = [text for text in _doctor_remedies() if "/memkit:" in text]
+    # Exactly one literal survives, and it is inside the branch that has
+    # already tested the channel: `_config_route`'s plugin arm returns before
+    # the non-plugin one is reached. Everything else interpolates
+    # `_init_command`, which asks.
+    unguarded = [
+        text for text in hardcoded
+        if "On this channel it writes the config" not in text
+    ]
+    assert not unguarded, unguarded
+    assert hardcoded, "the scrape sees nothing, so it proves nothing"
+
+
+def test_the_init_remedy_names_a_command_each_channel_has(root) -> None:
+    """Both halves, run rather than read: on the plugin channel the slash
+    command, off it the binary the channel really ships."""
+    from memkit import cli_doctor as doc
+
+    plugin = doc.Machine()
+    off = doc.Machine()
+    saved = os.environ.get(hook.PLUGIN_ENV)
+    try:
+        os.environ[hook.PLUGIN_ENV] = "1"
+        assert doc._init_command(plugin) == "/memkit:init"
+        os.environ.pop(hook.PLUGIN_ENV, None)
+        rendered = doc._init_command(off)
+    finally:
+        if saved is None:
+            os.environ.pop(hook.PLUGIN_ENV, None)
+        else:
+            os.environ[hook.PLUGIN_ENV] = saved
+    assert "/memkit:" not in rendered, rendered
+    assert "memkit init --dry-run" in rendered
+    # And it is a command this channel ships: `memkit` is a console script the
+    # pip and nix installs both put on the adopter's own PATH.
+    assert rendered.split("`")[1].split()[0] == "memkit"
+
+
+def test_every_outcome_the_hook_emits_has_a_reason_and_a_row() -> None:
+    """The EMITTER, pinned to the two readers that were only pinned to each
+    other.
+
+    The README table and doctor's `OUTCOME_REASONS` agree by an equality
+    assertion, and nothing tied either to the code that writes the names. A new
+    outcome could therefore ship and reach an adopter's histogram as `(an
+    outcome this build does not know)` with both readers green — which is the
+    drift the vocabulary's own growth rule says to expect.
+
+    Scraped as literals, which the log's contract already requires of them:
+    "the outcome arrives as a string LITERAL at each call site, because that is
+    what lets the consumer enumerate the vocabulary statically".
+    """
+    from memkit.cli_doctor import OUTCOME_REASONS
+
+    source = (REPO / "src" / "memkit" / "memory_prompt_recall.py").read_text()
+    emitted = set(re.findall(r'done\(\s*"([a-z:-]+)"', source))
+    emitted |= set(re.findall(r'return "(gate:[a-z]+)"', source))
+    # The one conditional call site, whose two names are the delivery split.
+    emitted |= {"injected", "output-lost"}
+    assert len(emitted) >= 12, sorted(emitted)
+
+    # The CLI's own records are not prompt outcomes — they carry
+    # `"concludes": false`, which is the log's published discriminator and what
+    # `_prompt_records` filters on — so they need no histogram row.
+    prompt_outcomes = {name for name in emitted if not name.startswith("cli")}
+    assert prompt_outcomes <= set(OUTCOME_REASONS), sorted(
+        prompt_outcomes - set(OUTCOME_REASONS)
+    )
+
+
+def test_the_search_cli_marks_its_records_as_not_prompt_outcomes(tmp_path) -> None:
+    """The discriminator, measured rather than read.
+
+    `gate-outcomes` counts the per-prompt population, and an adopter who
+    followed the README's own instruction to run the search command would
+    otherwise see their command-line runs inflating a line labelled
+    "last N prompts".
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "MEMKIT_CONFIG": str(REPO / "tests" / "fixtures" / "memkit.json"),
+    }
+    for query in ("flange torque sequence", "zzz nothing matches zzz"):
+        subprocess.run(
+            ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
+             "--search", query],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+    log = home / ".cache" / "memory-recall" / "log.jsonl"
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    assert records, "the search wrote no record, so this proves nothing"
+    for record in records:
+        assert str(record.get("outcome", "")).startswith("cli"), record
+        assert record.get("concludes") is False, record
+        # `cwd` is a PROMPT-path key. The README says a new top-level key may
+        # arrive and does not promise it on every shape, so what makes the
+        # shapes readable is that each one is consistent: a key present on some
+        # command-line records and not others is worse for a downstream reader
+        # than one that is never there.
+        assert "cwd" not in record, record
+
+    from memkit.cli_doctor import _prompt_records
+
+    assert _prompt_records(records) == []
+
+
+def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
+    """The one document written to be checkable has to check out.
+
+    The table said 70 files and 1.3 MiB while its own prose insisted the
+    numbers counted the PIN — where the recipe prints 63 and 1.3 MiB — and
+    `git ls-files` at HEAD prints 70 and 1.8. The headline was right under
+    neither reading, so a reader who did what the document told them to got a
+    different answer from the document.
+    """
+    _needs_checkout()
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    listed = _git("ls-files").stdout.split()
+    assert f"**{len(listed)} files" in note, (len(listed), "not the stated count")
+
+    sizes = _git("ls-tree", "-r", "-l", "HEAD").stdout.splitlines()
+    total = sum(int(line.split()[3]) for line in sizes if line.split()[3] != "-")
+    stated = re.search(r"about ([\d.]+) MiB\*\*", note)
+    assert stated, note[:400]
+    assert abs(float(stated.group(1)) - total / 1048576) < 0.1, (
+        stated.group(1), total / 1048576
+    )
+    # And the recipe names the tree the table counts, rather than one that
+    # answers differently.
+    assert "git ls-files | wc -l" in note
+    # ONCE PER TREE. A second count in prose is a number nobody updates with
+    # the first, and this document's whole claim is that a reader can check it.
+    # The pinned tree is the second one described, and it is a different tree
+    # rather than a repeat — see the note above the same rule in
+    # `test_the_admission_note_answers_what_it_claims_to`.
+    pinned = _pinned_file_count()
+    counts = {int(n) for n in re.findall(r"\b(\d+) files\b", note)}
+    assert len(listed) in counts, counts
+    if pinned is None:
+        # Same reasoning as the sibling rule: the pinned tree's figure is a
+        # second TREE, not a second copy, and it cannot be verified from here.
+        assert len(counts) <= 2, counts
+    else:
+        expected = {len(listed)} if pinned == len(listed) else {len(listed), pinned}
+        assert counts == expected, (counts, expected)
+
+    # The shell line count, which was the one number in this file that was
+    # never re-derived: it said "about 550" while the two files held 658, and
+    # the figure is what somebody decides how much shell to read before
+    # installing. Its recipe is in the same block as the others.
+    shell = sum(
+        len((REPO / rel).read_text(encoding="utf-8").splitlines())
+        for rel in ("bin/memkit-hook", "bin/lib/common.sh")
+    )
+    assert f"**{shell} lines of POSIX" in note, (shell, "not the stated count")
+    assert "wc -l bin/memkit-hook bin/lib/common.sh" in note
+
+
+def test_the_published_sweep_budget_is_the_one_the_code_holds() -> None:
+    """Both documents that publish it, against the live constants.
+
+    ADMISSION.md's first line promises "every number here is read out of the
+    tree at the pinned sha rather than remembered", and this pair was
+    remembered: a commit raised the caps six-fold to shrink convergence and
+    left the sentence saying 500 and 100, where it stayed through two review
+    rounds while README.md next door already said 3000 and 1000. Asserted
+    against `SWEEP_MAX_STATS`/`SWEEP_MAX_UNLINKS` rather than against a
+    literal, so the next bump moves the documents or fails here.
+    """
+    stats, unlinks = hook.SWEEP_MAX_STATS, hook.SWEEP_MAX_UNLINKS
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for name, text in (("ADMISSION.md", note), ("README.md", readme)):
+        found = re.findall(r"(\d+) stats and\s+(\d+)\s+unlinks", text)
+        assert found, (name, "no sweep-budget sentence to check")
+        for pair in found:
+            assert (int(pair[0]), int(pair[1])) == (stats, unlinks), (name, pair)
+
+
+# --- the one path-admission rule, proved over the PAIR ------------------------
+
+
+def _shell_answers(function: str, corpus: list) -> list:
+    """`function` run over `corpus` inside ONE shell, one answer per line.
+
+    One process rather than one per path: the point of a differential test is
+    a corpus wide enough to find the case a reading would miss, and a fork per
+    case puts a ceiling on how wide that can be.
+    """
+    driver = (
+        f'. "{COMMON_SH}"\n'
+        "while IFS= read -r line; do\n"
+        f"  {function}\n"
+        "done\n"
+    )
+    out = subprocess.run(
+        ["sh", "-c", driver],
+        input="\n".join(corpus) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    answers = out.stdout.split("\n")[: len(corpus)]
+    assert len(answers) == len(corpus), (len(answers), len(corpus))
+    return answers
+
+
+def _path_corpus() -> list:
+    """Every short arrangement of the tokens the rule turns on, plus the
+    literals the field produced.
+
+    Generated rather than listed: the failures this exists to catch are the
+    ones a person reading both implementations agrees with themselves about.
+    Newline-free by construction — the driver is line-oriented, and a path
+    with a newline in it is a case neither implementation was written for.
+    """
+    tokens = ("", "/", "a", ".", "..", "~", "proc", "dev", "fd", " ")
+    corpus = [
+        "",
+        "~",
+        "~/",
+        "~/x",
+        "~root/x",
+        "~/../x",
+        "/proc",
+        "/proc/",
+        "/proc/self/cwd/memkit.json",
+        "/procx/a",
+        "/dev/fd",
+        "/dev/fd/",
+        "/dev/fd/3",
+        "/dev/fdx/a",
+        "/a/b",
+        "//",
+        "/.",
+        "/..",
+        "a//b",
+        "/a/./b",
+        "/a/../b",
+        "/a/.b",
+        "/a/..b",
+        "/a/b/.",
+        "/a/b/..",
+        "relative/path",
+        "./relative",
+        "../relative",
+    ]
+    for one in tokens:
+        for two in tokens:
+            for three in tokens:
+                corpus.append(one + two + three)
+                corpus.append("/" + one + two + three)
+    seen = set()
+    unique = []
+    for path in corpus:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def test_the_shell_and_the_python_admit_exactly_the_same_paths() -> None:
+    """ONE admission rule, proved over the pair rather than read twice.
+
+    `bin/lib/common.sh` decides what the hook will READ and what it will EXEC;
+    `memkit init` decides what to WRITE. When those disagree, init writes a
+    config the wrapper then refuses, and the adopter gets a store, a clean
+    integrity check, exit 0 and silence on every prompt — reachable through the
+    option rung, which init trusted and the shell vetted.
+
+    The rule exists twice because the shell cannot import Python and the hook
+    path may not fork a shell. What makes it one rule is this: the same corpus
+    through both, with the same verdict AND the same sentence, or the sweep is
+    red.
+    """
+    from memkit.memory_prompt_recall import path_refusal
+
+    corpus = _path_corpus()
+    answers = _shell_answers(
+        'if _why=$(memkit_path_refusal "$line"); then '
+        "printf 'R\\t%s\\n' \"$_why\"; else printf 'A\\t\\n'; fi",
+        corpus,
+    )
+    disagreements = []
+    for path, answer in zip(corpus, answers):
+        verdict, _, why = answer.partition("\t")
+        mine = path_refusal(path)
+        theirs = why if verdict == "R" else ""
+        if mine != theirs:
+            disagreements.append((path, theirs, mine))
+    assert not disagreements, disagreements[:10]
+    # Non-vacuous in both directions: the corpus really does contain paths the
+    # rule admits and paths it refuses for each of its three reasons.
+    refusals = {path_refusal(p) for p in corpus}
+    assert "" in refusals
+    # One admission plus each of the rule's four refusals.
+    assert len(refusals) == 5, refusals
+
+
+def test_the_shell_and_the_python_expand_home_the_same_way(monkeypatch) -> None:
+    """`os.path.expanduser` is not this rule.
+
+    It expands `~someone/x`, which the shell leaves alone — so the two would
+    admit different paths, and the one that admits more is the one that writes
+    the config.
+    """
+    from memkit.memory_prompt_recall import expand_home
+
+    corpus = [p for p in _path_corpus() if p]
+    home = "/tmp/memkit-home-fixture"
+    env = dict(os.environ, HOME=home)
+    driver = (
+        f'. "{COMMON_SH}"\n'
+        "while IFS= read -r line; do memkit_expand_home \"$line\"; done\n"
+    )
+    out = subprocess.run(
+        ["sh", "-c", driver],
+        input="\n".join(corpus) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+        env=env,
+    )
+    answers = out.stdout.split("\n")[: len(corpus)]
+    monkeypatch.setenv("HOME", home)
+    disagreements = [
+        (path, theirs, expand_home(path))
+        for path, theirs in zip(corpus, answers)
+        if expand_home(path) != theirs
+    ]
+    assert not disagreements, disagreements[:10]
+    assert expand_home("~/x") == home + "/x"
+    assert expand_home("~root/x") == "~root/x"
+
+
+def test_the_checker_probe_never_executes_what_the_session_path_supplied(
+    tmp_path,
+) -> None:
+    """The probe runs each candidate to ask its version, so the lookup that
+    finds it is a lookup that executes it.
+
+    A checkout with a `.direnv/bin/python3.12` therefore got its own program
+    run as the user on every `memkit` invocation — `bin/memkit` calls
+    `memkit_resolve_checker` unconditionally, including for `doctor` and for
+    `init --dry-run`, the two commands the skills pre-approve.
+    """
+    session = tmp_path / "project"
+    (session / ".direnv" / "bin").mkdir(parents=True)
+    marker = tmp_path / "PWNED-probe.txt"
+    shim = session / ".direnv" / "bin" / "python3.12"
+    shim.write_text(f"#!/bin/sh\necho pwned >> {marker}\nexit 0\n", encoding="utf-8")
+    shim.chmod(0o755)
+    env = dict(
+        os.environ,
+        PATH=os.pathsep.join([str(shim.parent), "/usr/bin", "/bin"]),
+        PWD=str(session),
+    )
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+    out = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'. "{COMMON_SH}"\n'
+            "memkit_resolve_checker /usr/bin/false\n"
+            'printf "%s\\n" "$MEMKIT_CHECKER_CMD"\n'
+            'printf "%s\\n" "$PATH"\n',
+        ],
+        capture_output=True, text=True, timeout=120, check=True,
+        cwd=str(session), env=env,
+    )
+    command, path_after = out.stdout.splitlines()[:2]
+    assert not marker.exists(), marker.read_text()
+    assert str(shim) not in command, command
+    # And the filter is the probe's own rule, not a change to what the
+    # subcommand inherits: doctor reports on the PATH the install really has.
+    assert path_after == env["PATH"], (path_after, env["PATH"])
+
+
+def test_the_shell_has_no_second_implementation_of_the_path_rule(
+    tmp_path,
+) -> None:
+    """The parity case this replaces held two implementations of one rule in
+    agreement. There is one now, and the second one is deleted rather than
+    kept honest.
+
+    It could not be made correct in POSIX sh under this project's own
+    zero-external-command rule: no `realpath`, so its filter was a string
+    prefix test; it compared against the LOGICAL `$PWD` where python compares
+    `realpath(getcwd())`; and its success path printed `""`, which POSIX reads
+    as the current directory. Its only consumer was a probe that executed each
+    candidate python it found, and that is gone too.
+    """
+    shell = COMMON_SH.read_text(encoding="utf-8")
+    assert "memkit_trusted_path" not in shell
+    # And nothing else in `bin/` resolves a program by NAME any more, which is
+    # the property the deleted parity case was standing in for. `command -v` on
+    # the wrapper's own `$0` is not that: it locates this file, not a program
+    # to run.
+    for wrapper in ("memkit", "memkit-hook", "memkit-recall"):
+        text = (BIN / wrapper).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "command -v" not in line or line.lstrip().startswith("#"):
+                continue
+            assert '"$_self"' in line, (wrapper, line)
+def test_one_home_expansion_reaches_the_reader_the_commands_hand_paths_to(
+    tmp_path, monkeypatch
+) -> None:
+    """"ONE PREDICATE, because the failure it prevents is two of them" — and
+    `load_config`, ~470 lines below where that is written, still had the other
+    one.
+
+    It is the function `Machine.config()` hands `--config` to on both new
+    commands, so the two disagreed on the same flag: `cli_init._resolve_config`
+    routed the value through `expand_home` while doctor handed the raw value
+    to `load_config`, which called `os.path.expanduser` and so accepted a
+    `~someone/x` the wrapper refuses to read. A doctor reporting on a config
+    the install cannot load is the shape this pair exists to prevent.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "memkit.json").write_text(
+        json.dumps({"schema": hook.SCHEMA, "roots": {}, "stores": []}),
+        encoding="utf-8",
+    )
+    assert hook.load_config("~/memkit.json") is not None
+    # `~someone/x` is the case that separates the two rules. `expanduser`
+    # turns it into an absolute path; the shell, and this reader, leave it
+    # alone — so the file is simply not found.
+    with pytest.raises(hook.ConfigError):
+        hook.load_config("~nobody-here/memkit.json")
+    source = pathlib.Path(hook.__file__).read_text(encoding="utf-8")
+    assert "os.path.expanduser(path)" not in source, (
+        "a second home expansion is back in the module that declares it has one"
+    )
+
+
+def test_the_init_skill_says_where_dry_run_goes_in_the_argv() -> None:
+    """The turn-one grant is a literal prefix.
+
+    `Bash(... init --dry-run:*)` admits an invocation only where `--dry-run`
+    immediately follows `init`, so a model that wrote `init --store PATH
+    --dry-run` — which reads as equally correct — falls outside the grant and
+    raises a permission prompt on the turn this page promises is pre-approved.
+    It fails toward MORE prompting rather than less, which is the safe
+    direction; what it costs is a handshake the user has been told is two
+    turns turning into three.
+    """
+    skill = (REPO / "skills" / "init" / "SKILL.md").read_text(encoding="utf-8")
+    grant = re.search(r"^allowed-tools: (.+)$", skill, re.M)
+    assert grant, skill[:200]
+    assert grant.group(1).strip().endswith("init --dry-run:*)"), grant.group(1)
+    assert "`--dry-run` goes first" in skill
+
+
+def test_the_task_registration_matches_the_subagent_tool_and_nothing_else() -> None:
+    """One `PreToolUse` entry, matched on the Agent tool by name.
+
+    `"Agent"` rather than `"^Agent$"`, and the difference is not cosmetic. The
+    harness picks its matching strategy from the CHARACTERS in the matcher
+    (measured on 2.1.238): a matcher of word characters, `|`, `,`, spaces and
+    hyphens takes an exact-equality branch that first canonicalizes the token
+    through the tool alias table, while anything carrying a regex metacharacter
+    compiles to a RegExp and is tested unanchored. So the plain form is the
+    exact one AND the one that survives a rename — `Task` still dispatches to
+    `Agent` through that table — whereas the anchored form is a literal string
+    that a rename leaves matching nothing, silently.
+
+    Measured both ways on the pinned binary: `Read` and `^Read$` fire, `Rea`
+    and `ead` do not, `Read.*` fires on NotebookEdit-shaped names too.
+    """
+    entries = [(event, h) for event, h in _entries() if event == "PreToolUse"]
+    assert len(entries) == 1, entries
+    groups = _json(HOOKS_JSON)["hooks"]["PreToolUse"]
+    assert len(groups) == 1, groups
+    assert groups[0]["matcher"] == hook.TASK_TOOL, groups[0]
+    assert hook.TASK_TOOL == "Agent"
+    # No metacharacter, or the harness takes the regex branch and the alias
+    # canonicalization that makes this survive a rename never runs.
+    assert re.fullmatch(r"[A-Za-z0-9_|, -]+", groups[0]["matcher"]), groups[0]
+    # And the prompt path's entry stays unmatched — a matcher there would scope
+    # a hook that must see every prompt.
+    for group in _json(HOOKS_JSON)["hooks"]["UserPromptSubmit"]:
+        assert "matcher" not in group, group
+
+
+def test_the_docs_count_the_hooks_the_registration_actually_declares() -> None:
+    """`plugin details` is the only surface that tells an adopter whether
+    registration took, and six places across README.md and docs/ROLLOUT.md
+    certify a number for it. The number moved with this registration and the
+    prose did not, so a correct install failed the reader's first verification
+    step while the install that half-failed passed it.
+
+    Pinned against `hooks.json` rather than against a literal, so the next
+    registration change cannot land without the documentation.
+    """
+    handlers = len(_entries())
+    assert handlers == 2, handlers
+    for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
+        text = path.read_text(encoding="utf-8")
+        assert f"Hooks ({handlers})" in text, path
+        # Every PRESCRIPTIVE statement — the ones a reader checks their own
+        # install against — names the live count. A stale one turns a correct
+        # install into a reported failure at the reader's first verification
+        # step, and certifies the half-registered one as healthy.
+        for stated in re.findall(r"must report Hooks \((\d+)\)", text):
+            assert int(stated) == handlers, (path, stated)
+        for stated in re.findall(r"Hooks \((\d+)\)` is a working install", text):
+            assert int(stated) == handlers, (path, stated)
+        # Every OTHER count that appears has to be talking about a failure —
+        # or about the RELEASE that is currently pinned, which is the second
+        # legitimate thing `Hooks (1)` can mean. `.claude-plugin/marketplace.json`
+        # pins v0.2.1, whose tree registers one hook, and the pin moves in its
+        # own release PR: for the whole window between that merge and this one,
+        # a healthy install reports `Hooks (1)` and this page used to call that
+        # its own failure, sending a correct install to `Reinstall` at the
+        # reader's first verification step. Both readings are here now, marked
+        # per `## Status`.
+        #
+        # Read over a window rather than a line, because the sentence that
+        # names either one wraps and a line-scoped check is a test of the line
+        # breaks.
+        for wrong in (f"Hooks ({n})" for n in range(4) if n != handlers):
+            start = 0
+            while (at := text.find(wrong, start)) != -1:
+                # Tight, because it has to be a claim about THIS mention: the
+                # words have to sit in the same clause, not merely on the same
+                # screen as some other count's explanation.
+                window = text[max(0, at - 90) : at + 90].lower()
+                assert "failure" in window or "pinned release" in window, (
+                    path, wrong, window
+                )
+                start = at + 1
+        # And the marker convention is actually used, or "from the next
+        # release" is a rule the page states and does not follow — which is
+        # how the six sites above came to describe a release that has not
+        # shipped as if it had.
+
+
+def test_the_docs_name_every_build_outcome_and_every_state_file() -> None:
+    """Two inventories a reader builds a sweeper and a dashboard against.
+
+    The `.build` vocabulary is a documented contract — "these are all of them",
+    with a stated rule for the unrecognised ones — and a new outcome that never
+    reaches the list leaves the reader classifying it by the rule instead of by
+    name. The derived-state list is the one an external sweeper is written
+    from: it enumerated one non-index file while this tree writes two, so a
+    sweeper built from it globbed the session ledgers and left every per-spawn
+    one behind.
+    """
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    outcomes = {
+        value
+        for name, value in vars(hook).items()
+        if name.startswith("BUILD_") and isinstance(value, str)
+    }
+    assert len(outcomes) >= 6, outcomes
+    for outcome in outcomes:
+        assert f"`{outcome}`" in text, outcome
+    # The per-spawn ledger, by the prefix a sweeper would glob for.
+    assert f"`{hook.TASK_STATE_PREFIX}<tool-use-id>.json`" in text
+    assert "`<session-uuid>.json`" in text
+
+
+def test_the_docs_state_the_frame_sizes_the_frames_actually_are() -> None:
+    """Both frames' fixed overhead is a documented number a reader subtracts
+    from the 16 KiB refusal bound to work out which of their briefs still get
+    served — and neither figure was pinned by anything, so the two sites
+    describing the subagent block drifted 226 bytes apart inside one commit
+    range while both stayed plausible.
+
+    Fixed part only: `_framed([])` and `_task_framed([])` are the block with no
+    pointer lines, which is what "plus the pointer lines" in each sentence
+    means.
+    """
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    prompt_bytes = len(hook._framed([]).encode())
+    task_bytes = len(hook._task_framed([]).encode())
+    assert f"**{prompt_bytes} bytes fixed**" in text, prompt_bytes
+    assert f"**{task_bytes} bytes fixed**" in text, task_bytes
+    # The subagent figure is stated twice, in the section a reader is pointed
+    # at and in the disclosures, and it is the pair that drifted.
+    assert text.count(str(task_bytes)) >= 2, task_bytes
+    # Anti-vacuity: the two frames are not the same size, so a check that
+    # matched one figure against both would not pass.
+    assert prompt_bytes != task_bytes, (prompt_bytes, task_bytes)
+
+
+def test_the_docs_mark_what_the_pinned_release_does_not_carry_yet() -> None:
+    """The window between merging a registration and shipping it.
+
+    `.claude-plugin/marketplace.json` pins the sha `/plugin install` clones,
+    and that pin moves in its own release PR — so for the whole window between
+    this merge and that one, every adopter who runs Quick start against a
+    marketplace install sees one fewer hook than this page describes. The page
+    defines a convention for exactly that (`## Status`: a behaviour that has
+    landed here and not in a release is marked *(from the next release)*) and
+    the subagent docs shipped without it, calling a correct install a failure
+    and sending the reader to `Reinstall`, which reinstalls the same sha.
+
+    Derived from the pin rather than asserted as a state: the pinned tree is in
+    this repo's own history, so its registration can be counted offline. When
+    the release PR moves the pin the counts agree, this case stops requiring
+    markers, and RELEASING.md item 4's sweep is free to remove them.
+    """
+    pinned = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text())
+    sha = pinned["plugins"][0]["source"]["sha"]
+    shown = subprocess.run(
+        ["git", "-C", str(REPO), "show", f"{sha}:hooks/hooks.json"],
+        capture_output=True, text=True,
+    )
+    if shown.returncode != 0:
+        pytest.skip(f"the pinned sha {sha[:12]} is not in this clone's history")
+    registered = sum(
+        len(group["hooks"])
+        for groups in json.loads(shown.stdout)["hooks"].values()
+        for group in groups
+    )
+    if registered == len(_entries()):
+        return  # the pin carries what this tree registers; nothing to mark
+    for path in (REPO / "README.md", REPO / "docs" / "ROLLOUT.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "from the next release" in text, (path, registered)
+
+
+def test_the_admission_note_names_both_events_it_registers() -> None:
+    """The note is what the README points at for 'what runs on my machine'.
+    Its subject list is asserted by name above; this is the half that a new
+    event silently escapes — the higher-consequence of the two, since it
+    rewrites a tool call rather than printing to a transcript."""
+    note = (REPO / "docs" / "ADMISSION.md").read_text(encoding="utf-8")
+    # The INVENTORY block, not the prose around it: a paragraph can mention an
+    # event while the list a reader counts stays one short, which is the shape
+    # this went wrong in.
+    after = note[note.index("## What runs, and when") :]
+    block = after[after.index("```") + 3 : after.index("```", after.index("```") + 3)]
+    for event, handler in _entries():
+        assert event in block, (event, block)
+        assert f"{handler['timeout']}s" in block, (event, block)
+    assert hook.TASK_TOOL in block, block
+
+
+def test_the_remote_tier_counts_hooks_from_the_manifest_it_installed() -> None:
+    """The remote tier asserts a hook count against a clone of the sha in
+    `.claude-plugin/marketplace.json`, and that sha is whichever release is
+    current — so a literal there is a snapshot that goes red on the release
+    that moves the pin, not in the review that changed the registration.
+
+    The tier itself is opt-in and needs the network, so what is checked here is
+    the derivation it now uses: over this tree, the manifest and the
+    registration agree.
+    """
+    from rig.test_remote_install import _registered_hooks
+
+    assert _registered_hooks(REPO) == len(_entries())
