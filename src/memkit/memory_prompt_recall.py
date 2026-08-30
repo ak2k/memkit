@@ -4494,6 +4494,13 @@ DOCTOR_ENV = "MEMKIT_DOCTOR"
 # fired" before that path exists. A prefix rather than a fixed name so the
 # outcomes stay individually greppable and collectively separable.
 TASK_OUTCOME_PREFIX = "task:"
+# The value of the `population` field on every record the subagent path
+# writes, and the key a reader GROUPS BY. Named here for the same reason the
+# prefix above is: doctor partitions the log by it, and a literal on each side
+# is two copies of one contract. The prefix is a naming convention and this is
+# the discriminator — a reader that partitioned on the prefix would have to
+# learn every new outcome's name to keep counting the same population.
+TASK_POPULATION = "task"
 # Plugin-scoped storage, which `claude plugin uninstall` removes unless
 # `--keep-data`. That is exactly the right lifetime for a record of refusals
 # and precisely the wrong one for anything a later `--undo` would need, which
@@ -6290,7 +6297,7 @@ def _task_main(payload: dict, t0: float) -> None:
         # and a name is a thing each new outcome teaches you. Absent means the
         # per-prompt population, so nothing already written changes shape.
         "concludes": False,
-        "population": "task",
+        "population": TASK_POPULATION,
         # The directory this spawn was made from, as a hash — the same field
         # the prompt path writes and for the same reason. Doctor separates
         # records by it to answer "has anything been injected HERE", and a
