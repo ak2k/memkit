@@ -13,29 +13,29 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **99 files, about 2.8 MiB**
-— and that is also the tree `.claude-plugin/marketplace.json` pins as this is
-written, so there is one tree here and one set of numbers. The recipe at the
-bottom reproduces them against either the repository or your own installed copy.
+The table below counts **the tree this file ships in** — **101 files, about 3.0 MiB**
+— and the recipe at the bottom reproduces that against either the repository or
+your own installed copy.
 
-The pin carries that same set of files and **about 2.7 MiB** of them: `main`
-has since edited files rather than added any, so the two trees differ in bytes
-and not in count. Both sizes are stated because both are read out of a real
-tree — the first from this one, the second from the one an adopter installing
-today receives — and the recipes below reproduce each against its own tree.
+`.claude-plugin/marketplace.json` pins an earlier commit as this is written, and
+what an adopter installing today receives is **99 files, about 2.7 MiB**: `main`
+has both added files the pin does not carry and grown bytes inside files it
+does, so the two trees differ in count and in size. Both are stated because both
+are read out of a real tree — the first from this one, the second from the
+installed one — and the recipes below reproduce each against its own tree.
 
 It does not stay that way, in either direction. `main` grows files the pin does
-not carry, and from the first such merge until the next release a count taken
-at the pin is smaller by exactly those files; it also grows bytes inside files
-the pin already has, which is the state above. Either way this paragraph states
-both numbers and says which tree each belongs to. The release procedure
-re-derives the table at the tag, which is what brings them back together.
+not carry, and from the first such merge until the next release a count taken at
+the pin is smaller by exactly those files; it also grows bytes inside files the
+pin already has. Either way this paragraph states both numbers and says which
+tree each belongs to. The release procedure re-derives the table at the tag,
+which is what brings them back together from the next release.
 
 | what | files | why it is there |
 |---|---|---|
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`, `skills/` | 18 | the payload proper — the wrappers, the hook module, the manifests |
 | `tests/` | 57 | not needed at run time; see below |
-| `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 16 | likewise |
+| `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 18 | likewise |
 | `README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 8 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |
 
