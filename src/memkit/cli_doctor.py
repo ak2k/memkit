@@ -2229,19 +2229,34 @@ def _prompt_records(records: list) -> list:
         for r in records
         if r.get("concludes") is not False
         and not r.get("doctor")
-        and r.get("population") != TASK_POPULATION
+        and not _stamped_task(r)
     ]
+
+
+def _stamped_task(record: dict) -> bool:
+    """The log's own discriminator for the subagent path, in the one place that
+    spells it. Every reader below is built out of this and `_names_task`, so
+    the partition is one fact each rather than four predicates that agree."""
+    return record.get("population") == TASK_POPULATION
+
+
+def _names_task(record: dict) -> bool:
+    """Named out of the subagent vocabulary, whatever the stamp says. The
+    NAMING CONVENTION rather than the discriminator, and only ever used as a
+    tripwire — a reader that partitioned on it would have to learn each new
+    outcome's name to keep counting the same population."""
+    outcome = record.get("outcome")
+    return isinstance(outcome, str) and outcome.startswith(TASK_OUTCOME_PREFIX)
 
 
 def _task_records(records: list) -> list:
     """The subagent population, per the log's own published discriminator.
 
-    Grouped on `population` rather than on the `task:` prefix, which is what
-    the emitter declares that field for: the prefix is a naming convention, so
-    a reader keyed on it has to learn each new outcome's name to keep counting
-    the same population. `_stray_task_records` covers the other direction.
+    What a COUNT is taken over, so it is the stamp alone: a record both
+    populations could claim would otherwise be counted twice, and a rate
+    nobody can reproduce is the defect this check was added to close.
     """
-    return [r for r in records if r.get("population") == TASK_POPULATION]
+    return [r for r in records if _stamped_task(r)]
 
 
 def _stray_task_records(records: list) -> list:
@@ -2254,13 +2269,19 @@ def _stray_task_records(records: list) -> list:
     record some other way, and both are things a reader has to be told rather
     than have averaged into a count.
     """
-    return [
-        r
-        for r in records
-        if isinstance(r.get("outcome"), str)
-        and r["outcome"].startswith(TASK_OUTCOME_PREFIX)
-        and r.get("population") != TASK_POPULATION
-    ]
+    return [r for r in records if _names_task(r) and not _stamped_task(r)]
+
+
+def _subagent_records(records: list) -> list:
+    """Every record the subagent path wrote, by EITHER witness, in log order.
+
+    What an EXISTENCE question is asked over, which is the opposite trade from
+    the count above: "has a subagent ever been served here" may not miss its
+    evidence because the record carried the other one of two witnesses. The two
+    halves above are disjoint by construction — one requires the stamp and the
+    other requires its absence — so this union double-counts nothing.
+    """
+    return [r for r in records if _stamped_task(r) or _names_task(r)]
 
 
 def _histogram(records: list) -> str:
@@ -2737,16 +2758,11 @@ def _subagent_delivery(machine: Machine) -> list[Check]:
         ]
     # EITHER WITNESS, because the question here is existence rather than a
     # rate: a record carrying the population stamp and a record merely named
-    # out of this path's vocabulary are both proof the path fired, and a check
-    # answering "has a subagent ever been served here" may not miss one because
-    # the other stamp was the one it looked for. `task-outcomes` counts the
-    # discriminator-claimed set alone and says so, for the opposite reason —
-    # a count has to be over one defined population, and a record that both
-    # populations could claim would otherwise be counted twice.
-    window = _soak_tail(machine.state_dir, GATE_WINDOW)
-    claimed = {id(r) for r in _task_records(window)}
-    stray = {id(r) for r in _stray_task_records(window)}
-    task = [r for r in window if id(r) in claimed or id(r) in stray]
+    # out of this path's vocabulary are both proof the path fired. Where
+    # `task-outcomes` takes the stamp alone, since a count has to be over one
+    # defined population, this one may not miss its evidence for having looked
+    # at the other witness.
+    task = _subagent_records(_soak_tail(machine.state_dir, GATE_WINDOW))
     if not task:
         # WHAT WAS CHECKED, in the words of what was read. The evidence behind
         # this row is one file inside the payload, so what it establishes is
