@@ -390,12 +390,16 @@ def _indent_columns(line: str) -> int:
     return col
 
 
-def _mask_code(text: str, mask_indented: bool = False) -> list[str]:
+def _mask_code(
+    text: str, mask_indented: bool = False, mask_spans: bool = True
+) -> list[str]:
     """Lines of `text` with all code blanked out, one entry per source line."""
-    return _mask_and_fence(text, mask_indented)[0]
+    return _mask_and_fence(text, mask_indented, mask_spans)[0]
 
 
-def _mask_and_fence(text: str, mask_indented: bool = False) -> tuple[list[str], int]:
+def _mask_and_fence(
+    text: str, mask_indented: bool = False, mask_spans: bool = True
+) -> tuple[list[str], int]:
     """(masked lines, line number of a fence that is never closed — 0 if none).
 
     The second value is the checker's own blind spot made visible: an
@@ -415,6 +419,15 @@ def _mask_and_fence(text: str, mask_indented: bool = False) -> tuple[list[str], 
                          or to no tree at all. Citations BLOCK on files the
                          commit touched, so a false positive there fails an
                          author for a path they only quoted.
+
+    `mask_spans=False` keeps inline code spans readable while still blanking
+    fences. No check in this file wants that; a caller that scans prose for
+    `path:line` references does. House style backticks a citation, so
+    `` `flake.nix:367` `` is the normal shape, and masking spans would hide
+    every reference such a scan exists to read. It can afford what the checks
+    here cannot, because a line reference is only reported once its path
+    resolves in the tree being checked — a quoted example naming some other
+    tree drops out on its own.
     """
     out: list[str] = []
     fence: str | None = None
@@ -461,7 +474,7 @@ def _mask_and_fence(text: str, mask_indented: bool = False) -> tuple[list[str], 
                 out.append("")
                 prev_blank = False
                 continue
-        out.append(_mask_spans(line))
+        out.append(_mask_spans(line) if mask_spans else line)
         prev_blank = blank
     return out, opened if fence is not None else 0
 
