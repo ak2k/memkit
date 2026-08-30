@@ -323,7 +323,7 @@ is on your own `PATH`.
 | **The corpus is not where you think** | `corpus-root` | `--debug-config` prints the corpus root, its file count, and a line naming any files stranded outside it | move them, or point `dir` at the right directory |
 | **Nothing matched well enough** | `canary-retrieval` | `--search` exits 1 and prints `no match in N files under <root>` | see [How a pointer gets chosen](docs/STORE.md#how-a-pointer-gets-chosen) — a match on a common English word alone will not carry a pointer |
 | **The session budget is spent** | `gate-outcomes` | 30 pointers already delivered this session | deliberate; a stronger match still displaces a weaker one |
-| **A subagent got no pointers** | `subagent-delivery` | the last `task:` record in `log.jsonl` names the reason — `tail -1` it and read the `outcome` against the table in the outcome table under [Why nothing appeared](#why-nothing-appeared) | every row below is one of those reasons |
+| **A subagent got no pointers** | `task-outcomes` | the row counts every `task:` outcome in the window and prints what each one means; `subagent-delivery` names the last one the same way | every row below is one of those reasons. `task-outcomes` is the row to read when it keeps happening — one spawn's outcome is an anecdote, twenty of the same one is the diagnosis |
 | **The brief plus its pointers exceeded 16 KiB** | `subagent-delivery` | `task:oversize` | the brief is echoed back inside the replacement, so there is nothing memkit may shed to make room; the pointers are dropped whole rather than the brief being trimmed |
 | **The hook was called for another tool** | `subagent-delivery` | `task:notool`, naming the tool | the registration and the harness disagree — what a tool rename looks like from inside. Reinstall; if it persists, the entry needs its matcher changed |
 | **The tool call carried no brief** | `subagent-delivery` | `task:nobrief` | there was no `prompt` string in the tool's input to read |
@@ -346,6 +346,15 @@ per-prompt hook; a `task:` outcome is the subagent path, which runs before the
 Agent tool and appends pointers to the brief. They are separate vocabularies on
 purpose: the two serve different populations, and one name over both would make
 every rate you compute a rate over an unknown mixture.
+
+Doctor counts them in two rows for that reason and never sums them —
+`gate-outcomes` over the prompts, `task-outcomes` over the spawns, each
+rendering this table's own meanings. What tells the populations apart in the
+log is not the prefix but the `population` field the subagent path writes:
+absent means the per-prompt population, so nothing written before that field
+existed changes shape. A name from a build newer than your reader is counted
+and reported as unrecognised rather than dropped, in both rows — this
+vocabulary grows without a version bump, so meeting one is expected.
 
 | outcome | meaning |
 |---|---|

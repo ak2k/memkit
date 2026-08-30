@@ -72,6 +72,7 @@ from memkit.memory_prompt_recall import (
     SCHEMA,
     _display_path,
     _plugin_install,
+    _utf8,
     append_record,
     claim_holds,
     expand_home,
@@ -120,7 +121,18 @@ VERIFY = "verify"
 
 
 def _sha(data: str) -> str:
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+    """Every digest this command takes, through the hook's total encoding.
+
+    The one chokepoint, and it has to be total because what flows through it
+    is outside text: a config path off argv, which `sys.argv` decodes with
+    `surrogateescape`, and file content and store paths that reach it the same
+    way. A strict encode raises `UnicodeEncodeError` on any of them, and
+    `--dry-run` takes this digest before it prints the manifest — so the
+    command that exists to show an adopter what it would write instead shows
+    them a traceback out of a hashing helper, having written nothing and said
+    nothing about why.
+    """
+    return hashlib.sha256(_utf8(data)).hexdigest()
 
 
 # What is at a path now, as one comparable token: `absent`, `dir`, or the

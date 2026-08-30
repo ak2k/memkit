@@ -9,6 +9,37 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
+## [Unreleased]
+
+### Added
+
+- **`task-outcomes`, a doctor check.** The subagent population as its own
+  histogram, counted and glossed the way `gate-outcomes` counts the prompt
+  one. The two are never summed: one record per prompt against one per spawn,
+  a 15-second budget against a 7-second one, so a rate over the union is a
+  rate over an unknown mixture. `gate-outcomes` now says which population it
+  counts.
+
+### Fixed
+
+- **Doctor renders what a `task:` outcome means.** Every one of the twenty
+  `task:*` reasons in doctor's map was unreachable: the histogram counted the
+  per-prompt population, which excludes every record the subagent path writes,
+  and `subagent-delivery` printed the raw name. An adopter met `task:killed`
+  and a full stop. Every check that names an outcome now goes through one
+  gloss, and a name from a newer build says so rather than appearing as a word
+  the reader should recognise.
+- **`plugin-diagnostics` explains both trust refusals.** It defined
+  `trust:unconfigured` in its remedy and printed `trust:config-error` bare, so
+  of a two-name vocabulary the name an adopter with a broken config is looking
+  at was the one explained nowhere in the report.
+- **`memory-eval` and `memkit init` survive a lone surrogate.** The corpus
+  fingerprint and init's digest helper both encoded strictly, so a store id
+  carrying an escaped `\udXXX` from the config, or a path arriving through
+  `sys.argv`'s `surrogateescape`, ended the run with a `UnicodeEncodeError`
+  out of a hashing loop — before the eval scored anything or `--dry-run`
+  printed its manifest.
+
 ## [0.3.0] — 2026-08-29
 
 ### Added

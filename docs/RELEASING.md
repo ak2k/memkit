@@ -119,3 +119,16 @@ Everything below has been missed at least once.
     profile — `HOME` and `CLAUDE_CONFIG_DIR` redirected — and confirm the
     behaviour this release was cut for. Every release so far has been reviewed
     that way, and it is the only check that sees what an adopter sees.
+13. **Run the rig's LIVE tier**, beside step 12 and for the same reason: it is
+    the only thing that takes a real turn with a real model, and no merge sees
+    it. `MEMKIT_RIG_LIVE=1 MEMKIT_RIG_REQUIRED=1 pytest tests/rig` against the
+    local proxy, or dispatch `.github/workflows/live.yml` where the credential
+    is provisioned. Both variables, and `REQUIRED` is the load-bearing one: it
+    turns a scenario that cannot start into a failure rather than a skip, and a
+    skipped live tier reports exactly like a passing one. **Green licenses the
+    release; any other result — including a skip — does not**, because the two
+    claims that live only here are the ones a green CI does not make: that a
+    hook's stdout reaches the turn's context at all (the harness tier reads
+    memkit's own artifacts, which say what the hook believes it wrote), and
+    that a duplicate registration is detected across several real turns. Record
+    the run in the release notes the way a harness bump records it in its PR.

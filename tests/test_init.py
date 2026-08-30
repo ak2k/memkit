@@ -2274,3 +2274,34 @@ def test_the_dry_run_never_asks_git_about_a_directory_inside_this_session(
         cwd=inside, check=True, timeout=60,
     )
     assert init._git_tracked(str(target)) is False
+
+
+def test_no_digest_in_init_dies_on_a_lone_surrogate() -> None:
+    """`--dry-run` exists to show an adopter what would be written, and it
+    digests before it prints.
+
+    `sys.argv` is decoded with `surrogateescape`, so `--config` naming a path
+    the filesystem holds as undecodable bytes hands this command a lone
+    surrogate; a store path and a file's content reach the same helper the
+    same way. A strict `.encode()` raises `UnicodeEncodeError` on every one of
+    them, and the manifest an adopter asked to see is then a traceback out of
+    a hashing helper — nothing written, and nothing said about why.
+
+    Same rule as the hook module's, held by the same imported scan rather than
+    by a copy of it: every encode names its handler. No exceptions in this
+    file — the hook has one argued strict encode because there the raise IS a
+    refusal, and nothing here refuses anything by dying.
+    """
+    from test_memory_prompt_recall import _unhandled_encodes
+
+    surrogate = json.loads('"\\udcff"')
+    assert len(init._sha(f"/tmp/memkit{surrogate}.json")) == 64
+    # Non-vacuity: the digest still SEPARATES, which is why it is taken over
+    # the raw path rather than over a sanitized one.
+    assert init._sha(f"/a{surrogate}") != init._sha(f"/b{surrogate}")
+    assert init._canary_nonce(f"/tmp/memkit{surrogate}.json").startswith("mkc")
+
+    source = pathlib.Path(init.__file__).read_text(encoding="utf-8")
+    assert _unhandled_encodes(source) == []
+    # And the scan still sees its subject in this file's own text.
+    assert _unhandled_encodes(source + '\ndef f(t):\n    return t.encode("utf-8")\n')

@@ -13,16 +13,23 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **99 files, about 2.7 MiB**
+The table below counts **the tree this file ships in** — **99 files, about 2.8 MiB**
 — and that is also the tree `.claude-plugin/marketplace.json` pins as this is
 written, so there is one tree here and one set of numbers. The recipe at the
 bottom reproduces them against either the repository or your own installed copy.
 
-It does not stay that way. `main` grows files the pin does not carry, and from
-the first such merge until the next release a count taken at the pin is smaller
-by exactly those files — at which point this paragraph states both counts and
-says which tree each belongs to. The release procedure re-derives the table at
-the tag, which is what brings them back together.
+The pin carries that same set of files and **about 2.7 MiB** of them: `main`
+has since edited files rather than added any, so the two trees differ in bytes
+and not in count. Both sizes are stated because both are read out of a real
+tree — the first from this one, the second from the one an adopter installing
+today receives — and the recipes below reproduce each against its own tree.
+
+It does not stay that way, in either direction. `main` grows files the pin does
+not carry, and from the first such merge until the next release a count taken
+at the pin is smaller by exactly those files; it also grows bytes inside files
+the pin already has, which is the state above. Either way this paragraph states
+both numbers and says which tree each belongs to. The release procedure
+re-derives the table at the tag, which is what brings them back together.
 
 | what | files | why it is there |
 |---|---|---|

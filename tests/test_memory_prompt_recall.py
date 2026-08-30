@@ -13727,6 +13727,12 @@ def test_every_task_outcome_is_registered_under_the_task_prefix() -> None:
     assert len(task) >= 17, sorted(task)
     # And the prefix is the one the other side declares.
     assert hook.TASK_OUTCOME_PREFIX == "task:"
+    # Its partner, and for the stronger version of the same reason: doctor
+    # PARTITIONS the log on `population`, so a redefinition here would move
+    # both sides at once and every reader would agree about a population no
+    # record on disk belongs to any more. The value is the contract; the
+    # symbol only keeps one copy of it.
+    assert hook.TASK_POPULATION == "task"
     # Its sibling, for the same reason and one this suite could not see: every
     # use of `TASK_STATE_PREFIX` reads the symbol, so a rebase that redefines
     # it adapts silently — and the comment on the constant says it exists to
