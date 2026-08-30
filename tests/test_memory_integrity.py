@@ -253,6 +253,35 @@ class CodeContexts(LinkCase):
         self.assertEqual(mi._mask_spans("a ``b ` c`` d"), "a           d")
         self.assertEqual(mi._mask_spans("unmatched ` tick"), "unmatched ` tick")
 
+    def test_span_masking_off_keeps_spans_verbatim_and_still_blanks_fences(
+        self,
+    ) -> None:
+        """`mask_spans=False` leaves inline spans intact; fences still go.
+
+        A caller scanning prose for `path:line` references is the one that
+        needs this, and it is why the flag is not just `mask_indented` again:
+        house style backticks a citation, so `` `flake.nix:367` `` is the
+        normal shape and the default mask would hide every reference such a
+        scan exists to read. Fences must still be blanked — a line number
+        inside a sample command is nobody's citation.
+
+        Both expectations are derived from the fixture's own lines, so the
+        case keeps stating "prose survives, fence does not" rather than a
+        transcript that has to be re-typed when the fixture moves.
+        """
+        prose = "see `flake.nix:367`"
+        fenced = ["```", "grep flake.nix:900", "```"]
+        text = "\n".join([prose, *fenced]) + "\n"
+        self.assertEqual(
+            mi._mask_code(text, mask_spans=False), [prose, *("" for _ in fenced)]
+        )
+        # The default is what every other caller gets, unchanged: the span is
+        # blanked from its opening backtick, columns preserved.
+        tick = prose.index("`")
+        self.assertEqual(
+            mi._mask_code(text)[0], prose[:tick] + " " * (len(prose) - tick)
+        )
+
 
 class Wikilinks(LinkCase):
     def test_dangling_wikilink_warns_and_does_not_fail(self) -> None:
