@@ -1931,6 +1931,96 @@ def test_the_trust_markers_refusals_finally_have_a_reader(profile, monkeypatch):
     assert row.actor == doctor.USER
 
 
+def _marker_vocabulary() -> set[str]:
+    """The trust marker's two outcomes, read off the gate that returns them.
+
+    Derived by the scrape the hook suite already runs over this vocabulary —
+    these names are RETURNED by `_trust_gate` rather than written through an
+    emitter, which is exactly how a table claiming totality once came to omit
+    both while the same section sent the reader to their file.
+    """
+    source = pathlib.Path(hook.__file__).read_text(encoding="utf-8")
+    names = set(re.findall(r'"(trust:[a-z-]+)"', source))
+    assert len(names) == 2, sorted(names)
+    return names
+
+
+def test_every_marker_refusal_is_rendered_with_its_reason(profile, monkeypatch):
+    """The sixth instance of the class, found by enumerating what reads an
+    outcome rather than by meeting it.
+
+    `plugin-diagnostics` printed `trust:config-error x3` and a remedy that
+    defined `trust:unconfigured` and `dup-registration` — so of a two-name
+    vocabulary the name an adopter with a broken config is looking at was the
+    one explained nowhere in the report. Same shape as the `task:*` reasons:
+    a renderer of a vocabulary that does not consult that vocabulary's map.
+
+    Its own map rather than a row in `OUTCOME_REASONS`, because these names
+    are the MARKER's and that map is pinned to the README's log table in both
+    directions — a name in it the log cannot hold would be a documented
+    outcome nothing writes. Derived from the emitter either way, so a third
+    refusal added tomorrow fails here.
+    """
+    path = _store_config(profile, stores=["personal"])
+    data = profile / "plugin-data"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    machine = _machine(profile, monkeypatch, path)
+    for outcome in sorted(_marker_vocabulary()):
+        reason = doctor.MARKER_REASONS.get(outcome)
+        assert reason, f"{outcome} has no reason in the marker map"
+        (data / hook.MARKER_NAME).write_text(
+            json.dumps({"v": 1, "records": [{"cwd": "a", "outcome": outcome,
+                                             "ts": 1}]}),
+            encoding="utf-8",
+        )
+        (row,) = _only(
+            doctor._PRODUCERS["plugin-diagnostics"](machine), "plugin-diagnostics"
+        )
+        assert f"{outcome} x1" in row.detail, (outcome, row.detail)
+        assert reason in row.detail, (outcome, row.detail)
+        assert "does not know" not in row.detail, (outcome, row.detail)
+
+    # A name from a newer build is a statement, not a silence — the same rule
+    # both histograms hold, in the third vocabulary.
+    (data / hook.MARKER_NAME).write_text(
+        json.dumps({"v": 1, "records": [{"cwd": "a", "outcome": "trust:teleported",
+                                         "ts": 1}]}),
+        encoding="utf-8",
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["plugin-diagnostics"](machine), "plugin-diagnostics"
+    )
+    assert "trust:teleported x1" in row.detail
+    assert "does not know" in row.detail, row.detail
+
+    # And the soak log's own name in this row reads out of the LOG's map, not
+    # the marker's: the two vocabularies are rendered side by side here and
+    # each has to reach its own.
+    (data / hook.MARKER_NAME).unlink()
+    _soak(profile, {"ts": 1, "outcome": "dup-registration", "concludes": False})
+    (row,) = _only(
+        doctor._PRODUCERS["plugin-diagnostics"](machine), "plugin-diagnostics"
+    )
+    assert doctor.OUTCOME_REASONS["dup-registration"] in row.detail, row.detail
+
+
+def test_the_two_reason_maps_stay_disjoint_and_each_is_pinned_to_the_readme(
+) -> None:
+    """One table in the docs, two maps in the code, and the split has a rule.
+
+    `OUTCOME_REASONS` is the soak log's and is pinned to the README's outcome
+    table by an equality assertion in both directions; `MARKER_REASONS` is
+    `trust.json`'s, which that table documents in the same rows under an
+    explicit "not the soak log" caveat. Overlap would mean one name with two
+    meanings depending on which file a reader took it out of.
+    """
+    assert not set(doctor.OUTCOME_REASONS) & set(doctor.MARKER_REASONS)
+    assert set(doctor.MARKER_REASONS) == _marker_vocabulary()
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for name in doctor.MARKER_REASONS:
+        assert f"`{name}`" in readme, name
+
 
 def test_no_refusals_and_no_duplicates_is_the_green_case(profile, monkeypatch):
     path = _store_config(profile, stores=["personal"])

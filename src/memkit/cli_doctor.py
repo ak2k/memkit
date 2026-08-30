@@ -2137,6 +2137,27 @@ OUTCOME_REASONS = {
     "task:error": "the subagent path raised; the turn was unaffected",
 }
 
+# The TRUST MARKER's vocabulary, which is a different file's and therefore a
+# different map. `trust.json` is what a plugin install with no config writes
+# instead of a soak log — creating the shared state directory is a mutation
+# nobody asked for — so these two names never appear in `log.jsonl` and the
+# README documents them in the same table under that caveat. Kept apart from
+# `OUTCOME_REASONS` rather than folded into it because that map is pinned to
+# the log table by an equality assertion in both directions, and a name in it
+# that the log cannot hold would be a documented outcome nothing writes.
+#
+# Two names, and both are glossed for a reason the other half of this file
+# already records: `_plugin_diagnostics` explained one of them in its remedy
+# and printed the other bare, which left the adopter whose config is broken —
+# the one this check exists for — reading the undefined name.
+MARKER_REASONS = {
+    "trust:unconfigured": "no config resolved on any route this install reads, "
+    "so the hook refused before it would have created the state directory. A "
+    "`memkitConfig` that is set and WRONG records this too: the wrapper "
+    "refuses the path before the hook learns one was named",
+    "trust:config-error": "a config was found and could not be used — "
+    "unreadable, unparseable, or a schema this build does not speak",
+}
 
 # How much of the log a histogram is built over. The file grows one line per
 # invocation and is deliberately unswept, so a check that read all of it would
@@ -2163,23 +2184,30 @@ def _soak_tail(state_dir: str, limit: int) -> list:
     return out
 
 
-def _gloss(outcome: object) -> str:
+def _gloss(outcome: object, reasons: dict | None = None) -> str:
     """What an outcome MEANS, in the one place that decides it.
 
     Every renderer of an outcome name goes through here, and that is the whole
     point: the map held twenty `task:*` reasons that no reader ever consulted,
     because the one check rendering those names printed them raw. A reader
     holding its own idea of how to say a name is a reason nobody reads, and
-    doctor carried three of them.
+    doctor carried four of them.
+
+    `reasons` because there are two maps and they may not merge: the soak log's
+    vocabulary and the trust marker's are written to different files by
+    different code paths, and `OUTCOME_REASONS` is pinned to the README's log
+    table by an equality assertion in both directions. Which map a caller reads
+    is a fact about which file it read the record out of.
 
     An unrecognised name is a STATEMENT rather than a silence, for the same
-    reason `_index_state` treats an unrecognised index outcome as not-ok: this
-    vocabulary grows without a version bump, so meeting a name from a newer
+    reason `_index_state` treats an unrecognised index outcome as not-ok: these
+    vocabularies grow without a version bump, so meeting a name from a newer
     build is the expected case and not an error.
     """
     if not isinstance(outcome, str):
         return "a record with no outcome name"
-    return OUTCOME_REASONS.get(outcome, "an outcome this build does not know")
+    table = OUTCOME_REASONS if reasons is None else reasons
+    return table.get(outcome, "an outcome this build does not know")
 
 
 def _prompt_records(records: list) -> list:
@@ -2643,19 +2671,31 @@ def _plugin_diagnostics(machine: Machine) -> list[Check]:
         if isinstance(name, str):
             outcomes[name] = outcomes.get(name, 0) + 1
     where = len({r.get("cwd") for r in records if r.get("cwd")})
-    parts = [f"{name} x{count}" for name, count in sorted(outcomes.items())]
+    # THE REASON BESIDE EACH NAME, from the marker's own map. The remedy below
+    # glossed `trust:unconfigured` and left `trust:config-error` — the other
+    # half of a two-name vocabulary — explained nowhere in the report, so the
+    # adopter whose config is broken read the one name that was not defined.
+    # Same class as the `task:*` reasons above and found the same way, by
+    # enumerating what reads an outcome rather than by meeting it.
+    parts = [
+        f"{name} x{count} ({_gloss(name, MARKER_REASONS)})"
+        for name, count in sorted(outcomes.items())
+    ]
     if dups:
-        parts.append(f"dup-registration x{len(dups)} in the soak log")
+        parts.append(
+            f"dup-registration x{len(dups)} in the soak log "
+            f"({_gloss('dup-registration')})"
+        )
     return [
         Check(
             "plugin-diagnostics",
             INFO,
             f"{len(records)} refusal(s) across {where} directory/ies: "
             + ", ".join(parts),
-            "`trust:unconfigured` means the hook refused before reading a "
-            "prompt because no config resolved — see config-route. "
-            "`dup-registration` means two installs served one prompt — see "
-            "registrations-count.",
+            "A `trust:` refusal is about the config this install resolved — "
+            "see config-route, which is the one surface that can tell "
+            "\"named and wrong\" from \"never named\". `dup-registration` "
+            "means two installs served one prompt — see registrations-count.",
             actor=USER,
         )
     ]
