@@ -115,7 +115,12 @@ import tempfile
 import time
 
 from memkit._exec import Untrusted, _execute, enforce_execution_boundary
-from memkit.memory_prompt_recall import CONFIG_ENV, ConfigError, load_config
+from memkit.memory_prompt_recall import (
+    CONFIG_ENV,
+    ConfigError,
+    _utf8,
+    load_config,
+)
 
 # The packaged hook, and the default for --hook. `--repo` moves the STORES;
 # the hook that scores them is memkit's own, because a tree's stores scored by
@@ -156,10 +161,21 @@ def corpus_fingerprint(cfg, repo: pathlib.Path) -> str:
     Untracked memories are the one asymmetry to know about. They count here and
     not in a sealed source snapshot, so re-baselining with one sitting in a
     store leaves CI hashing a different corpus — green, and gating nothing.
+
+    Both encodes below are the hook's total one, and neither is hygiene. A
+    store id comes out of `json.load`, which turns an escaped `\\udXXX` in the
+    config into a lone surrogate; a relative path comes out of `rglob`, which
+    turns a filename the filesystem holds as undecodable bytes into one. A
+    strict `.encode()` raises `UnicodeEncodeError` on either, and this function
+    runs before the gate does anything — so one such name anywhere under a
+    store root would end the run with a traceback and no eval, rather than with
+    a fingerprint that separates that corpus from every other. Digesting
+    `surrogatepass` bytes separates exactly the corpora a strict encode would
+    have separated; it simply also answers for the ones it dies on.
     """
     digest = hashlib.sha256()
     for store, root in zip(cfg.stores, store_roots(cfg, repo), strict=True):
-        digest.update(f"{store.id}\0".encode())
+        digest.update(_utf8(f"{store.id}\0"))
         if not root.is_dir():
             continue
         files = sorted(
@@ -168,7 +184,7 @@ def corpus_fingerprint(cfg, repo: pathlib.Path) -> str:
         )
         for rel, path in files:
             content = hashlib.sha256(path.read_bytes()).hexdigest()
-            digest.update(f"{rel}\0{content}\0".encode())
+            digest.update(_utf8(f"{rel}\0{content}\0"))
     return digest.hexdigest()
 
 
@@ -461,7 +477,7 @@ def long_brief_set(root: pathlib.Path) -> dict:
                     "gate measures the bytes on disk, so the file has to be "
                     "exactly the brief — strip it in the fixture, not here"
                 )
-            digest = hashlib.sha256(bodies[key].encode()).hexdigest()[:12]
+            digest = hashlib.sha256(_utf8(bodies[key])).hexdigest()[:12]
             if digest in texts:
                 first_rel, first_half = texts[digest]
                 raise RuntimeError(
@@ -486,7 +502,7 @@ def long_brief_set(root: pathlib.Path) -> dict:
         # filename alone would be the one kind of drift nothing reports: the
         # corpus fingerprint does not cover this directory, because these are
         # the queries and not the corpus.
-        digest = hashlib.sha256(brief.encode()).hexdigest()[:12]
+        digest = hashlib.sha256(_utf8(brief)).hexdigest()[:12]
         return {
             "name": f"{case['brief']}#{digest}",
             "file": case.get("file"),

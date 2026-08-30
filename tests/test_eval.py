@@ -1190,3 +1190,67 @@ def test_the_task_surface_declares_every_hook_name_the_slice_reaches() -> None:
     # the hook this repo ships over a name nothing reaches any more.
     absent = [n for n in ev.TASK_SURFACE if getattr(hook, n, None) is None]
     assert not absent, absent
+
+
+def test_the_corpus_fingerprint_survives_a_lone_surrogate(
+    corpus: Path, monkeypatch, tmp_path: Path
+) -> None:
+    """The fingerprint is taken before the gate does anything, so a strict
+    encode there ends the run with a traceback and no eval at all.
+
+    Two sources, and neither is exotic. A store id comes out of `json.load`,
+    which turns an escaped `\\udXXX` in the config into a lone surrogate. A
+    relative path comes out of `rglob`, which turns a filename the filesystem
+    holds as undecodable bytes into one. Both used to reach a bare
+    `.encode()`, which raises `UnicodeEncodeError` on either.
+
+    Accepted-open once, on the argument that the raise is visible on a CLI —
+    but visible is not the same as diagnosable: `UnicodeEncodeError` out of a
+    hashing loop names neither the store nor the file, and the run it ends is
+    the one that would have told the adopter what their corpus scores.
+    """
+    blob = json.loads((corpus / "memkit.json").read_text(encoding="utf-8"))
+    surrogate = json.loads('"\\ud800"')
+    blob["stores"][0]["id"] += surrogate
+    (corpus / "memkit.json").write_text(json.dumps(blob), encoding="utf-8")
+    cfg = hook.load_config(str(corpus / "memkit.json"))
+    first = ev.corpus_fingerprint(cfg, corpus)
+    assert len(first) == 64, first
+
+    # Non-vacuity: the digest still SEPARATES, which is the whole reason it is
+    # taken over the raw id rather than over a sanitized one.
+    blob["stores"][0]["id"] += "x"
+    (corpus / "memkit.json").write_text(json.dumps(blob), encoding="utf-8")
+    assert ev.corpus_fingerprint(
+        hook.load_config(str(corpus / "memkit.json")), corpus
+    ) != first
+
+    # The filename half. APFS refuses to create a name that is not valid
+    # UTF-8, so the two answers the filesystem would give are supplied rather
+    # than staged — the subject is what this function does with a name it is
+    # handed, and on a filesystem that allows one it is handed exactly this.
+    monkeypatch.setattr(
+        Path, "rglob", lambda self, pat: iter([Path(f"{self}/m\udcff.md")])
+    )
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"body")
+    assert len(ev.corpus_fingerprint(cfg, corpus)) == 64
+
+
+def test_no_digest_in_the_eval_dies_on_a_lone_surrogate() -> None:
+    """The rule the hook module already holds, applied to the module beside it.
+
+    Same scan, IMPORTED rather than copied: it is the one that matches the
+    rule instead of a shape, and the reason it exists is that a list of call
+    sites and a shape-matching predicate each let the same defect back in. A
+    second copy here would be the third way to do that.
+
+    Zero exceptions in this file. The hook has one argued strict encode
+    because there a raise IS the refusal; nothing in the eval refuses
+    anything by dying, so a strict encode here is a crash and nothing else.
+    """
+    from test_memory_prompt_recall import _unhandled_encodes
+
+    source = Path(ev.__file__).read_text(encoding="utf-8")
+    assert _unhandled_encodes(source) == []
+    # Non-vacuity: the scan still sees its subject in this file's own text.
+    assert _unhandled_encodes(source + '\ndef f(t):\n    return t.encode("utf-8")\n')
