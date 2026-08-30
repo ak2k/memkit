@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -1505,6 +1506,319 @@ def test_a_torn_final_log_line_is_skipped_rather_than_taken_as_an_empty_log(
     assert "last 1 prompts" in row.detail
 
 
+# --- the subagent population -------------------------------------------------
+
+
+def _task_vocabulary() -> set[str]:
+    """Every `task:*` outcome the emitter can write, read off the hook itself.
+
+    IMPORTED rather than copied. The reader is the AST scrape the hook suite
+    already runs — the same shape the consumer's own tripwire uses — and a
+    second copy of it here would be this file's whole subject arriving one
+    level up: two readers of one vocabulary, the stale one agreeing with
+    whatever shipped. Deriving it is also the only way a twenty-first outcome
+    fails these cases instead of quietly widening the set they cover.
+    """
+    from test_memory_prompt_recall import _hook_outcomes
+
+    names = {o for o in _hook_outcomes() if o.startswith(hook.TASK_OUTCOME_PREFIX)}
+    # Non-vacuity: a scrape that returned nothing would make every loop below
+    # pass over an empty subject.
+    assert len(names) >= 20, sorted(names)
+    return names
+
+
+def _subagent_payload(profile, monkeypatch) -> None:
+    """A plugin payload declaring the PreToolUse/Agent entry, so
+    `subagent-delivery` answers rather than reporting the path is not in this
+    build. Built rather than borrowed from `REPO`, so a case about what the
+    check RENDERS does not also depend on what this repository ships."""
+    payload = profile / "subagent-payload"
+    (payload / "hooks").mkdir(parents=True, exist_ok=True)
+    (payload / "hooks" / "hooks.json").write_text(
+        json.dumps(
+            {"hooks": {"PreToolUse": [{"matcher": "Agent",
+                                       "hooks": [{"type": "command",
+                                                  "command": "x"}]}]}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(payload) + "/")
+
+
+def _clear_soak(profile) -> None:
+    """Empty the log between subjects, so a loop over a vocabulary asserts on
+    one outcome at a time rather than on a window that accumulates."""
+    state = profile / "home" / ".cache" / "memory-recall"
+    with contextlib.suppress(OSError):
+        (state / hook.SOAK_LOG_NAME).unlink()
+
+
+def _task_soak(profile, *outcomes: str, stamped: bool = True) -> None:
+    """Records shaped the way `_task_main` writes them: BOTH discriminators,
+    `cwd`, and a latency. `stamped=False` drops the population stamp, which is
+    what a build older than it wrote."""
+    _soak(
+        profile,
+        *[
+            {
+                "ts": 1787000000 + i,
+                "outcome": name,
+                "cwd": hook._cwd_digest(),
+                "ms": 30 + i,
+                "concludes": False,
+                **({"population": hook.TASK_POPULATION} if stamped else {}),
+            }
+            for i, name in enumerate(outcomes)
+        ],
+    )
+
+
+def test_every_task_outcome_the_emitter_writes_is_rendered_with_its_reason(
+    profile, monkeypatch
+) -> None:
+    """The finding: twenty reasons in the map and no reader that consulted
+    them.
+
+    `OUTCOME_REASONS` has carried a line for every `task:*` outcome since the
+    subagent path landed, pinned to the README in both directions — and every
+    one of those lines was unreachable. The histogram counted `_prompt_records`,
+    which drops what `concludes: false` marks, and `_task_main` stamps that on
+    every record it writes; the only check that rendered these names printed
+    them raw. An adopter met `task:killed` and a full stop.
+
+    Derived from the emitter, so an outcome added tomorrow is asserted here by
+    existing rather than by somebody remembering to extend a list.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _subagent_payload(profile, monkeypatch)
+    machine = _machine(profile, monkeypatch, path)
+    for outcome in sorted(_task_vocabulary()):
+        reason = doctor.OUTCOME_REASONS.get(outcome)
+        assert reason, f"{outcome} has no reason in the map"
+        _task_soak(profile, outcome)
+        (row,) = _only(doctor._PRODUCERS["task-outcomes"](machine), "task-outcomes")
+        assert f"{outcome} 1" in row.detail, (outcome, row.detail)
+        assert reason in row.detail, (outcome, row.detail)
+        assert "does not know" not in row.detail, (outcome, row.detail)
+        (row,) = _only(
+            doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery"
+        )
+        # `task:injected` is the PASS arm and names a delivery rather than a
+        # reason; every other outcome is the arm that used to print the name
+        # alone.
+        if outcome != hook.TASK_OUTCOME_PREFIX + "injected":
+            assert reason in row.detail, (outcome, row.detail)
+        _clear_soak(profile)
+
+
+def test_the_two_populations_are_counted_separately_and_neither_is_dropped(
+    profile, monkeypatch
+) -> None:
+    """Separate sections, not one rate. A rate over the union is a rate over an
+    unknown mixture: one record per prompt against one per spawn, a 15-second
+    budget against a 7-second one, two gates that decline for different
+    reasons under names that only look alike.
+
+    What may not happen is what did: the aggregate silently excluding the whole
+    subagent path while labelling its own count in a way that reads as
+    everything.
+    """
+    path = _store_config(profile, stores=["personal"])
+    here = hook._cwd_digest()
+    _soak(
+        profile,
+        {"ts": 1, "outcome": "injected", "cwd": here, "ms": 30},
+        {"ts": 2, "outcome": "gate:short", "cwd": here, "ms": 4},
+    )
+    _task_soak(profile, "task:floored", "task:floored", "task:nomatch")
+    machine = _machine(profile, monkeypatch, path)
+
+    (gate,) = _only(doctor._PRODUCERS["gate-outcomes"](machine), "gate-outcomes")
+    assert "last 2 prompts" in gate.detail, gate.detail
+    assert "task:" not in gate.detail, gate.detail
+    # And it names the population it counts, so a reader cannot take it for a
+    # count of everything the log holds.
+    assert "task-outcomes" in gate.detail, gate.detail
+
+    (task,) = _only(doctor._PRODUCERS["task-outcomes"](machine), "task-outcomes")
+    assert "last 3 subagent spawns" in task.detail, task.detail
+    assert "task:floored 2" in task.detail, task.detail
+    assert doctor.OUTCOME_REASONS["task:nomatch"] in task.detail, task.detail
+    # Its own latency figure, over its own budget.
+    assert "median" in task.detail, task.detail
+    # Neither counts the other's records.
+    assert "injected 1" not in task.detail, task.detail
+    assert doctor.verdict([gate, task]) == "OK"
+
+
+def test_a_task_outcome_this_build_does_not_know_is_reported_not_dropped(
+    profile, monkeypatch
+) -> None:
+    """The subagent vocabulary grows without a version bump too, and the reader
+    that silently discarded a name it did not recognise would compute a rate
+    over a denominator nobody checked. The same rule the prompt histogram has,
+    now that this population has a reader at all."""
+    path = _store_config(profile, stores=["personal"])
+    _subagent_payload(profile, monkeypatch)
+    _task_soak(profile, "task:teleported")
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["task-outcomes"](machine), "task-outcomes")
+    assert "task:teleported 1" in row.detail
+    assert "does not know" in row.detail
+    # And the delivery row says so rather than printing the bare name.
+    (row,) = _only(
+        doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery"
+    )
+    assert "task:teleported" in row.detail
+    assert "does not know" in row.detail, row.detail
+
+
+def test_a_task_record_without_the_population_stamp_is_named_by_both_readers(
+    profile, monkeypatch
+) -> None:
+    """The tripwire on the partition itself.
+
+    The histogram groups on `population` because that is what the emitter
+    declares it for — keying on the `task:` prefix would make a reader learn
+    every new outcome's name to keep counting one population. That leaves the
+    other direction: a record named out of this vocabulary that the
+    discriminator did not claim, which is what a build older than the stamp
+    wrote. Neither counting it silently nor dropping it silently is allowed,
+    because a count nobody can reproduce is the shape of the defect above.
+
+    `subagent-delivery` still sees it, and deliberately: existence is not a
+    rate, and a check answering "has a subagent ever been served here" may not
+    miss the evidence because it looked for the other stamp.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _subagent_payload(profile, monkeypatch)
+    _task_soak(profile, "task:floored", stamped=False)
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["task-outcomes"](machine), "task-outcomes")
+    assert "no subagent records yet" in row.detail, row.detail
+    assert "1 record(s)" in row.detail, row.detail
+    assert "population stamp" in row.detail, row.detail
+    # Not counted into the prompt population either: it carries `concludes:
+    # false`, which is the discriminator that population filters on.
+    (row,) = _only(doctor._PRODUCERS["gate-outcomes"](machine), "gate-outcomes")
+    assert "task:" not in row.detail, row.detail
+    (row,) = _only(
+        doctor._PRODUCERS["subagent-delivery"](machine), "subagent-delivery"
+    )
+    assert "task:floored" in row.detail, row.detail
+    assert doctor.OUTCOME_REASONS["task:floored"] in row.detail, row.detail
+
+
+def test_a_spawn_the_real_hook_recorded_lands_in_the_subagent_population(
+    profile, monkeypatch
+) -> None:
+    """The reproduction, end to end, through the file the harness runs.
+
+    Every other case here writes the record shape by hand, so all of them
+    would stay green if `_task_main` stopped stamping what doctor partitions
+    on. This one drives a real PreToolUse payload into the real hook and asks
+    doctor about the record that run actually wrote.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _memory(profile / "stores" / "personal" / "search", "flange.md",
+            "Flange fasteners tighten in a star pattern, three passes",
+            description="Flange fasteners tighten in a star pattern")
+    env = dict(os.environ)
+    env.update(
+        HOME=str(profile / "home"),
+        XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+        MEMKIT_CONFIG=path,
+    )
+    env.pop("CLAUDE_PLUGIN_OPTION_MEMKITCONFIG", None)
+    out = subprocess.run(
+        [sys.executable, hook.__file__],
+        input=json.dumps(
+            {
+                "session_id": "spawn1",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Agent",
+                "tool_use_id": "toolu_doctor",
+                "tool_input": {
+                    "prompt": "flange fastener tightening sequence and passes",
+                    "description": "a short description",
+                },
+            }
+        ),
+        capture_output=True, text=True, timeout=120, env=env, cwd=str(profile),
+    )
+    assert out.returncode == 0, (out.stdout, out.stderr)
+    log = profile / "home" / ".cache" / "memory-recall" / hook.SOAK_LOG_NAME
+    record = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["outcome"].startswith(hook.TASK_OUTCOME_PREFIX), record
+
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["task-outcomes"](machine), "task-outcomes")
+    assert "last 1 subagent spawns" in row.detail, row.detail
+    assert doctor.OUTCOME_REASONS[record["outcome"]] in row.detail, row.detail
+    # And it is not in the other population's count.
+    assert "population stamp" not in row.detail, row.detail
+    (row,) = _only(doctor._PRODUCERS["gate-outcomes"](machine), "gate-outcomes")
+    assert "no records yet" in row.detail, row.detail
+
+
+def test_hook_ever_fired_says_what_the_outcome_it_names_means(
+    profile, monkeypatch
+) -> None:
+    """The third renderer of an outcome name, and the one that reached a reader
+    with `'nomatch'` and a pointer to another row. Sent through the same gloss,
+    because a name a reader has to go and look up is the friction the map
+    exists to remove."""
+    path = _store_config(profile, stores=["personal"])
+    here = hook._cwd_digest()
+    _soak(profile, {"ts": 1787000001, "outcome": "nomatch", "cwd": here})
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert doctor.OUTCOME_REASONS["nomatch"] in row.detail, row.detail
+
+    _clear_soak(profile)
+    _soak(profile, {"ts": 1787000002, "outcome": "gate:long", "cwd": "elsewhere00"})
+    (row,) = _only(doctor._PRODUCERS["hook-ever-fired"](machine), "hook-ever-fired")
+    assert "never in this directory" in row.detail
+    assert doctor.OUTCOME_REASONS["gate:long"] in row.detail, row.detail
+
+
+def test_no_reader_of_an_outcome_name_prints_it_without_the_map(
+    profile, monkeypatch
+) -> None:
+    """The class, stated as one property over the checks rather than as three
+    cases.
+
+    Three checks render an outcome name and each had its own idea of how: two
+    printed it raw. Every one of them now goes through `_gloss`, so a fourth
+    reader added later is one this case fails on unless it does too — the
+    subject is the SET of checks that name an outcome, derived from the report
+    they produce, not a list somebody keeps.
+    """
+    path = _store_config(profile, stores=["personal"])
+    here = hook._cwd_digest()
+    _soak(profile, {"ts": 1787000001, "outcome": "floored", "cwd": here, "ms": 9})
+    _task_soak(profile, "task:oversize")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO) + "/")
+    machine = _machine(profile, monkeypatch, path)
+    hits = 0
+    for check in doctor.collect(machine):
+        for outcome, reason in doctor.OUTCOME_REASONS.items():
+            # The two shapes a name is RENDERED in — quoted, which is how the
+            # last-outcome rows print one, and `name count`, which is how both
+            # histograms do. Not a bare substring: `injected` is also an
+            # ordinary English word these details use ("none injected"), and
+            # `floored` sits inside `task:floored`.
+            name = re.escape(outcome)
+            if not re.search(rf"'{name}'|(?<![\w:-]){name} \d+", check.detail):
+                continue
+            hits += 1
+            assert reason in check.detail, (check.id, outcome, check.detail)
+    # Non-vacuity: this window really does drive several checks to name an
+    # outcome, so a regex that matched nothing would be visibly wrong.
+    assert hits >= 3, hits
+
+
 # --- coexistence -------------------------------------------------------------
 
 
@@ -1615,6 +1929,7 @@ def test_the_trust_markers_refusals_finally_have_a_reader(profile, monkeypatch):
     assert "trust:unconfigured x2" in row.detail
     # A refusal is a setup fact, not something an agent may act on.
     assert row.actor == doctor.USER
+
 
 
 def test_no_refusals_and_no_duplicates_is_the_green_case(profile, monkeypatch):

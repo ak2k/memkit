@@ -94,6 +94,7 @@ from memkit.memory_prompt_recall import (
     SOAK_LOG_NAME,
     SWEEP_STAMP_NAME,
     TASK_OUTCOME_PREFIX,
+    TASK_POPULATION,
     ConfigError,
     _corpus_files,
     _cwd_digest,
@@ -265,6 +266,7 @@ CHECK_IDS: tuple[str, ...] = (
     "hook-path",
     "hook-ever-fired",
     "gate-outcomes",
+    "task-outcomes",
     "plugin-enabled",
     "registrations-count",
     "plugin-diagnostics",
@@ -2135,6 +2137,7 @@ OUTCOME_REASONS = {
     "task:error": "the subagent path raised; the turn was unaffected",
 }
 
+
 # How much of the log a histogram is built over. The file grows one line per
 # invocation and is deliberately unswept, so a check that read all of it would
 # be the slowest thing in the report on the machine that has been running it
@@ -2160,6 +2163,25 @@ def _soak_tail(state_dir: str, limit: int) -> list:
     return out
 
 
+def _gloss(outcome: object) -> str:
+    """What an outcome MEANS, in the one place that decides it.
+
+    Every renderer of an outcome name goes through here, and that is the whole
+    point: the map held twenty `task:*` reasons that no reader ever consulted,
+    because the one check rendering those names printed them raw. A reader
+    holding its own idea of how to say a name is a reason nobody reads, and
+    doctor carried three of them.
+
+    An unrecognised name is a STATEMENT rather than a silence, for the same
+    reason `_index_state` treats an unrecognised index outcome as not-ok: this
+    vocabulary grows without a version bump, so meeting a name from a newer
+    build is the expected case and not an error.
+    """
+    if not isinstance(outcome, str):
+        return "a record with no outcome name"
+    return OUTCOME_REASONS.get(outcome, "an outcome this build does not know")
+
+
 def _prompt_records(records: list) -> list:
     """The per-prompt population, per the log's own published rule.
 
@@ -2167,12 +2189,75 @@ def _prompt_records(records: list) -> list:
     about a prompt, and doctor's own probe carries `doctor: true`. Both are
     excluded here, or a report about how often prompts inject would be counting
     the runs doctor itself made.
+
+    `population` is the third exclusion and it is not redundant with the first:
+    the subagent path writes both stamps, so today either one alone would do —
+    but they are two facts and a record carrying one without the other has to
+    land somewhere deliberate rather than in whichever population happened to
+    ask first. A spawn is never a prompt, whatever else its record says.
     """
     return [
         r
         for r in records
-        if r.get("concludes") is not False and not r.get("doctor")
+        if r.get("concludes") is not False
+        and not r.get("doctor")
+        and r.get("population") != TASK_POPULATION
     ]
+
+
+def _task_records(records: list) -> list:
+    """The subagent population, per the log's own published discriminator.
+
+    Grouped on `population` rather than on the `task:` prefix, which is what
+    the emitter declares that field for: the prefix is a naming convention, so
+    a reader keyed on it has to learn each new outcome's name to keep counting
+    the same population. `_stray_task_records` covers the other direction.
+    """
+    return [r for r in records if r.get("population") == TASK_POPULATION]
+
+
+def _stray_task_records(records: list) -> list:
+    """Records named out of the subagent vocabulary that the discriminator did
+    not claim.
+
+    The tripwire for the partition itself. Neither population may silently
+    absorb these and neither may silently drop them: a `task:` outcome without
+    the stamp is either a build older than the stamp or an emitter that grew a
+    record some other way, and both are things a reader has to be told rather
+    than have averaged into a count.
+    """
+    return [
+        r
+        for r in records
+        if isinstance(r.get("outcome"), str)
+        and r["outcome"].startswith(TASK_OUTCOME_PREFIX)
+        and r.get("population") != TASK_POPULATION
+    ]
+
+
+def _histogram(records: list) -> str:
+    """`name count (what it means)`, commonest first, with the median latency.
+
+    One renderer for both populations, because they are the same question
+    asked over two sets of records and two copies of this would drift the way
+    the reasons themselves did.
+    """
+    counts: dict = {}
+    for record in records:
+        outcome = record.get("outcome")
+        if isinstance(outcome, str):
+            counts[outcome] = counts.get(outcome, 0) + 1
+    parts = [
+        # An outcome this build does not know is REPORTED rather than dropped:
+        # the vocabulary grows without a version bump, and a reader that
+        # silently discarded a name it did not recognise would compute a rate
+        # over a denominator nobody checked.
+        f"{outcome} {count} ({_gloss(outcome)})"
+        for outcome, count in sorted(counts.items(), key=lambda kv: -kv[1])
+    ]
+    took = sorted(r["ms"] for r in records if isinstance(r.get("ms"), int))
+    median = f"; median {took[len(took) // 2]}ms" if took else ""
+    return ", ".join(parts) + median
 
 
 def _when(record: dict) -> str:
@@ -2248,7 +2333,8 @@ def _hook_ever_fired(machine: Machine) -> list[Check]:
                 INFO,
                 f"{len(mine)} of the last {len(records)} records are from this "
                 f"directory and none injected; the last was "
-                f"{mine[-1].get('outcome')!r}. See gate-outcomes",
+                f"{mine[-1].get('outcome')!r} ({_gloss(mine[-1].get('outcome'))}). "
+                "See gate-outcomes",
             )
         ]
     return [
@@ -2256,7 +2342,8 @@ def _hook_ever_fired(machine: Machine) -> list[Check]:
             "hook-ever-fired",
             INFO,
             f"the hook has run ({len(records)} records, last {last.get('outcome')!r} "
-            f"at {when}) and never in this directory",
+            f"— {_gloss(last.get('outcome'))} — at {when}) and never in this "
+            "directory",
         )
     ]
 
@@ -2270,32 +2357,76 @@ def _gate_outcomes(machine: Machine) -> list[Check]:
     and a histogram is evidence rather than a verdict — "nothing passed the
     floor", "there was nothing to search" and "retrieval raised" are three
     different answers and none of them is broken by itself.
+
+    THE PER-PROMPT POPULATION ONLY, and it says so. It counted that population
+    from the day it was written and labelled the count "last N prompts", which
+    is true — but a log now holding two populations makes a count that names
+    one of them and never mentions the other read as a count of everything.
+    `task-outcomes` is the other half, and the two never merge: a rate over the
+    union is a rate over an unknown mixture of a 15-second budget and a
+    7-second one.
     """
     records = _prompt_records(_soak_tail(machine.state_dir, GATE_WINDOW))
     if not records:
         return [
             Check("gate-outcomes", INFO, "no records yet, so nothing to count")
         ]
-    counts: dict = {}
-    for record in records:
-        outcome = record.get("outcome")
-        if isinstance(outcome, str):
-            counts[outcome] = counts.get(outcome, 0) + 1
-    parts = []
-    for outcome, count in sorted(counts.items(), key=lambda kv: -kv[1]):
-        # An outcome this build does not know is REPORTED rather than dropped:
-        # the vocabulary grows without a version bump, and a reader that
-        # silently discarded a name it did not recognise would compute a rate
-        # over a denominator nobody checked.
-        reason = OUTCOME_REASONS.get(outcome, "an outcome this build does not know")
-        parts.append(f"{outcome} {count} ({reason})")
-    took = sorted(r["ms"] for r in records if isinstance(r.get("ms"), int))
-    median = f"; median {took[len(took) // 2]}ms" if took else ""
     return [
         Check(
             "gate-outcomes",
             INFO,
-            f"last {len(records)} prompts: " + ", ".join(parts) + median,
+            f"last {len(records)} prompts (this hook only; subagent spawns are "
+            f"counted by task-outcomes): " + _histogram(records),
+        )
+    ]
+
+
+@_produces("task-outcomes")
+def _task_outcomes(machine: Machine) -> list[Check]:
+    """The same histogram over the SUBAGENT population.
+
+    Its own row rather than a share of `gate-outcomes`, because the populations
+    may not be summed — one record per prompt against one per spawn, two gates,
+    two budgets — and because an adopter whose subagents get nothing is here to
+    read counts. `subagent-delivery` answers whether the path is wired up and
+    names the LAST outcome; "did it ever work" and "what keeps happening" are
+    different questions, and `task:floored` twenty times over (the bar, or the
+    corpus) is a different next move from `task:nodirs` twenty times over (the
+    config, or the cwd gate) or `task:oversize` (nothing in the store to fix).
+    Until this row existed the only way to ask was `tail`-ing the log by hand,
+    which is what the README told a reader to do.
+
+    Always INFO, for the reason its sibling is: every one of these is a state
+    the path is designed to reach.
+    """
+    window = _soak_tail(machine.state_dir, GATE_WINDOW)
+    records = _task_records(window)
+    stray = _stray_task_records(window)
+    # NAMED rather than absorbed. A `task:` record the discriminator did not
+    # claim is either older than the stamp or built some other way, and the one
+    # thing a report may not do with it is average it into a count silently —
+    # which is the defect this whole check was added to close, arriving from
+    # the other direction.
+    aside = (
+        f". {len(stray)} record(s) name a {TASK_OUTCOME_PREFIX} outcome without "
+        f"the {TASK_POPULATION!r} population stamp and are counted in neither "
+        "population; this build cannot say which one they belong to"
+        if stray
+        else ""
+    )
+    if not records:
+        return [
+            Check(
+                "task-outcomes",
+                INFO,
+                "no subagent records yet, so nothing to count" + aside,
+            )
+        ]
+    return [
+        Check(
+            "task-outcomes",
+            INFO,
+            f"last {len(records)} subagent spawns: " + _histogram(records) + aside,
         )
     ]
 
@@ -2564,12 +2695,18 @@ def _subagent_delivery(machine: Machine) -> list[Check]:
                 "no pointers and nothing is wrong",
             )
         ]
-    task = [
-        r
-        for r in _soak_tail(machine.state_dir, GATE_WINDOW)
-        if isinstance(r.get("outcome"), str)
-        and r["outcome"].startswith(TASK_OUTCOME_PREFIX)
-    ]
+    # EITHER WITNESS, because the question here is existence rather than a
+    # rate: a record carrying the population stamp and a record merely named
+    # out of this path's vocabulary are both proof the path fired, and a check
+    # answering "has a subagent ever been served here" may not miss one because
+    # the other stamp was the one it looked for. `task-outcomes` counts the
+    # discriminator-claimed set alone and says so, for the opposite reason —
+    # a count has to be over one defined population, and a record that both
+    # populations could claim would otherwise be counted twice.
+    window = _soak_tail(machine.state_dir, GATE_WINDOW)
+    claimed = {id(r) for r in _task_records(window)}
+    stray = {id(r) for r in _stray_task_records(window)}
+    task = [r for r in window if id(r) in claimed or id(r) in stray]
     if not task:
         # WHAT WAS CHECKED, in the words of what was read. The evidence behind
         # this row is one file inside the payload, so what it establishes is
@@ -2608,12 +2745,22 @@ def _subagent_delivery(machine: Machine) -> list[Check]:
                 f"last subagent brief was served at {_when(task[-1])}",
             )
         ]
+    # THE REASON, not just the name. Every `task:*` outcome has had a line in
+    # `OUTCOME_REASONS` since the day the vocabulary landed and this is the
+    # check that renders those names — it printed them raw, so all twenty of
+    # those lines were unreachable and the row an adopter met said `task:killed`
+    # and stopped. Sent through the same gloss as both histograms, which is
+    # also what makes a name from a newer build say so rather than sit there
+    # looking like a word the reader ought to recognise.
     return [
         Check(
             "subagent-delivery",
             INFO,
-            f"registered and firing; the last outcome was {last!r} rather than "
-            "a delivery",
+            f"registered and firing; the last outcome was {last!r} "
+            f"({_gloss(last)}) rather than a delivery",
+            "`task-outcomes` counts the whole window rather than naming the "
+            "last record, which is the row to read if this keeps happening.",
+            actor=USER,
         )
     ]
 
