@@ -184,7 +184,17 @@ def test_the_brief_reaches_the_subagent_unaltered(
 
     What is checked is the parent's own text, which the soak log never holds —
     the log carries a digest of the brief and nothing else — so this asks the
-    subagent for a distinctive sentence out of the middle of it.
+    subagent to read back two things that can only have arrived together: a
+    sentence out of the MIDDLE of the brief, and the pointer the hook appended
+    after its END. A replacement loses the first, a prefix-only rewrite loses
+    it too, and a dropped emission loses the second.
+
+    Both halves are an ECHO of delivered text, never the brief's own task. The
+    brief asks for an acceptance procedure and a live subagent is free to
+    decline to write one — it did, on this scenario's first run — and what it
+    decides to do with a brief is not what this tier exists to prove. The
+    subagent is instructed to do no work for exactly that reason, and the
+    assertions are over what it was handed.
     """
     profile.marketplace_add(staged)
     config = fixture_config(profile)
@@ -197,8 +207,10 @@ def test_the_brief_reaches_the_subagent_unaltered(
         "task is this brief, passed through verbatim as the tool's `prompt`:\n\n"
         f"{BRIEF}\n\n"
         "Instruct the subagent, as the last line of that prompt, to do no "
-        "work and instead quote back the sentence in its instructions that "
-        "mentions a thermal state. Report its reply verbatim.",
+        "work and instead reply with two things: the sentence in its "
+        "instructions that mentions a thermal state, quoted; and every file "
+        "path that appears anywhere in its instructions, or the word NONE. "
+        "Report its reply verbatim.",
         "--output-format",
         "json",
         "--allowedTools",
@@ -206,8 +218,22 @@ def test_the_brief_reaches_the_subagent_unaltered(
         cwd=str(project),
         timeout=600,
     )
-    answer = json.loads(out.stdout).get("result", "")
+    result = json.loads(out.stdout)
+    assert result["is_error"] is False, result
+    answer = result.get("result", "")
     # A phrase from the middle of the brief, well past where any prefix-only
     # rewrite would have stopped.
     assert "thermal state" in answer.lower(), answer
-    assert "gearbox" in answer.lower(), answer
+    # And the appended block, out of the same reply: the brief survived to its
+    # middle AND the pointer arrived after its end, which is what "appended,
+    # not replaced" means from the subagent's side. Two independent phrases
+    # from two ends of one delivery is also the anti-vacuity check — an empty
+    # or refusing answer carries neither.
+    assert EXPECTED in answer, answer
+    # The hook's own account of the same delivery, which fails differently: no
+    # record at all is a dispatch that never happened, and a record naming
+    # nothing is an emission the harness rejected.
+    records = soak_records(profile)
+    injected = [r for r in records if r["outcome"] == "task:injected"]
+    assert injected, [r["outcome"] for r in records]
+    assert EXPECTED in injected[-1]["injected"], injected[-1]
