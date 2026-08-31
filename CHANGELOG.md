@@ -14,7 +14,7 @@ ordering.
 ### Added
 
 - **A mutation sweep that ships with the tree it audits**, at
-  `tools/mutation_sweep.py` with its 364 probes beside it. Each breaks one
+  `tools/mutation_sweep.py` with its 365 probes beside it. Each breaks one
   load-bearing rule and requires the paired tests to fail, so a green suite is
   evidence that a broken tree would have gone red rather than an assumption
   that it would. Nothing an adopter runs, but it arrives in the payload like
