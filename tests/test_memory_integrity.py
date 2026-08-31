@@ -1821,6 +1821,120 @@ class RowLost(unittest.TestCase):
         errors, _ = mi.check(store, False, set())
         assert not [e for e in errors if e.startswith("ROW-LOST")], errors
 
+
+class RowTouchTiming(unittest.TestCase):
+    """When a ledger row last CHANGED — the timestamp HOT-STALE compares a
+    memory's own mtime against.
+
+    The walk reads `git log -p`, and every ledger row is a markdown list item.
+    So an edited row arrives here as `+- [name](file.md)` and
+    `-- [name](file.md)`, and a filter that skipped `---`/`+++` headers by
+    excluding any second `+`/`-` threw the rows away with them. Row edits were
+    invisible; the answer fell back to whatever older commit happened to
+    mention the file on some other line, and HOT-STALE went on warning after
+    the author had done exactly what it asked.
+
+    Real git, because the shape under test IS git's output format.
+    """
+
+    def setUp(self) -> None:
+        if not shutil.which("git"):
+            self.skipTest("no git")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name) / "repo"
+        self.repo.mkdir()
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@t")
+        self._git("config", "user.name", "t")
+
+    def _git(self, *args: str, when: str = "") -> str:
+        env = dict(os.environ)
+        if when:
+            env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = when
+        return subprocess.run(
+            ["git", *args], cwd=self.repo, check=True, capture_output=True,
+            text=True, env=env, timeout=60,
+        ).stdout
+
+    def _write(self, ledger: Path, *rows: str) -> None:
+        ledger.write_text(
+            MEMORY_HEAD + "\n" + "".join(f"{row}\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    def _commit(self, when: str) -> int:
+        """Commit everything at a pinned time and return git's own `%ct`."""
+        self._git("add", "-A")
+        self._git("commit", "-qm", "x", when=when)
+        return int(self._git("log", "-1", "--format=%ct").strip())
+
+    # A ledger row, and a continuation line naming the same memory. The second
+    # line is what makes the defect observable rather than merely wrong: it is
+    # a shape the broken filter DID admit, so a stale answer had an older
+    # commit to come from instead of no answer at all.
+    ROW_OLD = "- [widget](hot/widget.md) — the old hook"
+    ROW_NEW = "- [widget](hot/widget.md) — the new hook"
+    CONTINUATION = "  and see [widget](hot/widget.md) for the long form"
+
+    def test_an_edited_row_is_timed_by_the_commit_that_edited_it(self) -> None:
+        ledger = self.repo / "MEMORY.md"
+        self._write(ledger, self.ROW_OLD, self.CONTINUATION)
+        first = self._commit("2026-01-01T00:00:00+00:00")
+        # Positive control. With one commit in the log the walk has to answer
+        # it, or the case below would be measuring an empty result.
+        assert mi._row_touch(self.repo, ledger) == {"widget.md": first}
+
+        # Only the row's hook text changes. Nothing else in the file moves.
+        self._write(ledger, self.ROW_NEW, self.CONTINUATION)
+        second = self._commit("2026-02-02T00:00:00+00:00")
+        assert second > first, (first, second)
+        assert mi._row_touch(self.repo, ledger) == {"widget.md": second}
+
+    def test_a_row_taken_out_is_timed_by_the_commit_that_took_it_out(self):
+        """The deletion half, which the same clause discarded: a removed row
+        is `-- [name](file.md)`."""
+        ledger = self.repo / "MEMORY.md"
+        self._write(ledger, self.ROW_OLD, self.CONTINUATION)
+        first = self._commit("2026-01-01T00:00:00+00:00")
+        self._write(ledger, self.CONTINUATION)
+        second = self._commit("2026-02-02T00:00:00+00:00")
+        assert second > first, (first, second)
+        assert mi._row_touch(self.repo, ledger) == {"widget.md": second}
+
+    def test_a_diff_header_naming_a_file_is_not_a_row_touch(self) -> None:
+        """The property the broken clause was reaching for, kept.
+
+        `git log -p` prints `--- a/<path>` and `+++ b/<path>`, and a path can
+        carry the shape the link regex reads. Admitted as content, a header
+        would time a memory by a name that came out of the ledger's own
+        directory rather than out of any row.
+        """
+        directory = self.repo / "notes(archive.md)"
+        directory.mkdir()
+        ledger = directory / "MEMORY.md"
+        rel = "notes(archive.md)/MEMORY.md"
+        self._write(ledger, self.ROW_OLD, self.CONTINUATION)
+        self._commit("2026-01-01T00:00:00+00:00")
+        self._write(ledger, self.ROW_NEW, self.CONTINUATION)
+        second = self._commit("2026-02-02T00:00:00+00:00")
+
+        # Anti-vacuity: this proves something only if the headers git actually
+        # printed are ones the link regex would harvest. Git leaves parentheses
+        # unquoted today; the day it stops, this says so rather than passing.
+        raw = _exec.run_git(
+            _exec.GitRoute.ROW_TOUCH, repo=str(self.repo), limit=5, path=rel
+        ).stdout
+        headers = [
+            line for line in raw.splitlines()
+            if line[:3] in ("---", "+++") and mi.LINK_RE.findall(line)
+        ]
+        assert any(line.startswith("--- ") for line in headers), raw
+        assert any(line.startswith("+++ ") for line in headers), raw
+
+        assert mi._row_touch(self.repo, ledger) == {"widget.md": second}
+
+
 class BlameBaseShapeTest(unittest.TestCase):
     def test_an_option_shaped_blame_base_is_refused_rather_than_passed_to_git(
         self,

@@ -947,6 +947,18 @@ def _last_touch(repo: Path, paths: list[str]) -> dict[str, int]:
     return seen
 
 
+# A diff's file headers: `--- a/<path>`, `+++ b/<path>`, `--- /dev/null`, or a
+# bare path where the reader's config drops the prefixes. The marker is three
+# characters and a space, and matching it is the ONLY thing that separates a
+# header from content — a filter that instead excluded any second `+`/`-`
+# discarded every ledger row along with them, because a row is a markdown list
+# item, so an edit to one reaches the walk below as `+- [name](file.md)` and
+# `-- [name](file.md)`. Row edits were then invisible and the timestamp fell
+# back to an older commit, which is a HOT-STALE warning the author cannot clear
+# by updating the row.
+DIFF_HEADER_RE = re.compile(r"^(?:---|\+\+\+) ")
+
+
 def _row_touch(repo: Path, ledger: Path, limit: int = 400) -> dict[str, int]:
     """basename -> unix time of the newest commit whose diff to `ledger`
     mentioned it. One `git log -p` walk; the pickaxe alternative is one
@@ -966,7 +978,7 @@ def _row_touch(repo: Path, ledger: Path, limit: int = 400) -> dict[str, int]:
     for line in out.stdout.splitlines():
         if line.isdigit():
             ts = int(line)
-        elif line[:1] in "+-" and line[1:2] not in "+-":
+        elif line[:1] in ("+", "-") and not DIFF_HEADER_RE.match(line):
             for name in LINK_RE.findall(line):
                 seen.setdefault(os.path.basename(name), ts)
     return seen
