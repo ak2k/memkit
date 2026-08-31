@@ -14,22 +14,17 @@ pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
 The table below counts **the tree this file ships in** — **101 files, about 3.0 MiB**
-— and the recipe at the bottom reproduces that against either the repository or
-your own installed copy.
+— and `.claude-plugin/marketplace.json` pins that same tree as this is written,
+so there is one tree here and one set of numbers. The recipe at the bottom
+reproduces them against either the repository or your own installed copy.
 
-`.claude-plugin/marketplace.json` pins an earlier commit as this is written, and
-what an adopter installing today receives is **99 files, about 2.7 MiB**: `main`
-has both added files the pin does not carry and grown bytes inside files it
-does, so the two trees differ in count and in size. Both are stated because both
-are read out of a real tree — the first from this one, the second from the
-installed one — and the recipes below reproduce each against its own tree.
-
-It does not stay that way, in either direction. `main` grows files the pin does
-not carry, and from the first such merge until the next release a count taken at
-the pin is smaller by exactly those files; it also grows bytes inside files the
-pin already has. Either way this paragraph states both numbers and says which
-tree each belongs to. The release procedure re-derives the table at the tag,
-which is what brings them back together from the next release.
+It does not stay that way, and it goes in both directions at once. `main` grows
+files the pin does not carry, so from the first such merge a count taken at the
+pin is smaller by exactly those files; it also grows bytes inside files the pin
+already has, so the sizes drift even where the counts agree. For that whole
+window this paragraph states both numbers and says which tree each belongs to.
+The release procedure re-derives the table at the tag, which is what brings them
+back together.
 
 | what | files | why it is there |
 |---|---|---|
