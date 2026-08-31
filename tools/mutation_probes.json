@@ -3694,8 +3694,8 @@
       "name": "readme-uvx-rev-is-the-previous-release",
       "module": "docs",
       "file": "README.md",
-      "old": "git+https://github.com/ak2k/memkit@v0.3.0 memory-recall",
-      "new": "git+https://github.com/ak2k/memkit@v0.2.1 memory-recall",
+      "old": "git+https://github.com/ak2k/memkit@v0.4.0 memory-recall",
+      "new": "git+https://github.com/ak2k/memkit@v0.3.0 memory-recall",
       "tests": [
         "tests/test_plugin_surface.py::test_the_docs_quote_the_release_this_payload_is"
       ],
@@ -3706,7 +3706,7 @@
       "name": "readme-uvx-recipe-loses-its-pin",
       "module": "docs",
       "file": "README.md",
-      "old": "uvx --from git+https://github.com/ak2k/memkit@v0.3.0 memory-recall",
+      "old": "uvx --from git+https://github.com/ak2k/memkit@v0.4.0 memory-recall",
       "new": "uvx --from git+https://github.com/ak2k/memkit memory-recall",
       "tests": [
         "tests/test_plugin_surface.py::test_the_docs_quote_the_release_this_payload_is"
@@ -3762,8 +3762,8 @@
       "name": "plugin-manifest-version-drifts",
       "module": "plugin",
       "file": ".claude-plugin/plugin.json",
-      "old": "\"version\": \"0.3.0\"",
-      "new": "\"version\": \"0.3.1\"",
+      "old": "\"version\": \"0.4.0\"",
+      "new": "\"version\": \"0.4.1\"",
       "tests": [
         "tests/test_plugin_surface.py::test_the_manifest_and_the_marketplace_entry_agree_on_the_version",
         "tests/test_plugin_surface.py::test_the_docs_quote_the_release_this_payload_is"
@@ -3775,8 +3775,8 @@
       "name": "marketplace-entry-version-drifts",
       "module": "plugin",
       "file": ".claude-plugin/marketplace.json",
-      "old": "\"version\": \"0.3.0\"",
-      "new": "\"version\": \"0.2.1\"",
+      "old": "\"version\": \"0.4.0\"",
+      "new": "\"version\": \"0.3.0\"",
       "tests": [
         "tests/test_plugin_surface.py::test_the_manifest_and_the_marketplace_entry_agree_on_the_version"
       ],
@@ -3869,6 +3869,19 @@
         "tests/test_plugin_surface.py::test_the_pinned_sha_is_a_commit_in_this_history"
       ],
       "why": "a plausible 40-hex placeholder fails at git clone on the adopter's machine, after they have accepted the trust dialog"
+    },
+    {
+      "name": "admission-file-count-is-last-releases",
+      "module": "docs",
+      "file": "docs/ADMISSION.md",
+      "old": "**101 files, about 3.0 MiB**",
+      "new": "**99 files, about 3.0 MiB**",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
+        "tests/test_plugin_surface.py::test_the_admission_notes_breakdown_sums_to_the_total_it_states",
+        "tests/test_plugin_surface.py::test_the_admission_numbers_reproduce_from_its_own_recipe"
+      ],
+      "why": "The headline count is re-derived at each release and nothing else moves it, so the way it goes wrong is by staying at the previous release's number — which is what this writes, the count the pin still carries. It has to fail for two independent reasons: the figure no longer matches `git ls-files`, and the note now states 99 twice while claiming one count per tree described. A release that re-derives the table has to re-anchor this."
     },
     {
       "name": "hooks-matcher-becomes-an-anchored-regex",
