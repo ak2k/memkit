@@ -3852,8 +3852,8 @@
       "name": "marketplace-pins-a-ref-beside-the-sha",
       "module": "plugin",
       "file": ".claude-plugin/marketplace.json",
-      "old": "        \"sha\": \"43929774ed2c4018ed60151a832f7b1d3f1fd8ee\"",
-      "new": "        \"ref\": \"main\",\n        \"sha\": \"43929774ed2c4018ed60151a832f7b1d3f1fd8ee\"",
+      "old": "        \"sha\": \"5f1ece6665fb9a65ecaa79f82a13855cb08f1986\"",
+      "new": "        \"ref\": \"main\",\n        \"sha\": \"5f1ece6665fb9a65ecaa79f82a13855cb08f1986\"",
       "tests": [
         "tests/test_plugin_surface.py::test_the_marketplace_entry_pins_a_commit_rather_than_a_branch"
       ],
@@ -3863,7 +3863,7 @@
       "name": "marketplace-pin-names-no-commit-in-this-history",
       "module": "plugin",
       "file": ".claude-plugin/marketplace.json",
-      "old": "\"sha\": \"43929774ed2c4018ed60151a832f7b1d3f1fd8ee\"",
+      "old": "\"sha\": \"5f1ece6665fb9a65ecaa79f82a13855cb08f1986\"",
       "new": "\"sha\": \"0123456789abcdef0123456789abcdef01234567\"",
       "tests": [
         "tests/test_plugin_surface.py::test_the_pinned_sha_is_a_commit_in_this_history"
