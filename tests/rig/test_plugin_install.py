@@ -988,7 +988,34 @@ def test_a_cold_adopter_reaches_a_pointer_and_a_clean_doctor(
     # 3 is inert: nothing configured, nothing read, and it says so rather than
     # answering as though the store were empty.
     assert trial.returncode == 3, (trial.returncode, trial.stdout, trial.stderr)
-    assert not (profile.home / ".cache" / "memory-recall").exists()
+    assert "not a claim of absence" in trial.stderr, trial.stderr
+    # "Nothing read" is the claim, and it is not "nothing written": a run of
+    # the retrieval path that never reached a corpus is still a use of it, so
+    # it leaves one `cli:*` record like every other run — the outcome
+    # vocabulary carries the name and `concludes: false` keeps it out of every
+    # prompt rate. What the trial must not do is BUILD anything, so the state
+    # directory holds that record and nothing else: no index, no generated
+    # config, no store.
+    state = profile.home / ".cache" / "memory-recall"
+    assert sorted(p.name for p in state.iterdir()) == ["log.jsonl"], sorted(
+        p.name for p in state.iterdir()
+    )
+    trial_records = _soak(profile)
+    assert [r["outcome"] for r in trial_records] == ["cli:nodirs"], trial_records
+    assert trial_records[0]["concludes"] is False, trial_records[0]
+
+    # And doctor, run off the same unconfigured payload, does not read that
+    # record as the hook having served a prompt. This is the half the adopter
+    # sees: a command they ran themselves must not be able to answer the
+    # question "has this ever fired here?" on the hook's behalf.
+    cold = json.loads(_memkit(profile, staged, "doctor", "--json").stdout)
+    cold_rows = {c["id"]: c for c in cold["checks"]}
+    assert cold_rows["hook-ever-fired"]["status"] == "UNKNOWN", cold_rows[
+        "hook-ever-fired"
+    ]
+    assert "cli:nodirs" not in cold_rows["gate-outcomes"]["detail"], cold_rows[
+        "gate-outcomes"
+    ]
 
     profile.marketplace_add(staged)
     config = profile.home / ".config" / "memkit" / "memkit.json"
