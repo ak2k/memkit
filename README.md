@@ -1006,7 +1006,7 @@ lives outside every plugin-managed path by design. Retrieval still works
 without Claude Code, and with no install:
 
 ```
-uvx --from git+https://github.com/ak2k/memkit@v0.3.0 memory-recall \
+uvx --from git+https://github.com/ak2k/memkit@v0.4.0 memory-recall \
   --search "<terms>" --config ~/.config/memkit/memkit.json
 ```
 

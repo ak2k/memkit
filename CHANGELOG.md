@@ -9,10 +9,17 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
-## [Unreleased]
+## [0.4.0] — 2026-08-31
 
 ### Added
 
+- **A mutation sweep that ships with the tree it audits**, at
+  `tools/mutation_sweep.py` with its 364 probes beside it. Each breaks one
+  load-bearing rule and requires the paired tests to fail, so a green suite is
+  evidence that a broken tree would have gone red rather than an assumption
+  that it would. Nothing an adopter runs, but it arrives in the payload like
+  everything else the repository tracks — `docs/ADMISSION.md`'s counts move
+  with it.
 - **`task-outcomes`, a doctor check.** The subagent population as its own
   histogram, counted and glossed the way `gate-outcomes` counts the prompt
   one. The two are never summed: one record per prompt against one per spawn,
