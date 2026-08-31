@@ -22,6 +22,15 @@ ordering.
 
 ### Fixed
 
+- **HOT-STALE can see a ledger row change.** The walk that dates a row reads
+  `git log -p`, and it skipped the `---`/`+++` file headers by excluding any
+  line whose second character was another `+` or `-`. That is every row in the
+  file: a row is a markdown list item, so an edit to one arrives as
+  `+- [name](file.md)` and `-- [name](file.md)`, and both went out with the
+  headers. The date fell back to whatever older commit happened to name the
+  file on an indented line, so the warning outlived the author doing exactly
+  what it asked. Over one consuming store's hot ledger the walk saw 4 of 131
+  rows; it now sees 131, and a header is recognised by its own shape.
 - **Doctor renders what a `task:` outcome means.** Every one of the twenty
   `task:*` reasons in doctor's map was unreachable: the histogram counted the
   per-prompt population, which excludes every record the subagent path writes,

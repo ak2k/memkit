@@ -3142,6 +3142,28 @@
       "why": "the finding is about rows that VANISHED; reporting rows that are still present makes it fire on every clean store and get switched off"
     },
     {
+      "name": "row-touch-header-skip-swallows-the-rows",
+      "module": "integrity",
+      "file": "src/memkit/memory_integrity.py",
+      "old": "        elif line[:1] in (\"+\", \"-\") and not DIFF_HEADER_RE.match(line):",
+      "new": "        elif line[:1] in \"+-\" and line[1:2] not in \"+-\":",
+      "tests": [
+        "tests/test_memory_integrity.py::RowTouchTiming::test_an_edited_row_is_timed_by_the_commit_that_edited_it"
+      ],
+      "why": "a ledger row is a markdown list item, so excluding a second +/- discards the row edits this walk exists to date and HOT-STALE warns on"
+    },
+    {
+      "name": "row-touch-admits-the-diff-headers",
+      "module": "integrity",
+      "file": "src/memkit/memory_integrity.py",
+      "old": "        elif line[:1] in (\"+\", \"-\") and not DIFF_HEADER_RE.match(line):",
+      "new": "        elif line[:1] in (\"+\", \"-\"):",
+      "tests": [
+        "tests/test_memory_integrity.py::RowTouchTiming::test_a_diff_header_naming_a_file_is_not_a_row_touch"
+      ],
+      "why": "`--- a/<path>` names the ledger's own directory, so a header read as content dates a memory by a name no row carries"
+    },
+    {
       "name": "rows-at-an-unreadable-base-are-none-not-empty",
       "module": "integrity",
       "file": "src/memkit/memory_integrity.py",
