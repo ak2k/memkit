@@ -188,6 +188,107 @@ The checker is the one part that uses git, and only when the store is inside a
 repository: it dates memories against a base ref to find citations that have
 gone stale. Outside a repository it says so and skips that pass.
 
+## Keep your store in git
+
+The concrete form of that: **make the store a private git repository and point
+`memkitConfig` at it.** Nothing else is required. memkit reads a directory, the
+config names it, and no part of retrieval asks how the directory got there or
+whether anything tracks it.
+
+**Private, and the word carries weight.** The paragraph above is about text
+arriving *from* a repository; this is the other direction. What makes a memory
+worth keeping is that it is specific — this codebase's trap, what that incident
+turned out to be, the constraint a customer will not move on — and specific is
+the same property as disclosing. Pushing the store publishes it to wherever the
+remote is, so the default should be a repository whose readers you chose.
+
+### What a repository turns on
+
+The stale-citation pass is not the only part that needs history. Two more
+findings are dated ones, and both are inert without it:
+
+- **A hot memory edited after the row that describes it.** The file's date is
+  the newest commit touching it; the row's is the newest commit whose diff to
+  `MEMORY.md` touched that row. The finding is the comparison of the two, so it
+  needs both — a file no commit has touched dates to zero and is skipped. Outside
+  a repository this does not warn; it has nothing to say.
+- **A row a rewrite took away.** `SEARCH.md` is generated, so a memory that
+  stops producing a row loses its only pointer silently. Whether that happened is
+  decided against the copy of the ledger at the blame base, read out of git. With
+  no such ref the answer is withheld rather than guessed, because "the ledger had
+  no rows then" and "every row was lost" are the same observation.
+
+Retrieval itself is unchanged — a plain directory answers prompts exactly as a
+repository does. What the repository adds is something for the hygiene machinery
+to date against.
+
+### Where your agent's own memories land
+
+Claude Code keeps a memory of its own, and by default none of it reaches your
+store. Measured on 2.1.238, the version CI installs: it writes agent-curated
+memories to `~/.claude/projects/<sanitized cwd>/memory/`, one directory per
+project, the cwd sanitized by replacing `/` and `.` with `-`.
+
+```bash
+pwd | tr './' '-'      # /Users/you/.config/nix -> -Users-you--config-nix
+```
+
+Left there they are outside every store: nothing retrieves them and nothing
+curates them. Point the harness at the store instead. The setting is
+`memoryDir`, and the value worth giving it is the **corpus root** rather than the
+store root, so that what the harness writes is retrievable the moment it lands:
+
+```json
+{ "memoryDir": "~/notes/search" }
+```
+
+In `~/.claude/settings.json` that sends every project's memories to your personal
+store, which is the one to set once and forget about. In a checkout's
+`.claude/settings.local.json` it sends that project's memories to that project's
+store. **Not its checked-in `.claude/settings.json`** — the harness ignores
+`memoryDir` there deliberately, so that cloning a repository cannot redirect
+where your agent writes.
+
+A symlink does the same job, and is the route to know when that setting is not
+yours to set. Move what is already written before you swap, or it is orphaned:
+
+```bash
+store=~/notes; dir=~/.claude/projects/$(pwd | tr './' '-')/memory
+mv "$dir"/*.md "$store"/search/ && rmdir "$dir"
+ln -s "$store"/search "$dir"
+```
+
+`memkit doctor` reports whether the feature is on and names the directory it
+believes is in use — but it derives that path from the cwd, so what it names is
+the default and not a `memoryDir` you have moved.
+
+### Before you wire it up
+
+- **The default path is derived from the cwd**, so a symlink into it is tied to
+  one checkout path. Clone the project to `~/work/app` on one machine and
+  `~/src/app` on another, and only the machine whose path you linked is wired up.
+  `memoryDir` carries no such coupling, which is the better reason to prefer it.
+- **The layout rule does not relax for a repository.** The harness writes flat —
+  `MEMORY.md` and one file per memory, no `search/`. Point it at the store root
+  and every one of those files sits above the corpus root and is not retrieved:
+  [the same trap as any other file left there](#what-retrieval-actually-requires),
+  now arriving on its own. Pointing at `<store>/search` is what avoids it, and the
+  `MEMORY.md` that lands there alongside them is ignored by retrieval and by the
+  checker alike, wherever it sits.
+- **The lighter alternative**, for a repository that already keeps its memories
+  in its own tree: leave the harness where it is and put a stub `MEMORY.md` in its
+  directory naming the real store.
+
+  ```markdown
+  # Project memory
+
+  This project's memories live in `~/src/app/docs/memories` and are indexed by
+  the `MEMORY.md` there. Read that one.
+  ```
+
+  Writes still land outside the store, but the agent reads its way in — curation
+  without relocating anything.
+
 ## Writing and retiring
 
 **New memory.** Write the file. That is the whole of it — the next prompt
