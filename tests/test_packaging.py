@@ -383,6 +383,7 @@ def _require_floor_interpreter() -> str:
                 "`uv python install 3.9` provisions one"
             )
         pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
+    assert interpreter is not None
     return interpreter
 
 
