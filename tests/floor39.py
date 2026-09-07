@@ -87,9 +87,16 @@ check("sweep on an absent dir", hook._sweep()["unlink"], 0)
 
 # --- the dispatcher and both subcommands import ------------------------------
 
-from memkit import cli, cli_doctor, cli_init  # noqa: E402
+from memkit import cli, cli_doctor, cli_init, harness_memory  # noqa: E402
 
 check("dispatcher has both", sorted(cli._HANDLERS), ["doctor", "init"])
+# The harness-memory helpers, called rather than merely imported: both walk the
+# filesystem, and a 3.9 break in either is a doctor row that says "the check
+# itself failed" on the machine that most needs the answer.
+check("a project key is one directory name",
+      "/" in harness_memory.project_key(os.getcwd()), False)
+check("nothing written is an empty inventory",
+      harness_memory.inventory(os.environ["CLAUDE_CONFIG_DIR"]), [])
 check("doctor checks", len(cli_doctor.CHECK_IDS) > 20, True)
 check("version line", "hook:" in cli_doctor.version_line(), True)
 check("init default config is absolute after expansion",

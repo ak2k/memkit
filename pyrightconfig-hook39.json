@@ -33,6 +33,7 @@
     "src/memkit/cli.py",
     "src/memkit/cli_doctor.py",
     "src/memkit/cli_init.py",
+    "src/memkit/harness_memory.py",
     "src/memkit/__init__.py"
   ],
   "pythonVersion": "3.9",

@@ -258,9 +258,8 @@ mv "$dir"/*.md "$store"/search/ && rmdir "$dir"
 ln -s "$store"/search "$dir"
 ```
 
-`memkit doctor` reports whether the feature is on and names the directory it
-believes is in use — but it derives that path from the cwd, so what it names is
-the default and not a `memoryDir` you have moved.
+`memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
+honours and names the directory in use, or the derived default when it is unset.
 
 ### Before you wire it up
 

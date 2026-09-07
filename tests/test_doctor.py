@@ -26,7 +26,7 @@ import sys
 
 import pytest
 
-from memkit import _exec
+from memkit import _exec, harness_memory
 from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
@@ -2171,19 +2171,166 @@ def test_auto_memory_armed_is_information_and_names_the_setting(profile, monkeyp
     """The one differentiator the field survey found unclaimed: none of the six
     competitors handles built-in auto-memory coexistence at all. Two memory
     systems on one project is a choice, so it is INFO and the remedy names the
-    exact key."""
+    exact key.
+
+    Which key is the whole of what changed here. `autoDreamEnabled: false`
+    stops background consolidation and NOTHING else — the harness still writes
+    every memory — so the remedy that named it was one an adopter could follow
+    and still have two memory systems. `autoMemoryEnabled` is the switch.
+    """
     path = _store_config(profile, stores=["personal"])
     _settings(profile, autoDreamEnabled=True)
     checks = doctor.collect(_machine(profile, monkeypatch, path))
     (row,) = _only(checks, "auto-memory")
     assert row.status == doctor.INFO
-    assert "autoDreamEnabled is ON" in row.detail
-    assert '"autoDreamEnabled": false' in row.remedy
+    assert "the harness would write to" in row.detail
+    assert '"autoMemoryEnabled": false' in row.remedy
+    assert row.actor == doctor.USER
     assert doctor.verdict([row]) == "OK"
 
+    # Consolidation off is not the feature off: same branch, one more line.
     _settings(profile, autoDreamEnabled=False)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "auto-dream is off in user: no background consolidation" in row.detail
+    assert "the harness would write to" in row.detail
+
+
+def test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone(
+    profile, monkeypatch
+) -> None:
+    """`autoMemoryEnabled: false` and the harness neither reads nor writes
+    auto-memory, which is the one state where an adopter has one memory system.
+
+    Measured on 2.1.232, 2.1.240 and 2.1.258. It is checked FIRST because it
+    settles the question the other branches are about: where a feature that is
+    not running writes is not a fact anybody needs.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False, autoMemoryDirectory="/u/elsewhere")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
     assert row.status == doctor.PASS
+    assert "auto-memory is off in user settings" in row.detail
+    # And the directory it would have used is not reported as a second system,
+    # which is what the branch order buys.
+    assert "elsewhere" not in row.detail
+    assert doctor.verdict([row]) == "OK"
+
+
+def test_a_directory_inside_a_store_is_retrieved_and_passes(profile, monkeypatch):
+    """The state this whole check exists to send an adopter to: the harness
+    writing straight into the corpus root, where memkit retrieves what it
+    writes. One memory system, two writers."""
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "widget calibration after a flash")
+    _settings(profile, autoMemoryDirectory=str(corpus))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.PASS
+    assert "personal" in row.detail and str(corpus) in row.detail
+    assert "user settings" in row.detail
+
+
+def test_a_gated_store_still_holds_what_the_harness_writes_into_it(
+    profile, monkeypatch
+) -> None:
+    """Asked of EVERY configured store rather than of the searched ones.
+
+    A project store gated to a root this session is standing outside of is not
+    searchable right now — and it still holds the memories in it. Answering
+    from `searched_stores()` would make this check report "outside every store"
+    about a directory that is already right, with the answer changing according
+    to which directory the adopter happened to run doctor from.
+    """
+    path = _store_config(profile, stores=["personal", "project"], gate="elsewhere")
+    corpus = profile / "stores" / "project" / "search"
+    _memory(corpus, "kept.md", "sprocket backlash after the rebuild")
+    _settings(profile, autoMemoryDirectory=str(corpus))
+    machine = _machine(profile, monkeypatch, path)
+    cfg = machine.config()
+    assert cfg is not None
+    assert [s.id for s in cfg.searched_stores()] == ["personal"], "not gated out"
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.PASS
+    assert "project" in row.detail
+
+
+def test_a_directory_outside_every_store_is_named_with_what_it_costs(
+    profile, monkeypatch
+) -> None:
+    """The silent state: the setting is doing exactly what it says, the
+    memories are being written, and nothing retrieves them. INFO rather than
+    FAIL because it is a choice an adopter may have made — and the remedy names
+    the key and a value rather than describing one."""
+    path = _store_config(profile, stores=["personal"])
+    stray = profile / "elsewhere"
+    stray.mkdir()
+    _settings(profile, autoMemoryDirectory=str(stray))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert str(stray) in row.detail and "user settings" in row.detail
+    assert "nothing retrieves what lands there" in row.detail
+    assert "autoMemoryDirectory" in row.remedy
+    assert str(profile / "stores" / "personal" / "search") in row.remedy
+    # The section by name and no `#` fragment: the anchor is not in the shipped
+    # copy of that page yet, and a link to one that does not exist reads as an
+    # assurance the detail is somewhere.
+    assert "Where your agent's own memories land" in row.remedy
+    assert "STORE.md#" not in row.remedy
+    assert row.actor == doctor.USER
+
+
+def test_with_no_setting_the_report_names_the_derived_path_and_what_is_in_it(
+    profile, monkeypatch
+) -> None:
+    """The state almost every adopter is in, and the one the old check could
+    not describe: no setting at all, so the harness derives a path per project
+    and has been filling it for months.
+
+    The count is the argument for doing anything about it, so it is stated
+    across the whole config dir rather than for this project alone — an adopter
+    whose current checkout is new has no idea how much is elsewhere.
+    """
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    for key, names in (
+        ("-home-u-git-app", ("one.md", "two.md", "MEMORY.md")),
+        ("-home-u", ("note.md",)),
+        ("-home-u-empty", ()),
+    ):
+        (projects / key / "memory").mkdir(parents=True)
+        for name in names:
+            (projects / key / "memory" / name).write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    default = harness_memory.default_dir(
+        str(profile / "claude-config"), os.getcwd()
+    )
+    assert default in row.detail
+    assert "derived from the git root" in row.detail
+    assert "2 project directories hold 3 memories outside every store" in row.detail
+    assert "-home-u-git-app (2)" in row.detail and "-home-u (1)" in row.detail
+    assert "-home-u-empty" not in row.detail
+
+    # And once the directory exists, the sentence is in the present tense: the
+    # difference between "this is where it would go" and "this is where your
+    # memories are" is the whole reason an adopter reads this row.
+    os.makedirs(default, exist_ok=True)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "the harness writes this project's memories to" in row.detail
+    assert "project key from the git root" in row.detail
 
 
 def test_auto_memory_reports_whether_a_consolidation_actually_ran(
@@ -2194,7 +2341,11 @@ def test_auto_memory_reports_whether_a_consolidation_actually_ran(
     path = _store_config(profile, stores=["personal"])
     _settings(profile, autoDreamEnabled=True)
     project = (
-        profile / "claude-config" / "projects" / doctor._sanitized_cwd() / "memory"
+        profile
+        / "claude-config"
+        / "projects"
+        / harness_memory.project_key(os.getcwd())
+        / "memory"
     )
     project.mkdir(parents=True)
     (project / doctor.CONSOLIDATE_LOCK).touch()

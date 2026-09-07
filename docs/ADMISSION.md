@@ -13,10 +13,11 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **101 files, about 3.0 MiB**
-— and `.claude-plugin/marketplace.json` pins that same tree as this is written,
-so there is one tree here and one set of numbers. The recipe at the bottom
-reproduces them against either the repository or your own installed copy.
+The table below counts **the tree this file ships in** — **103 files, about 3.0 MiB**
+— which is the tree the next release pins. The marketplace pin still installs the
+v0.4.0 tree — **101 files, about 3.0 MiB** — and everything added since arrives
+from the next release. The recipe at the bottom reproduces either one, against
+the repository or against your own installed copy.
 
 It does not stay that way, and it goes in both directions at once. `main` grows
 files the pin does not carry, so from the first such merge a count taken at the
@@ -28,8 +29,8 @@ back together.
 
 | what | files | why it is there |
 |---|---|---|
-| `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`, `skills/` | 18 | the payload proper — the wrappers, the hook module, the manifests |
-| `tests/` | 57 | not needed at run time; see below |
+| `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`, `skills/` | 19 | the payload proper — the wrappers, the hook module, the manifests |
+| `tests/` | 58 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 18 | likewise |
 | `README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 8 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |

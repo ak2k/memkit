@@ -1914,6 +1914,84 @@
       "why": "the only unlink doctor performs is bounded to the ledger its own probe wrote; widened it collects the shared state directory, soak log included"
     },
     {
+      "name": "project-key-is-taken-from-the-directory-not-the-repository",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "        return os.path.dirname(common)",
+      "new": "        return cwd",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_project_key_comes_from_the_repository_not_the_directory"
+      ],
+      "why": "The harness keys auto-memory to the git root, so every worktree and every subdirectory of one checkout share one directory. Keyed on the directory instead, doctor names an empty path for a session standing anywhere but the repository root \u2014 and reports no memories to an adopter who has months of them."
+    },
+    {
+      "name": "inventory-counts-the-harnesss-own-index-as-a-memory",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "        if not any(name != INDEX_NAME for name in files):",
+      "new": "        if not files:",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_inventory_counts_memories_and_not_the_index"
+      ],
+      "why": "MEMORY.md is written whether or not anything else is, so a directory holding nothing but the index holds no memories. Counted, the report offers an adopter memories to adopt that do not exist."
+    },
+    {
+      "name": "auto-memory-directory-is-read-from-a-checked-in-project-settings-file",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "DIRECTORY_SCOPES = (\"managed\", \"local\", \"user\")",
+      "new": "DIRECTORY_SCOPES = (\"managed\", \"local\", \"user\", \"project\")",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_checked_in_project_scope_is_not_read_for_this_key"
+      ],
+      "why": "The harness IGNORES autoMemoryDirectory in a checked-in .claude/settings.json, deliberately, so that cloning a repository cannot redirect where an agent writes. Read here, a repository decides which directory this report names \u2014 and the named directory is one nothing writes to."
+    },
+    {
+      "name": "auto-memory-directory-is-compared-with-its-tilde-unexpanded",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "            return expand_home(value), name",
+      "new": "            return value, name",
+      "tests": [
+        "tests/test_harness_memory.py::test_a_tilde_is_expanded_before_anything_compares_the_path"
+      ],
+      "why": "`~/notes/search` and the path it expands to are one directory. Compared unexpanded against a store's corpus root, a setting pointing straight at the store reports as outside every store, with a remedy telling the adopter to change a setting that is already right."
+    },
+    {
+      "name": "auto-memory-asks-only-the-stores-this-session-may-search",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    for store in cfg.stores:\n        # A store naming a root the config does not define raises here, and",
+      "new": "    for store in cfg.searched_stores():\n        # A store naming a root the config does not define raises here, and",
+      "tests": [
+        "tests/test_doctor.py::test_a_gated_store_still_holds_what_the_harness_writes_into_it"
+      ],
+      "why": "A cwd-gated store is unsearchable from outside its root and still holds every memory in it. Gated out here, one directory is inside a store or outside every store according to where the adopter happened to run doctor from, and the wrong answer sends them to move a directory that is already right."
+    },
+    {
+      "name": "auto-memory-reads-the-consolidation-switch-as-the-feature-switch",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    enabled = switches.get(harness_memory.ENABLED_KEY)",
+      "new": "    enabled = switches.get(harness_memory.DREAM_KEY)",
+      "tests": [
+        "tests/test_doctor.py::test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone",
+        "tests/test_doctor.py::test_auto_memory_armed_is_information_and_names_the_setting"
+      ],
+      "why": "autoDreamEnabled false stops background consolidation only: every memory is still written. Read as the feature switch, the report tells an adopter memkit is the only memory system on the machine while the harness carries on writing a second corpus."
+    },
+    {
+      "name": "auto-memory-remedy-names-the-key-that-does-not-turn-it-off",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            'To run memkit alone, set \"autoMemoryEnabled\": false in '",
+      "new": "            'To run memkit alone, set \"autoDreamEnabled\": false in '",
+      "tests": [
+        "tests/test_doctor.py::test_auto_memory_armed_is_information_and_names_the_setting"
+      ],
+      "why": "This is the defect the check was fixed for: the old remedy named autoDreamEnabled, which an adopter can follow to the letter and still have two memory systems, because it stops consolidation rather than writing."
+    },
+    {
       "name": "cli-bare-invocation-is-a-usage-error",
       "module": "cli",
       "file": "src/memkit/cli.py",
@@ -3874,8 +3952,8 @@
       "name": "admission-file-count-is-last-releases",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**101 files, about 3.0 MiB**",
-      "new": "**99 files, about 3.0 MiB**",
+      "old": "**103 files, about 3.0 MiB**",
+      "new": "**101 files, about 3.0 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
         "tests/test_plugin_surface.py::test_the_admission_notes_breakdown_sums_to_the_total_it_states",

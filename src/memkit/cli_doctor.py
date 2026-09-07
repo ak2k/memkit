@@ -57,6 +57,7 @@ import sys
 import time
 from collections.abc import Callable
 
+from memkit import harness_memory
 from memkit._exec import (
     CHILD_ENV_KEEP,
     CheckerRoute,
@@ -311,6 +312,14 @@ def _produces(check_id: str) -> Callable:
 # about a question the harness has already answered. What the precedence order
 # below is for is naming WHICH file to edit — a remedy that said "your
 # settings" over four candidate files is a remedy nobody can act on.
+#
+# ONE KEY IS RESOLVED RATHER THAN REPORTED: `autoMemoryDirectory`, in
+# `harness_memory.configured_dir`. Its effect is a DIRECTORY, and the
+# auto-memory check has to say whether what the harness writes there is
+# retrievable — which is a question about one path, so a report that named all
+# the values it found would be answering a different one. Its scope order is
+# the harness's own, and it skips `project` because the harness ignores the key
+# in a checked-in `.claude/settings.json`.
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 SETTINGS_NAME = "settings.json"
 LOCAL_SETTINGS_NAME = "settings.local.json"
@@ -2491,10 +2500,13 @@ def _task_outcomes(machine: Machine) -> list[Check]:
 # nobody established.
 MEASURED_HARNESS = "2.1.238"
 
-# Where the harness keeps the built-in memory feature's per-project state.
-# Measured on 2.1.241: `<config dir>/projects/<sanitized cwd>/memory/`, with
-# the cwd sanitized by replacing `/` and `.` with `-`. The lock beside it is
-# how "armed" and "actually running" are told apart.
+# Where the harness keeps the built-in memory feature's per-project state:
+# `<config dir>/projects/<project key>/memory/`, derived in `harness_memory`.
+# The key was measured on 2.1.241 as the sanitized cwd and RE-MEASURED on
+# 2.1.258, against the binary and code.claude.com/docs/en/memory, as the
+# sanitized git repository root — so every worktree and subdirectory of one
+# checkout shares one directory. The lock beside it is how "armed" and
+# "actually running" are told apart.
 CONSOLIDATE_LOCK = ".consolidate-lock"
 # An hour, which is the harness's own consolidation interval. A lock older than
 # that is a run that finished, not one in flight.
@@ -2879,13 +2891,66 @@ def _harness_stamp(machine: Machine) -> list[Check]:
     ]
 
 
-def _sanitized_cwd() -> str:
-    """The harness's own per-project directory name for this cwd.
+def _session_cwd() -> str:
+    """Where this session stands, or "" once that directory is gone.
 
-    Measured on 2.1.241: `/` and `.` both become `-`, so
-    `/Users/x/.config/nix` is `-Users-x--config-nix`.
+    Same answer `settings_scopes` needs and for the same reason: an agent's
+    workdir can be removed underneath the process, and a diagnostic that
+    tracebacks there answers nothing about the twenty-five other checks.
     """
-    return re.sub(r"[/.]", "-", os.getcwd())
+    try:
+        return os.getcwd()
+    except OSError:
+        return ""
+
+
+# How many project directories the inventory summary names before it counts the
+# rest. Five is what fits beside the other evidence inside `DETAIL_MAX_BYTES`;
+# the total is stated whatever the list shows, so the number a reader acts on is
+# never the length of the list.
+INVENTORY_SHOWN = 5
+
+
+def _count(number: int, one: str, many: str) -> str:
+    return f"{number} {one if number == 1 else many}"
+
+
+def _within(child: str, parent: str) -> bool:
+    """Whether `child` is `parent` or sits under it, symlinks resolved.
+
+    Resolved on both sides, because the two paths compared here reach this
+    function by different routes — one typed into a settings file, one built
+    from the config's roots — and on a mac `/tmp` and `/var` are symlinks that
+    make two spellings of one directory differ character by character.
+    """
+    try:
+        child = os.path.realpath(child)
+        parent = os.path.realpath(parent)
+    except OSError:
+        return False
+    return child == parent or child.startswith(parent + os.sep)
+
+
+def _store_holding(machine: Machine, directory: str) -> tuple:
+    """`(store id, corpus root)` containing `directory`, or `("", "")`.
+
+    EVERY configured store, not `searched_stores()`. A store gated to a root
+    this session is standing outside of still holds whatever the harness writes
+    into it, so gating it out here would answer "outside every store" about a
+    directory that is already right — and the answer would change with the
+    directory the adopter happened to run doctor from.
+    """
+    cfg = machine.config()
+    if cfg is None:
+        return "", ""
+    for store in cfg.stores:
+        # A store naming a root the config does not define raises here, and
+        # `store-roots` is the check that owns saying so.
+        with contextlib.suppress(ConfigError, OSError):
+            root = _search_root(cfg.store_dir(store, "live"))
+            if _within(directory, root):
+                return store.id, root
+    return "", ""
 
 
 @_produces("auto-memory")
@@ -2896,23 +2961,27 @@ def _auto_memory(machine: Machine) -> list[Check]:
     competitors handles built-in auto-memory coexistence at all. Two stores
     writing memories about the same work, in two formats, with two retrieval
     paths, is a state an adopter should choose rather than discover.
+
+    What the branches turn on is WHERE the harness writes, because that is what
+    decides whether the adopter has one corpus or two: a directory inside a
+    store is retrieved and is not a second system at all. Each switch is read
+    in the first scope that declares it, independently of the other — they
+    answer different questions, and the earlier reading, which took whichever
+    key it met first, reported `autoDreamEnabled` while `autoMemoryEnabled`
+    sat in the same file deciding whether the feature ran.
     """
-    setting = None
-    where = ""
+    switches = {}
     for scope in machine.settings:
-        for key in ("autoDreamEnabled", "autoMemoryEnabled"):
-            if key in scope.data:
-                setting = (key, scope.data[key])
-                where = scope.scope
-                break
-        if setting:
-            break
+        for key in (harness_memory.ENABLED_KEY, harness_memory.DREAM_KEY):
+            if key not in switches and key in scope.data:
+                switches[key] = (scope.data[key], scope.scope)
     config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    project = os.path.join(config_dir, "projects", _sanitized_cwd())
+    default = harness_memory.default_dir(config_dir, _session_cwd())
+    memory = default.rstrip(os.sep)
     recent = ""
     for candidate in (
-        os.path.join(project, CONSOLIDATE_LOCK),
-        os.path.join(project, "memory", CONSOLIDATE_LOCK),
+        os.path.join(os.path.dirname(memory), CONSOLIDATE_LOCK),
+        os.path.join(memory, CONSOLIDATE_LOCK),
     ):
         with contextlib.suppress(OSError):
             age = int(time.time() - os.stat(candidate).st_mtime)
@@ -2921,28 +2990,89 @@ def _auto_memory(machine: Machine) -> list[Check]:
             else:
                 recent = f"; last consolidation {age // 3600}h ago"
             break
-    if setting is None:
+
+    enabled = switches.get(harness_memory.ENABLED_KEY)
+    if enabled is not None and not enabled[0]:
         return [
             Check(
                 "auto-memory",
                 PASS,
-                "no auto-memory setting in any scope" + (recent or ""),
+                f"auto-memory is off in {enabled[1]} settings; memkit is the "
+                f"only memory system here{recent}",
             )
         ]
-    key, value = setting
-    if not value:
+
+    configured, where = harness_memory.configured_dir(machine.settings)
+    if configured is not None:
+        named = (
+            f"{_display_path(configured)} ({harness_memory.DIRECTORY_KEY} in "
+            f"{where} settings)"
+        )
+        store, root = _store_holding(machine, configured)
+        if store:
+            return [
+                Check(
+                    "auto-memory",
+                    PASS,
+                    f"{named} is inside {store}'s corpus root "
+                    f"{_display_path(root)}, so what the harness writes there "
+                    f"is retrieved{recent}",
+                )
+            ]
+        cfg = machine.config()
+        target = "<store>/search"
+        if cfg is not None and cfg.stores:
+            with contextlib.suppress(ConfigError, OSError):
+                target = os.path.join(cfg.store_dir(cfg.stores[0], "live"), "search")
         return [
-            Check("auto-memory", PASS, f"{key} is off in {where} settings" + recent)
+            Check(
+                "auto-memory",
+                INFO,
+                f"{named} is outside every store, so nothing retrieves what "
+                f"lands there{recent}",
+                f'Point it at a corpus root — "{harness_memory.DIRECTORY_KEY}": '
+                f'"{_display_path(target)}" — or leave it there deliberately: '
+                '"Where your agent\'s own memories land" in docs/STORE.md is '
+                "the section that says what each choice costs.",
+                actor=USER,
+            )
         ]
+
+    known = harness_memory.inventory(config_dir)
+    detail = [
+        f"the harness writes this project's memories to {_display_path(default)} "
+        "(project key from the git root)"
+        if os.path.isdir(default)
+        else f"the harness would write to {_display_path(default)} "
+        "(derived from the git root)"
+    ]
+    if known:
+        listed = ", ".join(
+            f"{project.key} ({project.memories})" for project in known[:INVENTORY_SHOWN]
+        )
+        if len(known) > INVENTORY_SHOWN:
+            listed += f" + {len(known) - INVENTORY_SHOWN} more"
+        detail.append(
+            f"{_count(len(known), 'project directory', 'project directories')} "
+            f"{'holds' if len(known) == 1 else 'hold'} "
+            f"{_count(sum(p.memories for p in known), 'memory', 'memories')} "
+            f"outside every store: {listed}"
+        )
+    dream = switches.get(harness_memory.DREAM_KEY)
+    if dream is not None and not dream[0]:
+        detail.append(
+            f"auto-dream is off in {dream[1]}: no background consolidation"
+        )
     return [
         Check(
             "auto-memory",
             INFO,
-            f"{key} is ON in {where} settings{recent}. The harness writes and "
-            "consolidates its own memories under "
-            f"{_display_path(project)}/memory/, beside memkit's store",
+            "; ".join(detail) + recent,
             "Two memory systems on one project is a choice rather than a "
-            'fault. To run memkit alone, set "autoDreamEnabled": false in '
+            "fault. To put what the harness writes inside the store, set "
+            f'"{harness_memory.DIRECTORY_KEY}" by hand — "Where your agent\'s '
+            'own memories land" in docs/STORE.md has the value and the trap. '
+            'To run memkit alone, set "autoMemoryEnabled": false in '
             f"{_display_path(config_dir)}/settings.json.",
             actor=USER,
         )

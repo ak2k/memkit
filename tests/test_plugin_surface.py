@@ -65,6 +65,11 @@ PAYLOAD = [
     # and answers nothing.
     "src/memkit/cli_doctor.py",
     "src/memkit/cli_init.py",
+    # Where the harness's own memory feature writes, which `doctor` reads at
+    # module scope. On the 3.9 floor and in the payload for the same reason as
+    # its importer: a plugin whose dispatcher cannot import is one that installs
+    # and answers nothing.
+    "src/memkit/harness_memory.py",
     "src/memkit/__init__.py",
     # The checker `bin/memkit` routes to when a local python meets the 3.12
     # floor: `MEMKIT_CHECKER_CMD` is `<python> -m memkit.memory_integrity`, run
