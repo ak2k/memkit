@@ -1494,12 +1494,14 @@ def _search_ledger_text(store: str, nonce: str, entries: list) -> str:
     there, the text init would have written stands in for it, which is what
     makes a second init on a fresh store find its own ledger already correct.
     """
-    ledger = os.path.join(store, "SEARCH.md")
     old = _search_ledger(store, nonce)
-    if os.path.isfile(ledger):
-        with contextlib.suppress(OSError, ValueError):
-            with open(ledger, encoding="utf-8") as f:
-                old = f.read()
+    # Through the same reader the destinations go through, so a ledger this
+    # process cannot decode falls back to the default preamble rather than
+    # raising out of `--dry-run`. That is today's behaviour — the file was
+    # clobbered unconditionally before this — and not a new refusal.
+    held, _readable = _held_text(os.path.join(store, "SEARCH.md"))
+    if held is not None:
+        old = held
     head, sep, _rest = old.partition(_INDEX_HEADING)
     preamble = (head + sep) if sep else old.rstrip("\n") + f"\n\n{_INDEX_HEADING}"
     body = "\n".join(

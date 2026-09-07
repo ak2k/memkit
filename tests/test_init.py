@@ -2584,17 +2584,17 @@ def test_every_description_adoption_writes_is_one_the_checker_can_read(
         if a.op == init.CREATE_FILE and a.path.startswith(str(base))
     }
     assert set(landed) == {"heading.md", "toolong.md", "colon.md", "bare.md"}
+    read_back = {}
     for name, text in landed.items():
         raw = init._frontmatter_of(text).get("description", "")
-        assert init._scalar_of(raw) is not None, (name, raw)
-        assert len(init._scalar_of(raw)) <= init._MAX_DESC_CHARS, name
-    assert init._scalar_of(
-        init._frontmatter_of(landed["heading.md"])["description"]
-    ) == "The heading line"
-    truncated = init._scalar_of(
-        init._frontmatter_of(landed["toolong.md"])["description"]
-    )
+        value = init._scalar_of(raw)
+        assert value is not None, (name, raw)
+        assert len(value) <= init._MAX_DESC_CHARS, name
+        read_back[name] = value
+    assert read_back["heading.md"] == "The heading line"
+    truncated = read_back["toolong.md"]
     assert len(truncated) == init._MAX_DESC_CHARS and truncated.endswith("…")
+    assert read_back["colon.md"] == "a thing: with a colon"
     assert landed["colon.md"].count('description: "a thing: with a colon"') == 1
     assert landed["bare.md"].startswith("---\n")
     assert landed["bare.md"].endswith(BARE)
