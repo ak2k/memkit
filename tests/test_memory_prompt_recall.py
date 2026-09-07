@@ -14359,6 +14359,10 @@ SECRET_SHAPES = [
     ("a github token", "ghp_" + "a" * 36),
     ("a bearer header", "Authorization: Bearer abcdefghij.klmnopqrstu"),
     ("an assignment", "password: correct-horse-battery"),
+    # The keyword wearing an identifier on both sides. A word boundary cannot
+    # fire between `_` and `secret`, so the anchored form of this branch misses
+    # the commonest credential a checkout carries.
+    ("an identifier-shaped assignment", "aws_secret_access_key = " + "x" * 26),
 ]
 
 
@@ -14375,13 +14379,21 @@ def test_the_credential_scan_leaves_prose_alone_and_compiles_once() -> None:
     false positive costs is one pointer, and `lex_secret` is what makes even
     that visible.
 
+    THE SHAPE is what holds the prose back, not the word boundary the branch
+    no longer has: a separator and eight unbroken characters. So a settings
+    key whose name is all keyword and whose value is short — `3600` — reads as
+    prose here, and it is the value that decides, not the name.
+
     Compiled lazily and kept: a module-level compile is what the import-cost
     test exists to keep out of a file that is imported on every prompt.
     """
     for prose in (
         "Change your password in the settings panel before the audit.",
+        "Change your password in the settings panel first.",
         "the token is rotated by hand every week",
+        "the token is rotated weekly by hand",
         "secret sauce: it is the ratio",
+        "password_reset_link_expires_in_seconds: 3600",
     ):
         assert hook._secret_re().search(prose) is None, prose
     assert hook._secret_re() is hook._secret_re()

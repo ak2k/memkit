@@ -3915,10 +3915,17 @@ def _secret_re() -> re.Pattern[str]:
     `re.error` on 3.11+ ("global flags not at the start of the expression"),
     and this alternation could only ever have them in the middle.
 
-    The last branch is an ASSIGNMENT shape — a word, a separator, then eight
-    unbroken characters — rather than the bare word, so ordinary prose about
-    passwords does not floor a memory. What it costs when it is wrong is one
-    pointer, visible as `lex_secret` in the soak record rather than silent.
+    The last branch is an ASSIGNMENT shape — a name, a separator, then eight
+    unbroken characters — rather than the bare word, and it is the SHAPE that
+    keeps ordinary prose about passwords off the floor, not a word boundary.
+    Which is why the keyword may carry identifier characters on either side:
+    a word-boundary anchor cannot fire between `_` and `secret`, so the
+    anchored form of this branch reads right and misses
+    `aws_secret_access_key = <40 chars>`, the commonest credential a checkout
+    carries. A short value still passes, so a key like
+    `password_reset_seconds: 3600` is prose here too. What it costs when it is
+    wrong is one pointer, visible as `lex_secret` in the soak record rather
+    than silent.
     """
     global _SECRET
     if _SECRET is None:
@@ -3930,7 +3937,8 @@ def _secret_re() -> re.Pattern[str]:
                     r"sk-[A-Za-z0-9_-]{20,}",
                     r"gh[pousr]_[A-Za-z0-9]{36}",
                     r"(?i:authorization:\s*bearer\s+[A-Za-z0-9._~+/-]{20,})",
-                    r"(?i:\b(?:password|passwd|secret|token)\b\s*[:=]\s*\S{8,})",
+                    r"(?i:[A-Za-z0-9_]*(?:password|passwd|secret|token)"
+                    r"[A-Za-z0-9_]*)\s*[:=]\s*\S{8,}",
                 )
             )
         )
