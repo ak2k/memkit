@@ -2351,8 +2351,8 @@
       "name": "init-the-preflight-sees-the-actions-the-flags-add",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    notes = list(_auto_memory_notes(store_path, config_dir)) + adoption_notes\n    if wire_claude_md:",
-      "new": "    _refuse_incompatible_types(actions)\n    notes = list(_auto_memory_notes(store_path, config_dir)) + adoption_notes\n    if wire_claude_md:",
+      "old": "    notes = _auto_memory_notes(store_path, known) + adoption_notes\n    if wire_claude_md:",
+      "new": "    _refuse_incompatible_types(actions)\n    notes = _auto_memory_notes(store_path, known) + adoption_notes\n    if wire_claude_md:",
       "tests": [
         "tests/test_init.py::test_the_plan_preflight_sees_the_actions_the_flags_add"
       ],

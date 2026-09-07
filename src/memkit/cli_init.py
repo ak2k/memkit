@@ -403,26 +403,22 @@ Hand-written. `SEARCH.md` beside it is generated and is not.
 """
 
 
-def _search_ledger(store: str, nonce: str) -> str:
-    """SEARCH.md exactly as the checker would generate it.
+def _search_ledger(store: str) -> str:
+    """The preamble a store with no SEARCH.md of its own gets.
 
-    Written here rather than left to `--write`, and the difference matters: a
-    regeneration would produce a correct ledger whatever init put in the file,
-    so the checker run that follows would be verifying its own repair. Written
-    this way, the run is a real check of what init did.
+    THE ROWS ARE NEVER THIS FUNCTION'S. `_search_ledger_text` keeps only what
+    precedes `## Index` and generates every row from the store's own
+    frontmatter, so what this stands in for is a file that is not there yet —
+    which is what makes a second init on a fresh store find the ledger it
+    wrote already correct.
     """
-    preamble = f"""# {os.path.basename(store) or 'memories'} — retrieval-only ledger
+    return f"""# {os.path.basename(store) or 'memories'} — retrieval-only ledger
 
 Generated from each memory's `description:` frontmatter. Never hand-edited —
 run the integrity checker with `--write` after adding a memory.
 
 ## Index
 """
-    row = (
-        f"- [memkit-canary]({os.path.join('search', CANARY_NAME)}) — "
-        + _canary_description(nonce)
-    )
-    return f"{preamble}\n{row}\n"
 
 
 def _config_entries(*, store: str, store_id: str) -> dict:
@@ -646,8 +642,8 @@ def check_refusals(
     store_path: str,
     wire_claude_md: bool,
     auto_dream_off: bool,
-    adopt_auto_memory: bool = False,
-    auto_memory_off: bool = False,
+    adopt_auto_memory: bool,
+    auto_memory_off: bool,
 ) -> None:
     """Every reason init will not proceed, in the order they are cheapest to
     answer and most terminal to meet."""
@@ -723,9 +719,11 @@ def check_refusals(
     # into.
     for flag, target, what in (
         (wire_claude_md, _claude_md(machine), "CLAUDE.md"),
-        (auto_dream_off, _settings_path(machine), "settings.json"),
-        (adopt_auto_memory, _settings_path(machine), "settings.json"),
-        (auto_memory_off, _settings_path(machine), "settings.json"),
+        (
+            auto_dream_off or adopt_auto_memory or auto_memory_off,
+            _settings_path(machine),
+            "settings.json",
+        ),
     ):
         if not flag:
             continue
@@ -1485,7 +1483,7 @@ def _rows_on_disk(store: str, config_path: str) -> dict:
     return out
 
 
-def _search_ledger_text(store: str, nonce: str, entries: list) -> str:
+def _search_ledger_text(store: str, entries: list) -> str:
     """SEARCH.md over this whole store, in the form the checker generates.
 
     THE PREAMBLE IS THE EXISTING FILE'S, verbatim through `## Index`, because
@@ -1494,7 +1492,7 @@ def _search_ledger_text(store: str, nonce: str, entries: list) -> str:
     there, the text init would have written stands in for it, which is what
     makes a second init on a fresh store find its own ledger already correct.
     """
-    old = _search_ledger(store, nonce)
+    old = _search_ledger(store)
     # Through the same reader the destinations go through, so a ledger this
     # process cannot decode falls back to the default preamble rather than
     # raising out of `--dry-run`. That is today's behaviour — the file was
@@ -1524,14 +1522,18 @@ def _adoptable(project) -> bool:
     return not (project.is_symlink or project.linked_project)
 
 
-def _auto_memory_notes(store: str, config_dir: str) -> list:
+def _auto_memory_notes(store: str, known: list) -> list:
     """What the harness has written, said in every manifest.
+
+    THE INVENTORY IS THE CALLER'S, and shared with the adoption planner: this
+    sentence is the reader's check on the copy plan below it, and two scans of
+    one tree is how a note saying 18 directories comes to sit above a manifest
+    that copied 19.
 
     Unconditional, because the state it describes is the one an adopter cannot
     see: two memory systems on one machine, one of them writing where nothing
     retrieves. A flag they never heard of is not an answer to that.
     """
-    known = harness_memory.inventory(config_dir)
     mine = [project for project in known if _adoptable(project)]
     memories = sum(project.memories for project in mine)
     out = []
@@ -1557,7 +1559,7 @@ def _auto_memory_notes(store: str, config_dir: str) -> list:
     return out
 
 
-def _plan_adoption(store: str, config_dir: str) -> tuple:
+def _plan_adoption(store: str, known: list) -> tuple:
     """(actions, ledger rows, notes) for every harness memory this would adopt.
 
     COPY, NEVER MOVE, AND NEVER OVERWRITE. A destination that already holds
@@ -1575,7 +1577,7 @@ def _plan_adoption(store: str, config_dir: str) -> tuple:
     already = 0
     payload = 0
     directories = 0
-    for project in harness_memory.inventory(config_dir):
+    for project in known:
         if not _adoptable(project):
             continue
         target = os.path.join(base, project.key)
@@ -1728,12 +1730,16 @@ def build_plan(
     )
     nonce = _canary_nonce(config_path)
     store_id = _store_id(store_path)
-    config_dir = _harness_config_dir()
+    # ONE SCAN, read by the adoption planner and by the note it sits above.
+    # It is a `scandir` of every project entry under the harness's config
+    # directory, and the two readers have to describe one snapshot: a second
+    # scan is how the note and the manifest under it come to disagree.
+    known = harness_memory.inventory(_harness_config_dir())
     adopted: list = []
     rows: list = []
     adoption_notes: list = []
     if adopt_auto_memory:
-        adopted, rows, adoption_notes = _plan_adoption(store_path, config_dir)
+        adopted, rows, adoption_notes = _plan_adoption(store_path, known)
     canary_link = os.path.join("search", CANARY_NAME)
     # THE WHOLE STORE'S ROWS, not just the ones this run writes. A file already
     # under `search/` owes SEARCH.md a row whoever put it there, and the
@@ -1814,7 +1820,7 @@ def build_plan(
         Action(
             CREATE_FILE,
             os.path.join(store_path, "SEARCH.md"),
-            _search_ledger_text(store_path, nonce, list(ledger_rows.values())),
+            _search_ledger_text(store_path, list(ledger_rows.values())),
             note="generated from the frontmatter of every memory under "
             "search/, in the form the integrity checker generates.",
         ),
@@ -1830,7 +1836,7 @@ def build_plan(
     # What the harness has already written is a fact about this machine an
     # adopter cannot see from inside memkit, and a flag they have never heard
     # of is not an answer to it.
-    notes = list(_auto_memory_notes(store_path, config_dir)) + adoption_notes
+    notes = _auto_memory_notes(store_path, known) + adoption_notes
     if wire_claude_md:
         target = _claude_md(machine)
         # FileNotFoundError is the create case and takes the empty default;
