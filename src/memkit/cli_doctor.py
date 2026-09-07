@@ -3039,13 +3039,16 @@ def _auto_memory(machine: Machine) -> list[Check]:
         ]
 
     known = harness_memory.inventory(config_dir)
-    detail = [
-        f"the harness writes this project's memories to {_display_path(default)} "
-        "(project key from the git root)"
-        if os.path.isdir(default)
-        else f"the harness would write to {_display_path(default)} "
-        "(derived from the git root)"
-    ]
+    if os.path.isdir(default):
+        detail = [
+            f"the harness writes this project's memories to "
+            f"{_display_path(default)} (project key from the git root)"
+        ]
+    else:
+        detail = [
+            f"the harness would write to {_display_path(default)} "
+            "(derived from the git root)"
+        ]
     if known:
         listed = ", ".join(
             f"{project.key} ({project.memories})" for project in known[:INVENTORY_SHOWN]
@@ -3060,9 +3063,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
         )
     dream = switches.get(harness_memory.DREAM_KEY)
     if dream is not None and not dream[0]:
-        detail.append(
-            f"auto-dream is off in {dream[1]}: no background consolidation"
-        )
+        detail.append(f"auto-dream is off in {dream[1]}: no background consolidation")
     return [
         Check(
             "auto-memory",

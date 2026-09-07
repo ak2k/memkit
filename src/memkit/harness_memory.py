@@ -70,9 +70,7 @@ class ProjectMemory:
 
     __slots__ = ("key", "path", "files", "is_symlink")
 
-    def __init__(
-        self, key: str, path: str, files: list, is_symlink: bool
-    ) -> None:
+    def __init__(self, key: str, path: str, files: list, is_symlink: bool) -> None:
         self.key = key
         self.path = path
         self.files = files
@@ -151,12 +149,12 @@ def inventory(config_dir: str) -> list:
     can show only a few of them wants, and stable for two directories holding
     the same number.
     """
-    found = []
     try:
         with os.scandir(os.path.join(config_dir, "projects")) as entries:
             projects = [(entry.name, entry.path) for entry in entries]
     except OSError:
-        return found
+        return []
+    found = []
     for key, path in projects:
         memory = os.path.join(path, "memory")
         try:
@@ -170,9 +168,7 @@ def inventory(config_dir: str) -> list:
             continue
         if not any(name != INDEX_NAME for name in files):
             continue
-        found.append(
-            ProjectMemory(key, memory, files, os.path.islink(memory))
-        )
+        found.append(ProjectMemory(key, memory, files, os.path.islink(memory)))
     found.sort(key=lambda project: (-project.memories, project.key))
     return found
 
