@@ -230,11 +230,11 @@ memories to `~/.claude/projects/<project key>/memory/`, one directory per
 project. Measured on 2.1.258 and on the documentation page, the key is the git
 repository root, sanitized by replacing `/` and `.` with `-`, so every
 subdirectory of one repository shares one directory; outside a repository the
-cwd is used instead. A linked worktree maps to its main
-checkout's root, so a repository's worktrees share that directory too.
+cwd is used instead. A linked worktree maps to its main checkout's root, so a
+repository's worktrees share that directory too.
 
 ```bash
-# /Users/you/.config/nix -> -Users-you--config-nix
+# needs git 2.31+; /Users/you/.config/nix -> -Users-you--config-nix
 dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$PWD/.git")" | tr './' '-'
 ```
 
@@ -248,24 +248,33 @@ moment it lands:
 { "autoMemoryDirectory": "~/notes/search" }
 ```
 
-Measured on 2.1.258 and on the documentation page: the value is a path, a
-leading `~/` is expanded, and it is used as it stands for every project — flat,
-with no per-project directory under it.
+Measured on the same version: a leading `~/` is expanded, and the value is used
+as it stands for every project — flat, with no per-project directory under it.
 
 In `~/.claude/settings.json` that sends every project's memories to your personal
 store, which is the one to set once and forget about. In a checkout's
 `.claude/settings.local.json` it sends that project's memories to that project's
 store. **Not its checked-in `.claude/settings.json`** — the harness ignores
-`autoMemoryDirectory` in that file, measured on 2.1.258.
+`autoMemoryDirectory` in that file, measured on 2.1.258, so a clone's checked-in
+settings cannot redirect where your agent writes.
 
 A symlink does the same job, and is the route to know when that setting is not
 yours to set. Move what is already written before you swap, or it is orphaned:
 
 ```bash
+# needs git 2.31+
 store=~/notes; root=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$PWD/.git")")
 dir=~/.claude/projects/$(echo "$root" | tr './' '-')/memory
-mv "$dir"/*.md "$store"/search/ && rmdir "$dir" && ln -s "$store"/search "$dir"
+mv -n "$dir"/*.md "$store"/search/ && rmdir "$dir" && ln -s "$store"/search "$dir"
 ```
+
+The chain stops rather than losing anything: `mv` fails when that directory is
+missing or holds no `*.md`, `rmdir` fails when something is left behind — a
+file `mv -n` skipped because the store already had that name, a dotfile, a
+subdirectory — and either way `ln` never runs and the harness keeps writing to
+the old path, so finish it by hand: move what remains, `rmdir`, then `ln -s`.
+Inside a submodule the snippet does not apply, the common dir being under the
+superproject's `.git`, and which key the harness derives there was not measured.
 
 `memkit doctor` reports whether the feature is on and names the directory it
 believes is in use — but it derives that path from the cwd, so what it names is
