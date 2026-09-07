@@ -7,8 +7,8 @@ names it; a later command offers to move it. Both need the same three answers,
 and deriving them twice is how two commands come to disagree about which
 directory holds an adopter's memories.
 
-MEASURED, on the 2.1.232, 2.1.240 and 2.1.258 binaries and against
-code.claude.com/docs/en/memory:
+MEASURED on 2.1.258, out of the shipped binary and against live `claude -p`
+runs, superseding an earlier reading of the 2.1.232 and 2.1.240 schema text:
 
 - `autoMemoryEnabled` decides whether the feature runs at all. False and the
   harness neither reads nor writes auto-memory.
@@ -18,7 +18,28 @@ code.claude.com/docs/en/memory:
   still written, which is why it is not the switch that turns the feature off.
 - Unset, the directory is `<config dir>/projects/<project key>/memory`, and
   the key comes from the GIT REPOSITORY ROOT rather than from the cwd: every
-  worktree and every subdirectory of one repository share one directory.
+  worktree of one repository shares one directory, and a SUBMODULE keys on
+  itself.
+
+A CHECKED-IN `.claude/settings.json` REDIRECTS IT. The schema description says
+the key is "Ignored if set in projectSettings (checked-in .claude/settings.json)
+for security"; that sentence is false in this build. The resolver consults
+`projectSettings` whenever its trust gate passes, and the gate short-circuits
+to true for every non-interactive invocation — `claude -p`, hooks, the SDK,
+subagents — whatever the folder trust state is. An interactive session applies
+it once the folder is trusted. So a clone can decide where an agent writes its
+memories, which is why a value decided by that file is reported rather than
+passed.
+
+WHAT LANDS IN THAT DIRECTORY IS REWRITTEN. On every Write or Edit of a `.md`
+file whose normalised path merely STARTS WITH the configured directory — a
+string prefix, with no `realpath` — a file with parseable frontmatter is
+re-serialised: `name` slugified, every other top-level key buried under
+`metadata`, `node_type`, a session id and a timestamp added, comments and key
+order lost. So pointing the key at a corpus root hands memkit's own memories to
+somebody else's serialiser. A directory of the harness's own under the corpus
+root is what keeps both: retrieval recurses, and the rewrite reaches only what
+is inside it.
 
 `memoryDir` is not a key the harness reads. It was memkit's own earlier reading
 of this feature, and a remedy naming it changed nothing on the adopter's
@@ -37,9 +58,19 @@ from memkit.memory_prompt_recall import (
     expand_home,
 )
 
-# The harness's own sanitiser for a project key: `/` and `.` both become `-`,
-# so `/Users/x/.config/nix` keys as `-Users-x--config-nix`.
-_SANITIZE = re.compile(r"[/.]")
+# The harness's own sanitiser for a project key: EVERY character outside
+# `[A-Za-z0-9]` becomes `-`, one for one and with no run collapsing, so
+# `/Users/x/.config/nix` keys as `-Users-x--config-nix` and a path holding a
+# space or an underscore loses it the same way. Measured on 2.1.258.
+_SANITIZE = re.compile(r"[^A-Za-z0-9]")
+
+# Where the harness stops spelling the path out and starts hashing it: a key
+# longer than this is truncated to it and given a `-<base36>` suffix derived
+# from the unsanitised path. THE HASH IS NOT MEASURED, so this package cannot
+# name that directory and says so rather than naming the prefix — a prefix is
+# a directory nothing writes to, which is the answer this module refuses
+# everywhere else.
+KEY_MAX = 200
 
 # The one file in an auto-memory directory that is an INDEX rather than a
 # memory. It is carried in `files` because anything moving the directory has to
@@ -53,15 +84,28 @@ INDEX_NAME = "MEMORY.md"
 # submodule of that superproject.
 _SUBMODULE_GIT_DIR = os.sep + ".git" + os.sep + "modules" + os.sep
 
-# The key whose value is a directory this package must name, and the scopes the
-# harness honours it in — most authoritative first. `project` is absent
-# deliberately: the harness IGNORES `autoMemoryDirectory` in a checked-in
-# `.claude/settings.json`, so that cloning a repository cannot redirect where
-# an agent writes. Reading it there would make this report name a directory
-# nothing writes to.
-DIRECTORY_KEY = "autoMemoryDirectory"
-DIRECTORY_SCOPES = ("managed", "local", "user")
+# The scopes the harness resolves these keys in, most authoritative first, and
+# the FIRST ONE THAT DECLARES THE KEY WINS. Measured on 2.1.258: the resolver
+# reads policy settings, then the `--settings` flag, then
+# `.claude/settings.local.json`, then the checked-in `.claude/settings.json`,
+# then user settings — so `local` outranks `project`, and both outrank `user`.
+#
+# The `--settings` scope has no entry here because it cannot be one: it names a
+# file chosen per invocation, on a command line this process never sees.
+SCOPE_ORDER = ("managed", "local", "project", "user")
 
+# The one scope whose file is checked into the repository and travels with
+# every clone of it. Named rather than compared inline, because what hangs off
+# it is a status: a value this file decided is REPORTED, never passed.
+CHECKOUT_SCOPE = "project"
+
+# What to point `autoMemoryDirectory` at inside a corpus root, rather than at
+# the root. Retrieval recurses, so a memory here is found; the harness's
+# rewrite is a string prefix on the configured directory, so keeping that
+# directory below memkit's own files is what keeps them out of its serialiser.
+SAFE_SUBDIR = "auto-memory"
+
+DIRECTORY_KEY = "autoMemoryDirectory"
 ENABLED_KEY = "autoMemoryEnabled"
 DREAM_KEY = "autoDreamEnabled"
 
@@ -117,6 +161,13 @@ def project_key(cwd: str) -> str:
     answer rather than one per tree, and it is why the walk goes through the
     git COMMON dir — a linked worktree's own git dir is under the main
     checkout's, and its `commondir` file is the only thing that says so.
+    Measured on 2.1.258: a linked worktree wrote to its main checkout's key.
+
+    PHYSICAL, not the spelling the caller used. The harness keys on the
+    process's own `cwd`, which the kernel has already resolved, so a directory
+    reached through a symlink keys to what the link points at. Measured on
+    2.1.258: a session in a symlinked directory outside any repository wrote to
+    the target's key, not the link's.
 
     `cwd` is the caller's to pass and has to be ABSOLUTE. Doctor has already
     resolved where it stands for the settings scopes, and a second walk here
@@ -126,6 +177,11 @@ def project_key(cwd: str) -> str:
     failed, and keyed it collapses to `<config dir>/projects/memory`, a path
     that reads as derived and is nowhere.
 
+    A key over `KEY_MAX` characters is refused for the same reason. The harness
+    truncates and appends a hash of the untruncated path, and that hash was not
+    measured — so the only names this could return are one the harness does not
+    use and a prefix that is no directory at all.
+
     Never raises for anything the FILESYSTEM does. Every way the walk can fail
     — no repository above `cwd`, a session directory that was removed
     underneath the process, a `.git` file nothing can read, a path the OS
@@ -134,27 +190,41 @@ def project_key(cwd: str) -> str:
     """
     if not os.path.isabs(cwd):
         raise ValueError(f"{cwd!r} is not an absolute directory")
-    return _SANITIZE.sub("-", _project_path(cwd))
+    key = _SANITIZE.sub("-", _project_path(cwd))
+    if len(key) > KEY_MAX:
+        raise ValueError(
+            f"the key for {cwd!r} is {len(key)} characters; over {KEY_MAX} the "
+            "harness appends a hash suffix memkit has not measured"
+        )
+    return key
 
 
 def _project_path(cwd: str) -> str:
+    # RESOLVED on every path out of this function, including the ones that give
+    # up: `_repo_root` resolves before it walks, so only the fallbacks could
+    # return the spelling the caller happened to use.
     try:
-        root = _repo_root(cwd)
+        resolved = os.path.realpath(cwd)
+    except (OSError, ValueError):
+        return cwd
+    try:
+        root = _repo_root(resolved)
         if root is None:
-            return cwd
+            return resolved
         common = _repo_common_dir(root)
         if common is None:
-            return cwd
+            return resolved
         if _SUBMODULE_GIT_DIR in common:
-            # The submodule's own worktree root, which is at minimum unique —
-            # the common dir is shared by every submodule of the superproject.
-            # What the harness keys a submodule to was never measured, so this
-            # answers with the one thing that cannot collide rather than with a
-            # guess at somebody else's rule.
+            # The submodule's own worktree root. Measured on 2.1.258: the
+            # harness rewrites a git dir to another root only when it finds a
+            # `commondir` beside it, which a linked worktree has and a
+            # submodule does not — so a submodule keys on itself, where the
+            # common-dir walk would key every submodule of one superproject to
+            # `<super>/.git/modules`.
             return root
         return os.path.dirname(common)
     except (_RootUnknown, OSError, ValueError):
-        return cwd
+        return resolved
 
 
 def default_dir(config_dir: str, cwd: str) -> str:
@@ -239,25 +309,56 @@ def inventory(config_dir: str) -> list:
     return found
 
 
+def switch(scopes, key: str) -> tuple:
+    """`(value, scope name)` for one settings key, or `(None, None)`.
+
+    `SCOPE_ORDER`, not the order the scopes arrive in: these keys are read in
+    the harness's own precedence because the answer is a switch and a directory
+    the report has to NAME, and a report that named every value it found would
+    be answering a different question. An explicit `null` is absence, which is
+    what the harness's own `!= null` test makes it.
+    """
+    by_name = {scope.scope: scope for scope in scopes}
+    for name in SCOPE_ORDER:
+        scope = by_name.get(name)
+        if scope is not None and scope.data.get(key) is not None:
+            return scope.data[key], name
+    return None, None
+
+
+def usable_dir(value) -> bool:
+    """Whether the harness would USE this `autoMemoryDirectory` value.
+
+    Measured on 2.1.258: a value that is not absolute once `~/` is expanded, is
+    shorter than three characters, or holds a NUL is rejected — and what it
+    falls back to is the DEFAULT rather than the next scope down.
+
+    (memkit's `expand_home` also expands a bare `~`, where the harness expands
+    only `~/`; a bare `~` is under three characters either way.)
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    expanded = expand_home(value)
+    return os.path.isabs(expanded) and len(expanded) >= 3 and "\x00" not in expanded
+
+
 def configured_dir(scopes) -> tuple:
     """`(directory, scope name)` the harness would use, or `(None, None)`.
 
-    The scopes are iterated in `DIRECTORY_SCOPES` order rather than in the
-    order they arrive, because that order is the harness's answer to which file
-    wins and this is the one key doctor resolves rather than merely reports.
-    What hangs off it is a directory the report has to NAME.
+    DECIDED BY THE FIRST SCOPE THAT DECLARES THE KEY, whatever it declares.
+    Measured on 2.1.258: the resolver takes the first non-null value it finds
+    and validates afterwards, so a value it rejects falls through to the
+    default directory and NOT to the next scope. Read the other way — skipping
+    a bad value and reporting a lower scope's good one — this names a directory
+    the harness does not write to, which is the whole defect this module
+    exists to close.
 
     EXPANDED. `~/notes/search` and the path it expands to are the same
     directory, and a comparison against a store's corpus root that used the
     unexpanded spelling would report "outside every store" for a setting
     pointing straight at one. Display puts the `~` back.
     """
-    by_name = {scope.scope: scope for scope in scopes}
-    for name in DIRECTORY_SCOPES:
-        scope = by_name.get(name)
-        if scope is None:
-            continue
-        value = scope.data.get(DIRECTORY_KEY)
-        if isinstance(value, str) and value:
-            return expand_home(value), name
-    return None, None
+    value, name = switch(scopes, DIRECTORY_KEY)
+    if name is None or not usable_dir(value):
+        return None, None
+    return expand_home(value), name

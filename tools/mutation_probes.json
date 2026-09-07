@@ -1936,22 +1936,23 @@
       "why": "MEMORY.md is written whether or not anything else is, so a directory holding nothing but the index holds no memories. Counted, the report offers an adopter memories to adopt that do not exist."
     },
     {
-      "name": "auto-memory-directory-is-read-from-a-checked-in-project-settings-file",
+      "name": "auto-memory-scopes-are-ordered-as-doctor-lists-them-not-as-the-harness-reads",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "DIRECTORY_SCOPES = (\"managed\", \"local\", \"user\")",
-      "new": "DIRECTORY_SCOPES = (\"managed\", \"local\", \"user\", \"project\")",
+      "old": "SCOPE_ORDER = (\"managed\", \"local\", \"project\", \"user\")\n",
+      "new": "SCOPE_ORDER = (\"managed\", \"user\", \"project\", \"local\")\n",
       "tests": [
-        "tests/test_harness_memory.py::test_the_checked_in_project_scope_is_not_read_for_this_key"
+        "tests/test_harness_memory.py::test_the_directory_is_read_in_the_order_the_harness_reads_it",
+        "tests/test_harness_memory.py::test_the_switches_are_read_in_the_same_order_as_the_directory"
       ],
-      "why": "The harness IGNORES autoMemoryDirectory in a checked-in .claude/settings.json, deliberately, so that cloning a repository cannot redirect where an agent writes. Read here, a repository decides which directory this report names — and the named directory is one nothing writes to."
+      "why": "Measured on 2.1.258: the harness reads .claude/settings.local.json ahead of user settings. Ordered the way doctor lists its scopes instead, a settings.local.json that redirects the harness or turns it off is invisible behind a user settings.json that does not, and the row names a directory nothing writes to or calls a running feature off."
     },
     {
       "name": "auto-memory-directory-is-compared-with-its-tilde-unexpanded",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "            return expand_home(value), name",
-      "new": "            return value, name",
+      "old": "    return expand_home(value), name\n",
+      "new": "    return value, name\n",
       "tests": [
         "tests/test_harness_memory.py::test_a_tilde_is_expanded_before_anything_compares_the_path"
       ],
@@ -1972,8 +1973,8 @@
       "name": "auto-memory-reads-the-consolidation-switch-as-the-feature-switch",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    enabled = switches.get(harness_memory.ENABLED_KEY)",
-      "new": "    enabled = switches.get(harness_memory.DREAM_KEY)",
+      "old": "    enabled, enabled_scope = harness_memory.switch(\n        machine.settings, harness_memory.ENABLED_KEY\n    )\n",
+      "new": "    enabled, enabled_scope = harness_memory.switch(\n        machine.settings, harness_memory.DREAM_KEY\n    )\n",
       "tests": [
         "tests/test_doctor.py::test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone",
         "tests/test_doctor.py::test_auto_memory_armed_is_information_and_names_the_setting"
@@ -1984,8 +1985,8 @@
       "name": "auto-memory-remedy-names-the-key-that-does-not-turn-it-off",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "            'To run memkit alone, set \"autoMemoryEnabled\": false in '",
-      "new": "            'To run memkit alone, set \"autoDreamEnabled\": false in '",
+      "old": "            'alone, set \"autoMemoryEnabled\": false in '\n",
+      "new": "            'alone, set \"autoDreamEnabled\": false in '\n",
       "tests": [
         "tests/test_doctor.py::test_auto_memory_armed_is_information_and_names_the_setting"
       ],
@@ -2017,8 +2018,8 @@
       "name": "auto-memory-reads-any-falsy-value-as-the-feature-off",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    if enabled is not None and enabled[0] is False:\n",
-      "new": "    if enabled is not None and not enabled[0]:\n",
+      "old": "    if enabled is False:\n",
+      "new": "    if not enabled:\n",
       "tests": [
         "tests/test_doctor.py::test_only_false_turns_the_switches_off"
       ],
@@ -2045,6 +2046,17 @@
         "tests/test_harness_memory.py::test_a_cwd_that_is_not_an_absolute_path_is_refused"
       ],
       "why": "The empty string is what a caller holds once os.getcwd() has failed, and keyed it disappears: os.path.join swallows the empty component and the answer is <config dir>/projects/memory, a path that reads as derived and is nowhere. A relative one is resolved against whatever directory the process stands in, which is the second walk this module refuses."
+    },
+    {
+      "name": "auto-memory-passes-a-directory-a-checked-in-file-chose",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        if retrieved and not checkout:\n",
+      "new": "        if retrieved:\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_checked_in_settings_file_decides_and_is_reported_not_passed"
+      ],
+      "why": "Measured on 2.1.258: a checked-in .claude/settings.json redirects auto-memory in every non-interactive run whatever the folder trust state, so the value travels with every clone. Passed over because the directory happens to be retrievable, the report stops saying that a repository is the thing deciding where this adopter's agent writes."
     },
     {
       "name": "cli-bare-invocation-is-a-usage-error",

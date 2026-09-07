@@ -314,13 +314,21 @@ def _produces(check_id: str) -> Callable:
 # below is for is naming WHICH file to edit — a remedy that said "your
 # settings" over four candidate files is a remedy nobody can act on.
 #
-# ONE KEY IS RESOLVED RATHER THAN REPORTED: `autoMemoryDirectory`, in
-# `harness_memory.configured_dir`. Its effect is a DIRECTORY, and the
-# auto-memory check has to say whether what the harness writes there is
-# retrievable — which is a question about one path, so a report that named all
-# the values it found would be answering a different one. Its scope order is
-# the harness's own, and it skips `project` because the harness ignores the key
-# in a checked-in `.claude/settings.json`.
+# THREE KEYS ARE RESOLVED RATHER THAN REPORTED, in `harness_memory`:
+# `autoMemoryDirectory`, `autoMemoryEnabled` and `autoDreamEnabled`. They are
+# the exception the paragraph above allows for, and what earns it is that
+# their effect is a DIRECTORY and a switch the auto-memory check has to name:
+# whether what the harness writes is retrievable is a question about one path,
+# so a report listing every value it found would answer a different one.
+#
+# Their order is `harness_memory.SCOPE_ORDER`, measured on 2.1.258 out of the
+# resolver itself, and it is NOT the order this file lists the scopes in: the
+# harness reads `.claude/settings.local.json` and then the checked-in
+# `.claude/settings.json` ahead of user settings, so a checkout outranks the
+# adopter. It is also not what the shipped schema description claims — that
+# text says the directory key is ignored in a checked-in file "for security",
+# and the resolver consults it on every non-interactive run whatever the
+# folder trust state.
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 SETTINGS_NAME = "settings.json"
 LOCAL_SETTINGS_NAME = "settings.local.json"
@@ -2969,31 +2977,89 @@ def _pruned(directory: str, root: str) -> bool:
     return bool(set(relative.split(os.sep)) & EXCLUDE_DIRS)
 
 
-def _store_holding(machine: Machine, directory: str) -> tuple:
-    """`(store id, corpus root)` containing `directory`, or `("", "")`.
+def _store_relation(machine: Machine, directory: str) -> tuple:
+    """`(store id, corpus root, how the two overlap)`, or `("", "", "")`.
 
     EVERY configured store, not `searched_stores()`. A store gated to a root
     this session is standing outside of still holds whatever the harness writes
     into it, so gating it out here would answer "outside every store" about a
     directory that is already right — and the answer would change with the
     directory the adopter happened to run doctor from.
+
+    FOUR overlaps rather than in-or-out, because the harness does something
+    different in each: `at` and `over` are the two spellings of a configured
+    directory that CONTAINS the store's memories, which is what puts them
+    inside the harness's own rewrite; `pruned` is inside the corpus root and
+    below a name the indexing walk never descends into; `inside` is the one
+    that is retrieved.
     """
     cfg = machine.config()
     if cfg is None:
-        return "", ""
+        return "", "", ""
     for store in cfg.stores:
         # A store naming a root the config does not define raises here, and
         # `store-roots` is the check that owns saying so.
         with contextlib.suppress(ConfigError, OSError):
             root = _search_root(cfg.store_dir(store, "live"))
+            # Asked in this order because both tests are true when the two
+            # paths are one directory, and that case belongs to the rewrite.
+            if _within(root, directory):
+                same = _within(directory, root)
+                return store.id, root, "at" if same else "over"
             if _within(directory, root):
-                return store.id, root
-    return "", ""
+                pruned = _pruned(directory, root)
+                return store.id, root, "pruned" if pruned else "inside"
+    return "", "", ""
+
+
+def _placed(machine: Machine, directory: str) -> tuple:
+    """`(retrieved, what to say about it, what a remedy should name)`.
+
+    The middle answer is why this is not a bool. A directory inside a corpus
+    root but under a pruned name is in the store and out of retrieval at once;
+    a directory that HOLDS the corpus root is retrieved and rewritten at once.
+    Containment alone reports both as the state this check exists to reach.
+    """
+    store, root, how = _store_relation(machine, directory)
+    if not store:
+        return (
+            False,
+            "is outside every store, so nothing retrieves what lands there",
+            "",
+        )
+    safe = os.path.join(root, harness_memory.SAFE_SUBDIR)
+    if how in ("at", "over"):
+        where = (
+            f"is {store}'s corpus root itself"
+            if how == "at"
+            else f"holds {store}'s corpus root {_display_path(root)}"
+        )
+        return (
+            False,
+            f"{where}, so every memory already in that store is one the "
+            "harness re-serialises the first time an agent writes or edits "
+            "it: name slugified, other keys moved under metadata",
+            safe,
+        )
+    if how == "pruned":
+        return (
+            False,
+            f"is inside {store}'s corpus root {_display_path(root)} but under "
+            f"a name retrieval prunes ({', '.join(sorted(EXCLUDE_DIRS))}), so "
+            f"nothing written there is indexed",
+            safe,
+        )
+    return (
+        True,
+        f"is inside {store}'s corpus root {_display_path(root)}, so what the "
+        f"harness writes there is retrieved",
+        "",
+    )
 
 
 def _nearest_store(machine: Machine, directory: str) -> tuple:
-    """`(store id, corpus root, stores declared)` for the store this directory
-    is most plausibly meant for.
+    """`(store id, where to point the key, stores declared)` for the store this
+    directory is most plausibly meant for.
 
     A remedy prints ONE value, and with several stores declared the first one
     in the config file is an arbitrary answer to which store was meant. Nearest
@@ -3023,55 +3089,37 @@ def _nearest_store(machine: Machine, directory: str) -> tuple:
                 shared += 1
             personal = store.role == "personal"
             if (shared, personal) > (best[2], best[3]):
-                best = (store.id, root, shared, personal)
+                best = (store.id, os.path.join(root, harness_memory.SAFE_SUBDIR),
+                        shared, personal)
     return best[0], best[1], len(cfg.stores)
 
 
-def _placed(machine: Machine, directory: str) -> tuple:
-    """`(retrieved, what to say about it, corpus root)` for one directory.
-
-    THREE answers rather than two, and the middle one is why this is not a
-    bool: a directory inside a corpus root but under a name the indexing walk
-    prunes is in the store and out of retrieval at the same time, which is the
-    state a containment test alone reports as retrieved.
-    """
-    store, root = _store_holding(machine, directory)
-    if not store:
-        return (
-            False,
-            "is outside every store, so nothing retrieves what lands there",
-            "",
-        )
-    if _pruned(directory, root):
-        return (
-            False,
-            f"is inside {store}'s corpus root {_display_path(root)} but under "
-            f"a name retrieval prunes ({', '.join(sorted(EXCLUDE_DIRS))}), so "
-            f"nothing written there is indexed",
-            root,
-        )
-    return (
-        True,
-        f"is inside {store}'s corpus root {_display_path(root)}, so what the "
-        f"harness writes there is retrieved",
-        root,
-    )
-
-
-def _odd_switch(key: str, switch) -> str:
+def _odd_switch(key: str, value, scope: str) -> str:
     """What to say about a switch whose value is neither true nor false.
 
-    Only `false` turns either of these off, so a file carrying `null` or `0`
-    has the feature RUNNING while reading, to a person and to a truthiness
-    test alike, as though it were off. Quoting the value back is the whole
-    remedy an adopter needs.
+    Only `false` turns either of these off, so a file carrying `0` or `""` has
+    the feature RUNNING while reading, to a person and to a truthiness test
+    alike, as though it were off. Quoting the value back is the whole remedy an
+    adopter needs. An explicit `null` is not quoted, because the harness reads
+    it as the key being absent.
     """
-    if switch is None or isinstance(switch[0], bool):
+    if not scope or isinstance(value, bool):
         return ""
     return (
-        f'"{key}" is {json.dumps(switch[0])[:20]} in {switch[1]} settings, '
+        f'"{key}" is {json.dumps(value)[:20]} in {scope} settings, '
         "which is not true or false; only false turns it off"
     )
+
+
+# What a checked-in settings file costs, said once. It is the whole of why a
+# value this scope decided is reported rather than acted on, and it is too long
+# to repeat in the two remedies that need it.
+_CHECKOUT_COST = (
+    "A checked-in .claude/settings.json travels with every clone, and the "
+    "harness applies it: always in a `claude -p` run, a hook or a subagent, "
+    "whatever the folder trust state, and in an interactive session once you "
+    "trust the folder. Read that file before leaving it in place"
+)
 
 
 @_produces("auto-memory")
@@ -3096,15 +3144,26 @@ def _auto_memory(machine: Machine) -> list[Check]:
     directory the adopter placed, opens nothing, and no branch here acts on
     what it finds.
     """
-    switches = {}
-    for scope in machine.settings:
-        for key in (harness_memory.ENABLED_KEY, harness_memory.DREAM_KEY):
-            if key not in switches and key in scope.data:
-                switches[key] = (scope.data[key], scope.scope)
+    enabled, enabled_scope = harness_memory.switch(
+        machine.settings, harness_memory.ENABLED_KEY
+    )
+    dream, dream_scope = harness_memory.switch(
+        machine.settings, harness_memory.DREAM_KEY
+    )
+    odd_enabled = _odd_switch(harness_memory.ENABLED_KEY, enabled, enabled_scope)
     config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    # "" once the session directory has gone: there is no project to derive a
-    # path for, and an empty key would name `<config dir>/projects/memory`.
-    default = harness_memory.default_dir(config_dir, machine.cwd) if machine.cwd else ""
+    default = ""
+    underived = ""
+    if not machine.cwd:
+        underived = (
+            "the session directory was removed underneath this run, so where "
+            "the harness writes for this project cannot be derived"
+        )
+    else:
+        try:
+            default = harness_memory.default_dir(config_dir, machine.cwd)
+        except ValueError as exc:
+            underived = f"where the harness writes for this project is unknown: {exc}"
     recent = ""
     candidates = (
         (
@@ -3123,33 +3182,42 @@ def _auto_memory(machine: Machine) -> list[Check]:
                 recent = f"last consolidation {age // 3600}h ago"
             break
 
-    enabled = switches.get(harness_memory.ENABLED_KEY)
-    odd_enabled = _odd_switch(harness_memory.ENABLED_KEY, enabled)
-    # `is False` and not falsiness: JSON `null`, `0`, `""`, `[]` and `{}` are
-    # every one of them a value the harness goes on writing under, and read as
-    # off they produce this row's most confident sentence over a machine with
-    # two memory systems on it.
-    if enabled is not None and enabled[0] is False:
-        return [
-            Check(
-                "auto-memory",
-                PASS,
-                _detail(
-                    f"auto-memory is off in {enabled[1]} settings; memkit is "
-                    "the only memory system here",
-                    recent,
-                ),
-            )
-        ]
+    # `is False` and not falsiness: JSON `0`, `""`, `[]` and `{}` are every one
+    # of them a value the harness goes on writing under, and read as off they
+    # produce this row's most confident sentence over a machine with two memory
+    # systems on it.
+    if enabled is False:
+        off = (
+            f"auto-memory is off in {enabled_scope} settings; memkit is the "
+            "only memory system here"
+        )
+        if enabled_scope == harness_memory.CHECKOUT_SCOPE:
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(
+                        f"{off} while this checkout says so — the value is in "
+                        "its checked-in .claude/settings.json",
+                        recent,
+                    ),
+                    f'{_CHECKOUT_COST}. To decide it yourself, set '
+                    f'"{harness_memory.ENABLED_KEY}" in '
+                    f"{_display_path(config_dir)}/settings.json.",
+                    actor=USER,
+                )
+            ]
+        return [Check("auto-memory", PASS, _detail(off, recent))]
 
     configured, where = harness_memory.configured_dir(machine.settings)
     if configured is not None:
+        checkout = where == harness_memory.CHECKOUT_SCOPE
         named = (
             f"{_display_path(configured)} ({harness_memory.DIRECTORY_KEY} in "
-            f"{where} settings)"
+            f"{'this checkout' if checkout else where} settings)"
         )
-        retrieved, says, root = _placed(machine, configured)
-        if retrieved:
+        retrieved, says, target = _placed(machine, configured)
+        if retrieved and not checkout:
             return [
                 Check(
                     "auto-memory",
@@ -3157,22 +3225,35 @@ def _auto_memory(machine: Machine) -> list[Check]:
                     _detail(f"{named} {says}", recent, odd_enabled),
                 )
             ]
-        store, nearest, declared = _nearest_store(machine, configured)
-        target = root or nearest or "<store>/search"
-        aside = (
-            f" ({store}'s corpus root, of the {declared} stores you have)"
-            if declared > 1 and store
-            else ""
+        aside = ""
+        if not target:
+            store, target, declared = _nearest_store(machine, configured)
+            aside = (
+                f" ({store}'s, of the {declared} stores you have)"
+                if declared > 1 and store
+                else ""
+            )
+        remedy = (
+            f'Point it at a directory of the harness\'s own inside a corpus '
+            f'root — "{harness_memory.DIRECTORY_KEY}": '
+            f'"{_display_path(target or "<store>/search/auto-memory")}"{aside} '
+            "— retrieval recurses into it and the rewrite reaches only what is "
+            'in it. Or leave it there deliberately: "Where your agent\'s own '
+            'memories land" in docs/STORE.md says what each choice costs.'
         )
+        if checkout:
+            remedy = (
+                f"{_CHECKOUT_COST}. To decide where your agent writes, set "
+                f'"{harness_memory.DIRECTORY_KEY}" in '
+                f"{_display_path(config_dir)}/settings.json, which outranks "
+                "nothing this checkout can add but is yours."
+            )
         return [
             Check(
                 "auto-memory",
                 INFO,
                 _detail(f"{named} {says}", recent, odd_enabled),
-                f'Point it at a corpus root — "{harness_memory.DIRECTORY_KEY}": '
-                f'"{_display_path(target)}"{aside} — or leave it there '
-                'deliberately: "Where your agent\'s own memories land" in '
-                "docs/STORE.md is the section that says what each choice costs.",
+                remedy,
                 actor=USER,
             )
         ]
@@ -3185,21 +3266,18 @@ def _auto_memory(machine: Machine) -> list[Check]:
         # a link into a corpus root is the wiring docs/STORE.md recommends —
         # counted as a second memory system, this row alarms about the state it
         # exists to send adopters to.
-        holder = _store_holding(machine, project.path)[0] if project.linked else ""
-        (wired if holder else outside).append(project)
+        how = _store_relation(machine, project.path)[2] if project.linked else ""
+        (wired if how == "inside" else outside).append(project)
 
     here = False
-    if not machine.cwd:
-        first = (
-            "the session directory was removed underneath this run, so where "
-            "the harness writes for this project cannot be derived"
-        )
+    if underived:
+        first = underived
     elif os.path.isdir(default):
         first = (
             f"the harness writes this project's memories to "
             f"{_display_path(default)} (project key from the git root)"
         )
-        here, says, _root = _placed(machine, default)
+        here, says, _target = _placed(machine, default)
         if here:
             first = f"{first}, and that directory {says}"
     else:
@@ -3208,15 +3286,14 @@ def _auto_memory(machine: Machine) -> list[Check]:
             "(derived from the git root)"
         )
 
-    dream = switches.get(harness_memory.DREAM_KEY)
     dream_off = ""
-    if dream is not None and dream[0] is False:
-        dream_off = f"auto-dream is off in {dream[1]}: no background consolidation"
+    if dream is False:
+        dream_off = f"auto-dream is off in {dream_scope}: no background consolidation"
     fixed = (
         first,
         recent,
         odd_enabled,
-        _odd_switch(harness_memory.DREAM_KEY, dream),
+        _odd_switch(harness_memory.DREAM_KEY, dream, dream_scope),
         dream_off,
         f"{_count(len(wired), 'project directory', 'project directories')} "
         f"{'is' if len(wired) == 1 else 'are'} already linked into a store"
@@ -3251,9 +3328,10 @@ def _auto_memory(machine: Machine) -> list[Check]:
             _detail(*fixed, counted, listed),
             "Two memory systems on one project is a choice rather than a "
             "fault. To put what the harness writes inside the store, set "
-            f'"{harness_memory.DIRECTORY_KEY}" by hand — "Where your agent\'s '
-            'own memories land" in docs/STORE.md has the value and the trap. '
-            'To run memkit alone, set "autoMemoryEnabled": false in '
+            f'"{harness_memory.DIRECTORY_KEY}" to an {harness_memory.SAFE_SUBDIR}/ '
+            'directory under a corpus root — "Where your agent\'s own memories '
+            'land" in docs/STORE.md has the value and the trap. To run memkit '
+            'alone, set "autoMemoryEnabled": false in '
             f"{_display_path(config_dir)}/settings.json.",
             actor=USER,
         )

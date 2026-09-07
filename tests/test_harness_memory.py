@@ -7,10 +7,9 @@ shapes on disk: a linked worktree that must key to its main checkout, a project
 directory holding nothing but an index, a `~/` that has to expand before any
 path comparison is worth anything.
 
-The one shape that is RECORDED rather than required is the submodule. Nothing
-here measured what the harness does with one, so the case says what memkit
-yields — a key that is at least the submodule's own — and refuses to dress it
-up as the harness's rule.
+The submodule and the linked worktree were RECORDED here before they were
+measured, and they are measured now: 2.1.258 keys a submodule on itself and a
+linked worktree on its main checkout, which is what these cases assert.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -45,8 +45,13 @@ def _init(root: pathlib.Path) -> None:
 
 
 def _key(path) -> str:
-    """The sanitised spelling of a path, derived the way the harness does."""
-    return str(path).replace("/", "-").replace(".", "-")
+    """The sanitised spelling of a path, derived the way the harness does.
+
+    Measured on 2.1.258: every character outside `[A-Za-z0-9]` becomes `-`,
+    one for one, with no run collapsing. Resolved first, because the harness
+    keys on the process's own cwd and the kernel has already resolved that.
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(path)))
 
 
 @pytest.fixture
@@ -358,16 +363,91 @@ def test_a_path_the_os_will_not_resolve_is_answered_rather_than_raised():
     doctor row: an exception escaping this walk demotes the whole check to
     UNKNOWN.
     """
-    assert harness_memory.project_key("/tmp/a\x00b") == "-tmp-a\x00b"
+    assert harness_memory.project_key("/tmp/a\x00b") == "-tmp-a-b"
+
+
+def test_the_sanitiser_replaces_every_character_that_is_not_alphanumeric():
+    """Measured on 2.1.258, and wider than the `/` and `.` an earlier reading
+    of it had: `[^A-Za-z0-9]` maps ONE FOR ONE to `-`, with no run collapsing,
+    so a space and an underscore go the same way a separator does and two
+    adjacent ones stay two dashes.
+
+    What hangs off the exact rule is a directory NAME, so a rule that is close
+    is a report naming a directory that is not there.
+    """
+    key = harness_memory.project_key("/tmp/a b_c.d/e+f")
+    assert key.endswith("-a-b-c-d-e-f")
+    # `/tmp` resolves to `/private/tmp` on a mac and stays `/tmp` on Linux;
+    # what this case is about is the characters, not the prefix.
+    assert key.startswith("-")
+    assert "_" not in key and " " not in key
+
+
+def test_a_key_over_the_harnesss_cap_is_refused_rather_than_guessed(tmp_path):
+    """The harness truncates a key at 200 characters and appends `-<base36>`
+    derived from the untruncated path. That hash was not measured, so the two
+    names this could return are one the harness does not use and a prefix that
+    is no directory at all — and naming either is the defect every other
+    refusal in this module exists to avoid.
+    """
+    deep = pathlib.Path(os.path.realpath(tmp_path))
+    while len(str(deep)) <= harness_memory.KEY_MAX:
+        deep = deep / "a-directory-with-a-long-enough-name"
+    assert len(str(deep)) > harness_memory.KEY_MAX
+    with pytest.raises(ValueError) as raised:
+        harness_memory.project_key(str(deep))
+    assert str(harness_memory.KEY_MAX) in str(raised.value)
+
+    # And one character under the cap is answered normally.
+    ok = "/" + "a" * (harness_memory.KEY_MAX - 1)
+    assert len(harness_memory.project_key(ok)) == harness_memory.KEY_MAX
+
+
+def test_the_key_is_the_physical_path_and_not_the_spelling_used(tmp_path):
+    """Measured on 2.1.258: a session standing in a symlinked directory outside
+    any repository wrote to the TARGET's key, not the link's — the harness keys
+    on the process's own cwd, which the kernel resolved before the process ever
+    saw it.
+
+    Inside a repository the walk already resolves before it climbs; this is the
+    case that does not, and it is the one an adopter with a symlinked scratch
+    directory is in.
+    """
+    home = pathlib.Path(os.path.realpath(tmp_path))
+    real = home / "real"
+    real.mkdir()
+    link = home / "link"
+    link.symlink_to(real)
+    assert harness_memory.project_key(str(link)) == harness_memory.project_key(
+        str(real)
+    )
+    assert harness_memory.project_key(str(link)) == _key(real)
+
+    # A CHECKOUT reached through a symlink was already right, because the walk
+    # resolves before it climbs. Pinned so that stays true: only the two
+    # give-up paths out of the derivation ever returned the caller's spelling.
+    if not _git():
+        return
+    checkout = home / "checkout"
+    checkout.mkdir()
+    _init(checkout)
+    (home / "through").symlink_to(checkout)
+    assert harness_memory.project_key(str(home / "through")) == _key(checkout)
 
 
 # --- which settings file decides ---------------------------------------------
 
 
 def test_the_directory_is_read_in_the_order_the_harness_reads_it(config_dir):
-    """Managed over local over user, and the answer names the scope — a remedy
-    that said "your settings" over four candidate files is one nobody can act
-    on."""
+    """Managed over local over project over user, measured on 2.1.258 out of
+    the resolver, and the answer names the scope — a remedy that said "your
+    settings" over four candidate files is one nobody can act on.
+
+    LOCAL OVER USER is the half that had it backwards. The scopes arrive from
+    `settings_scopes` in the order doctor reports them, which puts `user`
+    second, and read in arrival order a `settings.local.json` redirecting the
+    harness is invisible behind a `settings.json` that does not.
+    """
     scopes = doctor.settings_scopes
     assert harness_memory.configured_dir(scopes()) == (None, None)
 
@@ -387,26 +467,74 @@ def test_the_directory_is_read_in_the_order_the_harness_reads_it(config_dir):
     assert harness_memory.configured_dir(scopes()) == ("/u/managed", "managed")
 
 
-def test_the_checked_in_project_scope_is_not_read_for_this_key(config_dir):
-    """The harness IGNORES `autoMemoryDirectory` in a checked-in
-    `.claude/settings.json`, so that cloning a repository cannot redirect where
-    an agent writes its memories.
+def test_a_checked_in_project_scope_does_redirect_the_directory(config_dir):
+    """MEASURED ON 2.1.258, and it overturns the rule this module was built on.
 
-    Reading it here would make the report name a directory nothing writes to —
-    and would quietly hand a repository the answer to "where are this adopter's
-    memories", which is the thing the harness's own rule exists to refuse.
+    The shipped schema text says the key is "Ignored if set in projectSettings
+    (checked-in .claude/settings.json) for security". It is not: the resolver
+    consults that file whenever its trust gate passes, and the gate returns
+    true unconditionally for every NON-INTERACTIVE invocation — `claude -p`, a
+    hook, the SDK, a subagent — whatever the folder trust state. A live probe
+    with no trust recorded anywhere had the harness both announce and write to
+    the directory a checked-in file named.
+
+    So a clone decides where an agent writes its memories, and reading this
+    scope is what lets the report say so. `local` still outranks it.
     """
     _settings(
         pathlib.Path.cwd() / ".claude" / doctor.SETTINGS_NAME,
         autoMemoryDirectory="/u/from-the-repository",
     )
-    assert harness_memory.configured_dir(doctor.settings_scopes()) == (None, None)
-    assert "project" not in harness_memory.DIRECTORY_SCOPES
+    assert harness_memory.configured_dir(doctor.settings_scopes()) == (
+        "/u/from-the-repository", "project",
+    )
+    assert harness_memory.CHECKOUT_SCOPE in harness_memory.SCOPE_ORDER
 
-    # And it does not mask a scope that IS read.
+    # It outranks user settings, and `settings.local.json` outranks it.
     _settings(config_dir / "settings.json", autoMemoryDirectory="/u/user")
     assert harness_memory.configured_dir(doctor.settings_scopes()) == (
-        "/u/user", "user",
+        "/u/from-the-repository", "project",
+    )
+    _settings(
+        pathlib.Path.cwd() / ".claude" / doctor.LOCAL_SETTINGS_NAME,
+        autoMemoryDirectory="/u/local",
+    )
+    assert harness_memory.configured_dir(doctor.settings_scopes()) == (
+        "/u/local", "local",
+    )
+
+
+def test_the_switches_are_read_in_the_same_order_as_the_directory(config_dir):
+    """One order for all three keys. The two booleans were read in the order
+    the scopes arrived rather than in the harness's, so a
+    `settings.local.json` turning auto-memory back on sat behind a
+    `settings.json` turning it off — and the row said memkit was the only
+    memory system on the machine while the harness wrote.
+    """
+    scopes = doctor.settings_scopes
+    assert harness_memory.switch(scopes(), harness_memory.ENABLED_KEY) == (None, None)
+
+    _settings(config_dir / "settings.json", autoMemoryEnabled=False)
+    assert harness_memory.switch(scopes(), harness_memory.ENABLED_KEY) == (
+        False, "user",
+    )
+
+    _settings(
+        pathlib.Path.cwd() / ".claude" / doctor.LOCAL_SETTINGS_NAME,
+        autoMemoryEnabled=True,
+    )
+    assert harness_memory.switch(scopes(), harness_memory.ENABLED_KEY) == (
+        True, "local",
+    )
+
+    # An explicit `null` is absence, which is what the harness's own `!= null`
+    # makes it: the scope below decides.
+    _settings(
+        pathlib.Path.cwd() / ".claude" / doctor.LOCAL_SETTINGS_NAME,
+        autoMemoryEnabled=None,
+    )
+    assert harness_memory.switch(scopes(), harness_memory.ENABLED_KEY) == (
+        False, "user",
     )
 
 
@@ -425,6 +553,32 @@ def test_a_value_that_is_not_a_path_is_not_an_answer(config_dir) -> None:
     """An empty string and a non-string are two ways a settings file says
     nothing, and both have to read as "unset" rather than as a directory: what
     hangs off the difference is whether doctor names the derived default."""
-    for value in ("", 17, None, ["/u/list"]):
+    for value in ("", 17, None, ["/u/list"], "relative/path", "/a"):
         _settings(config_dir / "settings.json", autoMemoryDirectory=value)
         assert harness_memory.configured_dir(doctor.settings_scopes()) == (None, None)
+
+
+def test_a_value_the_harness_rejects_masks_the_scope_below_it(config_dir):
+    """MEASURED: the resolver takes the first NON-NULL value it finds and
+    validates afterwards, so a scope holding a value the harness refuses does
+    not fall through to the next scope — it falls through to the DEFAULT
+    directory.
+
+    Read the other way, this reports a lower scope's good value as the answer
+    and names a directory the harness does not write to, which is the exact
+    shape of the defect this module exists to close. An explicit `null` is the
+    one value that is absence rather than a bad answer.
+    """
+    _settings(config_dir / "settings.json", autoMemoryDirectory="/u/user")
+    assert harness_memory.configured_dir(doctor.settings_scopes()) == (
+        "/u/user", "user",
+    )
+
+    local = pathlib.Path.cwd() / ".claude" / doctor.LOCAL_SETTINGS_NAME
+    _settings(local, autoMemoryDirectory="")
+    assert harness_memory.configured_dir(doctor.settings_scopes()) == (None, None)
+
+    _settings(local, autoMemoryDirectory=None)
+    assert harness_memory.configured_dir(doctor.settings_scopes()) == (
+        "/u/user", "user",
+    )
