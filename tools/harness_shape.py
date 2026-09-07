@@ -54,6 +54,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 import time
 
@@ -130,11 +131,11 @@ def _managed_dir() -> str:
 def _read_json(path: str):
     """The parsed object at `path`, or None for anything that is not one.
 
-    A file that is present and unparseable reads as absent here, where doctor
-    reports it as its own state. The difference is what each is for: doctor is
-    telling an adopter which file to fix, and a shape is a tree to rebuild — a
-    parse error has no shape, so recording one would describe a machine the
-    materialiser cannot produce.
+    None for BOTH "not there" and "there and unusable", because the two are
+    told apart by the caller: `_settings` asks the filesystem whether the path
+    exists and records the second as its own state. Omitting it said "no
+    settings at that scope", which is a different machine — and one a
+    materialiser reproduces by writing a file that does not parse.
     """
     try:
         with open(path, encoding="utf-8") as handle:
@@ -178,6 +179,7 @@ def _settings_scope(data: dict, names: _Pseudonyms, anonymise: bool) -> dict:
     plugins = data.get("enabledPlugins")
     listed = sorted(plugins) if isinstance(plugins, dict) else []
     return {
+        "unreadable": False,
         "memory_keys": memory_keys,
         # SORTED AFTER the pseudonyms are assigned, not before. The numbering
         # follows the real sort order because determinism needs it to, but the
@@ -209,6 +211,17 @@ def _settings(config_dir: str, names: _Pseudonyms, anonymise: bool) -> dict:
         data = _read_json(path)
         if data is not None:
             found[scope] = _settings_scope(data, names, anonymise)
+        elif os.path.lexists(path):
+            # PRESENT, and not readable as an object. Omitting it would say
+            # this machine has no settings at that scope, which is a different
+            # machine — the same distinction the docstring above draws between
+            # an absent file and one that sets nothing.
+            found[scope] = {
+                "unreadable": True,
+                "memory_keys": {},
+                "hooks": [],
+                "plugins": [],
+            }
     return found
 
 
@@ -338,12 +351,18 @@ def _frontmatter(text: str) -> dict:
     }
 
 
-def _read_head(path: str) -> str:
+def _read_head(path: str):
+    """The first `FRONTMATTER_BYTES` of `path`, or None if it could not be read.
+
+    None rather than `""`: an unreadable file and an empty one produced the
+    same four `false` flags, and a capture taken over ssh under `sudo -n` into
+    an NFS home is exactly where the difference lives.
+    """
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read(FRONTMATTER_BYTES)
     except OSError:
-        return ""
+        return None
 
 
 # --- pseudonyms -------------------------------------------------------------
@@ -435,21 +454,46 @@ def _lock_age(project_dir: str, memory_dir: str, now: float):
     return None
 
 
+def _outside(target: str) -> bool:
+    """Whether an index row names something other than a file in this directory.
+
+    Judged from the STRING, with no filesystem touched. A row target is
+    adopter-authored text, and joined onto the memory directory an absolute
+    one wins the join outright while a `../..` one walks out of it — so the
+    lookup that scored the row was a stat of whatever path somebody wrote, run
+    over ssh under `sudo -n` on a machine this tool is a guest on. It is also
+    the accuracy bug: `/etc/passwd` exists, so that row scored as SATISFIED.
+    """
+    if not target or os.path.isabs(target) or target in (os.curdir, os.pardir):
+        return True
+    return "/" in target or "\\" in target or os.sep in target
+
+
 def _index(memory_dir: str, listed: list) -> dict:
     """Row counts for `MEMORY.md`, and how many of the rows point at nothing.
 
     `dangling_rows` is a COUNT and never a name. It is the number an adopter's
     own index is judged on, and the one a rebuilt corpus has to reproduce for
-    the ORPHAN rule to fire the same number of times.
+    the ORPHAN rule to fire the same number of times. No such rule reads a
+    harness-written index today; this is the number one would need, and
+    `truncated` is how it says it is not the whole file.
+
+    CAPPED at `FRONTMATTER_BYTES` like every other read here. The cap exists
+    so one pathological file cannot turn a capture into a read of somebody's
+    whole disk, and an index was the one read that did not honour it.
     """
     path = os.path.join(memory_dir, INDEX_NAME)
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
+            text = handle.read(FRONTMATTER_BYTES + 1)
     except OSError:
-        return {"lines": 0, "rows": 0, "dangling_rows": 0}
+        return {"rows": 0, "dangling_rows": 0, "truncated": False}
+    truncated = len(text) > FRONTMATTER_BYTES
+    lines = text[:FRONTMATTER_BYTES].splitlines()
+    if truncated and lines:
+        # What the cap cut is a fragment of a line, not a row.
+        lines.pop()
     present = set(listed)
-    lines = text.splitlines()
     rows = dangling = 0
     for line in lines:
         match = _INDEX_ROW_RE.match(line)
@@ -459,52 +503,96 @@ def _index(memory_dir: str, listed: list) -> dict:
         target = match.group(1).strip()
         if target in present:
             continue
-        # `os.path.exists` is already False for every way the lookup can fail.
-        if not os.path.exists(os.path.join(memory_dir, target)):
+        # `lexists`, so a row pointing at a dead symlink counts as present:
+        # the file is there to be moved, which is what the row is about.
+        if _outside(target) or not os.path.lexists(
+            os.path.join(memory_dir, target)
+        ):
             dangling += 1
-    return {"lines": len(lines), "rows": rows, "dangling_rows": dangling}
+    return {"rows": rows, "dangling_rows": dangling, "truncated": truncated}
 
 
 def _memory_dir(
     key: str,
     project_dir: str,
+    project_is_symlink: bool,
     memory_dir: str,
     listed: list,
     config_root: str,
     names: _Pseudonyms,
     anonymise: bool,
     now: float,
-) -> dict:
+) -> tuple:
+    """One project's memory directory, and how many files could not be read.
+
+    THREE LINK FLAGS, matching `harness_memory.ProjectMemory`, because
+    whatever copies this directory owes each of them a different answer: the
+    memory directory's own, the project directory it sits in, and each file
+    inside. The tool captured one of the three, so a rebuilt tree could not
+    reproduce the other two and the equivalence test could not see them.
+    """
     files = []
-    for name in listed:
+    read_errors = 0
+    for name, linked in listed:
         path = os.path.join(memory_dir, name)
+        failed = False
         try:
-            size = os.stat(path).st_size
+            # `lstat`: the size of the LINK, never of what it points at. A
+            # memory file that is a link out of the directory had the target's
+            # size and the target's description length recorded, which is a
+            # measurement of a file outside the capture.
+            size = os.lstat(path).st_size
         except OSError:
-            size = 0
-        record = {"name": names.file(name) if anonymise else name, "size": size}
-        record.update(_frontmatter(_read_head(path)))
+            size = None
+            failed = True
+        record = {
+            "name": names.file(name) if anonymise else name,
+            "size": size,
+            "is_symlink": linked,
+        }
+        head = ""
+        if not linked:
+            # NEVER OPENED WHEN IT IS A LINK. The bytes are somebody else's
+            # file, reached through a name in this directory.
+            head = _read_head(path)
+            if head is None:
+                head, failed = "", True
+        record.update(_frontmatter(head))
         files.append(record)
+        if failed:
+            read_errors += 1
     is_symlink = os.path.islink(memory_dir)
     target_kind = None
     if is_symlink:
         try:
             resolved = os.path.realpath(memory_dir)
         except OSError:
-            resolved = ""
-        inside = resolved == config_root or resolved.startswith(
-            config_root + os.sep
-        )
-        target_kind = "in-shape" if inside else "external"
-    return {
-        "key": names.key(key) if anonymise else key,
-        "key_len": len(key),
-        "is_symlink": is_symlink,
-        "symlink_target_kind": target_kind,
-        "files": files,
-        "index": _index(memory_dir, listed) if INDEX_NAME in listed else None,
-        "lock_age_s": _lock_age(project_dir, memory_dir, now),
-    }
+            # A link this process cannot resolve is a third state, and calling
+            # it external would be a guess about where it points.
+            target_kind = "unresolved"
+        else:
+            inside = resolved == config_root or resolved.startswith(
+                config_root + os.sep
+            )
+            target_kind = "in-shape" if inside else "external"
+    names_listed = [name for name, _ in listed]
+    return (
+        {
+            "key": names.key(key) if anonymise else key,
+            "key_len": len(key),
+            "is_symlink": is_symlink,
+            "project_is_symlink": project_is_symlink,
+            "symlink_target_kind": target_kind,
+            "files": files,
+            "index": (
+                _index(memory_dir, names_listed)
+                if INDEX_NAME in names_listed
+                else None
+            ),
+            "lock_age_s": _lock_age(project_dir, memory_dir, now),
+        },
+        read_errors,
+    )
 
 
 def capture(config_dir: str, anonymise: bool = True) -> dict:
@@ -524,21 +612,38 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
     projects_root = os.path.join(config_dir, "projects")
     try:
         with os.scandir(projects_root) as entries:
-            keys = sorted(entry.name for entry in entries)
-    except OSError:
+            keys = sorted((entry.name, entry.is_symlink()) for entry in entries)
+    except FileNotFoundError:
+        # A config directory with no `projects/` is a machine with nothing
+        # written yet, and that is a shape. EVERY OTHER failure is not: the
+        # directory is there and could not be listed, and the zeros below it
+        # read as a healthy empty machine — which over `sudo -n` into an NFS
+        # home under root-squash is the reachable failure, on a host the
+        # operator may not get a second run at. It leaves here as an
+        # exception, and `main` turns it into a message and an exit 2.
         keys = []
     memory_dirs = []
-    memory_dirs_total = skipped = 0
-    for key in keys:
+    memory_dirs_total = skipped = read_errors = 0
+    for key, project_is_symlink in keys:
         project_dir = os.path.join(projects_root, key)
         memory_dir = os.path.join(project_dir, "memory")
-        if not os.path.isdir(memory_dir):
+        try:
+            is_dir = stat.S_ISDIR(os.stat(memory_dir).st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            # `os.path.isdir` answers False for an unreadable directory as
+            # well as for an absent one, so a project nobody could read used
+            # to miss BOTH counters and read as a project with no memories.
+            skipped += 1
+            continue
+        if not is_dir:
             continue
         memory_dirs_total += 1
         try:
             with os.scandir(memory_dir) as entries:
                 listed = sorted(
-                    entry.name
+                    (entry.name, entry.is_symlink())
                     for entry in entries
                     if entry.name.endswith(".md") and entry.is_file()
                 )
@@ -549,12 +654,12 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
             continue
         if not listed:
             continue
-        memory_dirs.append(
-            _memory_dir(
-                key, project_dir, memory_dir, listed, config_root,
-                names, anonymise, now,
-            )
+        record, failed = _memory_dir(
+            key, project_dir, project_is_symlink, memory_dir, listed,
+            config_root, names, anonymise, now,
         )
+        read_errors += failed
+        memory_dirs.append(record)
     return {
         "schema": SCHEMA,
         "tool": "harness_shape",
@@ -563,7 +668,12 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
         "settings": _settings(config_dir, names, anonymise),
         "projects_total": len(keys),
         "memory_dirs_total": memory_dirs_total,
+        # TWO counters, because a half-failed capture that is
+        # byte-indistinguishable from a complete one is a capture nobody can
+        # act on: `skipped` is a memory directory that could not be listed,
+        # `read_errors` a file inside one that could not be measured.
         "skipped": skipped,
+        "read_errors": read_errors,
         "memory_dirs": memory_dirs,
     }
 
@@ -571,15 +681,17 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
 # --- the command ------------------------------------------------------------
 
 
-def _inside_worktree(out: str) -> bool:
-    """Whether `out` would land in a git checkout.
+def _inside_worktree(directory: str) -> bool:
+    """Whether a file written in `directory` would land in a git checkout.
 
-    Walks the ancestors of the resolved PARENT, because `--out` names a file
-    that does not exist yet. `os.path.exists` rather than `isdir`: a linked
+    A DIRECTORY and not a file, because the two callers name one differently:
+    `--out` is a file that does not exist yet, so its parent is what there is
+    to walk, and a stdout redirect names no path at all — only the directory
+    the process stands in. `os.path.exists` rather than `isdir`: a linked
     worktree's `.git` is a FILE, and those are exactly the trees a
     worktree-per-unit workflow writes in.
     """
-    current = os.path.realpath(os.path.dirname(os.path.abspath(out)))
+    current = os.path.realpath(directory)
     while True:
         if os.path.exists(os.path.join(current, ".git")):
             return True
@@ -587,6 +699,22 @@ def _inside_worktree(out: str) -> bool:
         if parent == current:
             return False
         current = parent
+
+
+def _stdout_is_a_file() -> bool:
+    """Whether stdout is a REDIRECT rather than a terminal, a pipe or a device.
+
+    A regular file is the one spelling of stdout that leaves bytes on disk
+    under a name this command line never mentions, which is why `--raw >
+    somewhere` escaped a refusal keyed on `--out`. A tty, a pipe — `| jq` and
+    the documented ssh flow are both pipes — and `/dev/null` are untouched.
+    """
+    try:
+        return stat.S_ISREG(os.fstat(sys.stdout.fileno()).st_mode)
+    except (AttributeError, OSError, ValueError):
+        # No usable fd is not a redirect. It is also not a file this can
+        # overwrite, so answering False refuses nothing that matters.
+        return False
 
 
 def main(argv=None) -> int:
@@ -613,19 +741,41 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.raw and args.out and _inside_worktree(args.out):
-        sys.stderr.write(
-            f"harness_shape: --raw refuses to write inside a git worktree "
-            f"({args.out}); a shape committed with real names is the one "
-            f"mistake this tool exists to prevent\n"
-        )
-        return 2
+    if args.raw:
+        if args.out and _inside_worktree(
+            os.path.dirname(os.path.abspath(args.out))
+        ):
+            sys.stderr.write(
+                f"harness_shape: --raw refuses to write inside a git worktree "
+                f"({args.out}); a shape committed with real names is the one "
+                f"mistake this tool exists to prevent\n"
+            )
+            return 2
+        if not args.out and _stdout_is_a_file() and _inside_worktree(os.getcwd()):
+            # THE SPELLING THE DOCSTRING NAMES. "A debugging run whose
+            # redirect happened to point at the repository" is `--raw >
+            # somewhere`, and the guard above sees only the run where somebody
+            # typed the destination and could read it back.
+            sys.stderr.write(
+                "harness_shape: --raw refuses a redirect to a file from "
+                "inside a git worktree; pass --out so the destination can be "
+                "checked, and name one outside the checkout\n"
+            )
+            return 2
     config_dir = os.path.expanduser(args.config_dir)
     if not os.path.isdir(config_dir):
         sys.stderr.write(f"harness_shape: {config_dir} is not a directory\n")
         return 2
 
-    text = json.dumps(capture(config_dir, anonymise=not args.raw), indent=2) + "\n"
+    try:
+        shape = capture(config_dir, anonymise=not args.raw)
+    except OSError as exc:
+        # A capture that could not read the projects directory reports no
+        # shape rather than an empty one.
+        where = getattr(exc, "filename", None) or config_dir
+        sys.stderr.write(f"harness_shape: {where}: {exc.strerror or exc}\n")
+        return 2
+    text = json.dumps(shape, indent=2) + "\n"
     if not args.out:
         sys.stdout.write(text)
         return 0

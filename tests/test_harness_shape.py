@@ -87,10 +87,16 @@ FOLDED = "one line and another"
 def _tree(tmp_path: Path) -> Path:
     """One config directory holding every state the shape distinguishes.
 
-    Four project directories: a normal one with an index and two memories, an
-    index-only one, one whose `memory` is empty, and one whose `memory` is a
-    symlink to somewhere else — plus a project directory with no `memory` at
-    all, which is what 3,900 of the 3,923 entries on a real machine are.
+    A normal directory with an index and two memories, an index-only one, one
+    whose `memory` is empty, one whose `memory` links somewhere else, one
+    whose PROJECT directory is a link, one holding a memory FILE that is a
+    link, and one whose `memory` links to another directory under the same
+    config root — plus a project directory with no `memory` at all, which is
+    what 3,900 of the 3,923 entries on a real machine are.
+
+    The last three are named to sort AFTER the others, because pseudonyms are
+    assigned by first appearance over sorted keys: a name inserted in the
+    middle renumbers every assertion below it and says nothing.
     """
     config = tmp_path / "config"
     normal = _memory_dir(config, "-h-u-git-app")
@@ -116,6 +122,24 @@ def _tree(tmp_path: Path) -> Path:
     linked.mkdir(parents=True)
     os.symlink(outside, linked / "memory")
     (config / "projects" / "-h-u-git-none").mkdir(parents=True)
+    # A project directory reached through a link somebody else made. The
+    # package's inventory carries this as its own flag, and a copy has to
+    # answer it separately from the memory directory's.
+    elsewhere_project = tmp_path / "elsewhere-project"
+    _write(elsewhere_project / "memory" / "one.md", "x\n")
+    os.symlink(elsewhere_project, config / "projects" / "-h-u-git-plink")
+    # A memory FILE that is a link: its bytes live outside the directory being
+    # copied, which is the third of the three link states.
+    file_linked = _memory_dir(config, "-h-u-git-qlink")
+    _write(file_linked / "real.md", "x\n")
+    os.symlink(outside / "linked.md", file_linked / "link.md")
+    # And a memory directory linked to somewhere INSIDE the config root, which
+    # is the only value of `symlink_target_kind` no fixture or test produced.
+    shared = config / "shared"
+    _write(shared / "shared.md", "x\n")
+    in_shape = config / "projects" / "-h-u-git-rlink"
+    in_shape.mkdir(parents=True)
+    os.symlink(shared, in_shape / "memory")
     return config
 
 
@@ -144,27 +168,33 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     # and no install method, and a null here is what proves the capture did not
     # reach for the operator's own.
     assert shape["harness"] == {"version_hint": None, "install": None}
-    assert shape["projects_total"] == 5
-    assert shape["memory_dirs_total"] == 4
+    assert shape["projects_total"] == 8
+    assert shape["memory_dirs_total"] == 7
     assert shape["skipped"] == 0
+    assert shape["read_errors"] == 0
     # The bare `memory` directory holds no `*.md`, so it is counted and not
-    # listed; the other three are listed, index-only included.
-    assert len(shape["memory_dirs"]) == 3
+    # listed; the other six are listed, index-only included.
+    assert len(shape["memory_dirs"]) == 6
 
     listed = _by_key(shape)
-    assert set(listed) == {"-s1-s2-s3-s4", "-s1-s2-s3-s5", "-s1-s2-s3-s6"}
+    assert set(listed) == {
+        "-s1-s2-s3-s4", "-s1-s2-s3-s5", "-s1-s2-s3-s6",
+        "-s1-s2-s3-s7", "-s1-s2-s3-s8", "-s1-s2-s3-s9",
+    }
     normal = listed["-s1-s2-s3-s4"]
     assert normal["key_len"] == len("-h-u-git-app")
     assert normal["is_symlink"] is False
+    assert normal["project_is_symlink"] is False
     assert normal["symlink_target_kind"] is None
     assert normal["lock_age_s"] is None
-    assert normal["index"] == {"lines": 4, "rows": 2, "dangling_rows": 1}
+    assert normal["index"] == {"rows": 2, "dangling_rows": 1, "truncated": False}
     source = config / "projects" / "-h-u-git-app" / "memory"
     files = {entry["name"]: entry for entry in normal["files"]}
     assert set(files) == {"MEMORY.md", "m1.md", "m2.md"}
     assert files["m1.md"] == {
         "name": "m1.md",
         "size": (source / "kept.md").stat().st_size,
+        "is_symlink": False,
         "has_frontmatter": True,
         "has_description": True,
         "description_len": len(DESCRIPTION),
@@ -177,7 +207,7 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
 
     index_only = listed["-s1-s2-s3-s5"]
     assert [entry["name"] for entry in index_only["files"]] == ["MEMORY.md"]
-    assert index_only["index"] == {"lines": 3, "rows": 1, "dangling_rows": 1}
+    assert index_only["index"] == {"rows": 1, "dangling_rows": 1, "truncated": False}
 
     linked = listed["-s1-s2-s3-s6"]
     assert linked["is_symlink"] is True
@@ -189,6 +219,24 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     assert linked["files"][0]["description_len"] == len(FOLDED)
     assert linked["files"][0]["has_type"] is True
     assert linked["files"][0]["has_name"] is False
+
+    # The three link states, each answered separately.
+    project_linked = listed["-s1-s2-s3-s7"]
+    assert project_linked["project_is_symlink"] is True
+    assert project_linked["is_symlink"] is False
+    file_linked = listed["-s1-s2-s3-s8"]
+    by_name = {entry["name"]: entry for entry in file_linked["files"]}
+    assert by_name["m6.md"]["is_symlink"] is False
+    assert by_name["m5.md"]["is_symlink"] is True
+    # AND NEVER OPENED. The target carries frontmatter and a description; the
+    # link records neither, and the size is the link's rather than the file's.
+    assert by_name["m5.md"]["has_frontmatter"] is False
+    assert by_name["m5.md"]["description_len"] is None
+    assert by_name["m5.md"]["size"] == (
+        config / "projects" / "-h-u-git-qlink" / "memory" / "link.md"
+    ).lstat().st_size
+    # The one value of `symlink_target_kind` nothing produced until now.
+    assert listed["-s1-s2-s3-s9"]["symlink_target_kind"] == "in-shape"
 
 
 def test_the_same_tree_captures_to_the_same_bytes_twice(tmp_path) -> None:
@@ -399,6 +447,92 @@ def test_raw_refuses_to_write_where_a_fixture_would_be_committed(tmp_path) -> No
     assert _run("--config-dir", str(tmp_path), "--raw").returncode == 0
 
 
+def test_raw_refuses_a_redirect_from_inside_a_checkout(tmp_path) -> None:
+    """The spelling the tool's own docstring names, which had no guard.
+
+    "A debugging run whose redirect happened to point at the repository" is
+    `--raw > somewhere`, and the refusal only ran when `--out` was given —
+    the spelling where somebody typed the destination and could read it back.
+    A regular-file stdout is the redirect; a terminal, a pipe (`| jq` and the
+    documented ssh flow) and `/dev/null` are not, and all three keep working.
+    """
+    tree = tmp_path / "repo"
+    (tree / "tests" / "data").mkdir(parents=True)
+    (tree / ".git").mkdir()
+    config = tmp_path / "config"
+    config.mkdir()
+    argv = [sys.executable, str(TOOL), "--config-dir", str(config), "--raw"]
+    target = tree / "tests" / "data" / "oops.json"
+    with target.open("w") as handle:
+        refused = subprocess.run(
+            argv, stdout=handle, stderr=subprocess.PIPE, text=True,
+            cwd=str(tree), timeout=300,
+        )
+    assert refused.returncode == 2, refused.stderr
+    assert "--raw refuses a redirect" in refused.stderr
+    assert target.read_text(encoding="utf-8") == "", "it refused and wrote anyway"
+
+    # The three spellings that are not a redirect, from the same directory.
+    piped = subprocess.run(
+        argv, capture_output=True, text=True, cwd=str(tree), timeout=300
+    )
+    assert piped.returncode == 0, piped.stderr
+    with open(os.devnull, "w") as sink:
+        nulled = subprocess.run(
+            argv, stdout=sink, stderr=subprocess.PIPE, text=True,
+            cwd=str(tree), timeout=300,
+        )
+    assert nulled.returncode == 0, nulled.stderr
+    # And a redirect from OUTSIDE a checkout is what the flag is for.
+    mine = tmp_path / "mine.json"
+    with mine.open("w") as handle:
+        allowed = subprocess.run(
+            argv, stdout=handle, stderr=subprocess.PIPE, text=True,
+            cwd=str(tmp_path), timeout=300,
+        )
+    assert allowed.returncode == 0, allowed.stderr
+    assert json.loads(mine.read_text(encoding="utf-8"))["anonymised"] is False
+
+
+def test_an_index_row_is_judged_without_leaving_the_directory(tmp_path) -> None:
+    """`dangling_rows` used to be decided by joining adopter-authored text onto
+    the memory directory and stat-ing whatever came out.
+
+    Two things wrong with one line: the walk left the directory — over ssh
+    under `sudo -n`, so as root on somebody else's machine — and `/etc/passwd`
+    exists, so that row scored as SATISFIED and the count was wrong in the
+    direction that hides the problem.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    _write(memory / "real.md", "x\n")
+    _write(
+        memory / "MEMORY.md",
+        "# Memory index\n\n"
+        "- [a](real.md) — hook\n"
+        "- [b](/etc/passwd) — hook\n"
+        "- [c](../../../../etc/hosts) — hook\n"
+        "- [d](nope.md) — hook\n",
+    )
+    entry = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]
+    assert entry["index"] == {"rows": 4, "dangling_rows": 3, "truncated": False}
+
+
+def test_a_pathological_index_is_read_to_the_cap_and_says_so(tmp_path) -> None:
+    """Every other read here stops at `FRONTMATTER_BYTES` so one file cannot
+    turn a capture into a read of somebody's whole disk. The index was the one
+    that did not, and a count taken off a truncated read has to say so or it
+    is a number a rebuilt corpus cannot reproduce."""
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    _write(memory / "real.md", "x\n")
+    _write(memory / "MEMORY.md", "- [a](real.md) — hook\n" * 6000)
+    entry = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]
+    assert entry["index"]["truncated"] is True
+    assert 0 < entry["index"]["rows"] < 6000
+    assert entry["index"]["dangling_rows"] == 0
+
+
 def test_the_tool_and_the_package_agree_on_what_a_corpus_is(tmp_path) -> None:
     """The shape is measured by one walk and consumed by another, and the two
     have to name the same directories.
@@ -420,15 +554,114 @@ def test_the_tool_and_the_package_agree_on_what_a_corpus_is(tmp_path) -> None:
     }
     found = harness_memory.inventory(str(config))
     assert set(adoptable) == {project.key for project in found}
-    assert {project.key: project.is_symlink for project in found} == {
-        key: entry["is_symlink"] for key, entry in adoptable.items()
-    }
+    for project in found:
+        entry = adoptable[project.key]
+        # ALL THREE link flags and the file list, not just the one. The
+        # package documents why each needs its own answer, and a comparison of
+        # one of them passes while the two copies disagree about what a link
+        # is — which is a rebuilt tree that never reaches doctor's linked path.
+        assert entry["is_symlink"] is project.is_symlink, project.key
+        assert entry["project_is_symlink"] is project.linked_project, project.key
+        assert [item["name"] for item in entry["files"]] == project.files, project.key
+        assert tuple(
+            item["name"] for item in entry["files"] if item["is_symlink"]
+        ) == project.linked_files, project.key
     # The index-only directory is the difference between the two questions, and
     # it is a directory the tool reports and the inventory does not.
     assert "-h-u-git-empty" not in adoptable
     assert any(
         entry["key"] == "-h-u-git-empty" for entry in shape["memory_dirs"]
     )
+
+
+ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+@pytest.mark.skipif(ROOT, reason="root reads a directory nobody else can")
+def test_a_half_failed_capture_counts_what_it_could_not_read(tmp_path) -> None:
+    """A capture that read half a machine has to be distinguishable from one
+    that read all of a smaller machine.
+
+    Three failures, three places. An unreadable PROJECT directory answered
+    False to `os.path.isdir` and so missed both counters — it read as a
+    project with no memories. An unreadable memory directory was already
+    counted. And a file that could not be read recorded `size: 0` and four
+    `false` flags, which is also what an empty file records.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    _write(memory / "one.md", "x\n")
+    unreadable_file = _write(memory / "two.md", "---\nname: two\n---\n")
+    unreadable_file.chmod(0o000)
+    blocked_memory = _memory_dir(config, "-b")
+    _write(blocked_memory / "one.md", "x\n")
+    blocked_memory.chmod(0o000)
+    blocked_project = _memory_dir(config, "-c").parent
+    _write(blocked_project / "memory" / "one.md", "x\n")
+    blocked_project.chmod(0o000)
+    try:
+        shape = _shape("--config-dir", str(config), "--raw")
+    finally:
+        for path, mode in (
+            (unreadable_file, 0o600), (blocked_memory, 0o700), (blocked_project, 0o700)
+        ):
+            path.chmod(mode)
+    # `-c` is not counted as a memory directory because nothing could tell
+    # whether it had one; it is counted as a directory that was skipped.
+    assert shape["memory_dirs_total"] == 2
+    assert shape["skipped"] == 2
+    assert shape["read_errors"] == 1
+    files = {item["name"]: item for item in _by_key(shape)["-a"]["files"]}
+    # The size is readable here and the CONTENT is not, so the file is listed
+    # with its real size and no frontmatter — the same four flags an empty
+    # file gets, which is why the count above is the thing that tells them
+    # apart. (A file whose `lstat` fails records `size: null`, never 0.)
+    assert files["two.md"]["size"] == unreadable_file.stat().st_size
+    assert files["two.md"]["has_frontmatter"] is False
+    assert files["one.md"]["has_frontmatter"] is False
+
+
+@pytest.mark.skipif(ROOT, reason="root reads a directory nobody else can")
+def test_a_projects_directory_that_cannot_be_listed_is_an_exit(tmp_path) -> None:
+    """The failure the deployment reaches: piped over ssh under `sudo -n` into
+    an NFS home, where root-squash turns a root read into EACCES.
+
+    Every number below that point is a zero, so the capture read as a healthy
+    machine with no projects and exited 0 — on a host the operator may not get
+    a second run at. An ABSENT projects directory still captures, because a
+    config directory with nothing written yet really is empty.
+    """
+    config = tmp_path / "config"
+    projects = config / "projects"
+    projects.mkdir(parents=True)
+    _write(projects / "-a" / "memory" / "one.md", "x\n")
+    projects.chmod(0o000)
+    try:
+        refused = _run("--config-dir", str(config))
+    finally:
+        projects.chmod(0o700)
+    assert refused.returncode == 2, refused.stdout
+    assert refused.stdout == "", "it failed and emitted a shape anyway"
+    assert "harness_shape:" in refused.stderr
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _shape("--config-dir", str(empty))["projects_total"] == 0
+
+
+def test_a_settings_file_that_cannot_be_read_is_a_state_not_an_absence(
+    tmp_path,
+) -> None:
+    """"No settings at that scope" and "settings this run could not read" are
+    different machines, and the scope was omitted for both."""
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    _write(config / "settings.json", "{ not json")
+    assert _shape("--config-dir", str(config))["settings"] == {
+        "user": {
+            "unreadable": True, "memory_keys": {}, "hooks": [], "plugins": []
+        }
+    }
 
 
 def test_harness_shape_parses_as_python_38() -> None:
@@ -487,6 +720,13 @@ def test_the_committed_shapes_carry_no_names() -> None:
         assert shape["tool"] == "harness_shape", path.name
         assert shape["anonymised"] is True, path.name
         assert shape["memory_dirs"], (path.name, "a shape of nothing tests nothing")
+        # A committed fixture is a COMPLETE capture. A half-failed one is a
+        # tree nobody can rebuild, and it looks exactly like a small machine.
+        assert shape["skipped"] == 0, path.name
+        # `.get`, and only until the fixtures are re-captured: a shape taken
+        # before this counter existed has no key to read, and the alternative
+        # is a gate that is red on an artifact nothing is wrong with.
+        assert shape.get("read_errors", 0) == 0, path.name
         # The two harness rows, which are adopter-controlled strings and were
         # the only free text in either committed fixture.
         version = shape["harness"]["version_hint"]
