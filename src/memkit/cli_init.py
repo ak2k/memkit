@@ -1294,11 +1294,18 @@ def _as_scalar(value: str) -> str:
 
 
 def _body_of(text: str) -> str:
-    """Everything after the frontmatter block, or all of it when there is none."""
+    """Everything after the frontmatter block, or all of it when there is none.
+
+    A `---` THAT NEVER CLOSES OPENS NOTHING. Returning "" for it left
+    `_first_heading` searching an empty string, so a file whose very next line
+    was a heading got its description from the file name instead — and the
+    line this treats as a body is the same one `_with_description` writes into
+    for that shape, which is what keeps the two readings of it together.
+    """
     if not text.startswith("---"):
         return text
     end = text.find("\n---", 3)
-    return text[end:] if end != -1 else ""
+    return text[end:] if end != -1 else text[3:]
 
 
 def _first_heading(text: str) -> str:
@@ -1307,7 +1314,8 @@ def _first_heading(text: str) -> str:
 
 
 def _normalise(text: str, stem: str) -> tuple:
-    """(`text` with a description a ledger row can carry, the rule applied).
+    """(`text` with a description and a label a ledger row can carry, the
+    rules applied).
 
     "" for the rule when the file already had one, which is the case adoption
     must leave alone — a copy that rewrote a description the checker accepts
@@ -1322,8 +1330,12 @@ def _normalise(text: str, stem: str) -> tuple:
     value = _scalar_of(raw)
     rules = []
     if value is None:
-        heading = _first_heading(_body_of(text))
-        value = heading or stem
+        heading = _clean(_first_heading(_body_of(text)))
+        # CLEANED, both of them. The stem is a filename, which may hold a
+        # newline, and this value goes onto a frontmatter line and then into a
+        # ledger row — each of which a newline ends, taking what follows with
+        # it. `name:` was cleaned here and the description beside it was not.
+        value = heading or _clean(stem)
         rules.append(
             "description "
             + ("was missing" if not raw else "could not be read")
@@ -1336,11 +1348,17 @@ def _normalise(text: str, stem: str) -> tuple:
             f"{_MAX_DESC_CHARS}"
         )
         value = value[: _MAX_DESC_CHARS - 1] + "…"
-    if not rules:
-        return text, ""
-    if not text.startswith("---"):
-        rules.append("no frontmatter block — one was added")
-    return _with_description(text, _as_scalar(value), stem), "; ".join(rules)
+    if rules:
+        if not text.startswith("---"):
+            rules.append("no frontmatter block — one was added")
+        text = _with_description(text, _as_scalar(value), stem)
+    # AFTER the block exists, and asked whether there are other rules or not: a
+    # file whose description the checker already reads can still carry a name
+    # that ends the row's link.
+    text, relabelled = _relabel(text, stem)
+    if relabelled:
+        rules.append(relabelled)
+    return text, "; ".join(rules)
 
 
 def _with_description(text: str, scalar: str, stem: str) -> str:
@@ -1356,14 +1374,29 @@ def _with_description(text: str, scalar: str, stem: str) -> str:
     opening `---`, which is also where a `---` that never closes has to take
     it.
     """
-    line = "description: " + scalar
     if not text.startswith("---"):
-        return f"---\nname: {_as_scalar(_clean(stem))}\n{line}\n---\n\n{text}"
+        return (
+            f"---\nname: {_as_scalar(_label(stem))}\ndescription: {scalar}\n"
+            f"---\n\n{text}"
+        )
+    return _with_scalar(text, "description", scalar)
+
+
+def _with_scalar(text: str, key: str, scalar: str) -> str:
+    """`text`'s frontmatter block carrying exactly this `key:` line.
+
+    The two shapes that edit a block that is already there, shared by the
+    description and the label because the arithmetic is the same one and a
+    second copy of it is how the continuation-line rule comes to hold for one
+    key and not the other. Callers hold the third shape — a file with no block
+    at all, which needs both lines at once.
+    """
+    line = f"{key}: {scalar}"
     end = text.find("\n---", 3)
     rows = text[3 : end if end != -1 else len(text)].split("\n")
     at = None
     for index, row in enumerate(rows):
-        if _is_frontmatter_key(row) and row.partition(":")[0].strip() == "description":
+        if _is_frontmatter_key(row) and row.partition(":")[0].strip() == key:
             at = index
             break
     if at is None:
@@ -1381,8 +1414,63 @@ def _clean(value: str) -> str:
     POSIX admits every byte but NUL and `/` in a filename, a newline included,
     and one written into a block unescaped ends the line it is on — taking the
     description below it with it.
+
+    Also what every adopter-controlled string goes through before it is
+    rendered into the manifest: a memory named
+    `a\n  create-file    ~/.claude/settings.json\nb.md` put two correctly
+    indented action lines into the surface a human reads before typing
+    `--confirm`.
     """
     return "".join(c for c in value if c.isprintable()).strip()
+
+
+# What a ledger ROW's label may not carry. A row is
+# `- [label](link) — description`, so a `]` in the label ends the link early
+# and everything after it is markdown nobody wrote.
+_LINK_SYNTAX = frozenset("[]()")
+
+
+def _label(value: str) -> str:
+    """`_clean`'s stricter sibling: a label a generated row can carry."""
+    return "".join(c for c in _clean(value) if c not in _LINK_SYNTAX).strip()
+
+
+def _relabel(text: str, stem: str) -> tuple:
+    """(`text` carrying a label a row can carry, the rule applied).
+
+    THE LABEL IS THE ONE HALF OF A ROW TAKEN RAW — the description goes
+    through `_scalar_of` and the link is built from a path. A `name:` of
+    `x](hot/forged.md) — forged row` rows a link to a file that is not there
+    and leaves the real memory with no usable row, and the same goes for a
+    file NAMED that way, since the stem is the label when no `name:` declares
+    one.
+
+    THE ADOPTED TEXT IS WHAT IS REWRITTEN, not init's own row, and that is the
+    whole reason this exists as a normalisation rule rather than as a sanitiser
+    at the point the row is built: the checker regenerates that row from this
+    file's frontmatter, so a label init cleaned over a file it did not would
+    agree with the checker exactly until the next `--write`.
+
+    `(text, "")` for everything a row can already carry, which is every
+    ordinary memory — a name is rewritten only when the line as it stands
+    would end the link.
+    """
+    raw = _frontmatter_of(text).get("name", "")
+    shown = raw or stem
+    if _label(shown) == shown:
+        return text, ""
+    # The VALUE where the raw line parses as one, so a quoted name keeps its
+    # quotes rather than gaining a second pair.
+    value = _scalar_of(raw) if raw else None
+    safe = _label(value if value is not None else shown) or _label(stem)
+    if not safe:
+        # Nothing to write that would name anything. `_plan_adoption` skips the
+        # file for the same reason it skips one with no readable description.
+        return text, ""
+    return _with_scalar(text, "name", _as_scalar(safe)), (
+        "name carried markdown-link syntax or characters a row cannot hold — "
+        f"rewritten to {safe!r}"
+    )
 
 
 def _read_source(path: str) -> tuple:
@@ -1573,7 +1661,7 @@ def _auto_memory_notes(store: str, known: list) -> list:
     else:
         out.append("No harness auto-memory to adopt.")
     out.extend(
-        f"{project.key}: already redirected, skipped "
+        f"{_clean(project.key)}: already redirected, skipped "
         f"({_display_path(project.path)})"
         for project in known
         if not _adoptable(project)
@@ -1625,16 +1713,38 @@ def _plan_adoption(store: str, known: list) -> tuple:
         )
         mine: list = []
         for name in project.files:
+            # THROUGH `_clean`, EVERY TIME. A filename is adopter-controlled
+            # text that lands in the surface a human reads before typing
+            # `--confirm`, and a newline in one forges a whole manifest line.
+            # The paths on these lines go through `_display_path` instead,
+            # which strips the same characters and keeps the spacing a path
+            # needs.
+            shown = f"{_clean(project.key)}/{_clean(name)}"
+            # AND A NAME NO LINE CAN CARRY IS NOT COPIED AT ALL. Sanitising
+            # the note leaves the destination path line, which must keep its
+            # spacing byte for byte to name a file that exists — so the only
+            # honest answer for a name holding a newline is not to write a
+            # line about it. The LINK half of the row is the same argument
+            # with no way out at all: a row points at a file by writing its
+            # path between `(` and `)`, so a file whose name holds either one
+            # is a file no row can point at, whatever the label says.
+            if not name.isprintable() or _label(name) != name:
+                skipped.append(
+                    f"{shown}: the file name holds a character no manifest "
+                    "line and no ledger row could carry — a link ends at the "
+                    "first `)` and a line at the first newline"
+                )
+                continue
             if name in project.linked_files:
                 skipped.append(
-                    f"{project.key}/{name}: the file is a symlink, so its bytes "
+                    f"{shown}: the file is a symlink, so its bytes "
                     "live outside the directory being copied"
                 )
                 continue
             source = os.path.join(project.path, name)
             text, why = _read_source(source)
             if text is None:
-                skipped.append(f"{project.key}/{name}: {why}")
+                skipped.append(f"{shown}: {why}")
                 continue
             dest = os.path.join(target, name)
             if not _inside(dest, store):
@@ -1659,7 +1769,7 @@ def _plan_adoption(store: str, known: list) -> tuple:
                 text, rule = _normalise(text, os.path.splitext(name)[0])
                 if _TIER_RE.search(text[:4096]):
                     skipped.append(
-                        f"{project.key}/{name}: carries a `tier:` line, which "
+                        f"{shown}: carries a `tier:` line, which "
                         "the checker rejects — tier is the directory now"
                     )
                     continue
@@ -1667,12 +1777,24 @@ def _plan_adoption(store: str, known: list) -> tuple:
                 desc = _scalar_of(front.get("description", ""))
                 if desc is None:
                     skipped.append(
-                        f"{project.key}/{name}: no description this store's "
+                        f"{shown}: no description this store's "
                         "ledger could carry was derivable from it"
                     )
                     continue
+                label = front.get("name") or os.path.splitext(name)[0]
+                # FAIL-CLOSED on the label as well. `_relabel` rewrites a name
+                # a row cannot carry; what reaches here is the one case it
+                # cannot rewrite — a name and a file name that are BOTH
+                # nothing but link syntax — and a row built from it would end
+                # its own link.
+                if _label(label) != label:
+                    skipped.append(
+                        f"{shown}: no label this store's ledger could carry "
+                        "was derivable from it"
+                    )
+                    continue
                 row = (
-                    front.get("name") or os.path.splitext(name)[0],
+                    label,
                     os.path.relpath(dest, store),
                     desc,
                 )

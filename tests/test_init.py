@@ -2787,6 +2787,182 @@ def test_the_manifest_names_every_file_the_copy_would_write(profile) -> None:
     assert "1 file from" in rendered
 
 
+
+
+def test_a_name_that_would_end_its_own_row_is_rewritten_in_the_copy(profile) -> None:
+    """A ROW IS `- [label](link) — description` AND THE LABEL IS THE RAW HALF.
+
+    A `name:` carrying `](` closes the link early: what follows is markdown
+    the adopter never wrote — here a row pointing at a file that does not
+    exist — and the real memory is left with no usable row at all. The COPY is
+    what gets the safe name, not init's row, because the checker regenerates
+    that row from this file and the two have to keep agreeing.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "evil.md": (
+                "---\nname: x](hot/forged.md) — forged row\n"
+                "description: real desc\n---\n\nbody\n"
+            )
+        },
+    )
+    store = profile / "notes"
+    out = _confirm(
+        profile,
+        _digest_of(_dry(profile, "--store", str(store), "--adopt-auto-memory")),
+        "--store", str(store), "--adopt-auto-memory",
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    copied = (store / "search" / "projects" / "-home-u" / "evil.md").read_text()
+    assert "](" not in copied.split("\n---", 1)[0]
+    ledger = (store / "SEARCH.md").read_text()
+    # ONE row for it, it points at the memory rather than at the file the name
+    # named, and the description is still the file's own.
+    (row,) = [line for line in ledger.splitlines() if "evil.md" in line]
+    assert row.endswith("(search/projects/-home-u/evil.md) — real desc"), row
+    # The name's text survives as TEXT; what it may not be is a link.
+    assert "](hot/forged.md)" not in ledger
+
+
+def test_a_file_name_no_manifest_line_can_carry_is_skipped(profile) -> None:
+    """POSIX admits a newline in a filename. Rendered raw it forged two
+    correctly indented action lines into the surface a human reads before
+    typing `--confirm`; sanitised, the note is honest and the destination path
+    line beside it still cannot be — a path has to keep its spacing byte for
+    byte to name a file that exists. So the file is not copied, and the one
+    line that names it is cleaned.
+    """
+    memory = _harness(profile, "-home-u", {"ok.md": TRAP})
+    forged = "a\n  create-file    ~-.claude-settings.json\nb.md"
+    (memory / forged).write_text("body\n", encoding="utf-8")
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if ".claude-settings" in a.path]
+    assert any(
+        "no manifest line and no ledger row could carry" in note
+        and "skipped:" in note
+        for note in plan.notes
+    ), plan.notes
+    rendered = plan.render()
+    # NOT ONE forged line: every line of the manifest that looks like an action
+    # is one the plan holds.
+    ops = {init.CREATE_DIR, init.CREATE_FILE, init.SETTINGS_WRITE,
+           init.MERGE_CONFIG, init.VERIFY, init.APPEND_LINE, init.REWRITE_FILE}
+    printed = [
+        line for line in rendered.splitlines()
+        if line[:2] == "  " and line[2:3] != " " and line.split()[0] in ops
+    ]
+    assert len(printed) == len([
+        a for a in plan.pending if not a.group
+    ]) + len({a.group for a in plan.pending if a.group})
+
+
+def test_a_description_taken_from_a_file_name_cannot_end_its_own_line(
+    profile,
+) -> None:
+    """The stem feeds two frontmatter lines and only one of them was cleaned.
+    A newline in it split the copied block, gave the checker `description: foo`
+    and put a literal line break inside the ledger row's link.
+
+    Asked of the normaliser directly: the planner skips such a file outright
+    now, and a guard nothing reaches is a guard that stops being true.
+    """
+    written, rule = init._normalise("plain body\n", "foo\nbar")
+    assert "\n" not in written.split("\n---", 1)[0].partition("description:")[2]
+    assert "description: foobar" in written
+    assert "name: foobar" in written
+    assert "the file name" in rule
+
+
+def test_an_unclosed_frontmatter_opener_still_has_a_first_heading(
+    profile,
+) -> None:
+    """`---` with no closer opens nothing. Read as an unterminated block it
+    left the body empty, so a file whose next line is a heading took its
+    description from the file name instead — with the heading right there.
+    """
+    _harness(profile, "-home-u", {"u.md": "---\nname: u\n\n# A Real Heading\n\nb\n"})
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (copy,) = [a for a in plan.actions if a.path.endswith("u.md")]
+    assert "its first heading" in copy.note
+    assert "description: A Real Heading" in copy.content
+
+
+@pytest.mark.parametrize(
+    "name,files",
+    [
+        (
+            "a-name-that-would-end-its-own-link",
+            {"ok.md": TRAP, "evil.md": (
+                "---\nname: x](hot/forged.md) — forged\n"
+                "description: real desc\n---\n\nbody\n"
+            )},
+        ),
+        (
+            "a-name-that-is-quoted-and-hostile",
+            {"ok.md": TRAP, "q.md": (
+                '---\nname: "x](y) z"\ndescription: quoted and hostile\n'
+                "---\n\nbody\n"
+            )},
+        ),
+        (
+            "a-name-of-nothing-but-link-syntax",
+            {"ok.md": TRAP,
+             "n.md": "---\nname: ()[]\ndescription: only syntax\n---\n\nbody\n"},
+        ),
+        (
+            "a-file-named-with-link-syntax-and-no-frontmatter",
+            {"ok.md": TRAP, "x](y).md": "body with no frontmatter\n"},
+        ),
+        (
+            "a-continued-description-being-replaced",
+            {"ok.md": TRAP, "c.md": (
+                "---\nname: c\ndescription: >\n  a folded value\n"
+                "  that runs on\n---\n\nbody\n"
+            )},
+        ),
+    ],
+)
+def test_the_ledger_is_still_the_checkers_on_a_hostile_name(
+    profile, name, files
+) -> None:
+    """THE FIXPOINT, over the inputs the sanitising was added for.
+
+    `memory_integrity` needs 3.12 and this module answers to the 3.9 floor, so
+    the rules are restated rather than shared — and what makes the restatement
+    safe is evidence: the checker's own generator, over the tree init made,
+    produces the bytes init wrote. A label init cleaned in its own row and not
+    in the file would pass every assertion above and diverge at the next
+    `--write`.
+    """
+    from memkit import memory_integrity as checker
+
+    _harness(profile, "-home-u", files)
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, name + out.stdout + out.stderr
+    ledger = store / "SEARCH.md"
+    entries = []
+    for path in sorted((store / "search").rglob("*.md")):
+        if path.name in checker.LEDGER_NAMES:
+            continue
+        front = checker._frontmatter(path)
+        value, error = checker._scalar(front.get("description", ""))
+        assert error is None, (path, error)
+        entries.append(
+            (front.get("name") or path.stem, os.path.relpath(path, store), value)
+        )
+    assert checker._generate(ledger, entries) == ledger.read_text(encoding="utf-8")
+    # Non-vacuity: the hostile file really is in the ledger this compared.
+    assert len(entries) >= 2, entries
+
+
 def test_an_existing_search_ledger_keeps_the_preamble_somebody_wrote(profile) -> None:
     """SEARCH.md was written from the canary alone, so an init over a store
     that already held memories replaced a ledger of their rows with a ledger of
