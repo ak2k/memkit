@@ -13,7 +13,7 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **105 files, about 3.1 MiB**
+The table below counts **the tree this file ships in** — **107 files, about 3.2 MiB**
 — which is the tree the next release pins. The marketplace pin still installs the
 v0.4.0 tree — **101 files, about 3.0 MiB** — and everything added since arrives
 from the next release. The recipe at the bottom reproduces either one, against
@@ -30,7 +30,7 @@ back together.
 | what | files | why it is there |
 |---|---|---|
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`, `skills/` | 19 | the payload proper — the wrappers, the hook module, the manifests |
-| `tests/` | 59 | not needed at run time; see below |
+| `tests/` | 61 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 19 | likewise |
 | `README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 8 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |

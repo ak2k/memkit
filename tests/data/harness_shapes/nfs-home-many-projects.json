@@ -1,0 +1,1516 @@
+{
+  "schema": 1,
+  "tool": "harness_shape",
+  "anonymised": true,
+  "harness": {
+    "version_hint": "2.1.263",
+    "install": "native"
+  },
+  "settings": {
+    "user": {
+      "memory_keys": {},
+      "hooks": [],
+      "plugins": []
+    }
+  },
+  "projects_total": 3923,
+  "memory_dirs_total": 3918,
+  "skipped": 0,
+  "memory_dirs": [
+    {
+      "key": "-",
+      "key_len": 1,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 634,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m1.md",
+          "size": 2392,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 192,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m2.md",
+          "size": 1502,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 87,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m3.md",
+          "size": 1195,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 74,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m4.md",
+          "size": 1720,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 108,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 4,
+        "rows": 4,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2",
+      "key_len": 12,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 700,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m5.md",
+          "size": 1294,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 117,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m6.md",
+          "size": 1931,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 206,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m7.md",
+          "size": 965,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 105,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m8.md",
+          "size": 1305,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 136,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 6,
+        "rows": 4,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s4-s5-s6-s7",
+      "key_len": 51,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "m9.md",
+          "size": 1501,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 80,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m10.md",
+          "size": 1529,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 82,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": null,
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s9-s10",
+      "key_len": 43,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 841,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m11.md",
+          "size": 2473,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 126,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m12.md",
+          "size": 1758,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 112,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m13.md",
+          "size": 1288,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 84,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m14.md",
+          "size": 3185,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 109,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 4,
+        "rows": 4,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s11-s12-s13",
+      "key_len": 42,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 2706,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m15.md",
+          "size": 599,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 95,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m16.md",
+          "size": 1352,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 166,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m17.md",
+          "size": 1312,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 136,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m18.md",
+          "size": 1070,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 134,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m19.md",
+          "size": 1068,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 139,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m20.md",
+          "size": 1291,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 130,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m21.md",
+          "size": 1441,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 158,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m22.md",
+          "size": 1098,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 118,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m23.md",
+          "size": 2281,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 178,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m24.md",
+          "size": 1189,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 130,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m25.md",
+          "size": 1321,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 183,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m26.md",
+          "size": 2012,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 122,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m27.md",
+          "size": 1162,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 143,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m28.md",
+          "size": 1144,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 162,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m29.md",
+          "size": 1397,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 165,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m30.md",
+          "size": 1417,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 165,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m31.md",
+          "size": 1041,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 169,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m32.md",
+          "size": 948,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 100,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 17,
+        "rows": 17,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s14-s15",
+      "key_len": 35,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 1064,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m33.md",
+          "size": 1880,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 158,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m34.md",
+          "size": 935,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 92,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m35.md",
+          "size": 407,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 105,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m36.md",
+          "size": 744,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 143,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m37.md",
+          "size": 1438,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 159,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m38.md",
+          "size": 1260,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 136,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m39.md",
+          "size": 733,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 82,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m40.md",
+          "size": 1154,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 133,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 8,
+        "rows": 8,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s14-s16",
+      "key_len": 42,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 2984,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m41.md",
+          "size": 1601,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 107,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m42.md",
+          "size": 923,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 167,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m43.md",
+          "size": 797,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 113,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m44.md",
+          "size": 1479,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 76,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m45.md",
+          "size": 1567,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 127,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m46.md",
+          "size": 1945,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 99,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m47.md",
+          "size": 1503,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 131,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m48.md",
+          "size": 1941,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 129,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m49.md",
+          "size": 1083,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 123,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m50.md",
+          "size": 1159,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 100,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m51.md",
+          "size": 1005,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 85,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m52.md",
+          "size": 1355,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 95,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m53.md",
+          "size": 1029,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 87,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m54.md",
+          "size": 1366,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 160,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m55.md",
+          "size": 1736,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 108,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m56.md",
+          "size": 1548,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 111,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m57.md",
+          "size": 2143,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 111,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m58.md",
+          "size": 1313,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 170,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m59.md",
+          "size": 863,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 102,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m60.md",
+          "size": 854,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 95,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m61.md",
+          "size": 983,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 88,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 23,
+        "rows": 21,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s14-s17-s18",
+      "key_len": 47,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 829,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m62.md",
+          "size": 885,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 146,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m63.md",
+          "size": 2087,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 141,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m64.md",
+          "size": 901,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 120,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m65.md",
+          "size": 836,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 88,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m66.md",
+          "size": 796,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 119,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m67.md",
+          "size": 1109,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 165,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 6,
+        "rows": 6,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s19-s20-s21",
+      "key_len": 53,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 715,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m68.md",
+          "size": 1484,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 187,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m69.md",
+          "size": 1712,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 149,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m70.md",
+          "size": 1646,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 166,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m71.md",
+          "size": 3233,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 166,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m72.md",
+          "size": 911,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 154,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m73.md",
+          "size": 1425,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 172,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 5,
+        "rows": 5,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s4-s9-s22",
+      "key_len": 55,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 161,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m74.md",
+          "size": 896,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 78,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 3,
+        "rows": 1,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s4-s16",
+      "key_len": 46,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 117,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m75.md",
+          "size": 689,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 69,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 3,
+        "rows": 1,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s4-s23",
+      "key_len": 44,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 976,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m76.md",
+          "size": 930,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 103,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m77.md",
+          "size": 1406,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 109,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m78.md",
+          "size": 1582,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 77,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m79.md",
+          "size": 1441,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 119,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m80.md",
+          "size": 1204,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 73,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m81.md",
+          "size": 1254,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 85,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m82.md",
+          "size": 1473,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 106,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m83.md",
+          "size": 1813,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 88,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 8,
+        "rows": 8,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s24-s25",
+      "key_len": 42,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 180,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m84.md",
+          "size": 2942,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 128,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 1,
+        "rows": 1,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s26-s27-s28",
+      "key_len": 49,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 1103,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m85.md",
+          "size": 1437,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 156,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m86.md",
+          "size": 1360,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 109,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m87.md",
+          "size": 2307,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 128,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m88.md",
+          "size": 1476,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 161,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m89.md",
+          "size": 1695,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 194,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m90.md",
+          "size": 1449,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 137,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m91.md",
+          "size": 5859,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 133,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 6,
+        "rows": 6,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s26-s29-s30-s31",
+      "key_len": 55,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 383,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m92.md",
+          "size": 1499,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 111,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m93.md",
+          "size": 1166,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 96,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m94.md",
+          "size": 1294,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 140,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 3,
+        "rows": 3,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s8-s4-s17-s32",
+      "key_len": 38,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 3865,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m95.md",
+          "size": 1197,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 109,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m96.md",
+          "size": 1824,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 261,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m97.md",
+          "size": 1461,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 167,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m98.md",
+          "size": 1157,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 128,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m99.md",
+          "size": 930,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 77,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m100.md",
+          "size": 1265,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 139,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m101.md",
+          "size": 1016,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 111,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m102.md",
+          "size": 1211,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 99,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m103.md",
+          "size": 1178,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 118,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m104.md",
+          "size": 1615,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 98,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m105.md",
+          "size": 1783,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 136,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m106.md",
+          "size": 1496,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 155,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m107.md",
+          "size": 1239,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 90,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m108.md",
+          "size": 1008,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 92,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m109.md",
+          "size": 1155,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 101,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m110.md",
+          "size": 1278,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 123,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m111.md",
+          "size": 3731,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 178,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m112.md",
+          "size": 2633,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 233,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m113.md",
+          "size": 2122,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 95,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m114.md",
+          "size": 836,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 61,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m115.md",
+          "size": 1193,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 140,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 21,
+        "rows": 21,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s3-s33-s34-s35-s36",
+      "key_len": 52,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 133,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m116.md",
+          "size": 1068,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 102,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 1,
+        "rows": 1,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s26-s27",
+      "key_len": 23,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 130,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m117.md",
+          "size": 1810,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 143,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 1,
+        "rows": 1,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s37-s26-s2",
+      "key_len": 15,
+      "is_symlink": false,
+      "symlink_target_kind": null,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 285,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false
+        },
+        {
+          "name": "m118.md",
+          "size": 2699,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 130,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m119.md",
+          "size": 1034,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 105,
+          "has_name": true,
+          "has_type": true
+        }
+      ],
+      "index": {
+        "lines": 2,
+        "rows": 2,
+        "dangling_rows": 0
+      },
+      "lock_age_s": null
+    }
+  ]
+}
