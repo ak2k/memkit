@@ -2356,6 +2356,289 @@ def test_auto_memory_reports_whether_a_consolidation_actually_ran(
     assert "consolidation ran" in row.detail
 
 
+def test_within_is_containment_rather_than_a_prefix_match() -> None:
+    """`/store/search-old` starts with every character of `/store/search`, and
+    a prefix test calls it retrieved. The separator is the whole of what makes
+    containment containment, and this predicate decides whether a row claims
+    the harness's memories are indexed.
+
+    An unresolvable path answers "outside". `realpath` raises `ValueError`
+    rather than `OSError` on the embedded NUL a settings file may legally
+    carry, so catching only `OSError` lets the exception escape and demotes the
+    whole check to UNKNOWN.
+    """
+    assert doctor._within("/a/search", "/a/search") is True
+    assert doctor._within("/a/search/deep/x", "/a/search") is True
+    assert doctor._within("/a/search-old", "/a/search") is False
+    assert doctor._within("/a/searchling/x", "/a/search") is False
+    assert doctor._within("/a", "/a/search") is False
+    assert doctor._within("/a/x\x00y", "/a") is False
+
+
+def test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved(
+    profile, monkeypatch
+) -> None:
+    """Inside a corpus root is not the same as retrieved. `hot/` and
+    `archive/` are pruned by the indexing walk wherever they sit under one, so
+    a setting pointing into either is a directory the harness fills and the
+    index never reads — and containment alone reports it as the state this
+    check exists to send adopters to.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "gearbox shimming after a rebuild")
+    pruned = corpus / "hot"
+    pruned.mkdir()
+    _settings(profile, autoMemoryDirectory=str(pruned))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+    assert "personal" in row.detail
+    # The remedy names the corpus root itself, which is the one edit that fixes
+    # it, rather than the "outside every store" advice for a directory that is
+    # not outside anything.
+    assert f'"{corpus}"' in row.remedy
+    assert row.actor == doctor.USER
+
+    # A directory whose name merely CONTAINS an excluded one is not pruned, and
+    # neither is one under a home directory that happens to be called `hot`.
+    ordinary = corpus / "hotel"
+    ordinary.mkdir()
+    _settings(profile, autoMemoryDirectory=str(ordinary))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+
+
+def test_a_memory_directory_linked_into_a_store_is_already_wired(
+    profile, monkeypatch
+) -> None:
+    """The wiring docs/STORE.md recommends, and the state the count read as a
+    problem: with no setting at all, a project's memory directory symlinked
+    into a corpus root has the harness writing straight into the store.
+
+    Counted as "outside every store" it alarms about a correctly configured
+    machine — the inverse of the excluded-directory error, and the one an
+    adopter who followed the documentation would meet first.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "flywheel balance after the swap")
+    project = (
+        profile / "claude-config" / "projects" / harness_memory.project_key(os.getcwd())
+    )
+    project.mkdir(parents=True)
+    (project / "memory").symlink_to(corpus)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.PASS
+    assert "outside every store" not in row.detail
+    assert "is retrieved" in row.detail and "personal" in row.detail
+
+    # Another project still writing outside every store is still counted, and
+    # the wired one is not counted with it. The bound is lifted for this half
+    # alone: a pytest tmpdir key is twice the length of a real one, so the two
+    # counts fall off the end of a detail that fits on any real machine, and
+    # what is under test here is the split rather than the truncation.
+    stray = profile / "claude-config" / "projects" / "-home-u-other" / "memory"
+    stray.mkdir(parents=True)
+    (stray / "one.md").write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "1 project directory holds 1 memory outside every store" in row.detail
+    assert "1 project directory is already linked into a store" in row.detail
+    assert "-home-u-other (1)" in row.detail
+    assert "2 project directories" not in row.detail
+
+
+def test_only_false_turns_the_switches_off(profile, monkeypatch) -> None:
+    """JSON `null`, `0`, `""`, `[]` and `{}` are every one of them a value the
+    harness goes on writing under, and every one of them is falsy in Python. A
+    truthiness test reads all five as off and returns this row's most confident
+    sentence — "memkit is the only memory system here" — over a machine with
+    two of them.
+
+    The value is quoted back, because a settings file that says `null` was
+    hand-edited by somebody who meant `false`.
+    """
+    path = _store_config(profile, stores=["personal"])
+    for value in (None, 0, "", [], {}, "false"):
+        _settings(profile, autoMemoryEnabled=value)
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+        assert row.status == doctor.INFO, value
+        assert "only memory system here" not in row.detail
+        assert "is not true or false" in row.detail
+        assert json.dumps(value) in row.detail
+
+    _settings(profile, autoMemoryEnabled=False)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+    assert "auto-memory is off in user settings" in row.detail
+
+    # The same rule for the consolidation switch, whose off-line is the only
+    # thing a non-boolean silently removed.
+    _settings(profile, autoDreamEnabled=None)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "no background consolidation" not in row.detail
+    assert f'"{harness_memory.DREAM_KEY}" is null' in row.detail
+
+
+def test_the_switch_facts_outlive_a_project_list_that_overruns_the_detail(
+    profile, monkeypatch
+) -> None:
+    """`_bound` cuts from the END, and the list of project directories is the
+    one sentence whose length an adopter's own machine decides. Real keys are
+    whole absolute paths with the separators replaced, so five of them run past
+    `DETAIL_MAX_BYTES` on their own and took the auto-dream fact with them.
+
+    The fixtures could not see it: their keys are a scratch directory's,
+    fifteen characters where a real one is sixty.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoDreamEnabled=False)
+    projects = profile / "claude-config" / "projects"
+    for n in range(6):
+        directory = projects / f"-Users-u-src-organisation-platform-service-{n}" / "memory"
+        directory.mkdir(parents=True)
+        (directory / "one.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+    assert row.detail.endswith("...")
+    assert "auto-dream is off in user: no background consolidation" in row.detail
+    assert "the harness would write to" in row.detail
+
+
+def test_a_config_dir_under_home_names_the_directory_the_same_way(
+    profile, monkeypatch
+) -> None:
+    """`~/.claude` is where every real install keeps this, and both fixtures
+    made it a SIBLING of HOME — which is what hid a path spelled one way beside
+    HOME and another way under it.
+
+    `_display_path` re-spells anything under `$HOME` relative to it, and
+    normalising is what that costs: a trailing separator does not survive the
+    round trip. One spelling in both places is the only thing a test can pin.
+    """
+    config_dir = profile / "home" / ".claude"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config_dir))
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    key = harness_memory.project_key(os.getcwd())
+    assert f"~/.claude/projects/{key}/memory (derived from the git root)" in row.detail
+    assert f"{key}/memory/" not in row.detail
+
+
+def test_the_remedy_names_a_store_rather_than_the_first_one_declared(
+    profile, monkeypatch
+) -> None:
+    """One value goes in the remedy, and with several stores declared the first
+    one in the config file is an arbitrary answer to which store was meant.
+
+    Nearest by shared path, and the personal store on a tie: that is the one
+    STORE.md tells an adopter to set once and forget about. The value is
+    `<store>/search` whether or not that directory exists yet — named at the
+    store root instead, it puts every memory above the corpus root and out of
+    retrieval, which is the trap the section is mostly about.
+    """
+    path = _store_config(profile, stores=["alpha", "personal"])
+    for store in ("alpha", "personal"):
+        (profile / "stores" / store / "search").mkdir(parents=True)
+    stray = profile / "elsewhere"
+    stray.mkdir()
+    _settings(profile, autoMemoryDirectory=str(stray))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert str(profile / "stores" / "personal" / "search") in row.remedy
+    assert "personal's corpus root, of the 2 stores you have" in row.remedy
+
+    # And a project store the directory actually sits beside wins over it: the
+    # nearest is a guess an adopter can check by reading it.
+    beside = profile / "stores" / "alpha" / "notes"
+    beside.mkdir()
+    _settings(profile, autoMemoryDirectory=str(beside))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert str(profile / "stores" / "alpha" / "search") in row.remedy
+
+
+def test_the_session_directory_is_walked_once_and_read_off_the_machine(
+    profile, monkeypatch
+) -> None:
+    """`project_key`'s own contract: doctor resolved where it stands once, for
+    the settings scopes, and a second walk here answers differently if the
+    directory moved between the two — a row naming a project no scope was read
+    from.
+    """
+    path = _store_config(profile, stores=["personal"])
+    machine = _machine(profile, monkeypatch, path)
+    moved = profile / "moved"
+    moved.mkdir()
+    monkeypatch.setattr(os, "getcwd", lambda: str(moved))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert harness_memory.project_key(machine.cwd) in row.detail
+    assert harness_memory.project_key(str(moved)) not in row.detail
+
+
+def test_a_session_whose_directory_is_gone_says_so_rather_than_naming_a_path(
+    profile, monkeypatch
+) -> None:
+    """An agent's workdir can be removed underneath the process, and the key
+    derived from `""` collapses: `os.path.join` swallows the empty component
+    and the row names `<config dir>/projects/memory`, a path that reads as
+    derived and is nowhere.
+
+    The other twenty-five checks still have to answer, so this is a sentence
+    rather than a traceback.
+    """
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    hook._use_config(None)
+    hook._cwd_in_root.cache_clear()
+
+    def gone():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "getcwd", gone)
+    machine = doctor.Machine()
+    assert machine.cwd == ""
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "session directory was removed underneath this run" in row.detail
+    assert "projects/memory" not in row.detail
+
+
+def test_a_settings_path_the_os_will_not_resolve_is_not_an_unknown_row(
+    profile, monkeypatch
+) -> None:
+    """A JSON string may carry an embedded NUL, `realpath` raises `ValueError`
+    rather than `OSError` on one, and an exception escaping this check demotes
+    it to UNKNOWN — the one status the row's own contract does not have.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryDirectory="/u/no\x00where")
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.INFO
+    (row,) = _only(doctor.collect(machine), "auto-memory")
+    assert row.status in (doctor.PASS, doctor.INFO)
+
+
 def test_the_measured_harness_stamp_is_the_one_ci_measures_on() -> None:
     """A stamp that drifted from the build CI runs its scenarios against is a
     stamp reporting agreement nobody established."""

@@ -82,6 +82,7 @@ from memkit.memory_prompt_recall import (
     DOCTOR_ENV,
     ERRLOG_NAME,
     EXCLUDE_BASENAMES,
+    EXCLUDE_DIRS,
     FRAME_NONCE_BYTES,
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
@@ -395,20 +396,33 @@ def _option_in(scope: Settings) -> str:
     return value if isinstance(value, str) and value else ""
 
 
-def settings_scopes() -> list[Settings]:
+def _session_cwd() -> str:
+    """Where this session stands, or "" once that directory is gone.
+
+    THE DIRECTORY THIS PROCESS STANDS IN CAN BE REMOVED UNDER IT — an agent's
+    session workdir cleaned up by something else, a torn-down worktree.
+    `os.getcwd()` then raises, and this runs from `Machine.__init__`, so an
+    unguarded call turns both commands into a traceback where their published
+    tables promise a closed set of exit codes. A scope whose path cannot be
+    spelled is a scope with no file in it, which is the same answer as an
+    install that has none.
+
+    ONE WALK PER RUN, kept on `Machine` and passed to everything that needs it:
+    the settings scopes and the harness's project key are two facts about one
+    directory, and a second walk answers differently from the first if that
+    directory moved between them.
+    """
+    try:
+        return os.getcwd()
+    except OSError:
+        return ""
+
+
+def settings_scopes(cwd: str | None = None) -> list[Settings]:
     """Every scope, most authoritative first."""
     user = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    try:
-        cwd = os.getcwd()
-    except OSError:
-        # THE DIRECTORY THIS PROCESS STANDS IN CAN BE REMOVED UNDER IT — an
-        # agent's session workdir cleaned up by something else, a torn-down
-        # worktree. `os.getcwd()` then raises, and this function runs from
-        # `Machine.__init__`, so an unguarded call turns both commands into a
-        # traceback where their published tables promise a closed set of exit
-        # codes. A scope whose path cannot be spelled is a scope with no file
-        # in it, which is the same answer as an install that has none.
-        cwd = ""
+    if cwd is None:
+        cwd = _session_cwd()
     # THE TRUSTED SCOPE'S LOCATION IS AN ENVIRONMENT VARIABLE. Whatever can set
     # `$CLAUDE_CONFIG_DIR` — direnv in a checkout, a wrapper script — decides
     # where the `user` scope is read from, so pointed inside the session's own
@@ -474,7 +488,8 @@ class Machine:
 
     def __init__(self, config_path: str | None = None) -> None:
         self.explicit_config = config_path
-        self.settings = settings_scopes()
+        self.cwd = _session_cwd()
+        self.settings = settings_scopes(self.cwd)
         self.state_dir = _state_dir_candidate()
         # The config the WRAPPER settled on, which is the whole of what doctor
         # knows about the rungs: `bin/memkit` resolves them in POSIX sh and
@@ -2891,19 +2906,6 @@ def _harness_stamp(machine: Machine) -> list[Check]:
     ]
 
 
-def _session_cwd() -> str:
-    """Where this session stands, or "" once that directory is gone.
-
-    Same answer `settings_scopes` needs and for the same reason: an agent's
-    workdir can be removed underneath the process, and a diagnostic that
-    tracebacks there answers nothing about the twenty-five other checks.
-    """
-    try:
-        return os.getcwd()
-    except OSError:
-        return ""
-
-
 # How many project directories the inventory summary names before it counts the
 # rest. Five is what fits beside the other evidence inside `DETAIL_MAX_BYTES`;
 # the total is stated whatever the list shows, so the number a reader acts on is
@@ -2915,6 +2917,16 @@ def _count(number: int, one: str, many: str) -> str:
     return f"{number} {one if number == 1 else many}"
 
 
+def _detail(*parts: str) -> str:
+    """One detail from the sentences that have something to say.
+
+    FIXED FACTS FIRST at every call site, because `_bound` cuts from the end
+    and only the list of project directories has a length an adopter's own
+    machine decides.
+    """
+    return "; ".join(part for part in parts if part)
+
+
 def _within(child: str, parent: str) -> bool:
     """Whether `child` is `parent` or sits under it, symlinks resolved.
 
@@ -2922,13 +2934,39 @@ def _within(child: str, parent: str) -> bool:
     function by different routes — one typed into a settings file, one built
     from the config's roots — and on a mac `/tmp` and `/var` are symlinks that
     make two spellings of one directory differ character by character.
+
+    NOT `_exec._under_cwd`, whose containment arithmetic is the same one: the
+    safe answer when a path will not resolve is the opposite there. That one
+    says "inside" so an unresolvable path stays untrusted; this one says
+    "outside" so no path that cannot be resolved is reported as retrieved.
+
+    `ValueError` beside `OSError` because the child is adopter-supplied text:
+    `realpath` raises that, not `OSError`, on the embedded NUL a settings file
+    may legally carry.
     """
     try:
         child = os.path.realpath(child)
         parent = os.path.realpath(parent)
-    except OSError:
+    except (OSError, ValueError):
         return False
     return child == parent or child.startswith(parent + os.sep)
+
+
+def _pruned(directory: str, root: str) -> bool:
+    """Whether the indexing walk refuses to descend from `root` to `directory`.
+
+    Asked of the path RELATIVE to the corpus root, because `EXCLUDE_DIRS` is
+    what `_fts_scan` prunes once it is already inside a store: the same test
+    against the absolute path would report every adopter whose home directory
+    is called `hot` as unindexed.
+    """
+    try:
+        relative = os.path.relpath(os.path.realpath(directory), os.path.realpath(root))
+    except (OSError, ValueError):
+        # Only reachable if the pair stopped resolving since `_within` said
+        # they did; the answer that claims no retrieval is the one to give.
+        return True
+    return bool(set(relative.split(os.sep)) & EXCLUDE_DIRS)
 
 
 def _store_holding(machine: Machine, directory: str) -> tuple:
@@ -2953,6 +2991,89 @@ def _store_holding(machine: Machine, directory: str) -> tuple:
     return "", ""
 
 
+def _nearest_store(machine: Machine, directory: str) -> tuple:
+    """`(store id, corpus root, stores declared)` for the store this directory
+    is most plausibly meant for.
+
+    A remedy prints ONE value, and with several stores declared the first one
+    in the config file is an arbitrary answer to which store was meant. Nearest
+    by shared path is a guess as well, and it is the guess an adopter can check
+    by reading it; the personal store breaks a tie, being the one STORE.md
+    tells them to set once and forget about.
+    """
+    cfg = machine.config()
+    if cfg is None:
+        return "", "", 0
+    mine = directory.split(os.sep)
+    best = ("", "", -1, False)
+    for store in cfg.stores:
+        # A store naming a root the config does not define raises here, and
+        # `store-roots` owns saying so.
+        with contextlib.suppress(ConfigError, OSError):
+            # `<live>/search` rather than `_search_root`'s answer, which falls
+            # back to the store root on a store not yet laid out by tier: this
+            # value is one an adopter is being told to SET, and set to a store
+            # root it puts every memory above the corpus root and out of
+            # retrieval.
+            root = os.path.join(cfg.store_dir(store, "live"), "search")
+            shared = 0
+            for ours, theirs in zip(mine, root.split(os.sep)):
+                if ours != theirs:
+                    break
+                shared += 1
+            personal = store.role == "personal"
+            if (shared, personal) > (best[2], best[3]):
+                best = (store.id, root, shared, personal)
+    return best[0], best[1], len(cfg.stores)
+
+
+def _placed(machine: Machine, directory: str) -> tuple:
+    """`(retrieved, what to say about it, corpus root)` for one directory.
+
+    THREE answers rather than two, and the middle one is why this is not a
+    bool: a directory inside a corpus root but under a name the indexing walk
+    prunes is in the store and out of retrieval at the same time, which is the
+    state a containment test alone reports as retrieved.
+    """
+    store, root = _store_holding(machine, directory)
+    if not store:
+        return (
+            False,
+            "is outside every store, so nothing retrieves what lands there",
+            "",
+        )
+    if _pruned(directory, root):
+        return (
+            False,
+            f"is inside {store}'s corpus root {_display_path(root)} but under "
+            f"a name retrieval prunes ({', '.join(sorted(EXCLUDE_DIRS))}), so "
+            f"nothing written there is indexed",
+            root,
+        )
+    return (
+        True,
+        f"is inside {store}'s corpus root {_display_path(root)}, so what the "
+        f"harness writes there is retrieved",
+        root,
+    )
+
+
+def _odd_switch(key: str, switch) -> str:
+    """What to say about a switch whose value is neither true nor false.
+
+    Only `false` turns either of these off, so a file carrying `null` or `0`
+    has the feature RUNNING while reading, to a person and to a truthiness
+    test alike, as though it were off. Quoting the value back is the whole
+    remedy an adopter needs.
+    """
+    if switch is None or isinstance(switch[0], bool):
+        return ""
+    return (
+        f'"{key}" is {json.dumps(switch[0])[:20]} in {switch[1]} settings, '
+        "which is not true or false; only false turns it off"
+    )
+
+
 @_produces("auto-memory")
 def _auto_memory(machine: Machine) -> list[Check]:
     """The harness's own memory feature, running beside memkit's.
@@ -2969,6 +3090,11 @@ def _auto_memory(machine: Machine) -> list[Check]:
     answer different questions, and the earlier reading, which took whichever
     key it met first, reported `autoDreamEnabled` while `autoMemoryEnabled`
     sat in the same file deciding whether the feature ran.
+
+    The inventory enumerates `$CLAUDE_CONFIG_DIR` unguarded, unlike the
+    settings scope read out of the same variable: it counts names in a
+    directory the adopter placed, opens nothing, and no branch here acts on
+    what it finds.
     """
     switches = {}
     for scope in machine.settings:
@@ -2976,29 +3102,43 @@ def _auto_memory(machine: Machine) -> list[Check]:
             if key not in switches and key in scope.data:
                 switches[key] = (scope.data[key], scope.scope)
     config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    default = harness_memory.default_dir(config_dir, _session_cwd())
-    memory = default.rstrip(os.sep)
+    # "" once the session directory has gone: there is no project to derive a
+    # path for, and an empty key would name `<config dir>/projects/memory`.
+    default = harness_memory.default_dir(config_dir, machine.cwd) if machine.cwd else ""
     recent = ""
-    for candidate in (
-        os.path.join(os.path.dirname(memory), CONSOLIDATE_LOCK),
-        os.path.join(memory, CONSOLIDATE_LOCK),
-    ):
+    candidates = (
+        (
+            os.path.join(os.path.dirname(default), CONSOLIDATE_LOCK),
+            os.path.join(default, CONSOLIDATE_LOCK),
+        )
+        if default
+        else ()
+    )
+    for candidate in candidates:
         with contextlib.suppress(OSError):
             age = int(time.time() - os.stat(candidate).st_mtime)
             if age < CONSOLIDATE_RECENT:
-                recent = f"; a consolidation ran {age}s ago"
+                recent = f"a consolidation ran {age}s ago"
             else:
-                recent = f"; last consolidation {age // 3600}h ago"
+                recent = f"last consolidation {age // 3600}h ago"
             break
 
     enabled = switches.get(harness_memory.ENABLED_KEY)
-    if enabled is not None and not enabled[0]:
+    odd_enabled = _odd_switch(harness_memory.ENABLED_KEY, enabled)
+    # `is False` and not falsiness: JSON `null`, `0`, `""`, `[]` and `{}` are
+    # every one of them a value the harness goes on writing under, and read as
+    # off they produce this row's most confident sentence over a machine with
+    # two memory systems on it.
+    if enabled is not None and enabled[0] is False:
         return [
             Check(
                 "auto-memory",
                 PASS,
-                f"auto-memory is off in {enabled[1]} settings; memkit is the "
-                f"only memory system here{recent}",
+                _detail(
+                    f"auto-memory is off in {enabled[1]} settings; memkit is "
+                    "the only memory system here",
+                    recent,
+                ),
             )
         ]
 
@@ -3008,67 +3148,107 @@ def _auto_memory(machine: Machine) -> list[Check]:
             f"{_display_path(configured)} ({harness_memory.DIRECTORY_KEY} in "
             f"{where} settings)"
         )
-        store, root = _store_holding(machine, configured)
-        if store:
+        retrieved, says, root = _placed(machine, configured)
+        if retrieved:
             return [
                 Check(
                     "auto-memory",
                     PASS,
-                    f"{named} is inside {store}'s corpus root "
-                    f"{_display_path(root)}, so what the harness writes there "
-                    f"is retrieved{recent}",
+                    _detail(f"{named} {says}", recent, odd_enabled),
                 )
             ]
-        cfg = machine.config()
-        target = "<store>/search"
-        if cfg is not None and cfg.stores:
-            with contextlib.suppress(ConfigError, OSError):
-                target = os.path.join(cfg.store_dir(cfg.stores[0], "live"), "search")
+        store, nearest, declared = _nearest_store(machine, configured)
+        target = root or nearest or "<store>/search"
+        aside = (
+            f" ({store}'s corpus root, of the {declared} stores you have)"
+            if declared > 1 and store
+            else ""
+        )
         return [
             Check(
                 "auto-memory",
                 INFO,
-                f"{named} is outside every store, so nothing retrieves what "
-                f"lands there{recent}",
+                _detail(f"{named} {says}", recent, odd_enabled),
                 f'Point it at a corpus root — "{harness_memory.DIRECTORY_KEY}": '
-                f'"{_display_path(target)}" — or leave it there deliberately: '
-                '"Where your agent\'s own memories land" in docs/STORE.md is '
-                "the section that says what each choice costs.",
+                f'"{_display_path(target)}"{aside} — or leave it there '
+                'deliberately: "Where your agent\'s own memories land" in '
+                "docs/STORE.md is the section that says what each choice costs.",
                 actor=USER,
             )
         ]
 
     known = harness_memory.inventory(config_dir)
-    if os.path.isdir(default):
-        detail = [
+    wired = []
+    outside = []
+    for project in known:
+        # Only a linked one can be anywhere but under the config directory, and
+        # a link into a corpus root is the wiring docs/STORE.md recommends —
+        # counted as a second memory system, this row alarms about the state it
+        # exists to send adopters to.
+        holder = _store_holding(machine, project.path)[0] if project.linked else ""
+        (wired if holder else outside).append(project)
+
+    here = False
+    if not machine.cwd:
+        first = (
+            "the session directory was removed underneath this run, so where "
+            "the harness writes for this project cannot be derived"
+        )
+    elif os.path.isdir(default):
+        first = (
             f"the harness writes this project's memories to "
             f"{_display_path(default)} (project key from the git root)"
-        ]
+        )
+        here, says, _root = _placed(machine, default)
+        if here:
+            first = f"{first}, and that directory {says}"
     else:
-        detail = [
+        first = (
             f"the harness would write to {_display_path(default)} "
             "(derived from the git root)"
-        ]
-    if known:
-        listed = ", ".join(
-            f"{project.key} ({project.memories})" for project in known[:INVENTORY_SHOWN]
         )
-        if len(known) > INVENTORY_SHOWN:
-            listed += f" + {len(known) - INVENTORY_SHOWN} more"
-        detail.append(
-            f"{_count(len(known), 'project directory', 'project directories')} "
-            f"{'holds' if len(known) == 1 else 'hold'} "
-            f"{_count(sum(p.memories for p in known), 'memory', 'memories')} "
-            f"outside every store: {listed}"
-        )
+
     dream = switches.get(harness_memory.DREAM_KEY)
-    if dream is not None and not dream[0]:
-        detail.append(f"auto-dream is off in {dream[1]}: no background consolidation")
+    dream_off = ""
+    if dream is not None and dream[0] is False:
+        dream_off = f"auto-dream is off in {dream[1]}: no background consolidation"
+    fixed = (
+        first,
+        recent,
+        odd_enabled,
+        _odd_switch(harness_memory.DREAM_KEY, dream),
+        dream_off,
+        f"{_count(len(wired), 'project directory', 'project directories')} "
+        f"{'is' if len(wired) == 1 else 'are'} already linked into a store"
+        if wired
+        else "",
+    )
+    if here and not outside:
+        return [Check("auto-memory", PASS, _detail(*fixed))]
+    counted = ""
+    listed = ""
+    if outside:
+        counted = (
+            f"{_count(len(outside), 'project directory', 'project directories')} "
+            f"{'holds' if len(outside) == 1 else 'hold'} "
+            f"{_count(sum(p.memories for p in outside), 'memory', 'memories')} "
+            f"outside every store"
+        )
+        listed = ", ".join(
+            f"{project.key} ({project.memories})"
+            for project in outside[:INVENTORY_SHOWN]
+        )
+        if len(outside) > INVENTORY_SHOWN:
+            listed += f" + {len(outside) - INVENTORY_SHOWN} more"
     return [
         Check(
             "auto-memory",
             INFO,
-            "; ".join(detail) + recent,
+            # The KEYS last and their count with the other fixed facts:
+            # `_bound` cuts from the end, and a real key is a whole absolute
+            # path with its separators replaced, so five of them are longer
+            # than everything else in this row put together.
+            _detail(*fixed, counted, listed),
             "Two memory systems on one project is a choice rather than a "
             "fault. To put what the harness writes inside the store, set "
             f'"{harness_memory.DIRECTORY_KEY}" by hand — "Where your agent\'s '

@@ -1922,7 +1922,7 @@
       "tests": [
         "tests/test_harness_memory.py::test_the_project_key_comes_from_the_repository_not_the_directory"
       ],
-      "why": "The harness keys auto-memory to the git root, so every worktree and every subdirectory of one checkout share one directory. Keyed on the directory instead, doctor names an empty path for a session standing anywhere but the repository root \u2014 and reports no memories to an adopter who has months of them."
+      "why": "The harness keys auto-memory to the git root, so every worktree and every subdirectory of one checkout share one directory. Keyed on the directory instead, doctor names an empty path for a session standing anywhere but the repository root — and reports no memories to an adopter who has months of them."
     },
     {
       "name": "inventory-counts-the-harnesss-own-index-as-a-memory",
@@ -1944,7 +1944,7 @@
       "tests": [
         "tests/test_harness_memory.py::test_the_checked_in_project_scope_is_not_read_for_this_key"
       ],
-      "why": "The harness IGNORES autoMemoryDirectory in a checked-in .claude/settings.json, deliberately, so that cloning a repository cannot redirect where an agent writes. Read here, a repository decides which directory this report names \u2014 and the named directory is one nothing writes to."
+      "why": "The harness IGNORES autoMemoryDirectory in a checked-in .claude/settings.json, deliberately, so that cloning a repository cannot redirect where an agent writes. Read here, a repository decides which directory this report names — and the named directory is one nothing writes to."
     },
     {
       "name": "auto-memory-directory-is-compared-with-its-tilde-unexpanded",
@@ -1990,6 +1990,61 @@
         "tests/test_doctor.py::test_auto_memory_armed_is_information_and_names_the_setting"
       ],
       "why": "This is the defect the check was fixed for: the old remedy named autoDreamEnabled, which an adopter can follow to the letter and still have two memory systems, because it stops consolidation rather than writing."
+    },
+    {
+      "name": "auto-memory-calls-a-pruned-directory-retrieved",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    return bool(set(relative.split(os.sep)) & EXCLUDE_DIRS)\n",
+      "new": "    return False\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved"
+      ],
+      "why": "Inside a corpus root is not the same as retrieved: the indexing walk prunes hot/ and archive/ wherever they sit under one. Without this test a setting pointing into either gets the row's most reassuring sentence — what the harness writes there is retrieved — over a directory the index never reads."
+    },
+    {
+      "name": "auto-memory-containment-is-a-bare-prefix-match",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    return child == parent or child.startswith(parent + os.sep)\n",
+      "new": "    return child.startswith(parent)\n",
+      "tests": [
+        "tests/test_doctor.py::test_within_is_containment_rather_than_a_prefix_match"
+      ],
+      "why": "`/store/search-old` starts with every character of `/store/search` and is not inside it. The separator is the whole of what makes containment containment, and this predicate decides whether the row claims an adopter's memories are indexed."
+    },
+    {
+      "name": "auto-memory-reads-any-falsy-value-as-the-feature-off",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if enabled is not None and enabled[0] is False:\n",
+      "new": "    if enabled is not None and not enabled[0]:\n",
+      "tests": [
+        "tests/test_doctor.py::test_only_false_turns_the_switches_off"
+      ],
+      "why": "JSON null, 0, the empty string, [] and {} are all falsy in Python and none of them stops the harness writing. Read as off, each one produces this row's single most confident sentence — memkit is the only memory system here — on a machine that has two."
+    },
+    {
+      "name": "inventory-counts-a-directory-whose-name-ends-in-md",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "                    if entry.name.endswith(\".md\") and entry.is_file()\n",
+      "new": "                    if entry.name.endswith(\".md\")\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_a_directory_named_like_a_memory_is_not_one"
+      ],
+      "why": "A directory called notes.md is not a memory, and counted as one it offers an adopter something to move that no move can carry."
+    },
+    {
+      "name": "project-key-answers-for-a-cwd-that-is-not-a-path",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "    if not os.path.isabs(cwd):\n        raise ValueError(f\"{cwd!r} is not an absolute directory\")\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_memory.py::test_a_cwd_that_is_not_an_absolute_path_is_refused"
+      ],
+      "why": "The empty string is what a caller holds once os.getcwd() has failed, and keyed it disappears: os.path.join swallows the empty component and the answer is <config dir>/projects/memory, a path that reads as derived and is nowhere. A relative one is resolved against whatever directory the process stands in, which is the second walk this module refuses."
     },
     {
       "name": "cli-bare-invocation-is-a-usage-error",
@@ -3959,7 +4014,7 @@
         "tests/test_plugin_surface.py::test_the_admission_notes_breakdown_sums_to_the_total_it_states",
         "tests/test_plugin_surface.py::test_the_admission_numbers_reproduce_from_its_own_recipe"
       ],
-      "why": "The headline count is re-derived at each release and nothing else moves it, so the way it goes wrong is by staying at the previous release's number — which is what this writes, the count the pin still carries. It has to fail for two independent reasons: the figure no longer matches `git ls-files`, and the note now states 99 twice while claiming one count per tree described. A release that re-derives the table has to re-anchor this."
+      "why": "The headline count is re-derived at each release and nothing else moves it, so the way it goes wrong is by staying at the previous release's number — which is what this writes, the count the pin still carries. It has to fail for two independent reasons: the figure no longer matches `git ls-files`, and the note now states 101 twice while claiming one count per tree described. A release that re-derives the table has to re-anchor this."
     },
     {
       "name": "hooks-matcher-becomes-an-anchored-regex",
