@@ -100,6 +100,7 @@ from memkit.memory_prompt_recall import (
     ConfigError,
     _corpus_files,
     _cwd_digest,
+    _display_cap,
     _display_path,
     _excluded,
     _fts_db,
@@ -3264,6 +3265,64 @@ def _checkout_source(scope: str) -> tuple:
     )
 
 
+def _env_switch_note(forced, value: str) -> str:
+    """What to say about `$CLAUDE_CODE_DISABLE_AUTO_MEMORY`, or "".
+
+    BOTH DIRECTIONS ARE REPORTED, and neither is passed. Forced on, the row's
+    most confident sentence would be false while every settings file agrees
+    with it. Forced off, what this process carries is not necessarily what an
+    adopter's interactive sessions carry — doctor can read one environment,
+    and the claim would be about all of them.
+    """
+    if forced is None:
+        return ""
+    spelled = _display_cap(json.dumps(value), 40)
+    if forced:
+        return (
+            f"${harness_memory.DISABLE_ENV} is set to {spelled}, which the "
+            "harness reads as an instruction to RUN auto-memory before it "
+            "opens a settings file at all: no settings scope turns it off "
+            "while that value is in the environment"
+        )
+    return (
+        f"${harness_memory.DISABLE_ENV} is set to {spelled}, which turns "
+        "auto-memory off in every process that carries it — doctor reads its "
+        "own environment, which need not be the one your sessions run in"
+    )
+
+
+def _env_switch_remedy(forced) -> str:
+    """The remedy for a switch an environment variable decided."""
+    if forced:
+        return (
+            f"Unset ${harness_memory.DISABLE_ENV} wherever it is exported — a "
+            "shell profile, a direnv file in this checkout, a wrapper script — "
+            f'or set it to 1. While it holds that value, "'
+            f'{harness_memory.ENABLED_KEY}": false changes nothing.'
+        )
+    return (
+        f"That switch is off only for processes that inherit "
+        f"${harness_memory.DISABLE_ENV}. To make it true of every session, set "
+        f'"{harness_memory.ENABLED_KEY}": false in your own settings as well.'
+    )
+
+
+def _override_note(names: tuple) -> str:
+    """What to say about an environment override of the DIRECTORY, or "".
+
+    Named rather than resolved: each of these needs a resolver of its own, and
+    re-deriving three more harness surfaces is how this row comes to name a
+    directory with confidence and be wrong. What it stops is the PASS.
+    """
+    if not names:
+        return ""
+    return (
+        f"an environment override is in effect ({', '.join(names)}), so where "
+        "the harness writes is not what any settings file says and doctor "
+        "does not resolve it"
+    )
+
+
 def _adopter_owns(scopes: list, name: str) -> bool:
     """Whether the scope that decided a key is one the ADOPTER owns.
 
@@ -3331,10 +3390,30 @@ def _auto_memory(machine: Machine) -> list[Check]:
     enabled, enabled_scope = harness_memory.switch(
         machine.settings, harness_memory.ENABLED_KEY
     )
+    # THE ENVIRONMENT DECIDES BEFORE ANY SETTINGS FILE IS OPENED, on both
+    # axes — see `harness_memory.DISABLE_ENV` and `OVERRIDE_ENV`. Read from the
+    # 2.1.258 code: a falsy word in that variable RUNS the feature and returns
+    # before the settings walk, so the state this row calls "memkit is the only
+    # memory system here" is one an environment variable can make false while
+    # every settings scope agrees with it.
+    forced, forced_value = harness_memory.env_switch()
+    # ONE ANSWER to "did something outside every settings file decide part of
+    # this row", carried into every detail and gating every PASS in it: a
+    # PASS is a claim about the machine, and neither of these is answerable
+    # from the environment this one process happens to have inherited.
+    environed = _detail(
+        _env_switch_note(forced, forced_value),
+        _override_note(harness_memory.overrides()),
+    )
     dream, dream_scope = harness_memory.switch(
         machine.settings, harness_memory.DREAM_KEY
     )
+    # Asked of the SETTINGS value before the environment replaces it: a scope
+    # holding `0` is a file somebody hand-edited meaning `false`, and that is
+    # worth saying whichever way the environment then decided.
     odd_enabled = _odd_switch(harness_memory.ENABLED_KEY, enabled, enabled_scope)
+    if forced is not None:
+        enabled = forced
     config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
     # THE SAME VARIABLE `settings_scopes` guards, guarded the same way. Read
     # raw it decided three things — the directory printed as the derived
@@ -3388,9 +3467,34 @@ def _auto_memory(machine: Machine) -> list[Check]:
     )
     if enabled is False:
         off = (
-            f"auto-memory is off in {enabled_scope} settings; memkit is the "
-            "only memory system here"
+            "auto-memory is off in this process's environment"
+            if forced is not None
+            else f"auto-memory is off in {enabled_scope} settings; memkit is "
+            "the only memory system here"
         )
+        if forced is not None:
+            # NOT A PASS, and not the settings' answer either: the variable
+            # outranks every scope. The scope is still disclosed when the
+            # adopter does not own it, because a session started without this
+            # variable is one that file decides.
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(
+                        off,
+                        environed,
+                        f'"{harness_memory.ENABLED_KEY}" is also set in '
+                        f"{switch_source}, and {switch_travels}"
+                        if switch_theirs
+                        else "",
+                        recent,
+                        odd_enabled,
+                    ),
+                    _env_switch_remedy(forced),
+                    actor=USER,
+                )
+            ]
         if switch_theirs:
             return [
                 Check(
@@ -3452,7 +3556,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
             f"{source})"
         )
         retrieved, says, target = _placed(machine, configured)
-        if retrieved and not checkout and not switch_theirs:
+        if retrieved and not checkout and not switch_theirs and not environed:
             return [
                 Check(
                     "auto-memory",
@@ -3485,7 +3589,12 @@ def _auto_memory(machine: Machine) -> list[Check]:
                 "auto-memory",
                 INFO,
                 _detail(
-                    f"{named} {says}", travels, switched_on, recent, odd_enabled
+                    f"{named} {says}",
+                    environed,
+                    travels,
+                    switched_on,
+                    recent,
+                    odd_enabled,
                 ),
                 remedy,
                 actor=USER,
@@ -3548,6 +3657,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
         )
     fixed = (
         first,
+        environed,
         redirected,
         switched_on,
         recent,
@@ -3559,7 +3669,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
         if wired
         else "",
     )
-    if here and not outside and not steered and not switch_theirs:
+    if here and not outside and not steered and not switch_theirs and not environed:
         return [Check("auto-memory", PASS, _detail(*fixed))]
     counted = ""
     listed = ""

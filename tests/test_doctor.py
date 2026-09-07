@@ -377,6 +377,11 @@ def profile(tmp_path, monkeypatch):
         hook.PLUGIN_DATA_ENV,
         "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
         "CLAUDE_PLUGIN_ROOT",
+        # The harness's own memory surfaces that are not a settings file: a
+        # developer with one of these exported would get an answer from the
+        # fixture that CI never gets.
+        harness_memory.DISABLE_ENV,
+        *harness_memory.OVERRIDE_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
     tmp_path.joinpath("state").mkdir(exist_ok=True)
@@ -2686,6 +2691,76 @@ def test_only_false_turns_the_switches_off(profile, monkeypatch) -> None:
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert "no background consolidation" not in row.detail
     assert f'"{harness_memory.DREAM_KEY}" is 0' in row.detail
+
+
+def test_an_environment_variable_that_forces_the_feature_on_is_never_a_pass(
+    profile, monkeypatch
+) -> None:
+    """`CLAUDE_CODE_DISABLE_AUTO_MEMORY=0` turns auto-memory ON before the
+    harness reads a settings file, so the one state that used to earn this
+    row's most confident sentence — "memkit is the only memory system here" —
+    is a machine with two of them.
+
+    Read from the 2.1.258 code: the gate takes the falsy word list as an
+    instruction to run, and returns before the settings are consulted.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "only memory system here" not in row.detail
+    assert harness_memory.DISABLE_ENV in row.detail
+    assert row.actor == doctor.USER
+
+    # The other direction is INFO for a different reason: the variable turns
+    # the feature off in every process that CARRIES it, and the environment
+    # doctor was started with need not be the one the adopter's sessions run
+    # in — so it is reported rather than passed on.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "yes")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert harness_memory.DISABLE_ENV in row.detail
+
+    # A word in neither list decides nothing, and the settings answer again.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "banana")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+    assert "auto-memory is off in user settings" in row.detail
+
+
+def test_an_environment_override_stops_the_row_naming_a_directory(
+    profile, monkeypatch
+) -> None:
+    """Three variables outrank every settings scope for where the harness
+    writes, and memkit reads none of them. A row that passed a directory while
+    one was in effect is naming a directory that is not the one being written
+    to — which is the defect this whole module exists to close."""
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(mine))
+    monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "/u/elsewhere")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE" in row.detail
+    assert "does not resolve" in row.detail
+
+    # And on the branch that never names a configured directory at all, where
+    # the row's PASS rests on the DERIVED default instead.
+    monkeypatch.delenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE")
+    monkeypatch.setenv("CLAUDE_CODE_PROJECT_DIR_NAME", "not-the-key")
+    _settings(profile)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "CLAUDE_CODE_PROJECT_DIR_NAME" in row.detail
 
 
 def test_the_switch_facts_outlive_a_project_list_that_overruns_the_detail(

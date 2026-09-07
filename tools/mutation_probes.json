@@ -1951,8 +1951,8 @@
       "name": "auto-memory-directory-is-compared-with-its-tilde-unexpanded",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "    return expand_home(value), name\n",
-      "new": "    return value, name\n",
+      "old": "        value = os.path.join(os.path.expanduser(\"~\"), remainder)\n",
+      "new": "        value = \"~\" + os.sep + remainder\n",
       "tests": [
         "tests/test_harness_memory.py::test_a_tilde_is_expanded_before_anything_compares_the_path"
       ],

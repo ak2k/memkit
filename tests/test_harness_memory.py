@@ -72,6 +72,11 @@ def config_dir(tmp_path, monkeypatch) -> pathlib.Path:
     monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
     monkeypatch.setattr(doctor, "_managed_dir", lambda: str(tmp_path / "managed"))
     (tmp_path / "managed").mkdir(exist_ok=True)
+    # The harness surfaces that are NOT a settings file. A developer running
+    # the suite with one of these exported would otherwise get a different
+    # answer from the fixture than CI does.
+    for name in (harness_memory.DISABLE_ENV, *harness_memory.OVERRIDE_ENV):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(project)
     return config
 
@@ -582,3 +587,92 @@ def test_a_value_the_harness_rejects_masks_the_scope_below_it(config_dir):
     assert harness_memory.configured_dir(doctor.settings_scopes()) == (
         "/u/user", "user",
     )
+
+
+# --- the surfaces that are not a settings file -------------------------------
+
+
+def test_the_environment_decides_the_switch_above_every_settings_scope(
+    config_dir, monkeypatch
+) -> None:
+    """`CLAUDE_CODE_DISABLE_AUTO_MEMORY=0` turns the feature ON before the
+    harness reads a settings file at all, which is the direction that matters:
+    an adopter who set `autoMemoryEnabled: false` has a second memory system
+    running and every settings scope says otherwise.
+
+    Read from the 2.1.258 code: the value is lower-cased and trimmed, one word
+    list turns the feature off and the other forces it on, and a word in
+    neither list falls through to the settings.
+    """
+    _settings(config_dir / "settings.json", autoMemoryEnabled=False)
+    for spelling in ("0", "false", "no", "off", " OFF ", "False"):
+        monkeypatch.setenv(harness_memory.DISABLE_ENV, spelling)
+        assert harness_memory.env_switch() == (True, spelling), spelling
+    for spelling in ("1", "true", "yes", "on", " ON ", "TRUE"):
+        monkeypatch.setenv(harness_memory.DISABLE_ENV, spelling)
+        assert harness_memory.env_switch() == (False, spelling), spelling
+    # Unset, empty, and a word in neither list are all "the settings decide".
+    for spelling in ("", "banana", "2"):
+        monkeypatch.setenv(harness_memory.DISABLE_ENV, spelling)
+        assert harness_memory.env_switch() == (None, ""), spelling
+    monkeypatch.delenv(harness_memory.DISABLE_ENV)
+    assert harness_memory.env_switch() == (None, "")
+
+
+def test_an_environment_override_is_named_rather_than_resolved(
+    config_dir, monkeypatch
+) -> None:
+    """Three variables outrank every settings scope for the DIRECTORY, and
+    memkit resolves none of them. What it can do is say one is in effect, so
+    the row stops claiming to know where the harness writes."""
+    assert harness_memory.overrides() == ()
+    monkeypatch.setenv("CLAUDE_CODE_PROJECT_DIR_NAME", "elsewhere")
+    assert harness_memory.overrides() == ("CLAUDE_CODE_PROJECT_DIR_NAME",)
+    monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "/u/somewhere")
+    assert harness_memory.overrides() == (
+        "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE",
+        "CLAUDE_CODE_PROJECT_DIR_NAME",
+    )
+    # An empty value is not an override: the harness's own reader refuses a
+    # falsy one before it looks at anything.
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE_MEMORY_DIR", "")
+    assert "CLAUDE_CODE_REMOTE_MEMORY_DIR" not in harness_memory.overrides()
+
+
+def test_the_directory_is_the_one_the_harness_normalises_to(config_dir) -> None:
+    """The validator memkit mirrors, read out of the 2.1.258 code: only a
+    LEADING `~/` expands, a remainder that normalises to `.` or above the home
+    directory is refused outright, and the value is normalised and stripped of
+    trailing separators BEFORE the absolute / three-character / NUL tests.
+
+    Validating the expanded string instead accepted four values the harness
+    replaces with the default — and naming a directory the harness does not
+    write to is the whole of what this module exists to prevent.
+    """
+    home = os.environ["HOME"]
+    refused = ("~", "~/", "~/.", "~/..", "~/../elsewhere", ".", "..", "/a", "/")
+    for value in refused:
+        assert not harness_memory.usable_dir(value), value
+    # Normalised and de-separated, so what is named is what the harness uses.
+    for value, want in (
+        ("/a/b/", "/a/b"),
+        ("/a/b//", "/a/b"),
+        ("/a/b/../c", "/a/c"),
+        ("~/notes/", os.path.join(home, "notes")),
+        ("~/notes/../notes/x", os.path.join(home, "notes", "x")),
+    ):
+        assert harness_memory.usable_dir(value), value
+        _settings(config_dir / "settings.json", autoMemoryDirectory=value)
+        assert harness_memory.configured_dir(doctor.settings_scopes()) == (
+            want, "user",
+        ), value
+
+
+def test_the_inventory_survives_a_config_dir_that_is_not_a_path(tmp_path) -> None:
+    """`scandir` raises `ValueError` rather than `OSError` on an embedded NUL,
+    and this value comes from the environment. Unreachable through a POSIX
+    environment variable, closed for the same reason the walk above it is: an
+    exception escaping here demotes a whole doctor row to UNKNOWN."""
+    assert harness_memory.inventory("/c\x00d") == []
+    (tmp_path / "projects" / "-p" / "memory").mkdir(parents=True)
+    assert harness_memory.inventory(str(tmp_path)) == []

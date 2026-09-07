@@ -41,6 +41,21 @@ somebody else's serialiser. A directory of the harness's own under the corpus
 root is what keeps both: retrieval recurses, and the rewrite reaches only what
 is inside it.
 
+WHETHER THAT PREFIX ENDS IN A SEPARATOR IS NOT MEASURED, and it decides one
+case: a SIBLING whose name merely starts with the configured directory's —
+`auto-memory-old/` beside `auto-memory/` — is inside the rewrite under a bare
+prefix test and outside it under a separator-terminated one. Every directory
+this package recommends is one it also recommends creating, so nothing memkit
+says rests on the answer; it is recorded because the remedy's promise that "the
+rewrite reaches only what is in it" is exactly as wide as this.
+
+THE ENVIRONMENT OUTRANKS EVERY SETTINGS FILE, on two surfaces this module reads
+and one it does not. `CLAUDE_CODE_DISABLE_AUTO_MEMORY` decides the switch
+before a settings file is opened at all (`env_switch`), and three more
+variables decide the DIRECTORY the same way (`OVERRIDE_ENV`) — of which memkit
+resolves none, and says so rather than naming a directory that is not the one
+being written to.
+
 `memoryDir` is not a key the harness reads. It was memkit's own earlier reading
 of this feature, and a remedy naming it changed nothing on the adopter's
 machine.
@@ -50,12 +65,12 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 
 from memkit.memory_prompt_recall import (
     _repo_common_dir,
     _repo_root,
     _RootUnknown,
-    expand_home,
 )
 
 # The harness's own sanitiser for a project key: EVERY character outside
@@ -120,6 +135,33 @@ SAFE_SUBDIR = "auto-memory"
 DIRECTORY_KEY = "autoMemoryDirectory"
 ENABLED_KEY = "autoMemoryEnabled"
 DREAM_KEY = "autoDreamEnabled"
+
+# The variable the harness reads BEFORE any settings file, and the two word
+# lists it reads it with. Read from the 2.1.258 code: the gate lower-cases and
+# trims the value, takes `1/true/yes/on` as "do not run" and — this is the
+# direction that matters — takes `0/false/no/off` as "RUN", returning before
+# the settings are consulted at all. So a machine with `autoMemoryEnabled:
+# false` in every scope has the feature running, and every settings file says
+# otherwise.
+#
+# A value in neither list, and an empty one, decide nothing: both fall through
+# to the settings, which is why this is a three-valued answer rather than a
+# bool.
+DISABLE_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
+_ENV_OFF = ("1", "true", "yes", "on")
+_ENV_ON = ("0", "false", "no", "off")
+
+# The variables that decide the DIRECTORY above every settings scope, in the
+# order the harness consults them. Read from the 2.1.258 code, and NOT
+# resolved here: each needs a resolver of its own (a cowork path, a remote
+# projects root, a literal project key), and re-deriving three more surfaces
+# is how this module comes to name a directory the harness does not use. What
+# a report can do with them honestly is say one is in effect.
+OVERRIDE_ENV = (
+    "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE",
+    "CLAUDE_CODE_REMOTE_MEMORY_DIR",
+    "CLAUDE_CODE_PROJECT_DIR_NAME",
+)
 
 
 class ProjectMemory:
@@ -204,17 +246,36 @@ def project_key(cwd: str) -> str:
         raise ValueError(f"{cwd!r} is not an absolute directory")
     key = _SANITIZE.sub("-", _project_path(cwd))
     if len(key) > KEY_MAX:
+        # THE EXPLANATION BEFORE THE PATH, because doctor interpolates this
+        # message into a detail that is bounded from the end, and the path here
+        # is the session's own cwd — the one part of the sentence whose length
+        # the adopter's machine decides. Led with the path, a deep enough
+        # directory cut the reason it was refused off the end of the row.
         raise ValueError(
-            f"the key for {cwd!r} is {len(key)} characters; over {KEY_MAX} the "
-            "harness appends a hash suffix memkit has not measured"
+            f"the project key is {len(key)} characters; over {KEY_MAX} the "
+            "harness appends a hash suffix memkit has not measured, so the "
+            f"directory it uses cannot be named: {cwd!r}"
         )
     return key
 
 
 def _project_path(cwd: str) -> str:
-    # RESOLVED on every path out of this function, including the ones that give
-    # up: `_repo_root` resolves before it walks, so only the fallbacks could
-    # return the spelling the caller happened to use.
+    """The path the harness keys on: the repository above `cwd`, or `cwd`.
+
+    RESOLVED on every path out of this function, including the ones that give
+    up: `_repo_root` resolves before it walks, so only the fallbacks could
+    return the spelling the caller happened to use.
+
+    A SUBMODULE KEYS ON ITSELF, and that is the one branch here that is a
+    reading rather than a measurement. Measured on 2.1.258: the harness
+    rewrites a git dir to another root only when it finds a `commondir` beside
+    it, which a linked worktree has and a submodule does not. What was not
+    measured is a live submodule session writing a memory — so if the harness
+    ever keys one on `<super>/.git/modules`, every submodule of one
+    superproject shares a directory and this names the wrong one. The test
+    covering it asserts the two submodules differ, which is the shape of the
+    claim rather than the harness's own answer.
+    """
     try:
         resolved = os.path.realpath(cwd)
     except (OSError, ValueError):
@@ -227,12 +288,8 @@ def _project_path(cwd: str) -> str:
         if common is None:
             return resolved
         if _SUBMODULE_GIT_DIR in common:
-            # The submodule's own worktree root. Measured on 2.1.258: the
-            # harness rewrites a git dir to another root only when it finds a
-            # `commondir` beside it, which a linked worktree has and a
-            # submodule does not — so a submodule keys on itself, where the
-            # common-dir walk would key every submodule of one superproject to
-            # `<super>/.git/modules`.
+            # The submodule's own worktree root — see the docstring for what
+            # was measured and what was read.
             return root
         return os.path.dirname(common)
     except (_RootUnknown, OSError, ValueError):
@@ -280,6 +337,9 @@ def inventory(config_dir: str) -> list:
 
     Unreadable entries are skipped rather than raising: a diagnostic that dies
     on one unreadable directory reports nothing about the other 3917.
+    `ValueError` beside `OSError` for the same reason `_project_path` catches
+    both — `scandir` raises that, not `OSError`, on an embedded NUL, and this
+    path is built from an environment variable.
 
     Sorted by memory count descending, then by key — the order a report that
     can show only a few of them wants, and stable for two directories holding
@@ -290,7 +350,7 @@ def inventory(config_dir: str) -> list:
             projects = [
                 (entry.name, entry.path, entry.is_symlink()) for entry in entries
             ]
-    except OSError:
+    except (OSError, ValueError):
         return []
     found = []
     for key, path, linked_project in projects:
@@ -302,7 +362,7 @@ def inventory(config_dir: str) -> list:
                     for entry in entries
                     if entry.name.endswith(".md") and entry.is_file()
                 )
-        except OSError:
+        except (OSError, ValueError):
             continue
         files = [name for name, _ in listed]
         if not any(name != INDEX_NAME for name in files):
@@ -343,20 +403,78 @@ def switch(scopes, key: str) -> tuple:
     return None, None
 
 
-def usable_dir(value) -> bool:
-    """Whether the harness would USE this `autoMemoryDirectory` value.
+def harness_dir(value):
+    """The directory the harness would USE for this value, or None.
 
-    Measured on 2.1.258: a value that is not absolute once `~/` is expanded, is
-    shorter than three characters, or holds a NUL is rejected — and what it
-    falls back to is the DEFAULT rather than the next scope down.
+    THE VALIDATOR, not a test of the string a caller passed in. Read from the
+    2.1.258 code, in this order:
 
-    (memkit's `expand_home` also expands a bare `~`, where the harness expands
-    only `~/`; a bare `~` is under three characters either way.)
+    - a falsy value is refused before anything else looks at it;
+    - only a LEADING `~/` expands, and only against the home directory — and
+      the remainder is refused outright when it normalises to `.`, `..` or
+      anything below `..`, so `~/..` is not the parent of home, it is nothing;
+    - the value is then NORMALISED and stripped of trailing separators, and
+      only then tested for being absolute, at least three characters, and free
+      of a NUL. (Its refusal of a bare `C:` drive letter is not mirrored: on
+      the platforms memkit runs on that string is not absolute, so the branch
+      could never be reached or tested.)
+
+    The order is the whole of it. Testing the expanded string first accepted
+    `~`, `~/`, `~/..` and `/a/` — four values the harness replaces with the
+    default directory — and a report that names a directory the harness does
+    not write to is the defect this module exists to close.
+
+    NFC, because the harness normalises the string it returns and a Linux
+    filesystem holds the two spellings of a composed character as two
+    different directories.
+
+    ONE REFUSAL IS NOT MIRRORED: the harness's validator ends with a predicate
+    this reading could not resolve out of the minified bundle, so a value
+    memkit calls usable may still be one the harness declines. That direction
+    is disclosed rather than guessed at — the alternative is refusing values
+    the harness accepts, which is the same wrong answer pointed the other way.
     """
     if not isinstance(value, str) or not value:
-        return False
-    expanded = expand_home(value)
-    return os.path.isabs(expanded) and len(expanded) >= 3 and "\x00" not in expanded
+        return None
+    if value.startswith("~" + os.sep):
+        remainder = value[2:]
+        above = os.path.normpath(remainder or os.curdir)
+        if above in (os.curdir, os.pardir) or above.startswith(os.pardir + os.sep):
+            return None
+        value = os.path.join(os.path.expanduser("~"), remainder)
+    path = os.path.normpath(value).rstrip(os.sep) or os.sep
+    if not os.path.isabs(path) or len(path) < 3 or "\x00" in path:
+        return None
+    return unicodedata.normalize("NFC", path)
+
+
+def usable_dir(value) -> bool:
+    """Whether the harness would use this `autoMemoryDirectory` value."""
+    return harness_dir(value) is not None
+
+
+def env_switch() -> tuple:
+    """`(whether the feature runs, the value that said so)`, or `(None, "")`.
+
+    ABOVE EVERY SETTINGS SCOPE and answered before them — see `DISABLE_ENV`.
+    The value is returned as it was spelled rather than as it was read, because
+    what an adopter has to go and change is the spelling.
+    """
+    raw = os.environ.get(DISABLE_ENV)
+    if not raw:
+        return None, ""
+    word = raw.strip().lower()
+    if word in _ENV_OFF:
+        return False, raw
+    if word in _ENV_ON:
+        return True, raw
+    return None, ""
+
+
+def overrides() -> tuple:
+    """Every `OVERRIDE_ENV` name set to a non-empty value, in the harness's
+    own order. Named, never resolved."""
+    return tuple(name for name in OVERRIDE_ENV if os.environ.get(name))
 
 
 def configured_dir(scopes) -> tuple:
@@ -370,12 +488,18 @@ def configured_dir(scopes) -> tuple:
     the harness does not write to, which is the whole defect this module
     exists to close.
 
-    EXPANDED. `~/notes/search` and the path it expands to are the same
-    directory, and a comparison against a store's corpus root that used the
-    unexpanded spelling would report "outside every store" for a setting
-    pointing straight at one. Display puts the `~` back.
+    EXPANDED, AND NORMALISED THE WAY THE HARNESS NORMALISES IT. `~/notes/search`
+    and the path it expands to are the same directory, and a comparison against
+    a store's corpus root that used the unexpanded spelling would report
+    "outside every store" for a setting pointing straight at one. `harness_dir`
+    answers with the string the harness resolves to, so what is compared and
+    what is printed are both the directory being written to. Display puts the
+    `~` back.
     """
     value, name = switch(scopes, DIRECTORY_KEY)
-    if name is None or not usable_dir(value):
+    if name is None:
         return None, None
-    return expand_home(value), name
+    directory = harness_dir(value)
+    if directory is None:
+        return None, None
+    return directory, name
