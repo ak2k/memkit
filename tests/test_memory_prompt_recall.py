@@ -13887,6 +13887,10 @@ def test_a_project_file_adds_a_store_to_the_search_and_not_to_the_config(
     assert project.read_only is True
     assert [s.id for s in cfg.stores] == ["s"]
     assert [s.id for s in cfg.searched_stores()] == ["s", PROJECT_STORE_ID]
+    # AFTER the call, which is the only moment the claim can be broken: a
+    # `searched_stores()` that appended to both lists satisfies the line above
+    # and still puts a repository's directory in front of every write path.
+    assert [s.id for s in cfg.stores] == ["s"]
     # Resolved once and answered from `resolved_dir`, so no name in `roots` is
     # invented for it and none can collide with one.
     assert cfg.store_dir(project) == str(repo / PROJECT_STORE_DIR)
@@ -14456,6 +14460,67 @@ def test_a_project_store_candidate_over_the_scan_cap_is_refused_unread(
     monkeypatch.setattr(hook, "_PROJECT_ROOTS", set())
     assert hook._relevance(["unionfs", "permissions"], path, os.path.realpath(str(root)))[0]
     assert hook._LEX_COUNTS["lex_secret"] == 0
+
+
+def test_a_candidate_over_the_scan_cap_is_never_opened_at_all(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """UNREAD, which is the half of the refusal the returned tuple cannot show.
+
+    The size floor and the length check that follows the read refuse the same
+    file, so nothing about the value `_relevance` returns can tell which one
+    fired. What separates them is whether an every-prompt hook read a file it
+    had already decided not to clear, and that is what this asks.
+    """
+    root = tmp_path / "corpus"
+    root.mkdir()
+    path = str(root / "unionfs_perms.md")
+    padding = "\nunionfs mount permissions and the media group.\n"
+    big = PROJECT_MEMORY + padding * (hook.SECRET_SCAN_MAX_BYTES // len(padding) + 2)
+    Path(path).write_text(big, encoding="utf-8")
+    real = os.path.realpath(str(root))
+    monkeypatch.setitem(hook._LEX_MATCHED, path, ["unionfs", "permissions"])
+    hook._LEX_COUNTS["lex_secret"] = 0
+    monkeypatch.setattr(hook, "_PROJECT_ROOTS", {real})
+    opened: list = []
+
+    def spy(target, *args, **kwargs):
+        opened.append(str(target))
+        return io.StringIO("")
+
+    # The module's own global, so `Path.write_text` above and pytest's own
+    # reads are untouched by it.
+    monkeypatch.setattr(hook, "open", spy, raising=False)
+    assert hook._relevance(["unionfs", "permissions"], path, real) == ([], 2, "?")
+    assert opened == [], opened
+    assert hook._LEX_COUNTS["lex_secret"] == 1
+
+
+def test_a_candidate_that_grew_after_the_stat_is_refused_on_the_read(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The window the floor cannot close: the file is inside the cap when it is
+    stat'd and past it when it is read. The read asks for one byte more than
+    the cap so that the length it comes back with answers the question, and the
+    same length check is what makes a truncating read impossible to mistake for
+    a whole one."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    path = str(root / "unionfs_perms.md")
+    Path(path).write_text(PROJECT_MEMORY, encoding="utf-8")
+    real = os.path.realpath(str(root))
+    monkeypatch.setitem(hook._LEX_MATCHED, path, ["unionfs", "permissions"])
+    hook._LEX_COUNTS["lex_secret"] = 0
+    monkeypatch.setattr(hook, "_PROJECT_ROOTS", {real})
+    # No credential in it: the length is the only thing that can refuse this.
+    grown = "unionfs permissions\n" * (hook.SECRET_SCAN_MAX_BYTES // 20 + 8)
+    assert len(grown) > hook.SECRET_SCAN_MAX_BYTES
+    assert hook._secret_re().search(grown) is None
+    monkeypatch.setattr(
+        hook, "open", lambda *a, **k: io.StringIO(grown), raising=False
+    )
+    assert hook._relevance(["unionfs", "permissions"], path, real) == ([], 2, "?")
+    assert hook._LEX_COUNTS["lex_secret"] == 1
 
 
 def test_the_project_roots_survive_the_side_channel_clear_inside_recall(
