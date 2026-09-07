@@ -3306,6 +3306,41 @@ def test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it(
             "registrations-count"} <= {c.id for c in named}
 
 
+def test_a_pass_never_stands_on_a_scope_that_would_not_parse(
+    profile, monkeypatch
+) -> None:
+    """The state the wrapper exists for: the scopes that DID parse agree, and
+    the one that did not is the one that outranks them.
+
+    `.claude/settings.json` in the session's own directory declares nothing
+    while it is malformed, so the user scope decides and the row reaches its
+    "memkit is the only memory system here" PASS — over a file that may set
+    the same key the other way and that a `git checkout` repairs.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text('{"autoMemoryEnabled": true,,}', encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "project settings could not be parsed" in row.detail
+    assert str(checked_in) in row.detail
+    assert row.actor == doctor.USER
+
+    # Repair the file and the row answers from what it says, PASS or not.
+    checked_in.write_text('{"autoMemoryEnabled": false}', encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO  # a checkout decided it; disclosed, not passed
+    assert "could not be parsed" not in row.detail
+    checked_in.unlink()
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+
+
 def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
     profile, monkeypatch
 ) -> None:

@@ -2186,7 +2186,7 @@
       "old": "            INFO if row.status == PASS else row.status,\n",
       "new": "            row.status,\n",
       "tests": [
-        "tests/test_doctor.py::test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it"
+        "tests/test_doctor.py::test_a_pass_never_stands_on_a_scope_that_would_not_parse"
       ],
       "why": "a PASS is a claim about the machine, and a file this process could not open is one that can falsify every claim the row derived from the scopes"
     },
