@@ -3007,8 +3007,8 @@ def _nearest_store(machine: Machine, directory: str) -> tuple:
     mine = directory.split(os.sep)
     best = ("", "", -1, False)
     for store in cfg.stores:
-        # A store naming a root the config does not define raises here, and
-        # `store-roots` owns saying so.
+        # One candidate fewer when a store names a root the config does not
+        # define; `store-roots` is the check that reports it.
         with contextlib.suppress(ConfigError, OSError):
             # `<live>/search` rather than `_search_root`'s answer, which falls
             # back to the store root on a store not yet laid out by tier: this
