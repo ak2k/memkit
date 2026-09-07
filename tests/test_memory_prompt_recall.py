@@ -9599,6 +9599,13 @@ TASK_PATH_MAY_READ = {
     # means the same thing in both populations, and a consumer reading the two
     # should not find them cut at different lengths for no reason.
     "FLOORED_LOG_MAX",
+    # Not a constant either: the module-global map of side-channel counters,
+    # read by this path's `done()` to fold the nonzero ones into its record.
+    # recall() folds them once, before `_eligible` runs — and `_eligible` is
+    # where the credential scan increments `lex_secret` — so without this read
+    # a task-path run that refused a repository's memory would record no sign
+    # of it. Nothing here is tuned; the values are counts this run produced.
+    "_LEX_COUNTS",
 }
 
 

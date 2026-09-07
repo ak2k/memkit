@@ -167,6 +167,33 @@ def _utf8(text: str) -> bytes:
 # source stays byte-stable for the same reason.
 SCHEMA = 1
 CONFIG_ENV = "MEMKIT_CONFIG"
+# --- what a REPOSITORY may say about memory -----------------------------------
+#
+# A checked-in file at the repository root, read by the hook, that can do
+# exactly one thing: ADD a read-only store to what this session searches. It is
+# never appended to `Config.stores`, which is the list every write, adoption,
+# checker and eval path iterates — so the addition is retrieval and nothing
+# else, by construction rather than by a rule somebody has to keep.
+#
+# `.memkit.json` rather than the `memkit.json` init writes: that name is what
+# config rung 2 reads and what doctor treats as a config this install may
+# execute against, and one name meaning two things is how a project file comes
+# to be honoured as a user config. `memkit_project` rather than `schema` for
+# the same reason from the other side — a project file handed to `--config`
+# fails loudly at Config's schema gate, and a user config read as a project
+# file fails on the missing key, so the two shapes cannot be confused in
+# either direction.
+#
+# Not under `.claude/`: that directory is the harness's, and a memkit file
+# there would sit one directory from routes that ARE followed, on the surface
+# where "reported, never followed" has to stay legible.
+PROJECT_CONFIG_NAME = ".memkit.json"
+PROJECT_SCHEMA_KEY = "memkit_project"
+PROJECT_SCHEMA = 1
+# Bounded before the parse, and against the file's own `fstat` rather than
+# against what a read returned: the whole file is 4 KiB of schema at the most,
+# and the read this bounds happens on every prompt.
+PROJECT_CONFIG_MAX_BYTES = 4096
 # What this binary answers to, per channel — and the two names exist because
 # the channels ship two of them. pip and nix install a `memory-recall` console
 # script; a plugin install ships no such name and puts `memkit-recall` on the
@@ -352,6 +379,14 @@ class Store:
         "edit_root",
         "sub_indexes",
         "cwd_gate",
+        # Set only by `_project_store`, and the two fields are what let a store
+        # the REPOSITORY named exist beside stores the user configured without
+        # either one learning about the other. `resolved_dir` is an absolute
+        # path `store_dir` returns as-is, so a project store needs no entry in
+        # `roots` and cannot collide with one; `read_only` is what `_live_dirs`
+        # tests to decide which corpus roots the credential scan covers.
+        "read_only",
+        "resolved_dir",
     )
 
     def __init__(self, raw: object, index: int) -> None:
@@ -392,6 +427,10 @@ class Store:
         # type, and the config's gate is the only thing keeping a project
         # store's memories out of every unrelated session's prompts. Widening
         # what an every-prompt hook reads is not a default anything may pick.
+        # A store the user configured is writable and resolves through a
+        # named root. Both are overwritten, together, only by `_project_store`.
+        self.read_only = False
+        self.resolved_dir = ""
         gate = raw.get("cwd_gate")
         if gate is None:
             self.cwd_gate = None
@@ -526,6 +565,185 @@ def _repo_common_dir(root: str):
     return os.path.normpath(named)
 
 
+# --- the repository's own file, and everything it is refused -----------------
+#
+# Read on every prompt, from a file the repository chose, so the whole of it is
+# a trust boundary. Three rules make that affordable:
+#
+#   WHOLE OR NOTHING. There is no partial application. Every check below
+#   returns a REASON and no store, so a file with one bad key adds nothing at
+#   all rather than adding whatever parsed — a half-honoured file is the state
+#   nobody can reason about from the file's own text.
+#
+#   THE FILE IS GUARDED BEFORE THE STORE IS. A checkout can carry a symlink, so
+#   `.memkit.json -> /dev/zero` is a thing a repository can hold, and a plain
+#   `open()` on it reads forever inside an every-prompt hook. The open is
+#   therefore non-blocking, the fstat decides before a byte is read, and only a
+#   regular file within the cap is read at all. A FIFO answers `open` at once
+#   under O_NONBLOCK and is refused as not-regular, which is why this order —
+#   open, fstat, decide, read — is the whole of it. (O_NONBLOCK is POSIX; this
+#   hook has no Windows path.)
+#
+#   NOTHING THE REPOSITORY WROTE IS RENDERED RAW. A refusal reason is read by
+#   an agent, so it is assembled from fixed strings plus values put through
+#   `sanitize` and capped. The store `id` is checked against a strict pattern
+#   for the same reason: it lands in `--debug-config` and in doctor's detail.
+#
+# The link is FOLLOWED rather than refused once it resolves to a regular file
+# inside the cap. A repository that points its own config file elsewhere on
+# disk gains nothing by it — the bytes it can choose are the bytes it could
+# have written here — and refusing links outright would also refuse the
+# ordinary shape where a checkout is itself reached through one.
+
+
+# How much of a repository-chosen value a refusal reason may carry. Long enough
+# to recognise the key you typed, short enough that a 4 KiB file cannot spend
+# an agent's context on a diagnostic.
+PROJECT_VALUE_MAX_CHARS = 60
+# What a store id may be, and it is deliberately narrower than a path: this
+# string is rendered into `--debug-config` and into doctor's detail, both of
+# which an agent reads.
+PROJECT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+_PROJECT_TOP_KEYS = frozenset((PROJECT_SCHEMA_KEY, "store", "note"))
+_PROJECT_STORE_KEYS = frozenset(("id", "dir", "note"))
+
+
+def _project_value(value: object) -> str:
+    """A value out of a project file, safe to put in a reason an agent reads."""
+    return _display_cap(sanitize(str(value)), PROJECT_VALUE_MAX_CHARS)
+
+
+def _project_store(root: str, taken):
+    """The read-only store `root`'s `.memkit.json` asks for, or why not.
+
+    Returns `(Store | None, reason)`. An empty reason with no store means there
+    is no file here, which is the ordinary case and not a refusal; every other
+    None comes with the sentence saying what was wrong with the file.
+
+    `taken` is the ids the USER's config already uses. A project file that
+    reuses one is refused rather than shadowing it: two stores under one name
+    make every later line about "store X" ambiguous, on surfaces whose whole
+    job is to say which corpus answered.
+    """
+    path = os.path.join(root, PROJECT_CONFIG_NAME)
+    try:
+        # O_NONBLOCK so a FIFO answers instead of blocking the prompt, and
+        # O_RDONLY so opening one is not itself a write.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        # Absent — a dangling link included — is not a refusal. Anything else
+        # is, because a file that is there and unreadable is a state the
+        # repository can see and fix.
+        if not os.path.lexists(path):
+            return None, ""
+        return None, (
+            f"{PROJECT_CONFIG_NAME} could not be opened: "
+            f"{_project_value(exc.strerror or type(exc).__name__)}"
+        )
+    try:
+        st = os.fstat(fd)
+        if not statmod.S_ISREG(st.st_mode):
+            return None, f"{PROJECT_CONFIG_NAME} is not a regular file"
+        if st.st_size > PROJECT_CONFIG_MAX_BYTES:
+            return None, (
+                f"{PROJECT_CONFIG_NAME} is {st.st_size} bytes; the limit is "
+                f"{PROJECT_CONFIG_MAX_BYTES}"
+            )
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
+            # fdopen owns the descriptor from here, and closing one twice is an
+            # error of its own — so the `finally` below is told to stand down.
+            fd = -1
+            # One past the cap, so a file that GREW between the fstat and this
+            # read is refused rather than read to whatever it now is.
+            text = f.read(PROJECT_CONFIG_MAX_BYTES + 1)
+    except OSError as exc:
+        return None, (
+            f"{PROJECT_CONFIG_NAME} could not be read: "
+            f"{_project_value(exc.strerror or type(exc).__name__)}"
+        )
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(text) > PROJECT_CONFIG_MAX_BYTES:
+        return None, f"{PROJECT_CONFIG_NAME} is over {PROJECT_CONFIG_MAX_BYTES} bytes"
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        return None, f"{PROJECT_CONFIG_NAME} is not valid JSON: {_project_value(exc)}"
+    if not isinstance(raw, dict):
+        return None, f"{PROJECT_CONFIG_NAME} does not hold a JSON object"
+    if raw.get(PROJECT_SCHEMA_KEY) != PROJECT_SCHEMA:
+        return None, (
+            f"{PROJECT_CONFIG_NAME} needs {PROJECT_SCHEMA_KEY}: {PROJECT_SCHEMA}, "
+            f"and this one says {_project_value(raw.get(PROJECT_SCHEMA_KEY))}"
+        )
+    for key in raw:
+        if key not in _PROJECT_TOP_KEYS:
+            return None, (
+                f"{PROJECT_CONFIG_NAME} has an unknown top-level key "
+                f"'{_project_value(key)}'"
+            )
+    # Exactly one store, an object rather than a list: what this file costs a
+    # prompt is one more directory searched, and that is the cap.
+    spec = raw.get("store")
+    if not isinstance(spec, dict):
+        return None, f"{PROJECT_CONFIG_NAME}: 'store' must be an object"
+    for key in spec:
+        if key not in _PROJECT_STORE_KEYS:
+            return None, (
+                f"{PROJECT_CONFIG_NAME}: 'store' has an unknown key "
+                f"'{_project_value(key)}'"
+            )
+    store_id = spec.get("id")
+    if not isinstance(store_id, str) or not re.match(PROJECT_ID_PATTERN, store_id):
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: store id '{_project_value(store_id)}' does "
+            f"not match {PROJECT_ID_PATTERN}"
+        )
+    if store_id in taken:
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: store id '{_project_value(store_id)}' is "
+            "already the id of a configured store"
+        )
+    rel = spec.get("dir")
+    if not isinstance(rel, str) or not rel:
+        return None, f"{PROJECT_CONFIG_NAME}: 'dir' must be a non-empty string"
+    if os.path.isabs(rel):
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: 'dir' must be relative to the repository, "
+            f"and '{_project_value(rel)}' is absolute"
+        )
+    if os.pardir in os.path.normpath(rel).replace(os.sep, "/").split("/"):
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: 'dir' must stay inside the repository, "
+            f"and '{_project_value(rel)}' climbs out of it"
+        )
+    # THE containment decision, made against resolved paths on both sides. The
+    # `..` refusal above is for the message; a `dir` that is a SYMLINK out of
+    # the tree spells no `..` at all, and only realpath sees that one.
+    try:
+        root_real = os.path.realpath(root)
+        resolved = os.path.realpath(os.path.join(root, rel))
+    except OSError as exc:
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: "
+            f"{_project_value(exc.strerror or type(exc).__name__)}"
+        )
+    if resolved != root_real and not resolved.startswith(root_real + os.sep):
+        return None, f"{PROJECT_CONFIG_NAME}: 'dir' resolves outside the repository"
+    if not os.path.isdir(resolved):
+        return None, f"{PROJECT_CONFIG_NAME}: 'dir' is not a directory in this checkout"
+    # `live_root` is the repository root itself rather than a name in `roots`:
+    # Store requires a non-empty one, and a synthetic entry in `roots` would be
+    # a mutation of the user's config to hold a value only this store reads.
+    # Nothing ever resolves it, because `store_dir` answers from `resolved_dir`
+    # first.
+    store = Store({"id": store_id, "dir": rel, "live_root": root}, 0)
+    store.read_only = True
+    store.resolved_dir = resolved
+    return store, ""
+
+
 class Config:
     """The parsed config file, with roots resolved lazily and once.
 
@@ -639,6 +857,27 @@ class Config:
                 f"{type(nonce).__name__}"
             )
         self.canary_nonce = nonce or ""
+        # THE KILL SWITCH for what a repository may add, and it is read HERE —
+        # from the user's own config — because that is the one file no
+        # repository can write. Same present-and-wrong-type rule as the fields
+        # above: absent is on, and a string "false" is an error rather than a
+        # switch somebody thinks they threw.
+        project_config = raw.get("project_config")
+        if "project_config" in raw and not isinstance(project_config, bool):
+            raise ConfigError(
+                f"{path}: 'project_config' must be true or false when present, "
+                f"not {type(project_config).__name__}"
+            )
+        self.project_config = project_config is not False
+        # Resolved on demand and at most once — see `project_store`. `_done`
+        # rather than a None check, because None is also the answer for "there
+        # is no such file", which is the common case and must not be re-derived
+        # on every call.
+        self._project_done = False
+        self._project: Store | None = None
+        # Why there is no project store, when a file was there and refused.
+        # Empty for every other outcome, including the ordinary one.
+        self.project_error = ""
         ev = _optional_mapping(raw, "eval")
         self.eval_root = ev.get("root")
         self.eval_snapshot = ev.get("snapshot")
@@ -728,6 +967,13 @@ class Config:
         raise ConfigError(f"{self.path}: root {name!r} has unknown kind {kind!r}")
 
     def store_dir(self, store: Store, which: str = "live") -> str:
+        # A project store carries its own resolved, contained path and has no
+        # name in `roots`; answering from it here is what lets such a store
+        # exist without a synthetic root entry that would mutate the user's
+        # config. "edit" returns the same path, which no caller asks for — a
+        # read-only store has no edit root to be different.
+        if store.resolved_dir:
+            return store.resolved_dir
         # Normalised, because this path is not only opened — it is PRINTED, in
         # every pointer the model reads and in every diagnostic line. The
         # smallest config a store can have says `"dir": "."`, and joining that
@@ -735,6 +981,41 @@ class Config:
         # the one surface whose whole job is to be pasted into `open()`.
         root = store.live_root if which == "live" else store.edit_root
         return os.path.normpath(os.path.join(self.root(root), store.dir))
+
+    def project_store(self) -> Store | None:
+        """The read-only store this session's repository asks for, or None.
+
+        None when the switch is off, when there is no repository above the
+        session's directory, when that repository carries no
+        `PROJECT_CONFIG_NAME`, or when the file it carries was refused —
+        `project_error` then holds the reason, for the surfaces that report it.
+
+        Resolved at most once per Config, and the hook's `_config()` is
+        lru-cached, so one hook process opens this file at most once.
+
+        WHAT IT COSTS a prompt in a repository with no such file: the walk in
+        `_repo_root`, which is 2 stats per ancestor level of the session
+        directory (`isdir`, then `isfile` only when that said no) plus one
+        realpath, and then a single `open` that fails. Nothing already computed
+        holds a repository root at this point — `_repo_root` is uncached and
+        its other callers reach it from inside a different question — so this
+        walk is the addition.
+        """
+        if self._project_done:
+            return self._project
+        self._project_done = True
+        if not self.project_config:
+            return None
+        try:
+            root = _repo_root(_session_cwd())
+        except _RootUnknown:
+            return None
+        if root is None:
+            return None
+        self._project, self.project_error = _project_store(
+            root, {store.id for store in self.stores}
+        )
+        return self._project
 
     def searched_stores(self) -> list:
         """Stores this session may read, in config order.
@@ -747,6 +1028,15 @@ class Config:
         for store in self.stores:
             if store.cwd_gate is None or _cwd_in_root(self.root(store.cwd_gate)):
                 out.append(store)
+        # LAST, and NEVER in `self.stores`. That one placement is the whole of
+        # what keeps a repository's store to retrieval: init, adoption, the
+        # integrity checker, the uninstall story and every doctor row iterate
+        # `stores`, and the eval intersects this list back onto `stores` by id
+        # — so a store that is only ever here is never a write target, never an
+        # adoption target, never rewritten by the checker and never scored.
+        project = self.project_store()
+        if project is not None:
+            out.append(project)
         return out
 
 
@@ -1862,6 +2152,21 @@ def _store_state(cfg, store, searched: list) -> str:
     return "searched" if _store_live_dir(cfg, store, searched) else "NOT on disk"
 
 
+# The corpus roots that came from a REPOSITORY, in the exact spelling
+# `_LEX_ROOT` stores — `os.path.realpath` of the directory `_store_live_dir`
+# returned — because `_relevance` decides membership by string equality on the
+# root it was handed.
+#
+# ONE WRITER and no clearer: `_live_dirs` REBUILDS the set every time it runs.
+# It was a clear-and-fill from the start for one reason — `recall()` zeroes the
+# `_LEX_*` side channels AFTER `_live_dirs` has run and before `_eligible`
+# reads this, so a set that recall() cleared would be empty at the only moment
+# it is consulted, and the credential scan and the size floor would silently
+# never fire. Rebuilding also makes the second call safe: `_config_state` and
+# `--debug-config` both reach `_live_dirs` again in the same process.
+_PROJECT_ROOTS: set[str] = set()
+
+
 def _live_dirs(cfg) -> list[str]:
     """The store directories `cfg` offers this session, in config order.
 
@@ -1878,9 +2183,16 @@ def _live_dirs(cfg) -> list[str]:
     a worktree still reads the copy that is actually live.
     """
     searched = cfg.searched_stores()
-    return [
-        d for s in searched if (d := _store_live_dir(cfg, s, searched)) is not None
-    ]
+    _PROJECT_ROOTS.clear()
+    dirs = []
+    for store in searched:
+        live = _store_live_dir(cfg, store, searched)
+        if live is None:
+            continue
+        if store.read_only:
+            _PROJECT_ROOTS.add(os.path.realpath(live))
+        dirs.append(live)
+    return dirs
 
 
 def _search_dirs() -> list[str]:
@@ -2321,6 +2633,15 @@ def _fts_answerable(con: sqlite3.Connection) -> bool:
 # eighth of that budget at the worst shape, and about a thousand times the
 # size of any memory anybody writes.
 INDEX_FILE_MAX_BYTES = 4 * 1024 * 1024
+# How much of a PROJECT store's candidate the credential scan reads, and
+# therefore how big such a file may be at all. The two facts are the same fact:
+# a candidate this hook did not read to the end is one the scan cannot clear,
+# so anything over this is refused rather than ranked on the part that was
+# read. Deliberately far below INDEX_FILE_MAX_BYTES above — that bound is about
+# what tokenizing costs, this one is about what a repository may put in front
+# of a model, and 64 KiB is about four hundred times the size of a memory
+# anybody writes.
+SECRET_SCAN_MAX_BYTES = 64 * 1024
 _LEX_COUNTS: dict[str, int] = {
     "lex_spared": 0,
     "lex_unwalked": 0,
@@ -2382,6 +2703,13 @@ _LEX_COUNTS: dict[str, int] = {
     # resolved before the walk starts, which is the shape `mkOutOfStoreSymlink`
     # deploys and the one both live stores on this machine use.
     "lex_linkdir": 0,
+    # Candidates from a REPOSITORY's store that the credential scan refused —
+    # a file it matched, or one too large for it to have read whole. Both are
+    # the same refusal from a reader's side: this hook declined to put the file
+    # in front of the model, and the drop is otherwise invisible, since a
+    # refused candidate loses its matched terms and the relevance floor then
+    # drops it like any other weak hit.
+    "lex_secret": 0,
 }
 
 # Where each hit came from INSIDE its file: path -> the heading of the
@@ -3524,17 +3852,92 @@ def _relevance(
     target = _store_path(path, root_real)
     if target is None:
         return [], len(terms), "?"
-    try:
-        with open(target, encoding="utf-8", errors="replace") as f:
-            head = f.read(4096)
-    except OSError:
-        return [], len(terms), "?"
+    if root_real in _PROJECT_ROOTS:
+        # A CHECKED-IN store, so the file is whatever the repository committed
+        # and this is the last place that can decline it: past here the path
+        # ranks, gets a description read off it, and is handed to the model as
+        # something to open. The read is the one the frontmatter needed anyway,
+        # widened to SECRET_SCAN_MAX_BYTES so the scan sees the whole file.
+        #
+        # FAILS CLOSED in both directions. Over the cap, the file is refused
+        # unread — a scan that saw the first 64 KiB of a larger file has
+        # cleared nothing. And a refusal returns the module's own no-evidence
+        # tuple rather than a flag, so `_passes_floor` drops the candidate
+        # through the path every other weak hit takes and no `[section: ...]`
+        # label is ever rendered for it.
+        try:
+            if os.stat(target).st_size > SECRET_SCAN_MAX_BYTES:
+                refused = True
+                body = ""
+            else:
+                with open(target, encoding="utf-8", errors="replace") as f:
+                    body = f.read(SECRET_SCAN_MAX_BYTES + 1)
+                # One past the cap catches a file that grew between the stat
+                # and the read; the pattern match is the scan proper.
+                refused = (
+                    len(body) > SECRET_SCAN_MAX_BYTES
+                    or _secret_re().search(body) is not None
+                )
+        except OSError:
+            return [], len(terms), "?"
+        if refused:
+            _LEX_COUNTS["lex_secret"] += 1
+            return [], len(terms), "?"
+        head = body[:4096]
+    else:
+        try:
+            with open(target, encoding="utf-8", errors="replace") as f:
+                head = f.read(4096)
+        except OSError:
+            return [], len(terms), "?"
     mtype = "?"
     m = re.search(r"^\s*type:\s*(\w+)", head, re.MULTILINE)
     if m:
         mtype = m.group(1)
     hit = set(_LEX_MATCHED.get(path, ()))
     return [t for t in terms if t in hit], len(terms), mtype
+
+
+def _secret_re() -> re.Pattern[str]:
+    """The credential shapes a project store may not put in front of a model.
+
+    LAZY, in `_common_words`' shape below, and that is not style: this module
+    is imported on every prompt and a module-level compile is exactly what
+    `test_importing_the_hook_costs_less_than_the_stdlib_it_imports` exists to
+    keep out — one such compile measured 38 ms. Nothing compiles it until a
+    repository store actually has a candidate.
+
+    memkit's own, because nothing else here scans and the harness's credential
+    scanner runs on the memory tool's WRITE path, which is not a path a
+    checked-in file travels.
+
+    SCOPED `(?i:...)` flags, never a bare `(?i)` mid-pattern: that is a
+    `re.error` on 3.11+ ("global flags not at the start of the expression"),
+    and this alternation could only ever have them in the middle.
+
+    The last branch is an ASSIGNMENT shape — a word, a separator, then eight
+    unbroken characters — rather than the bare word, so ordinary prose about
+    passwords does not floor a memory. What it costs when it is wrong is one
+    pointer, visible as `lex_secret` in the soak record rather than silent.
+    """
+    global _SECRET
+    if _SECRET is None:
+        _SECRET = re.compile(
+            "|".join(
+                (
+                    r"-----BEGIN [A-Z ]{0,20}PRIVATE KEY-----",
+                    r"AKIA[0-9A-Z]{16}",
+                    r"sk-[A-Za-z0-9_-]{20,}",
+                    r"gh[pousr]_[A-Za-z0-9]{36}",
+                    r"(?i:authorization:\s*bearer\s+[A-Za-z0-9._~+/-]{20,})",
+                    r"(?i:\b(?:password|passwd|secret|token)\b\s*[:=]\s*\S{8,})",
+                )
+            )
+        )
+    return _SECRET
+
+
+_SECRET: re.Pattern[str] | None = None
 
 
 def _common_words() -> frozenset[str]:
@@ -6315,6 +6718,11 @@ def _task_main(payload: dict, t0: float) -> None:
         way is a record its tripwire cannot see."""
         nonlocal logged
         rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
+        # The side-channel counters AGAIN, by value, because recall() folded
+        # them before `_eligible` ran and `_eligible` is where the credential
+        # scan increments `lex_secret`. Without this the one counter that says
+        # a repository store was refused could never reach the log.
+        rec.update({k: v for k, v in _LEX_COUNTS.items() if v})
         with _sigterm_masked():
             _soak_log(rec)
             logged = True
@@ -6656,15 +7064,19 @@ def main() -> None:
         `killed` machinery exists to make that outcome impossible, and it only
         covered the path where a record already existed.
         """
-        _soak_log(
-            dict(
-                kw,
-                outcome=outcome,
-                session=session,
-                cwd=_cwd_digest(),
-                ms=int((time.monotonic() - t0) * 1000),
-            )
+        record = dict(
+            kw,
+            outcome=outcome,
+            session=session,
+            cwd=_cwd_digest(),
+            ms=int((time.monotonic() - t0) * 1000),
         )
+        # The side-channel counters AGAIN, by value, because recall() folded
+        # them before `_eligible` ran and `_eligible` is where the credential
+        # scan increments `lex_secret`. Without this the one counter that says
+        # a repository store was refused could never reach the log.
+        record.update({k: v for k, v in _LEX_COUNTS.items() if v})
+        _soak_log(record)
 
     _on_kill(lambda signum, _frame: (done("killed", signal=signum), os._exit(0)))
 
@@ -6832,6 +7244,11 @@ def _prompt_main(payload: dict, t0: float) -> None:
         nonlocal logged
         if concludes:
             rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
+        # The side-channel counters AGAIN, by value, because recall() folded
+        # them before `_eligible` ran and `_eligible` is where the credential
+        # scan increments `lex_secret`. Without this the one counter that says
+        # a repository store was refused could never reach the log.
+            rec.update({k: v for k, v in _LEX_COUNTS.items() if v})
             record = rec
             if _doctor_run:
                 # The SAME statement the branch below makes, on a full record:
@@ -7411,6 +7828,34 @@ def _print_config(state: tuple) -> int:
         print(
             f"  ! via {source}: this run resolved {live} [{state_shown}]; "
             f"the hook will read {hook_live} [{hook_state}]"
+        )
+    # WHAT THE REPOSITORY ADDED, reported apart from the loop above because it
+    # is not in `display.stores` and must never look as though it were: this is
+    # the one store on this surface that no line of the user's config names,
+    # and "where did that corpus come from" is the question this output exists
+    # to answer. Its path carries a component the repository chose, so it is
+    # sanitized like any other string that came out of a file.
+    project = display.project_store()
+    if project is not None:
+        project_live = display.store_dir(project, "live")
+        corpus = _search_root(project_live)
+        count = _corpus_files(corpus)
+        print(
+            f"project {project.id}: {sanitize(_display_path(project_live))} "
+            f"[read-only; from {PROJECT_CONFIG_NAME} in this repository]"
+        )
+        print(
+            f"  corpus:  {sanitize(_display_path(corpus))} — "
+            f"{count} file{'' if count == 1 else 's'}"
+        )
+    elif display.project_error:
+        # Already assembled from fixed strings and sanitized values — a
+        # repository does not choose text on this surface.
+        print(f"project:    {display.project_error}")
+    elif not display.project_config:
+        print(
+            f"project:    'project_config': false, so {PROJECT_CONFIG_NAME} is "
+            "not read in any repository"
         )
     if inert:
         print(f"inert:      {inert}")
