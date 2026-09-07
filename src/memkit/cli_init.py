@@ -59,6 +59,7 @@ from memkit.cli_doctor import (
     OPTION_KEY,
     Machine,
     _checker_route,
+    _store_relation,
     authored_configs,
     canary_query,
 )
@@ -1536,7 +1537,17 @@ def _sub_indexes(store: str, config_path: str) -> list:
 
 
 def _sub_index_members(store: str, config_path: str) -> set:
-    """Every store-relative path a sub-index of this store already rows."""
+    """Every store-relative path a sub-index of this store already rows.
+
+    KEYED ON THE RESOLVED PATH, because that is what the checker's
+    `_sub_members` keys on — its `_rows` resolves every link against the
+    sub-index's own directory. So a sub-index that rows a symlinked `.md` file
+    claims the file the link points AT, and the link itself stays unclaimed
+    and gets a SEARCH.md row here, which is exactly the row `--write`
+    generates for it. Measured: on that store the checker's own `--write` exits
+    0 and leaves the ledger init produced byte-identical. Keying this on the
+    unresolved path instead would make the two disagree.
+    """
     out = set()
     root = os.path.realpath(store)
     for sub in _sub_indexes(store, config_path):
@@ -1555,8 +1566,26 @@ def _sub_index_members(store: str, config_path: str) -> set:
     return out
 
 
-def _rows_on_disk(store: str, config_path: str) -> dict:
-    """{store-relative path: row} for every memory already under `search/`.
+def _memories_under(store: str, tier: str) -> list:
+    """Every memory file under one tier of `store`, store-relative and sorted.
+
+    The checker's `_live` restated for one tier: `rglob("*.md")` less the
+    ledger names, which yields a symlinked FILE under its own name and never
+    descends a symlinked directory — the same two answers `os.walk` gives with
+    `followlinks` left alone.
+    """
+    out = []
+    for dirpath, _dirs, names in os.walk(os.path.join(store, tier)):
+        out.extend(
+            os.path.relpath(os.path.join(dirpath, name), store)
+            for name in names
+            if name.endswith(".md") and name not in _LEDGER_NAMES
+        )
+    return sorted(out)
+
+
+def _rows_on_disk(store: str, config_path: str) -> tuple:
+    """({store-relative path: row} for the memories under `search/`, notes).
 
     THE HALF THAT WAS MISSING. SEARCH.md was written from the canary alone, so
     an init against a store that already held memories replaced a ledger of
@@ -1565,32 +1594,84 @@ def _rows_on_disk(store: str, config_path: str) -> dict:
 
     Read the way the checker reads them, decode errors replaced rather than
     raised, so the rows this produces are the rows it would generate.
+
+    ROWS FOR THE `search/` HALF AND NOTES FOR THE REST. The checker's `_live`
+    walks `hot/` too, and generates no row for anything it finds there: a hot
+    memory is rowed in MEMORY.md, which is hand-written and which no `--write`
+    regenerates. So init cannot supply those rows — putting them in SEARCH.md
+    instead is worse and was measured (`MISROWED: ./hot/h.md is hot but rowed
+    in SEARCH.md`) — and what it can do is name them in the manifest, since
+    every unrowed one is an `ORPHAN` at the VERIFY step init runs on its own
+    work and the exit code arrives after the store is on disk.
     """
     out: dict = {}
+    notes = []
     claimed = _sub_index_members(store, config_path)
-    for dirpath, _dirs, names in os.walk(os.path.join(store, "search")):
-        for name in sorted(names):
-            if not name.endswith(".md") or name in _LEDGER_NAMES:
-                continue
-            path = os.path.join(dirpath, name)
-            link = os.path.relpath(path, store)
-            if link in claimed:
-                continue
-            with contextlib.suppress(OSError, ValueError):
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    text = f.read()
-                front = _frontmatter_of(text)
-                desc = _scalar_of(front.get("description", ""))
-                # A description the checker cannot read produces no row THERE
-                # either — it produces `DESC-BAD`. Generating one here would
-                # make init's ledger differ from the checker's.
-                if desc is not None:
-                    out[link] = (
-                        front.get("name") or os.path.splitext(name)[0],
-                        link,
-                        desc,
-                    )
-    return out
+    for link in _memories_under(store, "search"):
+        if link in claimed:
+            continue
+        path = os.path.join(store, link)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except (OSError, ValueError) as exc:
+            # NAMED, not suppressed. A row silently dropped here is a memory
+            # this ledger stops carrying, and the checker that reads the tree
+            # rather than the ledger calls that an ORPHAN — on a store init
+            # has just declared correct. `_read_source` names a reason for
+            # every adoption-side read failure and this is the same promise.
+            notes.append(
+                f"  no row: {_display_path(path)} could not be read "
+                f"({type(exc).__name__}), so SEARCH.md carries no row for it "
+                "and the check below will call it an orphan"
+            )
+            continue
+        front = _frontmatter_of(text)
+        desc = _scalar_of(front.get("description", ""))
+        # A description the checker cannot read produces no row THERE either —
+        # it produces `DESC-BAD`. Generating one here would make init's ledger
+        # differ from the checker's.
+        if desc is not None:
+            out[link] = (
+                front.get("name") or os.path.splitext(os.path.basename(link))[0],
+                link,
+                desc,
+            )
+    hot = _unrowed_hot(store)
+    if hot:
+        notes.append(
+            f"  no row: {len(hot)} {'memory' if len(hot) == 1 else 'memories'} "
+            f"under {_display_path(os.path.join(store, 'hot'))} "
+            f"({', '.join(hot)}) {'has' if len(hot) == 1 else 'have'} no row in "
+            "MEMORY.md, which is hand-written and which nothing regenerates — "
+            "the check below reports each one as an orphan until you add them"
+        )
+    return out, notes
+
+
+def _unrowed_hot(store: str) -> list:
+    """The hot memories MEMORY.md does not row, store-relative and sorted.
+
+    Read through `_LINK_RE` against the ledger's own directory, which is how
+    the checker decides what a ledger rows — so a store whose hot index is
+    complete produces nothing here whatever init would have written.
+    """
+    ledger = os.path.join(store, "MEMORY.md")
+    held, _readable = _held_text(ledger)
+    rowed = set()
+    for link in _LINK_RE.findall(held or ""):
+        if "://" in link:
+            continue
+        rowed.add(
+            os.path.relpath(os.path.realpath(os.path.join(store, link)),
+                            os.path.realpath(store))
+        )
+    return [
+        link
+        for link in _memories_under(store, "hot")
+        if os.path.relpath(os.path.realpath(os.path.join(store, link)),
+                           os.path.realpath(store)) not in rowed
+    ]
 
 
 def _search_ledger_text(store: str, entries: list) -> str:
@@ -1619,20 +1700,28 @@ def _search_ledger_text(store: str, entries: list) -> str:
     return f"{preamble}\n\n{body}\n"
 
 
-def _adoptable(project) -> bool:
+def _adoptable(machine: Machine, project) -> bool:
     """Whether adoption will copy out of this project directory at all.
 
-    A LINK IS SOMEBODY'S ANSWER ALREADY. A memory directory that is a symlink
-    is one an adopter has wired somewhere — docs/STORE.md tells them to wire it
-    into a corpus root — and copying through it would duplicate memories that
-    are already in the store. The same goes for a project directory reached
-    through one. This is the predicate doctor counts "outside every store"
-    with, so the two commands report the same number.
+    A LINK IS SOMEBODY'S ANSWER ONLY WHERE IT LANDS IN A STORE. A memory
+    directory wired into a corpus root — which is what docs/STORE.md tells an
+    adopter to do — holds memories the store already has, and copying through
+    it would duplicate every one of them. A link that lands anywhere else has
+    answered nothing: those memories are outside every store exactly as an
+    unlinked directory's are.
+
+    DOCTOR'S OWN PREDICATE, term for term, because the claim that the two
+    commands report one number is only worth making if one function decides
+    it. The three link flags asked alone made doctor count a memory directory
+    symlinked outside every store and init call it "already redirected,
+    skipped" — reported as handled, so never adopted and never chased.
     """
-    return not (project.is_symlink or project.linked_project)
+    return not (
+        project.linked and _store_relation(machine, project.path)[2] == "inside"
+    )
 
 
-def _auto_memory_notes(store: str, known: list) -> list:
+def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
     """What the harness has written, said in every manifest.
 
     THE INVENTORY IS THE CALLER'S, and shared with the adoption planner: this
@@ -1644,7 +1733,7 @@ def _auto_memory_notes(store: str, known: list) -> list:
     see: two memory systems on one machine, one of them writing where nothing
     retrieves. A flag they never heard of is not an answer to that.
     """
-    mine = [project for project in known if _adoptable(project)]
+    mine = [project for project in known if _adoptable(machine, project)]
     memories = sum(project.memories for project in mine)
     out = []
     if mine:
@@ -1664,12 +1753,12 @@ def _auto_memory_notes(store: str, known: list) -> list:
         f"{_clean(project.key)}: already redirected, skipped "
         f"({_display_path(project.path)})"
         for project in known
-        if not _adoptable(project)
+        if not _adoptable(machine, project)
     )
     return out
 
 
-def _plan_adoption(store: str, known: list) -> tuple:
+def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     """(actions, ledger rows, notes) for every harness memory this would adopt.
 
     COPY, NEVER MOVE, AND NEVER OVERWRITE. A destination that already holds
@@ -1696,7 +1785,7 @@ def _plan_adoption(store: str, known: list) -> tuple:
     payload = 0
     directories = 0
     for project in known:
-        if not _adoptable(project):
+        if not _adoptable(machine, project):
             continue
         target = os.path.join(base, project.key)
         if os.path.islink(target) or not _inside(target, store):
@@ -1917,14 +2006,14 @@ def build_plan(
     rows: list = []
     adoption_notes: list = []
     if adopt_auto_memory:
-        adopted, rows, adoption_notes = _plan_adoption(store_path, known)
+        adopted, rows, adoption_notes = _plan_adoption(machine, store_path, known)
     canary_link = os.path.join("search", CANARY_NAME)
     # THE WHOLE STORE'S ROWS, not just the ones this run writes. A file already
     # under `search/` owes SEARCH.md a row whoever put it there, and the
     # planned writes win over what is on disk because they are what will be
     # there when the checker runs. A `diverged` destination contributes no
     # planned row and keeps the one its own text produces.
-    ledger_rows = _rows_on_disk(store_path, config_path)
+    ledger_rows, ledger_notes = _rows_on_disk(store_path, config_path)
     ledger_rows[canary_link] = (
         "memkit-canary", canary_link, _canary_description(nonce),
     )
@@ -2014,7 +2103,11 @@ def build_plan(
     # What the harness has already written is a fact about this machine an
     # adopter cannot see from inside memkit, and a flag they have never heard
     # of is not an answer to it.
-    notes = _auto_memory_notes(store_path, known) + adoption_notes
+    notes = (
+        _auto_memory_notes(machine, store_path, known)
+        + adoption_notes
+        + ledger_notes
+    )
     if wire_claude_md:
         target = _claude_md(machine)
         # FileNotFoundError is the create case and takes the empty default;

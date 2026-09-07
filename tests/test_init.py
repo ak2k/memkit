@@ -27,7 +27,7 @@ import time
 
 import pytest
 
-from memkit import _exec
+from memkit import _exec, harness_memory
 from memkit import cli_doctor as doctor
 from memkit import cli_init as init
 from memkit import memory_prompt_recall as hook
@@ -2628,14 +2628,6 @@ def test_what_adoption_will_not_carry_is_named_rather_than_dropped(profile) -> N
     outside = profile / "outside.md"
     outside.write_text(TRAP, encoding="utf-8")
     (memory / "linked.md").symlink_to(outside)
-    # A memory directory that is a symlink is one somebody has already wired
-    # somewhere, and copying through it would duplicate what is in the store.
-    elsewhere = profile / "linked-memories"
-    elsewhere.mkdir()
-    (elsewhere / "wired.md").write_text(TRAP, encoding="utf-8")
-    wired = profile / "claude-config" / "projects" / "-wired"
-    wired.mkdir(parents=True)
-    (wired / "memory").symlink_to(elsewhere)
 
     store = profile / "notes"
     plan = _plan(profile, store=str(store), adopt_auto_memory=True)
@@ -2644,12 +2636,126 @@ def test_what_adoption_will_not_carry_is_named_rather_than_dropped(profile) -> N
     assert "huge.md: is" in skipped and "byte cap" in skipped
     assert "tiered.md: carries a `tier:` line" in skipped
     assert "linked.md: the file is a symlink" in skipped
-    assert "-wired: already redirected, skipped" in skipped
     copied = [
         a.path for a in plan.actions
         if a.op == init.CREATE_FILE and "projects" in a.path
     ]
     assert copied == [str(store / "search" / "projects" / "-skips" / "keep.md")]
+
+
+
+
+def test_only_a_memory_directory_wired_into_a_store_is_already_redirected(
+    profile, monkeypatch
+) -> None:
+    """A LINK IS AN ANSWER ONLY WHERE IT LANDS.
+
+    Adoption skipped every symlinked memory directory as "already redirected"
+    while doctor counted the ones landing nowhere as outside every store — so
+    a memory directory linked to an ordinary directory was reported as handled
+    on one command and as unadopted on the other, and never chased on either.
+    The two now ask one predicate, and this asserts the numbers as well as the
+    predicate.
+    """
+    # A store and a config first: "inside a store" is not a question that can
+    # be asked before one exists.
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    # The route the hook and doctor read it by. Without one, no store is
+    # configured and nothing can be inside one — which both commands already
+    # agree about.
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+
+    wired_at = store / "search" / "wired-memories"
+    wired_at.mkdir()
+    (wired_at / "wired.md").write_text(TRAP, encoding="utf-8")
+    wired = profile / "claude-config" / "projects" / "-wired"
+    wired.mkdir(parents=True)
+    (wired / "memory").symlink_to(wired_at)
+
+    nowhere = profile / "linked-memories"
+    nowhere.mkdir()
+    (nowhere / "loose.md").write_text(TRAP, encoding="utf-8")
+    loose = profile / "claude-config" / "projects" / "-linked-outside"
+    loose.mkdir(parents=True)
+    (loose / "memory").symlink_to(nowhere)
+
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    notes = " ".join(plan.notes)
+    assert "-wired: already redirected, skipped" in notes
+    assert "-linked-outside: already redirected" not in notes
+    assert "1 project memory directory holds 1 memory outside every store" in notes
+    # And doctor, over the same machine, counts the same one.
+    machine = doctor.Machine()
+    known = harness_memory.inventory(init._harness_config_dir())
+    outside = [p for p in known if init._adoptable(machine, p)]
+    assert [p.key for p in outside] == ["-linked-outside"]
+    (row,) = [
+        check for check in doctor.collect(machine) if check.id == "auto-memory"
+    ]
+    assert "1 project directory holds 1 memory outside every store" in row.detail
+
+
+def test_a_hot_memory_no_index_rows_is_named_before_the_confirm(profile) -> None:
+    """The checker walks `hot/` as well as `search/` and generates rows for
+    neither: a hot memory's row lives in MEMORY.md, which is hand-written.
+
+    So a store holding one gets an `ORPHAN` from the VERIFY step init runs on
+    its own work — after the store is on disk, with exit 6 and nothing in the
+    manifest that saw it coming. Rowing them in SEARCH.md instead is worse:
+    the checker answers `MISROWED`.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    (store / "hot" / "h.md").write_text(
+        "---\nname: h\ndescription: a hot memory\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    plan = _plan(profile, store=str(store))
+    assert any("hot/h.md" in note and "no row" in note for note in plan.notes), (
+        plan.notes
+    )
+    # And it is not answered by rowing it in the generated ledger.
+    (ledger,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    assert "hot/h.md" not in ledger.content
+    # And a store whose MEMORY.md DOES row it never reaches this: an index
+    # somebody wrote is refused outright, because nothing else records those
+    # rows. So the note above covers every store init will actually plan.
+    (store / "MEMORY.md").write_text(
+        (store / "MEMORY.md").read_text() + "\n- [h](hot/h.md) — a hot memory\n",
+        encoding="utf-8",
+    )
+    _refuses(profile, "adopted-memory-index", store=str(store))
+
+
+def test_a_memory_whose_row_cannot_be_read_is_named_and_not_dropped(
+    profile,
+) -> None:
+    """A blanket suppress produced no row, no note and no refusal — and the
+    checker that reads the tree rather than the ledger calls a memory with no
+    row an ORPHAN, on a store init has just declared correct.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    shut = store / "search" / "shut.md"
+    shut.write_text("---\nname: s\ndescription: shut\n---\n\nb\n", encoding="utf-8")
+    shut.chmod(0)
+    try:
+        plan = _plan(profile, store=str(store))
+        assert any(
+            "shut.md" in note and "no row" in note and "PermissionError" in note
+            for note in plan.notes
+        ), plan.notes
+    finally:
+        shut.chmod(0o644)
 
 
 @pytest.mark.skipif(
