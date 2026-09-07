@@ -226,34 +226,44 @@ to date against.
 
 Claude Code keeps a memory of its own, and by default none of it reaches your
 store. Measured on 2.1.238, the version CI installs: it writes agent-curated
-memories to `~/.claude/projects/<sanitized cwd>/memory/`, one directory per
-project, the cwd sanitized by replacing `/` and `.` with `-`.
+memories to `~/.claude/projects/<project key>/memory/`, one directory per
+project. The key is the git repository root, sanitized by replacing `/` and `.`
+with `-`, so every subdirectory of one repository shares one directory; outside
+a repository the cwd is used instead. A linked worktree maps to its main
+checkout's root, so a repository's worktrees share that directory too.
 
 ```bash
-pwd | tr './' '-'      # /Users/you/.config/nix -> -Users-you--config-nix
+# /Users/you/.config/nix -> -Users-you--config-nix
+dir=$(git rev-parse --show-toplevel 2>/dev/null || pwd); echo "$dir" | tr './' '-'
 ```
 
 Left there they are outside every store: nothing retrieves them and nothing
 curates them. Point the harness at the store instead. The setting is
-`memoryDir`, and the value worth giving it is the **corpus root** rather than the
-store root, so that what the harness writes is retrievable the moment it lands:
+`autoMemoryDirectory`, and the value worth giving it is the **corpus root**
+rather than the store root, so that what the harness writes is retrievable the
+moment it lands:
 
 ```json
-{ "memoryDir": "~/notes/search" }
+{ "autoMemoryDirectory": "~/notes/search" }
 ```
+
+Measured on 2.1.258 and on the documentation page: the value is a path, a
+leading `~/` is expanded, and it is used as it stands for every project — flat,
+with no per-project directory under it.
 
 In `~/.claude/settings.json` that sends every project's memories to your personal
 store, which is the one to set once and forget about. In a checkout's
 `.claude/settings.local.json` it sends that project's memories to that project's
 store. **Not its checked-in `.claude/settings.json`** — the harness ignores
-`memoryDir` there deliberately, so that cloning a repository cannot redirect
-where your agent writes.
+`autoMemoryDirectory` there deliberately, so that cloning a repository cannot
+redirect where your agent writes.
 
 A symlink does the same job, and is the route to know when that setting is not
 yours to set. Move what is already written before you swap, or it is orphaned:
 
 ```bash
-store=~/notes; dir=~/.claude/projects/$(pwd | tr './' '-')/memory
+store=~/notes; root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+dir=~/.claude/projects/$(echo "$root" | tr './' '-')/memory
 mv "$dir"/*.md "$store"/search/ && rmdir "$dir"
 ln -s "$store"/search "$dir"
 ```
@@ -264,10 +274,11 @@ the default and not a `memoryDir` you have moved.
 
 ### Before you wire it up
 
-- **The default path is derived from the cwd**, so a symlink into it is tied to
-  one checkout path. Clone the project to `~/work/app` on one machine and
-  `~/src/app` on another, and only the machine whose path you linked is wired up.
-  `memoryDir` carries no such coupling, which is the better reason to prefer it.
+- **The default path is derived from the repository root**, so a symlink into
+  it is tied to one checkout path. Clone the project to `~/work/app` on one
+  machine and `~/src/app` on another, and only the machine whose path you linked
+  is wired up. `autoMemoryDirectory` carries no such coupling, which is the
+  better reason to prefer it.
 - **The layout rule does not relax for a repository.** The harness writes flat —
   `MEMORY.md` and one file per memory, no `search/`. Point it at the store root
   and every one of those files sits above the corpus root and is not retrieved:

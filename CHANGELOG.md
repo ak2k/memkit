@@ -15,10 +15,11 @@ ordering.
 
 - **"Keep your store in git" in `docs/STORE.md`** — the store as a private
   repository, which findings need history to say anything at all, and where
-  Claude Code's own agent-written memories land. They default to a per-project
-  directory outside every store; `memoryDir` redirects them, and pointing it at
-  `<store>/search` rather than the store root is what keeps the harness's flat
-  writes inside the corpus root.
+  Claude Code's own agent-written memories land. They default to a directory
+  keyed by the git repository root and outside every store;
+  `autoMemoryDirectory` redirects them — the key measured on 2.1.258 and on the
+  documentation page — and pointing it at `<store>/search` rather than the store
+  root is what keeps the harness's flat writes inside the corpus root.
 
 ## [0.4.0] — 2026-08-31
 
