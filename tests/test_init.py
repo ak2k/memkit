@@ -995,6 +995,9 @@ def test_every_refusal_in_the_inventory_is_reachable() -> None:
             "test_a_session_directory_removed_underfoot_is_an_exit_code_"
             "not_a_traceback"
         ),
+        "escapes-store": (
+            "test_a_link_planted_after_the_plan_never_lands_outside_the_store"
+        ),
     }
     for name, case in apply_time.items():
         assert f"def {case}(" in mine, (name, case)
@@ -1207,11 +1210,11 @@ def test_a_crash_between_two_mutations_leaves_a_journal_that_describes_it(
     real = init._write_atomically
     calls = []
 
-    def explode(path, content, mode=0o600, expect=None):
+    def explode(path, content, mode=0o600, expect=None, confine=""):
         calls.append(path)
         if len(calls) == 2:
             raise OSError("no space left on device")
-        return real(path, content, mode, expect)
+        return real(path, content, mode, expect, confine)
 
     monkeypatch.setattr(init, "_write_atomically", explode)
     config = init._resolve_config(machine, None)
@@ -1231,11 +1234,11 @@ def test_a_partial_run_converges_when_it_is_run_again(profile, monkeypatch) -> N
     real = init._write_atomically
     calls = []
 
-    def explode(path, content, mode=0o600, expect=None):
+    def explode(path, content, mode=0o600, expect=None, confine=""):
         calls.append(path)
         if len(calls) == 2:
             raise OSError("no space left on device")
-        return real(path, content, mode, expect)
+        return real(path, content, mode, expect, confine)
 
     monkeypatch.setattr(init, "_write_atomically", explode)
     assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_INCOMPLETE
@@ -2702,6 +2705,86 @@ def test_the_ledger_init_writes_is_the_one_the_checker_would_generate(
         (e[0] for e in entries), key=str.lower
     )
     assert checker._generate(ledger, entries) == ledger.read_text(encoding="utf-8")
+
+
+
+
+def test_a_destination_that_is_a_link_is_named_and_never_written_through(
+    profile,
+) -> None:
+    """A DANGLING SYMLINK AT A DESTINATION READS AS ABSENT.
+
+    `state_token` opens the path, so a link pointing at nothing answers
+    "absent" exactly as an empty directory entry does — the copy was planned,
+    and the write followed the link, created the directories it named and put
+    somebody's memory outside the store. Nothing in the manifest said so.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    dest = store / "search" / "projects" / "-home-u" / "note.md"
+    dest.parent.mkdir(parents=True)
+    outside = profile / "elsewhere" / "deep" / "planted.md"
+    dest.symlink_to(outside)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if a.path == str(dest)]
+    diverged = [note for note in plan.notes if "diverged" in note]
+    assert any(str(outside) in note for note in diverged), diverged
+    assert any("0 files" in note and "1 diverged" in note for note in plan.notes)
+    machine = doctor.Machine()
+    assert init.apply_plan(
+        machine, plan, init._resolve_config(machine, None)
+    ) in (init.EXIT_OK, init.EXIT_INCOMPLETE)
+    assert not outside.exists(), "a copy landed outside the store"
+    assert not outside.parent.exists(), "a directory was made outside the store"
+
+
+def test_a_link_planted_after_the_plan_never_lands_outside_the_store(
+    profile,
+) -> None:
+    """The plan proves containment against the tree it was built over, and a
+    link planted after that proves nothing. Every write the adoption plan makes
+    carries the root it has to land inside, and the write itself is where that
+    is enforced — the two moments are different and only the second one is the
+    one that writes.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    base = store / "search" / "projects"
+    copy = next(
+        a for a in plan.pending if a.path.endswith("-home-u/note.md")
+    )
+    assert copy.confine == str(store)
+    # Between the plan and the write: the directory the copies go in becomes a
+    # link out of the store.
+    outside = profile / "elsewhere"
+    outside.mkdir()
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.symlink_to(outside)
+    machine = doctor.Machine()
+    code = init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert code == init.EXIT_INCOMPLETE
+    assert list(outside.iterdir()) == [], "the write followed the planted link"
+
+
+def test_the_manifest_names_every_file_the_copy_would_write(profile) -> None:
+    """A COUNT IS NOT A LIST. Doctor's remedy for this command promises it
+    "names every file first", and consent for a command whose named harm is a
+    wrong copy has to be given against the destinations rather than against
+    their number. The summary line stays: it is what keeps a hundred copies
+    from burying the writes that are not copies.
+    """
+    _harness(profile, "-home-u-git-app", {"trap.md": TRAP, "MEMORY.md": "# idx\n"})
+    _harness(profile, "-home-u", {"note.md": BARE})
+    store = profile / "notes"
+    rendered = _plan(profile, store=str(store), adopt_auto_memory=True).render()
+    base = store / "search" / "projects"
+    for rel in ("-home-u-git-app/trap.md", "-home-u-git-app/MEMORY.md",
+                "-home-u/note.md"):
+        assert str(base / rel) in rendered, rel
+    # And the summary line each of them hangs under.
+    assert "2 files from" in rendered
+    assert "1 file from" in rendered
 
 
 def test_an_existing_search_ledger_keeps_the_preamble_somebody_wrote(profile) -> None:

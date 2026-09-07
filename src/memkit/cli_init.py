@@ -156,6 +156,7 @@ class Action:
         "authored_config",
         "payload",
         "group",
+        "confine",
     )
 
     def __init__(
@@ -167,6 +168,7 @@ class Action:
         authored_config: bool = False,
         payload: object = None,
         group: str = "",
+        confine: str = "",
     ) -> None:
         self.op = op
         self.path = path
@@ -181,6 +183,13 @@ class Action:
         # copies. It is outside `key()` deliberately: what the digest binds is
         # the effect, and how the effect is printed is not part of it.
         self.group = group
+        # THE ROOT THIS EFFECT HAS TO LAND INSIDE, or "" for one that answers
+        # to no root. A copy is planned against a path; what a write reaches is
+        # that path with every symlink in it followed, and the two are the same
+        # thing only until somebody plants a link. Outside `key()` for the same
+        # reason `group` is: it constrains the effect rather than being one, so
+        # a plan that gained it is not a different request.
+        self.confine = confine
         # What a MERGE_CONFIG action re-derives its content from at apply time.
         # `content` is the merge as it would land against the tree the plan was
         # built over; `payload` is what has to be merged in whatever the tree
@@ -271,12 +280,12 @@ class Plan:
         seen_groups = set()
         for action in pending:
             if action.group:
-                # ONE LINE PER SOURCE DIRECTORY, and then only the files this
-                # command would not copy verbatim. A grouped action's path is
-                # always absent — a destination that exists and matches is
-                # redundant and a destination that exists and differs gets no
-                # action at all — so the two lines dropped here ("exists" and
-                # "resolves to") had nothing to say about it.
+                # A SUMMARY LINE PER SOURCE DIRECTORY, AND THEN EVERY FILE.
+                # The count on its own was the whole consent surface for the
+                # writes this command exists to make, on a command whose named
+                # harm is a wrong copy — and it hid the one case where a
+                # destination is not the path it is spelled as, since the
+                # summary carried no room for "resolves to".
                 if action.group in seen_groups:
                     continue
                 seen_groups.add(action.group)
@@ -286,22 +295,18 @@ class Plan:
                     f"{'file' if len(members) == 1 else 'files'} "
                     f"{action.group}"
                 )
-                lines.extend(
-                    f"                 {a.note}" for a in members if a.note
-                )
+                for member in members:
+                    lines.append(
+                        f"                 {_display_path(member.path)}"
+                    )
+                    if member.note:
+                        lines.append(f"                 {member.note}")
+                    lines.extend(_path_detail(member))
                 continue
             lines.append(f"  {action.op:<14} {_display_path(action.path)}")
             if action.note:
                 lines.append(f"                 {action.note}")
-            resolved = _terminal_realpath(action.path)
-            if resolved != os.path.abspath(action.path):
-                lines.append(
-                    f"                 -> resolves to {_display_path(resolved)}"
-                )
-            if action.before != "absent":
-                lines.append(
-                    f"                 (exists: {action.before.split(':')[0]})"
-                )
+            lines.extend(_path_detail(action))
         if self.notes:
             lines.append("")
             lines.extend(self.notes)
@@ -319,6 +324,23 @@ class Plan:
         # spacing exactly as it was — because a path with two spaces in it is
         # a path, and a collapsed one names nothing.
         return "\n".join(lines)
+
+
+def _path_detail(action) -> list:
+    """The two things a path alone does not say, for one action.
+
+    Shared by both branches of the manifest rather than written out in each:
+    the grouped branch grew its own copy of the path line and not of these, and
+    a destination that resolves somewhere else is exactly the case a grouped
+    line must not be the one to drop.
+    """
+    out = []
+    resolved = _terminal_realpath(action.path)
+    if resolved != os.path.abspath(action.path):
+        out.append(f"                 -> resolves to {_display_path(resolved)}")
+    if action.before != "absent":
+        out.append(f"                 (exists: {action.before.split(':')[0]})")
+    return out
 
 
 def _terminal_realpath(path: str) -> str:
@@ -1567,6 +1589,14 @@ def _plan_adoption(store: str, known: list) -> tuple:
     destination holding anything else is `diverged` — named, left exactly as it
     is, and no reason to refuse the rest. The originals are not touched on any
     path, so the worst outcome of a wrong guess here is a file to delete.
+
+    AND NEVER OUTSIDE THE STORE. A destination is a path until something
+    writes to it, and then it is that path with every link in it followed: a
+    dangling symlink at one reads as absent through `state_token`, so the copy
+    was planned, and the write created the link's target directory and put a
+    memory in it. What this plans, it can prove lands inside `store` — the
+    check is on the RESOLVED path rather than on `islink`, because the link
+    that moves the write is as often a directory halfway up as the leaf.
     """
     base = os.path.join(store, "search", ADOPT_DIRNAME)
     actions: list = []
@@ -1581,6 +1611,14 @@ def _plan_adoption(store: str, known: list) -> tuple:
         if not _adoptable(project):
             continue
         target = os.path.join(base, project.key)
+        if os.path.islink(target) or not _inside(target, store):
+            diverged.append(
+                f"{_display_path(target)} is a link to "
+                f"{_display_path(_terminal_realpath(target))} — every copy "
+                "into it would land at a path this manifest does not name, so "
+                "nothing was written for this project"
+            )
+            continue
         group = (
             f"from {_display_path(project.path)} "
             f"-> {_display_path(target)}{os.sep}"
@@ -1599,6 +1637,22 @@ def _plan_adoption(store: str, known: list) -> tuple:
                 skipped.append(f"{project.key}/{name}: {why}")
                 continue
             dest = os.path.join(target, name)
+            if not _inside(dest, store):
+                diverged.append(
+                    f"{_display_path(dest)} resolves to "
+                    f"{_display_path(_terminal_realpath(dest))}, outside "
+                    f"{_display_path(store)} — a copy would land there and "
+                    "not in the store, so nothing was written"
+                )
+                continue
+            if os.path.islink(dest):
+                diverged.append(
+                    f"{_display_path(dest)} is a symlink to "
+                    f"{_display_path(_terminal_realpath(dest))} — a copy would "
+                    "write through it, at a path this manifest does not name, "
+                    "so nothing was written"
+                )
+                continue
             rule = ""
             row = None
             if name not in _LEDGER_NAMES:
@@ -1641,8 +1695,9 @@ def _plan_adoption(store: str, known: list) -> tuple:
                 normalised += 1
             payload += len(_utf8(text))
             mine.append(
-                Action(CREATE_FILE, dest, text, note=f"{name}: {rule}" if rule else "",
-                       group=group)
+                Action(CREATE_FILE, dest, text,
+                       note=f"{_clean(name)}: {rule}" if rule else "",
+                       group=group, confine=store)
             )
             if row is not None:
                 rows.append(row)
@@ -1656,10 +1711,11 @@ def _plan_adoption(store: str, known: list) -> tuple:
                     note="one directory per harness project key, inside the "
                     "corpus root so retrieval reaches them and outside the "
                     "directory the harness rewrites.",
+                    confine=store,
                 )
             )
         directories += 1
-        actions.append(Action(CREATE_DIR, target))
+        actions.append(Action(CREATE_DIR, target, confine=store))
         actions.extend(mine)
     files = sum(1 for action in actions if action.op == CREATE_FILE)
     notes = [
@@ -2381,8 +2437,33 @@ class _Lock:
         self._fd = None
 
 
+def _refuse_escape(path: str, confine: str) -> None:
+    """Refuse a write whose real landing place is outside the root it named.
+
+    FAIL-CLOSED, and it is checked here rather than only at plan time because
+    the two are different moments: a link planted between the dry-run and the
+    confirm turns a path the manifest proved was inside the store into one that
+    is not, and every write below follows links by design.
+    """
+    if not confine or _inside(path, confine):
+        return
+    raise Refusal(
+        "escapes-store",
+        f"{_display_path(path)} resolves to "
+        f"{_display_path(_terminal_realpath(path))}, which is outside "
+        f"{_display_path(confine)}. The manifest you approved describes a copy "
+        "into the store, and following a link out of it would write somebody's "
+        "memory to a path nobody read. Nothing further was written. Re-run "
+        "`init --dry-run` for a manifest of what is left.",
+    )
+
+
 def _write_atomically(
-    path: str, content: str, mode: int = 0o600, expect: str | None = None
+    path: str,
+    content: str,
+    mode: int = 0o600,
+    expect: str | None = None,
+    confine: str = "",
 ) -> str:
     """Write beside and rename over, returning the state token that landed.
 
@@ -2406,6 +2487,7 @@ def _write_atomically(
     # file, the repo copy orphaned and unchanged, and the next `home-manager
     # switch` reaching nothing.
     path = os.path.realpath(path)
+    _refuse_escape(path, confine)
     if expect is not None and state_token(path) != expect:
         raise Refusal(
             "changed-underfoot",
@@ -2576,6 +2658,10 @@ def _perform(
         # predictable, and a mode a group could read is the symlink
         # pre-planting hazard the location was chosen to avoid.
         mode = 0o700 if action.path == machine.state_dir else 0o755
+        # The same containment the file writes get, because `os.makedirs`
+        # follows a symlinked component just as happily and a directory made
+        # outside the store is where the files after it would land.
+        _refuse_escape(action.path, action.confine)
         os.makedirs(action.path, mode=mode, exist_ok=True)
         journal.record(action, "dir")
     elif action.op == MERGE_CONFIG:
@@ -2673,7 +2759,11 @@ def _perform(
         # so for those, a file that moved is the case being handled rather than
         # a reason to stop.
         after = _write_atomically(
-            action.path, action.content, mode=0o644, expect=action.before
+            action.path,
+            action.content,
+            mode=0o644,
+            expect=action.before,
+            confine=action.confine,
         )
         journal.record(action, after)
     return EXIT_OK
