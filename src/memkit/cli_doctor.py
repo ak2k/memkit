@@ -3118,7 +3118,18 @@ _CHECKOUT_COST = (
     "A checked-in .claude/settings.json travels with every clone, and the "
     "harness applies it: always in a `claude -p` run, a hook or a subagent, "
     "whatever the folder trust state, and in an interactive session once you "
-    "trust the folder. Read that file before leaving it in place"
+    "trust the folder"
+)
+
+# And what to do about it. NOT "set it in your user settings", which is the
+# obvious advice and does nothing: `user` ranks BELOW the checked-in file in
+# the measured order, so a value there is masked for as long as that file sets
+# the key. `.claude/settings.local.json` outranks it and is not itself checked
+# in, which is the one edit that does not require touching the repository.
+_CHECKOUT_REMEDY = (
+    "either take the key out of that file or set it in "
+    ".claude/settings.local.json, which outranks it and is not itself checked "
+    "in. User settings rank below both and change nothing while it is set"
 )
 
 
@@ -3198,12 +3209,12 @@ def _auto_memory(machine: Machine) -> list[Check]:
                     INFO,
                     _detail(
                         f"{off} while this checkout says so — the value is in "
-                        "its checked-in .claude/settings.json",
+                        "a checked-in .claude/settings.json, which travels "
+                        "with every clone",
                         recent,
                     ),
-                    f'{_CHECKOUT_COST}. To decide it yourself, set '
-                    f'"{harness_memory.ENABLED_KEY}" in '
-                    f"{_display_path(config_dir)}/settings.json.",
+                    f"{_CHECKOUT_COST}. To decide it yourself, "
+                    f"{_CHECKOUT_REMEDY}.",
                     actor=USER,
                 )
             ]
@@ -3212,9 +3223,18 @@ def _auto_memory(machine: Machine) -> list[Check]:
     configured, where = harness_memory.configured_dir(machine.settings)
     if configured is not None:
         checkout = where == harness_memory.CHECKOUT_SCOPE
+        source = (
+            "a checked-in .claude/settings.json" if checkout else f"{where} settings"
+        )
         named = (
             f"{_display_path(configured)} ({harness_memory.DIRECTORY_KEY} in "
-            f"{'this checkout' if checkout else where} settings)"
+            f"{source})"
+        )
+        travels = (
+            "that file is checked into this repository and travels with every "
+            "clone"
+            if checkout
+            else ""
         )
         retrieved, says, target = _placed(machine, configured)
         if retrieved and not checkout:
@@ -3243,16 +3263,14 @@ def _auto_memory(machine: Machine) -> list[Check]:
         )
         if checkout:
             remedy = (
-                f"{_CHECKOUT_COST}. To decide where your agent writes, set "
-                f'"{harness_memory.DIRECTORY_KEY}" in '
-                f"{_display_path(config_dir)}/settings.json, which outranks "
-                "nothing this checkout can add but is yours."
+                f"{_CHECKOUT_COST}. To decide where your agent writes, "
+                f"{_CHECKOUT_REMEDY}."
             )
         return [
             Check(
                 "auto-memory",
                 INFO,
-                _detail(f"{named} {says}", recent, odd_enabled),
+                _detail(f"{named} {says}", travels, recent, odd_enabled),
                 remedy,
                 actor=USER,
             )

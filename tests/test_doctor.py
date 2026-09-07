@@ -2736,9 +2736,14 @@ def test_a_checked_in_settings_file_decides_and_is_reported_not_passed(
     # reported.
     assert "is retrieved" in row.detail
     assert row.status == doctor.INFO
-    assert "this checkout" in row.detail
-    assert "travels with every clone" in row.remedy
+    assert "in a checked-in .claude/settings.json" in row.detail
+    assert "travels with every clone" in row.detail
     assert "claude -p" in row.remedy
+    # NOT "set it in your user settings", which is the obvious advice and does
+    # nothing: user settings rank below the checked-in file in the measured
+    # order, so a value there is masked for as long as that file sets the key.
+    assert ".claude/settings.local.json, which outranks it" in row.remedy
+    assert "User settings rank below both" in row.remedy
     assert row.actor == doctor.USER
 
     # `.claude/settings.local.json` is not checked in, and outranks it.
