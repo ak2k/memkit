@@ -82,10 +82,8 @@ KEPT_PLUGIN = "memkit"
 FRONTMATTER_BYTES = 65536
 
 _FENCE = "---"
-_NAME_RE = re.compile(r"^name:")
-_DESCRIPTION_RE = re.compile(r"^description:")
-_TYPE_RE = re.compile(r"^type:")
-_METADATA_RE = re.compile(r"^metadata:")
+# A top-level key is a literal prefix and is tested as one; only the nested
+# `type:` under `metadata:` needs a pattern, for the indent it is known by.
 _NESTED_TYPE_RE = re.compile(r"^\s+type:")
 # The harness's own index row: `- [title](file.md) — hook`.
 _INDEX_ROW_RE = re.compile(r"^\s*[-*]\s+\[[^\]]*\]\(([^)]*)\)")
@@ -265,12 +263,12 @@ def _frontmatter(text: str) -> dict:
     in_metadata = False
     for index, line in enumerate(fence):
         if line.strip() and line[:1] not in (" ", "\t"):
-            in_metadata = _METADATA_RE.match(line) is not None
-        if _NAME_RE.match(line):
+            in_metadata = line.startswith("metadata:")
+        if line.startswith("name:"):
             has_name = True
-        if _TYPE_RE.match(line) or (in_metadata and _NESTED_TYPE_RE.match(line)):
+        if line.startswith("type:") or (in_metadata and _NESTED_TYPE_RE.match(line)):
             has_type = True
-        if not has_description and _DESCRIPTION_RE.match(line):
+        if not has_description and line.startswith("description:"):
             has_description = True
             description_len = _folded_len(fence, index)
     return {
@@ -384,8 +382,9 @@ def _index(memory_dir: str, listed: list) -> dict:
     except OSError:
         return {"lines": 0, "rows": 0, "dangling_rows": 0}
     present = set(listed)
+    lines = text.splitlines()
     rows = dangling = 0
-    for line in text.splitlines():
+    for line in lines:
         match = _INDEX_ROW_RE.match(line)
         if match is None:
             continue
@@ -393,12 +392,10 @@ def _index(memory_dir: str, listed: list) -> dict:
         target = match.group(1).strip()
         if target in present:
             continue
-        try:
-            if not os.path.exists(os.path.join(memory_dir, target)):
-                dangling += 1
-        except (OSError, ValueError):
+        # `os.path.exists` is already False for every way the lookup can fail.
+        if not os.path.exists(os.path.join(memory_dir, target)):
             dangling += 1
-    return {"lines": len(text.splitlines()), "rows": rows, "dangling_rows": dangling}
+    return {"lines": len(lines), "rows": rows, "dangling_rows": dangling}
 
 
 def _memory_dir(
@@ -565,9 +562,7 @@ def main(argv=None) -> int:
     if not args.out:
         sys.stdout.write(text)
         return 0
-    parent = os.path.dirname(os.path.abspath(args.out))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:
         handle.write(text)
     return 0

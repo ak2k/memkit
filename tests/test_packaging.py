@@ -368,6 +368,24 @@ def _floor_interpreter() -> str | None:
     return shutil.which("python3.9")
 
 
+def _require_floor_interpreter() -> str:
+    """A real 3.9, or a verdict — never a quiet pass.
+
+    One implementation for both floor cases, because this switch is what
+    `test_the_floor_gate_fails_rather_than_skips_when_it_is_required` watches,
+    and a second copy of it is a copy nothing watches.
+    """
+    interpreter = _floor_interpreter()
+    if interpreter is None:
+        if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
+            raise AssertionError(
+                f"{FLOOR_REQUIRED_ENV}=1 and no 3.9 interpreter was found — "
+                "`uv python install 3.9` provisions one"
+            )
+        pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
+    return interpreter
+
+
 def test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path) -> None:
     """The floor, EXECUTED — which is what a static pass cannot do.
 
@@ -385,15 +403,7 @@ def test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path) -> None:
     rather than skipping it, because a gate that quietly stops gating is the
     shape of the failure it exists to catch.
     """
-    interpreter = _floor_interpreter()
-    if interpreter is None:
-        if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
-            raise AssertionError(
-                f"{FLOOR_REQUIRED_ENV}=1 and no 3.9 interpreter was found — "
-                "`uv python install 3.9` provisions one"
-            )
-        pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
-    assert interpreter is not None
+    interpreter = _require_floor_interpreter()
     # A HOME OF ITS OWN, WITH SOMETHING TO LOSE IN IT. The floor script is not
     # a pytest module, so no fixture isolates it and the runner passes the
     # whole environment through — and it called `_sweep()` fifteen lines before
@@ -459,15 +469,7 @@ def test_harness_shape_runs_on_a_real_39(tmp_path) -> None:
     -` gives the module no `__file__` and an `argv[0]` of `-`, so a tool that
     reads either one works from the repository and dies over the pipe.
     """
-    interpreter = _floor_interpreter()
-    if interpreter is None:
-        if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
-            raise AssertionError(
-                f"{FLOOR_REQUIRED_ENV}=1 and no 3.9 interpreter was found — "
-                "`uv python install 3.9` provisions one"
-            )
-        pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
-    assert interpreter is not None
+    interpreter = _require_floor_interpreter()
     memory = tmp_path / "config" / "projects" / "-h-u-git-app" / "memory"
     memory.mkdir(parents=True)
     (memory / "one.md").write_text(
