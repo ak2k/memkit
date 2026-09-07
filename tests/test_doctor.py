@@ -3354,6 +3354,11 @@ def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
     path = _store_config(profile, stores=["personal"])
     broken = profile / "claude-config" / "settings.json"
     broken.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
+    # THE BOUND LIFTED, because it would answer this for the wrong reason: the
+    # two remedies together overrun 600 bytes on a tmpdir path, so a build that
+    # kept the offending sentence would have it truncated away and pass. What
+    # is under test is the rule that drops it, not `_bound` hiding it.
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
     (row,) = _only(
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
         "auto-memory",
@@ -3361,8 +3366,17 @@ def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
     assert row.status == doctor.INFO
     assert "parse as JSON before setting any key in it" in row.remedy
     assert 'set "autoMemoryEnabled": false in' not in row.remedy
-    # And the row that could not read the file is not the row that passes.
-    assert doctor.verdict([row]) != "OK" or row.status != doctor.PASS
+    assert str(broken) not in row.remedy.split("Keep a copy first")[-1]
+
+    # A remedy that names some OTHER file is kept: the rule is about the file
+    # this process could not read, not about remedies in general.
+    broken.write_text(json.dumps({"autoMemoryDirectory": "/u/elsewhere"}), encoding="utf-8")
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text('{"autoDreamEnabled": false,,}', encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "project settings could not be parsed" in row.detail
+    assert "docs/STORE.md" in row.remedy
 
 
 def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
