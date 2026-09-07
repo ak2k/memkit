@@ -226,17 +226,17 @@ to date against.
 
 Claude Code keeps a memory of its own, and by default none of it reaches your
 store. Measured on 2.1.238, the version CI installs: it writes agent-curated
-memories to `<config dir>/projects/<project key>/memory/`, and creates that
-directory at startup even when it writes nothing into it. The config dir is
-`$CLAUDE_CONFIG_DIR` when that is set, `~/.claude` otherwise. Measured on
-2.1.258, matching the documentation page, the key is the git repository root
-with every character that is not a letter or digit replaced by `-`, so every
-subdirectory of one repository shares one directory; outside a repository the
-cwd is used instead. The path is the physical one, so a checkout reached
-through a symlink keys on the symlink's target. A linked worktree maps to its
-main checkout's root, so a repository's worktrees share that directory too; a
-submodule keys on itself. Read from the code and not exercised: a key past 200
-characters is truncated there and given a base36 hash suffix.
+memories to `<config dir>/projects/<project key>/memory/`. Measured on 2.1.258:
+it creates that directory at startup even when it writes nothing into it, and
+the key, matching the documentation page, is the git repository root with every
+character that is not a letter or digit replaced by `-`, so every subdirectory
+of one repository shares one directory; outside a repository the cwd is used
+instead. The path is the physical one, so a checkout reached through a symlink
+keys on the symlink's target. A linked worktree maps to its main checkout's
+root, so a repository's worktrees share that directory too; a submodule keys on
+itself. Read from the code on 2.1.258 and not exercised: the config dir is
+`$CLAUDE_CONFIG_DIR` when that is set, `~/.claude` otherwise, and a key past
+200 characters is truncated there and given a base36 hash suffix.
 
 ```bash
 # needs git 2.31+; a "fatal:" here means the key fell back to the cwd
@@ -286,70 +286,42 @@ scopes, highest first, is managed policy, the `--settings` flag,
 `.claude/settings.local.json`, `.claude/settings.json`, then user settings.
 
 A symlink does the same job, and is the route to know when that setting is not
-yours to set. Point it at a directory of the harness's own for the same reason.
-Move what is already written before you swap, or it is orphaned:
+yours to set. The shape is one link per project: the harness's own memory
+directory for this repository — `<config dir>/projects/<key>/memory`, for the
+key the block above prints — becomes a symlink into the store. Retrieval then
+reads what the harness writes, and the harness goes on writing to the path it
+already knows. Point the link at a directory of the harness's own, for the
+reason the setting has one: a corpus directory that also holds your own memory
+files gets them rewritten.
 
-```bash
-# needs git 2.31+; a "fatal:" here means the key fell back to the cwd
-# ASCII, newline-free paths only: tr maps bytes, the harness maps characters
-store=~/notes
-if [ -d "$store"/search ]; then target=$store/search/auto-memory
-else target=$store/auto-memory; fi
-root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-case $root in */.git) root=${root%/.git} ;;
-  *) root=$(git rev-parse --path-format=absolute --show-toplevel || pwd -P) ;; esac
-key=$(printf '%s\n' "$root" | tr -c 'A-Za-z0-9\n' '-')
-dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$key/memory
-[ ! -L "$dir" ] && [ -d "$store" ] && [ -d "$dir" ] && mkdir -p "$target" &&
-{ mv -n "$dir"/*.md "$target"/ || :; } &&
-rmdir "$dir" && ln -sn "$target" "$dir" && echo migrated
-```
+**What the shape costs.** The link is per project, so the next repository needs
+its own. It is tied to the physical path the key derives from, so a checkout
+that moves keys somewhere else and needs a new link. And whatever is already
+written has to move into the store before the swap or it is orphaned, and it
+lands there as new files: they carry no ledger row until the checker's
+`--write` pass adds one.
 
-`$target` follows the store: `<store>/search/auto-memory` where `search/`
-exists, `<store>/auto-memory` where it does not, that being the corpus root of a
-store with no `search/`. Creating `search/` afterwards takes that directory back
-out of retrieval, so making `search/` first is the simpler order.
+**`/memkit:init --adopt-auto-memory` does all of that for every project at
+once.** It copies what the harness has written into the store and redirects the
+harness there, listing every path in one manifest you approve before anything
+is written. That is the route this page recommends, and the reason it no longer
+prints a chain of shell to do the same work by hand.
 
-`migrated` is the answer, whatever printed above it: `$dir` is the symlink and
-every `.md` the harness had written is under `$target`. On an empty `$dir` the
-shell complains that `*.md` matched nothing and the migration still succeeded.
-No `migrated`, and either one of the three tests that open the chain stopped it
-before `mkdir` ran — nothing created, nothing moved — or `rmdir` refused. Run
-the tests yourself; the first that fails is the cause.
+**One case still wants a hand.** An earlier revision of this page pointed that
+directory at the corpus root itself. Where `ls -ld "$dir"` shows a symlink,
+repoint it at the harness's own directory:
 
-**`ls -ld "$dir"` shows a symlink.** The redirect is already in place and there
-is nothing to move. Pointing at `$target`, you are done. Pointing anywhere else
-— v0.4.0 of this page said `ln -s "$store"/search "$dir"`, which aims it at the
-corpus root — repoint it: `mkdir -p "$target" && rm "$dir" && ln -sn "$target"
-"$dir"`. `rm` removes the link and never what it points at, and the target is
-made first so the harness's startup `mkdir` cannot meet a dangling link.
-Memories written under the old link stay where they lie, and stay retrievable
-as long as that is under `search/`.
+`[ -L "$dir" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
 
-**`ls -d "$store"` fails.** `$store` is mistyped. Nothing was created under the
-name you typed; correct it and rerun.
-
-**`ls -d "$dir"` fails.** Nothing is written under the key you derived, which
-is not the same as nothing being written. List what is, with `ls
-"${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/`. No entry standing for this
-repository means the harness has never run here and nothing is orphaned:
-`mkdir -p "$target" "$(dirname "$dir")" && ln -sn "$target" "$dir"` finishes
-it. An entry that is this repository under another name means `$key` is wrong —
-a key past 200 characters is truncated and hashed, and a git older than 2.31
-falls back to the cwd. Set `dir` from that entry before you link, or the link
-lands where the harness never writes while the memories stay orphaned.
-
-**All three pass and there is still no `migrated`.** `rmdir` refused, so `$dir`
-holds something the `*.md` move did not take; `ls -A "$dir"` says what. A `.md`
-is a name the store already had, so move it under a new one — `mv -n
-"$dir"/foo.md "$target"/foo-harness.md`, still `-n` because the new name can
-collide too. A dotfile is harness state: `.consolidate-lock` is the harness's
-consolidation lock, and read from the code, an hour is its interval — `rm
-"$dir"/.consolidate-lock` once it is older than that. A subdirectory is not the
-harness's, which writes one file per memory and no directories of its own; `mv
-"$dir"/sub "$(dirname "$target")"/` puts it at the corpus root, either shape of
-store. Then rerun the last line. Never a bare `mv` onto the store: it overwrites
-the copy `mv -n` kept.
+`$target` is the harness's directory under the corpus root:
+`$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
+it does not — that second one being the corpus root of a store with no
+`search/`. Creating `search/` afterwards takes that directory back out of
+retrieval, so making `search/` first is the simpler order. `rm` removes the
+link and never what it points at, so memories already lying flat in the corpus
+root stay where they are and stay retrievable. Where `$dir` is not a link the
+first test fails and nothing after it runs. Both variables are yours to set
+before the line runs.
 
 `memkit doctor` reports whether the feature is on and names the directory it
 believes is in use — but it derives that path from the cwd, so what it names is
