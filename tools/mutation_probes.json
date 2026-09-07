@@ -4344,12 +4344,12 @@
       "name": "init-adoption-plans-a-copy-it-cannot-place-inside-the-store",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if not _inside(dest, store):\n                diverged.append(\n",
-      "new": "            if False:\n                diverged.append(\n",
+      "old": "        if os.path.islink(target) or not _inside(target, store):\n",
+      "new": "        if os.path.islink(target):\n",
       "tests": [
-        "tests/test_init.py::test_a_destination_that_is_a_link_is_named_and_never_written_through"
+        "tests/test_init.py::test_a_linked_destination_directory_takes_the_whole_project_with_it"
       ],
-      "why": "the link that moves a write is as often a directory halfway up as the leaf, and `os.makedirs` follows one as happily as `open` does: the manifest planned a copy into the store and the bytes landed outside it."
+      "why": "`os.makedirs` follows a linked component as happily as `open` does, so a linked `search/projects/` sends every copy under it outside the store with no leaf being a link and nothing else to notice it."
     },
     {
       "name": "init-a-hot-memory-with-no-row-is-not-mentioned-before-the-confirm",
@@ -4383,6 +4383,17 @@
         "tests/test_init.py::test_the_manifest_names_every_file_the_copy_would_write"
       ],
       "why": "doctor's remedy for this command promises it names every file first, and consent for a command whose named harm is a wrong copy has to be given against the destinations rather than against their number."
+    },
+    {
+      "name": "init-adoption-writes-into-a-linked-project-directory",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        if os.path.islink(target) or not _inside(target, store):\n",
+      "new": "        if not _inside(target, store):\n",
+      "tests": [
+        "tests/test_init.py::test_a_linked_destination_directory_takes_the_whole_project_with_it"
+      ],
+      "why": "a destination directory that is a link lands inside the store and still not at the path the manifest names: consent was given for search/projects/<key>/, and the copies go wherever the link points."
     }
   ]
 }

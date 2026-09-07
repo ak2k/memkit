@@ -3030,6 +3030,53 @@ def test_a_destination_that_is_a_link_is_named_and_never_written_through(
     assert not (store / "hot" / "smuggled.md").exists(), "a copy went through a link"
 
 
+
+
+def test_a_linked_destination_directory_takes_the_whole_project_with_it(
+    profile,
+) -> None:
+    """THE LINK THAT MOVES A WRITE IS AS OFTEN A DIRECTORY AS THE LEAF.
+
+    `os.makedirs` follows a linked component exactly as `open` does, so a
+    linked `search/projects/` sends every copy under it somewhere the manifest
+    does not name — with no leaf a link and nothing else to notice it. Both
+    shapes are here: one landing outside the store, where containment is the
+    only test that answers, and one landing back inside it, where the link
+    itself is.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    outside = profile / "elsewhere"
+    outside.mkdir()
+    (store / "search").mkdir(parents=True)
+    (store / "search" / "projects").symlink_to(outside)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if a.op == init.CREATE_FILE
+                and "-home-u" in a.path]
+    assert any(str(outside) in note and "diverged" in note for note in plan.notes), (
+        plan.notes
+    )
+    machine = doctor.Machine()
+    init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert list(outside.iterdir()) == [], "a copy landed outside the store"
+
+    # And the project's OWN directory as a link, landing back inside the
+    # store: containment says yes and the link is still a path the manifest
+    # does not name, so this is the clause that answers.
+    (store / "search" / "projects").unlink()
+    (store / "search" / "projects").mkdir()
+    inward = store / "search" / "somewhere-else"
+    inward.mkdir()
+    (store / "search" / "projects" / "-home-u").symlink_to(inward)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if a.op == init.CREATE_FILE
+                and "-home-u" in a.path]
+    assert any(str(inward) in note and "diverged" in note for note in plan.notes), (
+        plan.notes
+    )
+    assert list(inward.iterdir()) == []
+
+
 def test_a_link_planted_after_the_plan_never_lands_outside_the_store(
     profile,
 ) -> None:

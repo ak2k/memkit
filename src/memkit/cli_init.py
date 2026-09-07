@@ -1788,9 +1788,14 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
         if not _adoptable(machine, project):
             continue
         target = os.path.join(base, project.key)
+        # ONCE PER PROJECT, AND ON THE RESOLVED PATH. The link that moves a
+        # write is as often a directory halfway up as the leaf, and
+        # `os.makedirs` follows one as happily as `open` does — so a linked
+        # `projects/` directory sends every copy under it somewhere the
+        # manifest does not name, without a single leaf being a link.
         if os.path.islink(target) or not _inside(target, store):
             diverged.append(
-                f"{_display_path(target)} is a link to "
+                f"{_display_path(target)} resolves to "
                 f"{_display_path(_terminal_realpath(target))} — every copy "
                 "into it would land at a path this manifest does not name, so "
                 "nothing was written for this project"
@@ -1839,14 +1844,11 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 skipped.append(f"{shown}: {why}")
                 continue
             dest = os.path.join(target, name)
-            if not _inside(dest, store):
-                diverged.append(
-                    f"{_display_path(dest)} resolves to "
-                    f"{_display_path(_terminal_realpath(dest))}, outside "
-                    f"{_display_path(store)} — a copy would land there and "
-                    "not in the store, so nothing was written"
-                )
-                continue
+            # THE LEAF, the directory above it having been checked once for
+            # the whole project. A dangling link reads as absent through
+            # `state_token`, so the copy was planned and the write followed
+            # it: out of the store where it pointed out, and into `hot/` — an
+            # index nothing regenerates — where it pointed back in.
             if os.path.islink(dest):
                 diverged.append(
                     f"{_display_path(dest)} is a symlink to "
