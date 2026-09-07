@@ -4216,6 +4216,95 @@
         "tests/test_packaging.py::test_the_wheel_declares_every_console_script"
       ],
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
+    },
+    {
+      "name": "harness-shape-file-keeps-a-long-stem",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if name == INDEX_NAME:\n            return name\n",
+      "new": "        if name == INDEX_NAME or len(os.path.splitext(name)[0]) >= 20:\n            return name\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "A memory file is named after what it is about, so the long ones are where identity lives: `worktree_discipline_shared_checkouts.md` names a practice and a person's habits. A threshold that waves long names through is the passthrough the whole suite survived until the sentinel was made 28 characters."
+    },
+    {
+      "name": "harness-shape-key-keeps-a-long-segment",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            \"\" if not segment else self._assign(self._segments, segment, \"s\")\n",
+      "new": "            \"\" if not segment else (segment if len(segment) >= 20 else self._assign(self._segments, segment, \"s\"))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "A project key is a sanitised absolute path, so its long segments are the repository name and the home directory it sits in. Kept, a shape carries the one string that identifies whose machine it came from."
+    },
+    {
+      "name": "harness-shape-key-passes-a-single-segment-through",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    def key(self, key: str) -> str:\n",
+      "new": "    def key(self, key: str) -> str:\n        if \"-\" not in key:\n            return key\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "Every key the harness writes is a sanitised absolute path and contains a separator, so a rule that only anonymises multi-segment keys reads as inert against a real capture — and is not, because a config directory holds whatever anybody put under projects/."
+    },
+    {
+      "name": "harness-shape-keeps-the-auto-memory-directory-it-does-not-recognise",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            memory_keys[key] = PATH_PLACEHOLDER if anonymise else value\n",
+      "new": "            memory_keys[key] = PATH_PLACEHOLDER if anonymise and str(value).startswith(\"/home/\") else value\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "The placeholder is unconditional because the value is a path on somebody's machine whatever it looks like. Narrowed to one platform's home, a darwin capture carries `/Users/<name>/…` verbatim — and neither committed fixture sets this key, so the artifact gate's assertion on it is vacuous and cannot stand in."
+    },
+    {
+      "name": "harness-shape-version-hint-is-prefix-matched",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if hint is not None and not _VERSION_FULL_RE.fullmatch(hint):\n",
+      "new": "        if hint is not None and not _VERSION_FULL_RE.match(hint):\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape",
+        "tests/test_harness_shape.py::test_a_version_that_is_not_one_never_travels"
+      ],
+      "why": "`match` is a PREFIX test, so `2.1.263-alice-patched` — a hand-built versions/ directory, which is what the hint is read from — passes the check entire and travels with the name still on it. The distinction between the two spellings is invisible in review and total in effect."
+    },
+    {
+      "name": "harness-shape-hook-key-travels-unrecognised",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if _HOOK_EVENT_RE.fullmatch(event):\n            return event\n",
+      "new": "        return event\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "A settings file can carry any key under `hooks`, and the ones that are not harness events are gates somebody named after their employer. The comment beside this code reasoned about the hook VALUES for two rounds while the keys went out verbatim."
+    },
+    {
+      "name": "harness-shape-install-method-travels-unrecognised",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if install is not None and install not in INSTALL_METHODS:\n            install = INSTALL_OTHER\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "`installMethod` has been seen holding an absolute path to the binary, which is a username. An allowlist that is not applied is a list of the values somebody expected rather than a statement about what leaves the machine."
+    },
+    {
+      "name": "harness-shape-a-settings-switch-that-is-not-a-boolean-travels",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        elif anonymise and not isinstance(value, bool):\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "The harness reads any non-null as on, so an adopter who typed a path into autoMemoryEnabled has a working switch and a string this tool would otherwise carry. What a rebuilt tree needs is that the key was set, which the null says."
     }
   ]
 }
