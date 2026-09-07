@@ -41,6 +41,7 @@ import subprocess
 import sys
 import time
 
+from memkit import harness_memory
 from memkit._exec import (
     CheckerRoute,
     GitRoute,
@@ -154,6 +155,7 @@ class Action:
         "note",
         "authored_config",
         "payload",
+        "group",
     )
 
     def __init__(
@@ -164,6 +166,7 @@ class Action:
         note: str = "",
         authored_config: bool = False,
         payload: object = None,
+        group: str = "",
     ) -> None:
         self.op = op
         self.path = path
@@ -171,6 +174,13 @@ class Action:
         self.content = content
         self.note = note
         self.authored_config = authored_config
+        # Which SUMMARY LINE the manifest folds this action into, or "" for an
+        # action the reader sees a line of its own for. Adoption copies one
+        # harness directory at a time and there can be hundreds of them; a
+        # manifest that listed every file would bury the writes that are not
+        # copies. It is outside `key()` deliberately: what the digest binds is
+        # the effect, and how the effect is printed is not part of it.
+        self.group = group
         # What a MERGE_CONFIG action re-derives its content from at apply time.
         # `content` is the merge as it would land against the tree the plan was
         # built over; `payload` is what has to be merged in whatever the tree
@@ -258,7 +268,28 @@ class Plan:
             lines.append("already holds what it would put there, so this")
             lines.append("install is already set up. The check below still runs.")
             lines.append("")
+        seen_groups = set()
         for action in pending:
+            if action.group:
+                # ONE LINE PER SOURCE DIRECTORY, and then only the files this
+                # command would not copy verbatim. A grouped action's path is
+                # always absent — a destination that exists and matches is
+                # redundant and a destination that exists and differs gets no
+                # action at all — so the two lines dropped here ("exists" and
+                # "resolves to") had nothing to say about it.
+                if action.group in seen_groups:
+                    continue
+                seen_groups.add(action.group)
+                members = [a for a in pending if a.group == action.group]
+                lines.append(
+                    f"  {action.op:<14} {len(members)} "
+                    f"{'file' if len(members) == 1 else 'files'} "
+                    f"{action.group}"
+                )
+                lines.extend(
+                    f"                 {a.note}" for a in members if a.note
+                )
+                continue
             lines.append(f"  {action.op:<14} {_display_path(action.path)}")
             if action.note:
                 lines.append(f"                 {action.note}")
@@ -1033,6 +1064,556 @@ def _refuse_incompatible_types(actions: list) -> None:
             )
 
 
+# --- adopting the harness's own auto-memory ----------------------------------
+#
+# THE CHECKER'S RULES, RESTATED RATHER THAN IMPORTED. `memory_integrity`
+# requires 3.12 and this module answers to the 3.9 floor `bin/memkit` runs the
+# dispatcher on, so the two cannot share one definition of what a ledger row
+# is. What closes that gap is evidence rather than care: a 3.12 case
+# regenerates the ledger init wrote using the checker's own generator and
+# requires the bytes to be equal, so a rule that drifts here fails there.
+#
+# The reason any of this is here at all: a memory under `search/` with no row
+# in SEARCH.md is an ORPHAN, which fails the VERIFY step init runs on its own
+# work. Adoption that left the store failing its own checker would hand the
+# adopter a broken store and an exit 6 out of the command that made it.
+
+# Ledgers and sub-indexes are never memories, at any depth, and are recognised
+# by FILENAME — which is what lets the harness's own `MEMORY.md` travel beside
+# the memories it indexed without owing anybody a row.
+_LEDGER_NAMES = frozenset({"MEMORY.md", "SEARCH.md", "INDEX.md"})
+_INDEX_HEADING = "## Index"
+# The checker's cap, which is the hook's 157-character truncation less the
+# ellipsis. A memory written to the hook's ceiling fails the check.
+_MAX_DESC_CHARS = 155
+# A plain YAML scalar may not START with one of these, and may not CONTAIN
+# ": " or " #".
+_YAML_INDICATORS = set("-?:,[]{}#&*!|>%@`")
+# `tier:` is the layout the tier directories replaced, and the checker rejects
+# a file still carrying it.
+_TIER_RE = re.compile(r"^tier:\s*\S+", re.MULTILINE)
+# A markdown link's destination, the way the checker reads a ledger's rows.
+_LINK_RE = re.compile(r"\(([^)]+\.md)\)")
+# A heading, whose text stands in for a description the file does not have.
+_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(\S.*?)[ \t]*$", re.MULTILINE)
+
+# Where adopted memories land inside the corpus root, one directory per
+# harness project key. Under `search/` because that is what retrieval reads,
+# and NOT under the directory the redirect points at: what the harness writes
+# is rewritten by it, and what this copies must not be.
+ADOPT_DIRNAME = "projects"
+# What adoption will not carry. A megabyte is two orders of magnitude past any
+# memory in any store here, so a file over it is something else that happens to
+# end in `.md` — and the whole file is read into the manifest's digest.
+ADOPT_MAX_BYTES = 1 << 20
+
+
+def _frontmatter_of(text: str) -> dict:
+    """Top-level scalar keys of a leading `---` block, values RAW.
+
+    The checker's own reader, restated: not a YAML parser, because the raw
+    text is what its description rules judge and the two must agree about
+    which line carries the description.
+    """
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    out: dict = {}
+    for line in text[3 : end if end != -1 else len(text)].splitlines():
+        if not _is_frontmatter_key(line):
+            continue
+        key, _sep, value = line.partition(":")
+        out.setdefault(key.strip(), value.strip())
+    return out
+
+
+def _is_frontmatter_key(line: str) -> bool:
+    """Whether this line of a `---` block declares a top-level key.
+
+    Nested keys (the harness buries everything it does not recognise under
+    `metadata:`) are indented and are not; a comment is not; a line with no
+    colon, or a spaced word before one, is not.
+    """
+    if not line or line[0].isspace() or line.startswith("#"):
+        return False
+    key, sep, _value = line.partition(":")
+    return bool(sep and key.strip() and " " not in key.strip())
+
+
+def _scalar_of(raw: str):
+    """The value a raw frontmatter scalar carries, or None when it is not one.
+
+    `memory_integrity._scalar` without its error strings. A `None` here is
+    exactly a `DESC-BAD` there.
+    """
+    if not raw:
+        return None
+    if raw[0] in "\"'":
+        quote = raw[0]
+        if len(raw) < 2 or raw[-1] != quote:
+            return None
+        inner = raw[1:-1]
+        if quote == "'":
+            return inner.replace("''", "'")
+        if re.search(r'(?<!\\)"', inner):
+            return None
+        return inner.replace('\\"', '"')
+    if raw[0] in _YAML_INDICATORS:
+        return None
+    if ": " in raw or raw.endswith(":"):
+        return None
+    if " #" in raw:
+        return None
+    return raw
+
+
+def _as_scalar(value: str) -> str:
+    """`value` written so that reading it back gives `value`.
+
+    Plain where a plain scalar is legal and double-quoted where it is not,
+    which is every shape the checker's rejection set names: a leading
+    indicator, an inner `": "`, a trailing colon, an inner ` #`.
+
+    A TRAILING BACKSLASH is dropped before quoting. The checker's reader would
+    hand it back happily; a real YAML parser reads the `\\"` it makes as an
+    escaped quote and the scalar as never closed, and this text goes into a
+    file other tools read.
+    """
+    value = value.rstrip("\\")
+    if value and _scalar_of(value) == value:
+        return value
+    return '"' + value.replace('"', '\\"') + '"'
+
+
+def _body_of(text: str) -> str:
+    """Everything after the frontmatter block, or all of it when there is none."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    return text[end:] if end != -1 else ""
+
+
+def _first_heading(text: str) -> str:
+    found = _HEADING_RE.search(text)
+    return found.group(1).strip() if found else ""
+
+
+def _normalise(text: str, stem: str) -> tuple:
+    """(`text` with a description a ledger row can carry, the rule applied).
+
+    "" for the rule when the file already had one, which is the case adoption
+    must leave alone — a copy that rewrote a description the checker accepts
+    would be an edit to somebody's memory for no gain.
+
+    BODIES ARE NEVER TOUCHED. Only the frontmatter's description line is
+    written, and only when the file has nothing usable there: what an adopter
+    consented to is a copy, and the one thing that makes a copy fail the
+    store's own checker is a description it cannot read.
+    """
+    raw = _frontmatter_of(text).get("description", "")
+    value = _scalar_of(raw)
+    rules = []
+    if value is None:
+        heading = _first_heading(_body_of(text))
+        value = heading or stem
+        rules.append(
+            "description "
+            + ("was missing" if not raw else "could not be read")
+            + " — taken from "
+            + ("its first heading" if heading else "the file name")
+        )
+    if len(value) > _MAX_DESC_CHARS:
+        rules.append(
+            f"description was {len(value)} characters — truncated to "
+            f"{_MAX_DESC_CHARS}"
+        )
+        value = value[: _MAX_DESC_CHARS - 1] + "…"
+    if not rules:
+        return text, ""
+    if not text.startswith("---"):
+        rules.append("no frontmatter block — one was added")
+    return _with_description(text, _as_scalar(value), stem), "; ".join(rules)
+
+
+def _with_description(text: str, scalar: str, stem: str) -> str:
+    """`text` carrying exactly this description, and nothing else changed.
+
+    THREE SHAPES, and the middle one is the reason this is not a regex. A file
+    with no `---` at all gets a block prepended, carrying the name the row will
+    use. A file whose block already declares a description has its FIRST one
+    rewritten — first, because that is the one the reader takes — along with
+    the indented lines under it, which are the rest of the value it replaced
+    and would otherwise attach somebody else's sentence to this description. A
+    file with a block that declares none gets the line straight after the
+    opening `---`, which is also where a `---` that never closes has to take
+    it.
+    """
+    line = "description: " + scalar
+    if not text.startswith("---"):
+        return f"---\nname: {_as_scalar(_clean(stem))}\n{line}\n---\n\n{text}"
+    end = text.find("\n---", 3)
+    rows = text[3 : end if end != -1 else len(text)].split("\n")
+    at = None
+    for index, row in enumerate(rows):
+        if _is_frontmatter_key(row) and row.partition(":")[0].strip() == "description":
+            at = index
+            break
+    if at is None:
+        rows.insert(1, line)
+    else:
+        rows[at] = line
+        while at + 1 < len(rows) and rows[at + 1][:1] in (" ", "\t"):
+            del rows[at + 1]
+    return text[:3] + "\n".join(rows) + (text[end:] if end != -1 else "")
+
+
+def _clean(value: str) -> str:
+    """A filename's stem with what a frontmatter line cannot hold taken out.
+
+    POSIX admits every byte but NUL and `/` in a filename, a newline included,
+    and one written into a block unescaped ends the line it is on — taking the
+    description below it with it.
+    """
+    return "".join(c for c in value if c.isprintable()).strip()
+
+
+def _read_source(path: str) -> tuple:
+    """(the file's text, why it cannot be adopted). Exactly one is set.
+
+    Read as TEXT, with the platform's newline translation, because that is how
+    `state_token` reads the destination back: a plan whose content the state
+    token could never equal would copy the same file on every run and never
+    converge.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        return None, f"cannot be read ({type(exc).__name__})"
+    if size > ADOPT_MAX_BYTES:
+        return None, f"is {size} bytes, over the {ADOPT_MAX_BYTES}-byte cap"
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read(), ""
+    except UnicodeDecodeError:
+        return None, "is not UTF-8"
+    except (OSError, ValueError) as exc:
+        return None, f"cannot be read ({type(exc).__name__})"
+
+
+def _held_text(path: str) -> tuple:
+    """(what is at `path`, whether it could be read at all).
+
+    `(None, True)` for a path with nothing at it; `(None, False)` for one this
+    process cannot read or decode, which adoption treats as DIVERGED rather
+    than as a traceback out of `--dry-run`.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read(), True
+    except FileNotFoundError:
+        return None, True
+    except (OSError, ValueError):
+        return None, False
+
+
+def _sub_indexes(store: str, config_path: str) -> list:
+    """The sub-index files the existing config declares for THIS store.
+
+    Read out of the config's own `stores[]` entry, matched on the id VERIFY
+    will read it under — a sub-index owns its members' rows, and generating a
+    second row for one of them in SEARCH.md is the checker's `DOUBLE-LEDGER`.
+    """
+    out = []
+    with contextlib.suppress(OSError, ValueError):
+        with open(config_path, encoding="utf-8") as f:
+            blob = json.load(f)
+        if not isinstance(blob, dict):
+            return out
+        wanted = _store_id(store)
+        for entry in blob.get("stores") or []:
+            if not isinstance(entry, dict) or entry.get("id") != wanted:
+                continue
+            for name in entry.get("sub_indexes") or []:
+                if isinstance(name, str) and name:
+                    out.append(os.path.join(store, name))
+    return out
+
+
+def _sub_index_members(store: str, config_path: str) -> set:
+    """Every store-relative path a sub-index of this store already rows."""
+    out = set()
+    root = os.path.realpath(store)
+    for sub in _sub_indexes(store, config_path):
+        with contextlib.suppress(OSError, ValueError):
+            with open(sub, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            for link in _LINK_RE.findall(text):
+                if "://" in link:
+                    continue
+                target = os.path.realpath(os.path.join(os.path.dirname(sub), link))
+                if os.path.basename(target) in _LEDGER_NAMES:
+                    continue
+                rel = os.path.relpath(target, root)
+                if rel != os.pardir and not rel.startswith(os.pardir + os.sep):
+                    out.add(rel)
+    return out
+
+
+def _rows_on_disk(store: str, config_path: str) -> dict:
+    """{store-relative path: row} for every memory already under `search/`.
+
+    THE HALF THAT WAS MISSING. SEARCH.md was written from the canary alone, so
+    an init against a store that already held memories replaced a ledger of
+    their rows with a ledger of one — every one of them an ORPHAN at the next
+    check and unreachable from the file that indexes them.
+
+    Read the way the checker reads them, decode errors replaced rather than
+    raised, so the rows this produces are the rows it would generate.
+    """
+    out: dict = {}
+    claimed = _sub_index_members(store, config_path)
+    for dirpath, _dirs, names in os.walk(os.path.join(store, "search")):
+        for name in sorted(names):
+            if not name.endswith(".md") or name in _LEDGER_NAMES:
+                continue
+            path = os.path.join(dirpath, name)
+            link = os.path.relpath(path, store)
+            if link in claimed:
+                continue
+            with contextlib.suppress(OSError, ValueError):
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                front = _frontmatter_of(text)
+                desc = _scalar_of(front.get("description", ""))
+                # A description the checker cannot read produces no row THERE
+                # either — it produces `DESC-BAD`. Generating one here would
+                # make init's ledger differ from the checker's.
+                if desc is not None:
+                    out[link] = (
+                        front.get("name") or os.path.splitext(name)[0],
+                        link,
+                        desc,
+                    )
+    return out
+
+
+def _search_ledger_text(store: str, nonce: str, entries: list) -> str:
+    """SEARCH.md over this whole store, in the form the checker generates.
+
+    THE PREAMBLE IS THE EXISTING FILE'S, verbatim through `## Index`, because
+    that is what `--write` would keep: a store whose ledger carries a sentence
+    somebody wrote must not have it replaced by a setup command. With no file
+    there, the text init would have written stands in for it, which is what
+    makes a second init on a fresh store find its own ledger already correct.
+    """
+    ledger = os.path.join(store, "SEARCH.md")
+    old = _search_ledger(store, nonce)
+    if os.path.isfile(ledger):
+        with contextlib.suppress(OSError, ValueError):
+            with open(ledger, encoding="utf-8") as f:
+                old = f.read()
+    head, sep, _rest = old.partition(_INDEX_HEADING)
+    preamble = (head + sep) if sep else old.rstrip("\n") + f"\n\n{_INDEX_HEADING}"
+    body = "\n".join(
+        f"- [{label}]({link}) — {desc}"
+        for label, link, desc in sorted(entries, key=lambda row: row[0].lower())
+    )
+    return f"{preamble}\n\n{body}\n"
+
+
+def _adoptable(project) -> bool:
+    """Whether adoption will copy out of this project directory at all.
+
+    A LINK IS SOMEBODY'S ANSWER ALREADY. A memory directory that is a symlink
+    is one an adopter has wired somewhere — docs/STORE.md tells them to wire it
+    into a corpus root — and copying through it would duplicate memories that
+    are already in the store. The same goes for a project directory reached
+    through one. This is the predicate doctor counts "outside every store"
+    with, so the two commands report the same number.
+    """
+    return not (project.is_symlink or project.linked_project)
+
+
+def _auto_memory_notes(store: str, config_dir: str) -> list:
+    """What the harness has written, said in every manifest.
+
+    Unconditional, because the state it describes is the one an adopter cannot
+    see: two memory systems on one machine, one of them writing where nothing
+    retrieves. A flag they never heard of is not an answer to that.
+    """
+    known = harness_memory.inventory(config_dir)
+    mine = [project for project in known if _adoptable(project)]
+    memories = sum(project.memories for project in mine)
+    out = []
+    if mine:
+        out.append(
+            f"{len(mine)} project memory "
+            f"{'directory holds' if len(mine) == 1 else 'directories hold'} "
+            f"{memories} {'memory' if memories == 1 else 'memories'} outside "
+            "every store — --adopt-auto-memory copies them into "
+            + _display_path(os.path.join(store, "search", ADOPT_DIRNAME))
+            + "/<project key>/ and redirects new ones there; "
+            "docs/STORE.md#where-your-agents-own-memories-land has the "
+            "by-hand version."
+        )
+    else:
+        out.append("No harness auto-memory to adopt.")
+    out.extend(
+        f"{project.key}: already redirected, skipped "
+        f"({_display_path(project.path)})"
+        for project in known
+        if not _adoptable(project)
+    )
+    return out
+
+
+def _plan_adoption(store: str, config_dir: str) -> tuple:
+    """(actions, ledger rows, notes) for every harness memory this would adopt.
+
+    COPY, NEVER MOVE, AND NEVER OVERWRITE. A destination that already holds
+    the same bytes is redundant and the action disappears from the manifest; a
+    destination holding anything else is `diverged` — named, left exactly as it
+    is, and no reason to refuse the rest. The originals are not touched on any
+    path, so the worst outcome of a wrong guess here is a file to delete.
+    """
+    base = os.path.join(store, "search", ADOPT_DIRNAME)
+    actions: list = []
+    rows: list = []
+    skipped: list = []
+    diverged: list = []
+    normalised = 0
+    already = 0
+    payload = 0
+    directories = 0
+    for project in harness_memory.inventory(config_dir):
+        if not _adoptable(project):
+            continue
+        target = os.path.join(base, project.key)
+        group = (
+            f"from {_display_path(project.path)} "
+            f"-> {_display_path(target)}{os.sep}"
+        )
+        mine: list = []
+        for name in project.files:
+            if name in project.linked_files:
+                skipped.append(
+                    f"{project.key}/{name}: the file is a symlink, so its bytes "
+                    "live outside the directory being copied"
+                )
+                continue
+            source = os.path.join(project.path, name)
+            text, why = _read_source(source)
+            if text is None:
+                skipped.append(f"{project.key}/{name}: {why}")
+                continue
+            dest = os.path.join(target, name)
+            rule = ""
+            row = None
+            if name not in _LEDGER_NAMES:
+                text, rule = _normalise(text, os.path.splitext(name)[0])
+                if _TIER_RE.search(text[:4096]):
+                    skipped.append(
+                        f"{project.key}/{name}: carries a `tier:` line, which "
+                        "the checker rejects — tier is the directory now"
+                    )
+                    continue
+                front = _frontmatter_of(text)
+                desc = _scalar_of(front.get("description", ""))
+                if desc is None:
+                    skipped.append(
+                        f"{project.key}/{name}: no description this store's "
+                        "ledger could carry was derivable from it"
+                    )
+                    continue
+                row = (
+                    front.get("name") or os.path.splitext(name)[0],
+                    os.path.relpath(dest, store),
+                    desc,
+                )
+            held, readable = _held_text(dest)
+            if not readable:
+                diverged.append(
+                    f"{_display_path(dest)} exists and cannot be read, so what "
+                    f"is there was not compared with {_display_path(source)}"
+                )
+                continue
+            if held is not None and held != text:
+                diverged.append(
+                    f"{_display_path(dest)} exists and differs from "
+                    f"{_display_path(source)} — left exactly as it is"
+                )
+                continue
+            if held is not None:
+                already += 1
+            elif rule:
+                normalised += 1
+            payload += len(_utf8(text))
+            mine.append(
+                Action(CREATE_FILE, dest, text, note=f"{name}: {rule}" if rule else "",
+                       group=group)
+            )
+            if row is not None:
+                rows.append(row)
+        if not mine:
+            continue
+        if not directories:
+            actions.append(
+                Action(
+                    CREATE_DIR,
+                    base,
+                    note="one directory per harness project key, inside the "
+                    "corpus root so retrieval reaches them and outside the "
+                    "directory the harness rewrites.",
+                )
+            )
+        directories += 1
+        actions.append(Action(CREATE_DIR, target))
+        actions.extend(mine)
+    files = sum(1 for action in actions if action.op == CREATE_FILE)
+    notes = [
+        f"Adoption: {files} files ({payload} bytes) from {directories} project "
+        f"{'directory' if directories == 1 else 'directories'} -> "
+        f"{_display_path(base)}{os.sep}<project key>{os.sep}, "
+        f"{normalised} normalised, {len(skipped)} skipped, {already} already "
+        f"adopted, {len(diverged)} diverged."
+    ]
+    # EVERY ONE OF THEM, uncapped. A count an adopter cannot reconcile against
+    # their own `ls` is the number this list exists to make checkable, and the
+    # diverged lines in particular are the only place a file adoption declined
+    # to touch is ever named.
+    notes.extend(f"  skipped: {line}" for line in skipped)
+    notes.extend(f"  diverged: {line}" for line in diverged)
+    return actions, rows, notes
+
+
+def _home_form(path: str) -> str:
+    """`path` written the way a settings file should carry it.
+
+    `~/`-prefixed under `$HOME` because the harness expands exactly that, and
+    a settings file that survives a moved home directory is worth the two
+    characters. `$HOME` rather than the password database, for the reason
+    `expand_home` reads it: the value has to mean the same thing to the
+    process that wrote it and the shell that resolved it.
+    """
+    home = os.environ.get("HOME", "")
+    if home and path.startswith(home + os.sep):
+        return "~/" + path[len(home) + 1 :]
+    return path
+
+
+def _redirect_dir(store: str) -> str:
+    """Where `--adopt-auto-memory` points the harness, resolved.
+
+    A DIRECTORY OF THE HARNESS'S OWN inside the corpus root, never the corpus
+    root itself. Measured on 2.1.258: every `.md` written or edited under the
+    configured directory is re-serialised — name slugified, other top-level
+    keys buried under `metadata:` — and the gate is a string prefix on that
+    path. Pointed at the corpus root, that is every memory in the store;
+    pointed here, it is only what the harness itself wrote.
+    """
+    return os.path.join(store, "search", harness_memory.SAFE_SUBDIR)
+
+
 def build_plan(
     machine: Machine,
     *,
@@ -1040,6 +1621,8 @@ def build_plan(
     config: str | None = None,
     wire_claude_md: bool = False,
     auto_dream_off: bool = False,
+    adopt_auto_memory: bool = False,
+    auto_memory_off: bool = False,
 ) -> Plan:
     """Everything init would do, computed against the tree as it is now."""
     config_path = _resolve_config(machine, config)
