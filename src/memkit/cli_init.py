@@ -646,6 +646,8 @@ def check_refusals(
     store_path: str,
     wire_claude_md: bool,
     auto_dream_off: bool,
+    adopt_auto_memory: bool = False,
+    auto_memory_off: bool = False,
 ) -> None:
     """Every reason init will not proceed, in the order they are cheapest to
     answer and most terminal to meet."""
@@ -714,13 +716,16 @@ def check_refusals(
             "rename one.",
         )
 
-    # The two writes that land OUTSIDE memkit's own paths, and the rule is the
-    # same for both: a target that resolves inside a memory store is a memory
-    # file that edits the harness's configuration. Nothing in this build writes
-    # a memory, but the store is a directory an agent is told to write into.
+    # The writes that land OUTSIDE memkit's own paths, and the rule is the same
+    # for every one of them: a target that resolves inside a memory store is a
+    # memory file that edits the harness's configuration. Nothing in this build
+    # writes a memory, but the store is a directory an agent is told to write
+    # into.
     for flag, target, what in (
         (wire_claude_md, _claude_md(machine), "CLAUDE.md"),
         (auto_dream_off, _settings_path(machine), "settings.json"),
+        (adopt_auto_memory, _settings_path(machine), "settings.json"),
+        (auto_memory_off, _settings_path(machine), "settings.json"),
     ):
         if not flag:
             continue
@@ -743,6 +748,80 @@ def check_refusals(
                 "file an agent is told to write memories into.",
             )
         _refuse_unwritable(what, target)
+
+    # BOTH OF THESE ARE --adopt-auto-memory's ALONE. `--auto-memory-off` writes
+    # one boolean and has to stay idempotent: refusing it because the feature
+    # is already off would take away the convergence every other flag here has,
+    # and a second run of it is an empty manifest either way.
+    if adopt_auto_memory:
+        by_scope = {scope.scope: scope for scope in machine.settings}
+        # THE SCOPE SET FOR THE BOOLEAN IS A FAIL-SAFE CHOICE AND NOT A
+        # MEASURED ONE. `harness_memory.switch` resolves this key in the
+        # precedence the harness was measured to use and answers with the one
+        # scope that decides it; this reads ALL of them and refuses on any
+        # `false` it finds. The two differ only where a lower scope says false
+        # and a higher one says true, and the costs are not symmetric: a
+        # refusal costs a flag the adopter drops, and a redirect written for a
+        # feature nobody turned on costs a directory they now have to clean up.
+        for name in harness_memory.SCOPE_ORDER:
+            scope = by_scope.get(name)
+            # `is False` and not falsiness: JSON `0`, `""` and `[]` are all
+            # values the harness goes on writing under.
+            if scope is None or scope.data.get(harness_memory.ENABLED_KEY) is not False:
+                continue
+            raise Refusal(
+                "auto-memory-off",
+                f'"{harness_memory.ENABLED_KEY}": false is set in {name} '
+                "settings, so the harness writes no auto-memory at all — and "
+                "--adopt-auto-memory would copy what is there and then point a "
+                "switched-off feature at your store. Turn it back on first if "
+                "you want new memories to land there, or drop the flag: "
+                "nothing under "
+                + _display_path(_harness_config_dir())
+                + " is going to grow while that is false.",
+            )
+        planned = _redirect_dir(store_path)
+        for name in harness_memory.SCOPE_ORDER:
+            scope = by_scope.get(name)
+            if scope is None:
+                continue
+            value = scope.data.get(harness_memory.DIRECTORY_KEY)
+            if value is None:
+                continue
+            # A value that is not a string is one the harness rejects and falls
+            # back to its default from — still not the planned directory, and
+            # still somebody's declaration to leave alone.
+            if isinstance(value, str) and os.path.normpath(
+                expand_home(value)
+            ) == os.path.normpath(planned):
+                continue
+            shown = (
+                _display_path(expand_home(value)) if isinstance(value, str)
+                else repr(value)
+            )
+            # WHICH SCOPE DECIDES IT, asked of the same reader doctor asks, so
+            # the two commands cannot come to disagree about it. `None` is a
+            # declaration the harness would not use, which sends it to its own
+            # default rather than to the next scope down.
+            winner, decides = harness_memory.configured_dir(machine.settings)
+            says = (
+                f"the harness reads {decides} settings for it"
+                if winner is not None
+                else "no scope declares a value the harness would use, so it "
+                "writes to its own default directory instead"
+            )
+            raise Refusal(
+                "auto-memory-redirected",
+                f'"{harness_memory.DIRECTORY_KEY}" is already set to {shown} '
+                f"in {name} settings, and {says}. --adopt-auto-memory writes "
+                f'"{_home_form(planned)}" into the user scope '
+                f"({_display_path(_settings_path(machine))}), which would "
+                "either be ignored or move where your agent writes without "
+                "your having said so. Point that setting at the store "
+                "yourself and run this again, or drop the flag — copying what "
+                "is already written is a separate decision from redirecting "
+                "what is written next.",
+            )
 
     if _inside(config_path, machine.state_dir):
         raise Refusal(
@@ -1017,13 +1096,22 @@ def _import_line(store: str) -> str:
 
 
 def _claude_md(machine: Machine) -> str:
-    config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    return os.path.join(config_dir, "CLAUDE.md")
+    return os.path.join(_harness_config_dir(), "CLAUDE.md")
+
+
+def _harness_config_dir() -> str:
+    """Where the harness keeps its settings and its own memories.
+
+    One reader rather than the expression repeated at each use: the two
+    directories this command now writes about — the settings file it may
+    change and the projects tree it may copy out of — are the same answer to
+    one question, and two copies of it is how they come to disagree.
+    """
+    return os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
 
 
 def _settings_path(machine: Machine) -> str:
-    config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    return os.path.join(config_dir, "settings.json")
+    return os.path.join(_harness_config_dir(), "settings.json")
 
 
 # The operations whose target is a FILE. `VERIFY` names the store directory
@@ -1633,9 +1721,29 @@ def build_plan(
         store_path=store_path,
         wire_claude_md=wire_claude_md,
         auto_dream_off=auto_dream_off,
+        adopt_auto_memory=adopt_auto_memory,
+        auto_memory_off=auto_memory_off,
     )
     nonce = _canary_nonce(config_path)
     store_id = _store_id(store_path)
+    config_dir = _harness_config_dir()
+    adopted: list = []
+    rows: list = []
+    adoption_notes: list = []
+    if adopt_auto_memory:
+        adopted, rows, adoption_notes = _plan_adoption(store_path, config_dir)
+    canary_link = os.path.join("search", CANARY_NAME)
+    # THE WHOLE STORE'S ROWS, not just the ones this run writes. A file already
+    # under `search/` owes SEARCH.md a row whoever put it there, and the
+    # planned writes win over what is on disk because they are what will be
+    # there when the checker runs. A `diverged` destination contributes no
+    # planned row and keeps the one its own text produces.
+    ledger_rows = _rows_on_disk(store_path, config_path)
+    ledger_rows[canary_link] = (
+        "memkit-canary", canary_link, _canary_description(nonce),
+    )
+    for row in rows:
+        ledger_rows[row[1]] = row
     actions = [
         Action(
             CREATE_DIR,
@@ -1695,12 +1803,18 @@ def build_plan(
             note="one memory, so the store answers something on the first "
             "prompt and doctor has a fixed query that can only match this file.",
         ),
+        # BEFORE the verification, and that is the whole reason they are in
+        # this list rather than appended past it the way the settings writes
+        # are: VERIFY runs the integrity checker over the finished store, and
+        # a copied memory whose ledger row landed after the check would be an
+        # orphan the check could not have seen.
+        *adopted,
         Action(
             CREATE_FILE,
             os.path.join(store_path, "SEARCH.md"),
-            _search_ledger(store_path, nonce),
-            note="generated from the frontmatter above, in the form the "
-            "integrity checker generates.",
+            _search_ledger_text(store_path, nonce, list(ledger_rows.values())),
+            note="generated from the frontmatter of every memory under "
+            "search/, in the form the integrity checker generates.",
         ),
         Action(
             VERIFY,
@@ -1710,7 +1824,11 @@ def build_plan(
             "then report success.",
         ),
     ]
-    notes = []
+    # THE INVENTORY LINE IS UNCONDITIONAL and the adoption lines are not.
+    # What the harness has already written is a fact about this machine an
+    # adopter cannot see from inside memkit, and a flag they have never heard
+    # of is not an answer to it.
+    notes = list(_auto_memory_notes(store_path, config_dir)) + adoption_notes
     if wire_claude_md:
         target = _claude_md(machine)
         # FileNotFoundError is the create case and takes the empty default;
@@ -1778,9 +1896,70 @@ def build_plan(
             )
         )
         notes.append(
-            "Turning auto-dream off stops the harness writing and "
-            "consolidating its own memories beside memkit's. It is the only "
-            "settings key init will ever write."
+            "Turning auto-dream off stops BACKGROUND CONSOLIDATION and "
+            "nothing else: the harness goes on writing its own memories "
+            "beside memkit's. --auto-memory-off is the flag that stops the "
+            "writing, and --adopt-auto-memory is the one that moves what is "
+            "written into the store."
+        )
+    if adopt_auto_memory:
+        target = _settings_path(machine)
+        redirect = _home_form(_redirect_dir(store_path))
+        actions.append(
+            Action(
+                SETTINGS_WRITE,
+                target,
+                _settings_with(target, {harness_memory.DIRECTORY_KEY: redirect}),
+                note=(
+                    f'sets "{harness_memory.DIRECTORY_KEY}": "{redirect}" and '
+                    "changes no other key. From then on EVERY project's new "
+                    "memories land flat in that one directory, and the "
+                    "MEMORY.md the harness keeps beside them is loaded into "
+                    "every session. The file is rewritten from its own parse, "
+                    "so its indentation becomes two spaces"
+                ),
+                payload={harness_memory.DIRECTORY_KEY: redirect},
+            )
+        )
+        notes.append(
+            "Sessions already running keep the directory they started with "
+            "until they are restarted, so run these two turns again "
+            "afterwards to sweep up whatever they wrote in between — a second "
+            "run copies only what is new."
+        )
+        notes.append(
+            "The originals are left exactly where they are: adoption copies "
+            "and never moves. Deleting what it copied is yours to do, once "
+            "you have looked at what landed."
+        )
+        notes.append(
+            "What the harness writes there LATER has no SEARCH.md row until "
+            "the integrity checker generates one (`memory-integrity --write` "
+            "on the pip and nix channels). Those files are retrievable "
+            "before that — the hook reads the tree, not the ledger — so a "
+            "missing row costs a line in an index and not a memory."
+        )
+    if auto_memory_off:
+        target = _settings_path(machine)
+        actions.append(
+            Action(
+                SETTINGS_WRITE,
+                target,
+                _settings_with(target, {harness_memory.ENABLED_KEY: False}),
+                note=(
+                    f'sets "{harness_memory.ENABLED_KEY}": false and changes '
+                    "no other key. The harness then neither reads nor writes "
+                    "auto-memory. The file is rewritten from its own parse, "
+                    "so its indentation becomes two spaces"
+                ),
+                payload={harness_memory.ENABLED_KEY: False},
+            )
+        )
+        notes.append(
+            "Turning auto-memory off leaves memkit as the only memory system "
+            "on this machine. What the harness has already written stays "
+            "where it is — --adopt-auto-memory is what copies it into the "
+            "store."
         )
     # AFTER the plan is complete and before anything acts on it. Run where the
     # list was still being built, it checked eight of the ten actions — the two
@@ -1797,7 +1976,9 @@ def build_plan(
 # rather than a check on that name, because the next key with the same power
 # has not been named yet and a denylist only ever catches the ones somebody
 # thought of.
-SETTINGS_KEYS_INIT_MAY_WRITE = frozenset({"autoDreamEnabled"})
+SETTINGS_KEYS_INIT_MAY_WRITE = frozenset(
+    {"autoDreamEnabled", "autoMemoryDirectory", "autoMemoryEnabled"}
+)
 
 
 def _settings_with(path: str, changes: dict) -> str:
@@ -1813,7 +1994,7 @@ def _settings_with(path: str, changes: dict) -> str:
         raise Refusal(
             "enabled-plugins",
             "init would write " + ", ".join(disallowed) + " into your "
-            "settings. The only key it may write is "
+            "settings. The only keys it may write are "
             + ", ".join(sorted(SETTINGS_KEYS_INIT_MAY_WRITE))
             + " — a plugin that enabled itself would be a plugin deciding its "
             "own access.",
@@ -1938,8 +2119,29 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--auto-dream-off",
         action="store_true",
         dest="auto_dream_off",
-        help='set "autoDreamEnabled": false, so the harness stops writing its '
-        "own memories beside memkit's. The only settings key init will write",
+        help='set "autoDreamEnabled": false, which stops the harness\'s '
+        "BACKGROUND CONSOLIDATION only — it goes on writing its own memories. "
+        "--auto-memory-off is the flag that stops the writing",
+    )
+    # NOT required, and mutually exclusive: adopting what the harness has
+    # written and switching the feature off are opposite answers to one
+    # question, and argparse turns the pair into the exit 2 the dispatcher
+    # already promises for a usage error.
+    auto_memory = parser.add_mutually_exclusive_group()
+    auto_memory.add_argument(
+        "--adopt-auto-memory",
+        action="store_true",
+        dest="adopt_auto_memory",
+        help="copy the memories the harness has written under its own config "
+        "directory into the store, and point it there for the ones it writes "
+        "next. Copies, never moves",
+    )
+    auto_memory.add_argument(
+        "--auto-memory-off",
+        action="store_true",
+        dest="auto_memory_off",
+        help='set "autoMemoryEnabled": false, so the harness writes no '
+        "memories of its own at all and memkit is the only one here",
     )
 
 
@@ -1959,6 +2161,8 @@ def run(args: argparse.Namespace) -> int:
             config=getattr(args, "config", None),
             wire_claude_md=getattr(args, "wire_claude_md", False),
             auto_dream_off=getattr(args, "auto_dream_off", False),
+            adopt_auto_memory=getattr(args, "adopt_auto_memory", False),
+            auto_memory_off=getattr(args, "auto_memory_off", False),
         )
     except Refusal as refusal:
         return _refuse(refusal)
