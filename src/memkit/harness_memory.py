@@ -85,10 +85,22 @@ INDEX_NAME = "MEMORY.md"
 _SUBMODULE_GIT_DIR = os.sep + ".git" + os.sep + "modules" + os.sep
 
 # The scopes the harness resolves these keys in, most authoritative first, and
-# the FIRST ONE THAT DECLARES THE KEY WINS. Measured on 2.1.258: the resolver
-# reads policy settings, then the `--settings` flag, then
-# `.claude/settings.local.json`, then the checked-in `.claude/settings.json`,
-# then user settings — so `local` outranks `project`, and both outrank `user`.
+# the FIRST ONE THAT DECLARES THE KEY WINS: policy settings, then the
+# `--settings` flag, then `.claude/settings.local.json`, then the checked-in
+# `.claude/settings.json`, then user settings — so `local` outranks `project`,
+# and both outrank `user`.
+#
+# MEASURED FOR THE DIRECTORY, INFERRED FOR THE TWO BOOLEANS, and the difference
+# is stated because nothing else here records it. `autoMemoryDirectory` is
+# resolved through an entry resolver that RETURNS THE SCOPE its value came
+# from, so which file won is observable. Read from the 2.1.258 code, the two
+# switches go through a plain merged-settings accessor that reports no scope at
+# all — one precedence almost certainly, but two code paths, and applying this
+# tuple to them is an inference this package has not measured.
+#
+# It only decides anything when TWO scopes declare one key with different
+# values; with one declaring scope every candidate order picks it. That is why
+# doctor reports rather than passes the disagreeing case instead of guessing.
 #
 # The `--settings` scope has no entry here because it cannot be one: it names a
 # file chosen per invocation, on a command line this process never sees.
@@ -317,6 +329,11 @@ def switch(scopes, key: str) -> tuple:
     the report has to NAME, and a report that named every value it found would
     be answering a different question. An explicit `null` is absence, which is
     what the harness's own `!= null` test makes it.
+
+    THAT PRECEDENCE IS AN INFERENCE FOR THE TWO BOOLEANS — see `SCOPE_ORDER`.
+    The scope name comes back beside the value so a caller can say which file
+    decided, and so a caller that cares can ask whether a lower one disagrees:
+    this returns the first answer, never a claim that it is the only one.
     """
     by_name = {scope.scope: scope for scope in scopes}
     for name in SCOPE_ORDER:

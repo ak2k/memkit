@@ -2922,12 +2922,126 @@ def test_a_checked_in_settings_file_decides_and_is_reported_not_passed(
     assert "User settings rank below both" in row.remedy
     assert row.actor == doctor.USER
 
-    # `.claude/settings.local.json` is not checked in, and outranks it.
+    # `.claude/settings.local.json` OUTRANKS it and is not the adopter's file
+    # either. It is untracked by convention, and a bare `git add` tracks it:
+    # nothing here enforces the convention, and doctor may not pass a value on
+    # the strength of one. Reported, with what to check.
     local = pathlib.Path(os.getcwd()) / ".claude" / doctor.LOCAL_SETTINGS_NAME
     local.write_text(json.dumps({"autoMemoryDirectory": str(mine)}), encoding="utf-8")
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert doctor.LOCAL_SETTINGS_NAME in row.detail
+    assert "untracked" in row.remedy
+    assert row.actor == doctor.USER
+    # And the sentence that was never true of this file is gone: what travels
+    # with a clone is the checked-in one.
+    assert "checked into this repository" not in row.detail
+
+    # The adopter's OWN settings file decides it and passes: the rule is who
+    # wrote the file, not which key it holds.
+    local.unlink()
+    checked_in.unlink()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert row.status == doctor.PASS
-    assert "local settings" in row.detail
+    assert "user settings" in row.detail
+
+
+def test_a_checkout_that_turns_the_feature_on_is_reported_the_same_way(
+    profile, monkeypatch
+) -> None:
+    """The disclosure is about WHO DECIDED, not about which way they decided.
+
+    Living inside `if enabled is False`, it fired for a clone that turned the
+    feature off and never for the one that turned it back on over an adopter
+    who had switched it off — which is the direction that leaves two memory
+    systems running on a machine whose owner believes there is one.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "travels with every clone" in row.detail
+    assert "memkit is the only memory system here" not in row.detail
+    assert doctor.LOCAL_SETTINGS_NAME in row.remedy
+    assert row.actor == doctor.USER
+
+    # The adopter's own file turning it on is the ordinary armed state, with no
+    # disclosure to make.
+    checked_in.unlink()
+    _settings(profile, autoMemoryEnabled=True)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "travels with every clone" not in row.detail
+
+
+def test_off_is_information_when_a_lower_scope_declares_it_otherwise(
+    profile, monkeypatch
+) -> None:
+    """The one case the boolean scope order decides, and that order is INFERRED.
+
+    The directory key's precedence was measured — the resolver returns the
+    scope it came from — but the two booleans go through a plain merged-settings
+    accessor that reports no source, so which file wins when two disagree is
+    read from one code path and applied to another. With a single declaring
+    scope every candidate order picks it and the answer is safe; with two, the
+    inference is load-bearing for this row's most confident sentence.
+    """
+    path = _store_config(profile, stores=["personal"])
+    managed = profile / "managed"
+    managed.mkdir()
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    _settings(profile, autoMemoryEnabled=True)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "user settings declare it otherwise" in row.detail
+    assert row.actor == doctor.USER
+
+    # One declaring scope, and every candidate order picks it: PASS.
+    _settings(profile, autoDreamEnabled=True)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+    assert "auto-memory is off in managed settings" in row.detail
+
+
+def test_a_config_directory_this_tree_chose_does_not_pass_its_own_inventory(
+    profile, monkeypatch
+) -> None:
+    """`$CLAUDE_CONFIG_DIR` is the same variable `settings_scopes` guards.
+
+    Pointed inside the session's own directory it is the project scope under
+    another name: what it enumerates decides PASS over INFO, it is printed as
+    the derived default, and it lands in the remedy — so a repository that
+    redirects it moves this row to the reassuring answer.
+    """
+    path = _store_config(profile, stores=["personal"], dirs={"personal": "project/s"})
+    corpus = profile / "project" / "s" / "search"
+    _memory(corpus, "kept.md", "valve lash after the top end")
+    steered = corpus / "claude-config"
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(steered))
+    written = steered / "projects" / harness_memory.project_key(os.getcwd()) / "memory"
+    written.mkdir(parents=True)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "this session stands in" in row.detail
+    # And the remedy does not send the adopter to edit a file the tree chose.
+    assert str(steered) not in row.remedy
+    assert row.actor == doctor.USER
 
 
 def test_a_checkout_that_turns_the_feature_off_is_reported_not_believed(

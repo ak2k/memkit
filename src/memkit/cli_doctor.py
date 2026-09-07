@@ -3197,13 +3197,108 @@ _CHECKOUT_COST = (
 # And what to do about it. NOT "set it in your user settings", which is the
 # obvious advice and does nothing: `user` ranks BELOW the checked-in file in
 # the measured order, so a value there is masked for as long as that file sets
-# the key. `.claude/settings.local.json` outranks it and is not itself checked
-# in, which is the one edit that does not require touching the repository.
+# the key. `.claude/settings.local.json` outranks it, which is the one edit
+# that does not require touching the repository — and being untracked is a
+# CONVENTION rather than something git enforces, so the instruction says to
+# keep it that way instead of asserting that it already is.
 _CHECKOUT_REMEDY = (
     "either take the key out of that file or set it in "
-    ".claude/settings.local.json, which outranks it and is not itself checked "
-    "in. User settings rank below both and change nothing while it is set"
+    ".claude/settings.local.json, which outranks it — and keep that file "
+    "untracked, which nothing but convention makes it. User settings rank "
+    "below both and change nothing while it is set"
 )
+
+
+def _checkout_remedy(decide_what: str, scope: str) -> str:
+    """What to tell an adopter about a value a file in this tree decided.
+
+    ONE FUNCTION for what were two spellings of the same paragraph, because
+    the pair had drifted: whether a scope's file travels with a clone is a
+    different fact per scope, and a remedy that told the adopter to move the
+    key into `.claude/settings.local.json` was nonsense addressed to the run
+    where that file is what set it.
+    """
+    if scope == harness_memory.CHECKOUT_SCOPE:
+        return f"{_CHECKOUT_COST}. To decide {decide_what}, {_CHECKOUT_REMEDY}."
+    return (
+        f"That value is in a file in the directory this session stands in "
+        f"rather than in your own settings. To decide {decide_what}, take the "
+        f"key out of it — and check that {LOCAL_SETTINGS_NAME} is untracked, "
+        "because a bare `git add` tracks it and then a clone carries it too."
+    )
+
+
+def _checkout_source(scope: str) -> tuple:
+    """`(how to name this scope's file, what it costs)` for a scope the adopter
+    does not own.
+
+    WHAT IS ASSERTED IS WHAT IS KNOWN. Only `.claude/settings.json` is the file
+    a repository checks in by design, so only that one is described as
+    travelling with every clone. `.claude/settings.local.json` is untracked by
+    convention alone, and memkit does not measure which: answering it means
+    running git inside the session's own checkout, which `cli_init._git_tracked`
+    refuses outright — `ls-files` executes `core.fsmonitor` from the config of
+    whatever repository the path belongs to, and no `-c` override closes a
+    surface a repository can always add a key to. So the file is named, the
+    convention is named as one, and the value is reported rather than passed.
+    """
+    if scope == harness_memory.CHECKOUT_SCOPE:
+        return (
+            f"a checked-in .claude/{SETTINGS_NAME}",
+            "that file is checked into this repository and travels with every "
+            "clone",
+        )
+    if scope == "local":
+        return (
+            f".claude/{LOCAL_SETTINGS_NAME} in this directory",
+            f"{LOCAL_SETTINGS_NAME} is untracked by convention rather than by "
+            "anything git enforces, and this file is in the directory this "
+            "session stands in",
+        )
+    # The `user` scope, once `$CLAUDE_CONFIG_DIR` puts it inside the session's
+    # own directory: the trusted scope under another name.
+    return (
+        f"{scope} settings",
+        "that file is in the directory this session stands in, so it is not "
+        "one your own machine placed",
+    )
+
+
+def _adopter_owns(scopes: list, name: str) -> bool:
+    """Whether the scope that decided a key is one the ADOPTER owns.
+
+    The predicate `settings_scopes` already computes, asked here rather than
+    re-derived: a comparison against one scope NAME left `local` — a file in
+    the session's own directory, outranking the one memkit does flag — passing
+    as though the adopter had written it.
+
+    An undeclared key has no scope and no owner to doubt.
+    """
+    for scope in scopes:
+        if scope.scope == name:
+            return scope.adopter_owned
+    return True
+
+
+def _declared_below(scopes: list, key: str, name: str, value) -> str:
+    """The highest scope BELOW `name` declaring `key` differently, or "".
+
+    The only case a precedence order decides anything. Compared as JSON text
+    rather than with `==`, because `False == 0` in Python and the harness reads
+    those two as opposite answers.
+    """
+    if name not in harness_memory.SCOPE_ORDER:
+        return ""
+    by_name = {scope.scope: scope for scope in scopes}
+    below = harness_memory.SCOPE_ORDER[harness_memory.SCOPE_ORDER.index(name) + 1 :]
+    for lower in below:
+        scope = by_name.get(lower)
+        if scope is None:
+            continue
+        other = scope.data.get(key)
+        if other is not None and json.dumps(other) != json.dumps(value):
+            return lower
+    return ""
 
 
 @_produces("auto-memory")
@@ -3223,10 +3318,15 @@ def _auto_memory(machine: Machine) -> list[Check]:
     key it met first, reported `autoDreamEnabled` while `autoMemoryEnabled`
     sat in the same file deciding whether the feature ran.
 
-    The inventory enumerates `$CLAUDE_CONFIG_DIR` unguarded, unlike the
-    settings scope read out of the same variable: it counts names in a
-    directory the adopter placed, opens nothing, and no branch here acts on
-    what it finds.
+    WHO DECIDED is the other axis, and it is asked of every value on this row
+    regardless of what the value is. A scope the adopter does not own is
+    reported and never passed — a clone that turns the feature ON over an
+    adopter who turned it off is the direction that leaves two memory systems
+    running on a machine whose owner believes there is one.
+
+    `$CLAUDE_CONFIG_DIR` is one of those scopes when it points inside the
+    session's own directory, and the inventory it enumerates is then a count of
+    whatever that tree put there.
     """
     enabled, enabled_scope = harness_memory.switch(
         machine.settings, harness_memory.ENABLED_KEY
@@ -3236,6 +3336,12 @@ def _auto_memory(machine: Machine) -> list[Check]:
     )
     odd_enabled = _odd_switch(harness_memory.ENABLED_KEY, enabled, enabled_scope)
     config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
+    # THE SAME VARIABLE `settings_scopes` guards, guarded the same way. Read
+    # raw it decided three things — the directory printed as the derived
+    # default, the inventory whose emptiness chooses PASS over INFO, and the
+    # file the remedy names — so a repository that redirects it moved this row
+    # to its most reassuring answer.
+    steered = _under_cwd(config_dir)
     default = ""
     underived = ""
     if not machine.cwd:
@@ -3270,47 +3376,83 @@ def _auto_memory(machine: Machine) -> list[Check]:
     # of them a value the harness goes on writing under, and read as off they
     # produce this row's most confident sentence over a machine with two memory
     # systems on it.
+    #
+    # THE SWITCH'S OWNER, whichever way it was switched. The disclosure used to
+    # live inside this branch, so it fired for a clone that turned the feature
+    # off and never for one that turned it back on.
+    switch_theirs = bool(enabled_scope) and not _adopter_owns(
+        machine.settings, enabled_scope
+    )
+    switch_source, switch_travels = (
+        _checkout_source(enabled_scope) if switch_theirs else ("", "")
+    )
     if enabled is False:
         off = (
             f"auto-memory is off in {enabled_scope} settings; memkit is the "
             "only memory system here"
         )
-        if enabled_scope == harness_memory.CHECKOUT_SCOPE:
+        if switch_theirs:
             return [
                 Check(
                     "auto-memory",
                     INFO,
                     _detail(
                         f"{off} while this checkout says so — the value is in "
-                        "a checked-in .claude/settings.json, which travels "
-                        "with every clone",
+                        f"{switch_source}, and {switch_travels}",
                         recent,
                     ),
-                    f"{_CHECKOUT_COST}. To decide it yourself, "
-                    f"{_CHECKOUT_REMEDY}.",
+                    _checkout_remedy("it yourself", enabled_scope),
+                    actor=USER,
+                )
+            ]
+        # THE ONLY CASE THE SCOPE ORDER DECIDES ANYTHING. With one declaring
+        # scope every candidate precedence picks it; with two that disagree,
+        # this row's most consequential sentence rests on an order inferred
+        # rather than measured, so it is reported instead of passed.
+        disputed = _declared_below(
+            machine.settings, harness_memory.ENABLED_KEY, enabled_scope, enabled
+        )
+        if disputed:
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(
+                        f"auto-memory is off in {enabled_scope} settings and "
+                        f"{disputed} settings declare it otherwise. Which file "
+                        "wins is read from the harness's directory resolver "
+                        "and inferred for this key, which resolves through an "
+                        "accessor that reports no scope",
+                        recent,
+                    ),
+                    f"Settle it in one place: take "
+                    f'"{harness_memory.ENABLED_KEY}" out of {disputed} '
+                    f"settings, or out of {enabled_scope} settings, so no "
+                    "order decides it.",
                     actor=USER,
                 )
             ]
         return [Check("auto-memory", PASS, _detail(off, recent))]
 
+    # The feature is running, and a file this tree carries may be why.
+    switched_on = (
+        f'"{harness_memory.ENABLED_KEY}" is on in {switch_source}, and '
+        f"{switch_travels}"
+        if switch_theirs
+        else ""
+    )
     configured, where = harness_memory.configured_dir(machine.settings)
     if configured is not None:
-        checkout = where == harness_memory.CHECKOUT_SCOPE
-        source = (
-            "a checked-in .claude/settings.json" if checkout else f"{where} settings"
+        checkout = not _adopter_owns(machine.settings, where)
+        source, travels = (
+            _checkout_source(where) if checkout else (f"{where} settings", "")
         )
         named = (
             f"{_display_path(configured)} ({harness_memory.DIRECTORY_KEY} in "
             f"{source})"
         )
-        travels = (
-            "that file is checked into this repository and travels with every "
-            "clone"
-            if checkout
-            else ""
-        )
         retrieved, says, target = _placed(machine, configured)
-        if retrieved and not checkout:
+        if retrieved and not checkout and not switch_theirs:
             return [
                 Check(
                     "auto-memory",
@@ -3335,15 +3477,16 @@ def _auto_memory(machine: Machine) -> list[Check]:
             'memories land" in docs/STORE.md says what each choice costs.'
         )
         if checkout:
-            remedy = (
-                f"{_CHECKOUT_COST}. To decide where your agent writes, "
-                f"{_CHECKOUT_REMEDY}."
-            )
+            remedy = _checkout_remedy("where your agent writes", where)
+        elif switch_theirs:
+            remedy = _checkout_remedy("whether it runs at all", enabled_scope)
         return [
             Check(
                 "auto-memory",
                 INFO,
-                _detail(f"{named} {says}", travels, recent, odd_enabled),
+                _detail(
+                    f"{named} {says}", travels, switched_on, recent, odd_enabled
+                ),
                 remedy,
                 actor=USER,
             )
@@ -3380,8 +3523,33 @@ def _auto_memory(machine: Machine) -> list[Check]:
     dream_off = ""
     if dream is False:
         dream_off = f"auto-dream is off in {dream_scope}: no background consolidation"
+    # THE CLAUSE BEFORE THE PATH, because `_bound` cuts from the end and the
+    # path is the part an adopter's own machine decides the length of.
+    redirected = (
+        "$CLAUDE_CONFIG_DIR points inside the directory this session stands "
+        "in, so both that path and what is counted in it are this tree's "
+        f"choice: {_display_path(config_dir)}"
+        if steered
+        else ""
+    )
+    # A remedy NEVER SENDS THE ADOPTER INTO THE CHECKOUT — and "set it in your
+    # user settings" is worse than nothing while a scope above them sets the
+    # key, which is the whole of what `_checkout_remedy` exists to say.
+    if steered:
+        switch_off = (
+            'To run memkit alone, set "autoMemoryEnabled": false in the '
+            "settings.json under your own ~/.claude, and unset "
+            "$CLAUDE_CONFIG_DIR or point it back there."
+        )
+    else:
+        switch_off = (
+            'To run memkit alone, set "autoMemoryEnabled": false in '
+            f"{_display_path(config_dir)}/settings.json."
+        )
     fixed = (
         first,
+        redirected,
+        switched_on,
         recent,
         odd_enabled,
         _odd_switch(harness_memory.DREAM_KEY, dream, dream_scope),
@@ -3391,7 +3559,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
         if wired
         else "",
     )
-    if here and not outside:
+    if here and not outside and not steered and not switch_theirs:
         return [Check("auto-memory", PASS, _detail(*fixed))]
     counted = ""
     listed = ""
@@ -3417,13 +3585,18 @@ def _auto_memory(machine: Machine) -> list[Check]:
             # path with its separators replaced, so five of them are longer
             # than everything else in this row put together.
             _detail(*fixed, counted, listed),
-            "Two memory systems on one project is a choice rather than a "
+            # THE WHOLE REMEDY when a scope above the adopter's turned the
+            # feature on, rather than a sentence appended to the store advice:
+            # where the harness writes is not the question while somebody else
+            # decides whether it writes, and the two paragraphs together do not
+            # fit inside this string's own bound.
+            _checkout_remedy("whether it runs at all", enabled_scope)
+            if switch_theirs
+            else "Two memory systems on one project is a choice rather than a "
             "fault. To put what the harness writes inside the store, set "
             f'"{harness_memory.DIRECTORY_KEY}" to an {harness_memory.SAFE_SUBDIR}/ '
             'directory under a corpus root — "Where your agent\'s own memories '
-            'land" in docs/STORE.md has the value and the trap. To run memkit '
-            'alone, set "autoMemoryEnabled": false in '
-            f"{_display_path(config_dir)}/settings.json.",
+            f"land\" in docs/STORE.md has the value and the trap. {switch_off}",
             actor=USER,
         )
     ]
