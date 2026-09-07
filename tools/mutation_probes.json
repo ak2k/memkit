@@ -1996,12 +1996,78 @@
       "name": "auto-memory-calls-a-pruned-directory-retrieved",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    return bool(set(relative.split(os.sep)) & EXCLUDE_DIRS)\n",
+      "old": "    return _excluded(os.path.join(root, relative))\n",
       "new": "    return False\n",
       "tests": [
         "tests/test_doctor.py::test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved"
       ],
       "why": "Inside a corpus root is not the same as retrieved: the indexing walk prunes hot/ and archive/ wherever they sit under one. Without this test a setting pointing into either gets the row's most reassuring sentence — what the harness writes there is retrieved — over a directory the index never reads."
+    },
+    {
+      "name": "auto-memory-prunes-on-the-last-component-only",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    return _excluded(os.path.join(root, relative))\n",
+      "new": "    return os.path.basename(relative) in EXCLUDE_DIRS\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved"
+      ],
+      "why": "The walk drops a directory the moment any component of the path is excluded, so hot/auto-memory is unindexed and its basename is not. A one-component fixture cannot tell the two rules apart, which is how this edit survived every test and every probe."
+    },
+    {
+      "name": "auto-memory-prunes-on-the-spelling-rather-than-the-target",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        relative = os.path.relpath(os.path.realpath(directory), os.path.realpath(root))\n",
+      "new": "        relative = os.path.relpath(directory, root)\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved"
+      ],
+      "why": "The harness writes to what the path resolves to. A link inside the corpus root pointing into hot/ is a directory the walk never descends into, and un-resolved it reads as an ordinary name the row passes."
+    },
+    {
+      "name": "auto-memory-prunes-on-a-corpus-relative-path-the-indexer-never-uses",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    return _excluded(os.path.join(root, relative))\n",
+      "new": "    return _excluded(relative)\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_corpus_root_under_a_pruned_name_indexes_nothing_at_all"
+      ],
+      "why": "_fts_scan asks _excluded of the whole path it built, so a store whose own root sits under archive/ has nothing indexed in it. Asked of the corpus-relative path instead, doctor passes the one directory an adopter is being told to point the harness at."
+    },
+    {
+      "name": "auto-memory-takes-the-first-store-with-any-relation-at-all",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                within = (store.id, root, _how_inside(directory, root, tiered))\n",
+      "new": "                return store.id, root, _how_inside(directory, root, tiered)\n",
+      "tests": [
+        "tests/test_doctor.py::test_nested_stores_answer_the_same_whichever_is_declared_first"
+      ],
+      "why": "With one store nested inside another, returning from the first match asks the at/over question per store and never across them: memkit.json's declaration order then decides PASS against INFO over one filesystem, and the PASS is the case where the configured directory holds another store's whole corpus root."
+    },
+    {
+      "name": "auto-memory-calls-a-store-that-is-not-on-disk-retrieval",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if not os.path.isdir(root):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_store_configured_and_not_on_disk_retrieves_nothing"
+      ],
+      "why": "realpath resolves a path nothing has created, so a store configured and not on disk still contains every directory named under it. Passed on that, one envelope carries this row's PASS and the corpus-root FAIL about the same store."
+    },
+    {
+      "name": "auto-memory-passes-a-directory-a-search-dir-would-unretrieve",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if not _within(directory, tiered):\n        return \"flat\"\n",
+      "new": "",
+      "tests": [
+        "tests/test_doctor.py::test_a_flat_store_does_not_pass_a_directory_a_search_dir_would_unretrieve"
+      ],
+      "why": "_search_root answers with the store root while a store has no search/, so a directory beside the store's memories reads as inside the corpus root — until a search/ appears and un-retrieves it in one step. Doctor would be passing what _nearest_store refuses to recommend in the same run."
     },
     {
       "name": "auto-memory-containment-is-a-bare-prefix-match",

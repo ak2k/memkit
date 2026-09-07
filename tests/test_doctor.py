@@ -745,7 +745,7 @@ def test_the_config_is_parsed_once_however_many_checks_ask(profile, monkeypatch)
 NONCE = "zq7v4k2mxr"
 
 
-def _store_config(profile, *, stores, nonce=None, gate=None) -> str:
+def _store_config(profile, *, stores, nonce=None, gate=None, dirs=None) -> str:
     """A config over real directories under the scratch profile.
 
     It RECORDS AN INTERPRETER, which is what `memkit init` writes and what the
@@ -766,7 +766,10 @@ def _store_config(profile, *, stores, nonce=None, gate=None) -> str:
             {
                 "id": name,
                 "role": "personal" if name == "personal" else "project",
-                "dir": f"stores/{name}",
+                # `dirs` is how a case puts one store's corpus root somewhere
+                # the default layout never reaches: under a pruned name, or
+                # inside another store's.
+                "dir": (dirs or {}).get(name, f"stores/{name}"),
                 "live_root": "home",
                 **({"cwd_gate": {"root": gate}} if gate and name != "personal" else {}),
             }
@@ -2414,11 +2417,184 @@ def test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved(
     assert f'"{corpus / harness_memory.SAFE_SUBDIR}"' in row.remedy
     assert row.actor == doctor.USER
 
-    # A directory whose name merely CONTAINS an excluded one is not pruned, and
-    # neither is one under a home directory that happens to be called `hot`.
+    # A directory whose name merely CONTAINS an excluded one is not pruned.
     ordinary = corpus / "hotel"
     ordinary.mkdir()
     _settings(profile, autoMemoryDirectory=str(ordinary))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+
+    # SEVERAL components down, which is the shape one guarding test on a
+    # one-component fixture could not tell from a basename comparison.
+    nested = corpus / "hot" / "am"
+    nested.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(nested))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+
+    # And through a LINK, because the harness writes to what the path resolves
+    # to and the walk never descends into a symlinked directory at all.
+    link = corpus / "linked-am"
+    link.symlink_to(nested)
+    _settings(profile, autoMemoryDirectory=str(link))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+
+
+def test_a_corpus_root_under_a_pruned_name_indexes_nothing_at_all(
+    profile, monkeypatch
+) -> None:
+    """Doctor's pruning question is the INDEXER's, asked of the absolute path.
+
+    `_fts_scan` calls `_excluded` on the path it built from the store's own
+    root, so a corpus root that itself sits under `archive/` has nothing
+    indexed anywhere inside it. Asked of the corpus-RELATIVE path, doctor
+    answered "retrieved" about the one directory an adopter is being told to
+    point the harness at — doctor disagreeing with the module it reports on.
+
+    Whether the indexer's own absolute test is right is a question about a file
+    this unit did not touch: doctor reports what it does.
+    """
+    path = _store_config(
+        profile, stores=["personal"], dirs={"personal": "archive/notes/personal"}
+    )
+    corpus = profile / "archive" / "notes" / "personal" / "search"
+    _memory(corpus, "kept.md", "brake bleed order after the caliper swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    # The hook's own answer about a file in that directory, which is what
+    # decides whether anything there is ever indexed.
+    assert hook._excluded(str(mine / "note.md")) is True
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+    assert "personal" in row.detail
+
+    # A corpus root under no pruned component keeps the PASS: the rule is the
+    # walk's, not a blanket refusal.
+    other = _store_config(
+        profile, stores=["personal"], dirs={"personal": "notes/personal"}
+    )
+    plain = profile / "notes" / "personal" / "search"
+    _memory(plain, "kept.md", "torque sequence after the head swap")
+    theirs = plain / harness_memory.SAFE_SUBDIR
+    theirs.mkdir()
+    _settings(profile, autoMemoryDirectory=str(theirs))
+    assert hook._excluded(str(theirs / "note.md")) is False
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, other)),
+        "auto-memory",
+    )
+    assert row.status == doctor.PASS
+
+
+def test_a_store_configured_and_not_on_disk_retrieves_nothing(
+    profile, monkeypatch
+) -> None:
+    """One envelope may not carry a PASS and a FAIL about the same store.
+
+    `realpath` does not require existence, so a corpus root that is not there
+    still "contains" the configured directory — and the row said what the
+    harness writes into it is retrieved while `corpus-root` said the store is
+    configured and not on disk. The reassuring one was the wrong one.
+    """
+    path = _store_config(profile, stores=["personal"])
+    mine = profile / "stores" / "personal" / "search" / harness_memory.SAFE_SUBDIR
+    _settings(profile, autoMemoryDirectory=str(mine))
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    (corpus_row,) = _only(doctor._PRODUCERS["corpus-root"](machine), "corpus-root")
+    assert corpus_row.status == doctor.FAIL
+    assert row.status == doctor.INFO
+    assert "is not on disk" in row.detail
+    assert row.actor == doctor.USER
+
+    # The same directory once the store is there: the PASS is about the store
+    # existing, not about the setting changing.
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "shim stack after the fork rebuild")
+    mine.mkdir()
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.PASS
+
+
+def test_nested_stores_answer_the_same_whichever_is_declared_first(
+    profile, monkeypatch
+) -> None:
+    """A store that merely CONTAINS the directory must not shadow the store the
+    directory contains.
+
+    `_store_relation` returned from the first store with any relation at all,
+    so `memkit.json`'s declaration order decided PASS against INFO over one
+    filesystem — and the PASS was the case where the configured directory holds
+    another store's whole corpus root, every memory in it handed to the
+    harness's serialiser.
+    """
+    inner = "stores/personal/search/team"
+    for order in (["personal", "team"], ["team", "personal"]):
+        path = _store_config(profile, stores=order, dirs={"team": inner})
+        corpus = profile / "stores" / "personal" / "search"
+        _memory(corpus, "kept.md", "damper settings after the spring swap")
+        team_corpus = profile / inner / "search"
+        _memory(team_corpus, "theirs.md", "release order for the payments cut")
+        _settings(profile, autoMemoryDirectory=str(profile / inner))
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+        assert row.status == doctor.INFO, order
+        assert "holds team's corpus root" in row.detail, order
+        assert "re-serialises" in row.detail, order
+
+    # And a directory that is only ever `inside` still passes, whichever store
+    # answers for it: the rule is that harm dominates, not that nesting does.
+    path = _store_config(profile, stores=["personal", "team"], dirs={"team": inner})
+    mine = profile / inner / "search" / harness_memory.SAFE_SUBDIR
+    mine.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.PASS
+
+
+def test_a_flat_store_does_not_pass_a_directory_a_search_dir_would_unretrieve(
+    profile, monkeypatch
+) -> None:
+    """Containment is decided against the corpus root the store WILL have.
+
+    `_search_root` falls back to the store root while `search/` is absent, so
+    `<store>/auto-memory` read as inside and passed — while `_nearest_store`,
+    in the same run, refused that directory and recommended
+    `<store>/search/auto-memory`. Creating `search/` later flips the row to
+    INFO and `corpus-root` to FAIL, which this file elsewhere calls the single
+    most expensive silent state in the field log.
+    """
+    path = _store_config(profile, stores=["personal"])
+    flat = profile / "stores" / "personal"
+    _memory(flat, "kept.md", "chain wear limit after the sprocket change")
+    mine = flat / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert f'"{flat / "search" / harness_memory.SAFE_SUBDIR}"' in row.remedy
+    assert row.actor == doctor.USER
+
+    # The directory that survives a `search/` appearing is the one that passes,
+    # and it passes before the directory exists.
+    _settings(profile, autoMemoryDirectory=str(flat / "search" / "auto-memory"))
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert row.status == doctor.PASS
 

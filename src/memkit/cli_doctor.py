@@ -101,6 +101,7 @@ from memkit.memory_prompt_recall import (
     _corpus_files,
     _cwd_digest,
     _display_path,
+    _excluded,
     _fts_db,
     _search_root,
     _session_state_path,
@@ -2963,10 +2964,22 @@ def _within(child: str, parent: str) -> bool:
 def _pruned(directory: str, root: str) -> bool:
     """Whether the indexing walk refuses to descend from `root` to `directory`.
 
-    Asked of the path RELATIVE to the corpus root, because `EXCLUDE_DIRS` is
-    what `_fts_scan` prunes once it is already inside a store: the same test
-    against the absolute path would report every adopter whose home directory
-    is called `hot` as unindexed.
+    THE INDEXER'S OWN PREDICATE, not a second copy of it: `_fts_scan` asks
+    `_excluded` of the whole path it built, so that is what is asked here, of
+    the same path — `root` as the config spells it, with the components the
+    walk would descend through appended. A corpus-relative test of memkit's
+    own answered "retrieved" about a store whose root sits under an `archive/`
+    or `hot/` component, where the walk indexes nothing at all.
+
+    That consequence is the HOOK's behaviour and it is left alone here: a store
+    under a pruned name is genuinely unindexed today, doctor's job is to report
+    it, and whether the walk should exclude on the absolute path at all is a
+    separate question about a module this row does not own.
+
+    RESOLVED on both sides before the components are taken, because the
+    harness writes to what the path resolves to: a link inside the corpus root
+    pointing into `hot/` is a directory the walk never descends into, and its
+    own spelling says nothing about that.
     """
     try:
         relative = os.path.relpath(os.path.realpath(directory), os.path.realpath(root))
@@ -2974,7 +2987,7 @@ def _pruned(directory: str, root: str) -> bool:
         # Only reachable if the pair stopped resolving since `_within` said
         # they did; the answer that claims no retrieval is the one to give.
         return True
-    return bool(set(relative.split(os.sep)) & EXCLUDE_DIRS)
+    return _excluded(os.path.join(root, relative))
 
 
 def _store_relation(machine: Machine, directory: str) -> tuple:
@@ -2986,30 +2999,65 @@ def _store_relation(machine: Machine, directory: str) -> tuple:
     directory that is already right — and the answer would change with the
     directory the adopter happened to run doctor from.
 
-    FOUR overlaps rather than in-or-out, because the harness does something
+    FIVE overlaps rather than in-or-out, because the harness does something
     different in each: `at` and `over` are the two spellings of a configured
     directory that CONTAINS the store's memories, which is what puts them
     inside the harness's own rewrite; `pruned` is inside the corpus root and
-    below a name the indexing walk never descends into; `inside` is the one
-    that is retrieved.
+    below a name the indexing walk never descends into; `flat` is inside a
+    store that has no `search/` yet, so it is retrieved only until one appears;
+    `inside` is the one that is retrieved.
+
+    EVERY store is asked, and harm dominates. Returning from the first store
+    with any relation at all asked the at/over question per store and never
+    across them, so with one store nested in another `memkit.json`'s
+    declaration order decided the answer — and the order that read as a PASS
+    was the one where the configured directory holds another store's whole
+    corpus root.
     """
     cfg = machine.config()
     if cfg is None:
         return "", "", ""
+    # The first store the directory is merely INSIDE, kept rather than
+    # returned: a later store whose corpus root this directory holds is the
+    # worse state and the one worth reporting.
+    within: tuple = ()
     for store in cfg.stores:
         # A store naming a root the config does not define raises here, and
         # `store-roots` is the check that owns saying so.
         with contextlib.suppress(ConfigError, OSError):
-            root = _search_root(cfg.store_dir(store, "live"))
+            live = cfg.store_dir(store, "live")
+            root = _search_root(live)
             # Asked in this order because both tests are true when the two
             # paths are one directory, and that case belongs to the rewrite.
             if _within(root, directory):
                 same = _within(directory, root)
                 return store.id, root, "at" if same else "over"
-            if _within(directory, root):
-                pruned = _pruned(directory, root)
-                return store.id, root, "pruned" if pruned else "inside"
-    return "", "", ""
+            if _within(directory, root) and not within:
+                tiered = os.path.join(live, "search")
+                within = (store.id, root, _how_inside(directory, root, tiered))
+    return within or ("", "", "")
+
+
+def _how_inside(directory: str, root: str, tiered: str) -> str:
+    """Which of the three inside-a-corpus-root states `directory` is in.
+
+    `search/` DECIDES CONTAINMENT, not the fallback root: `_search_root`
+    answers with the store root while a store has no tier layout, so a
+    directory beside the store's memories reads as inside one — and the moment
+    a `search/` appears, the same directory is above the corpus root and
+    nothing in it is retrieved. That is the state this file's `corpus-root`
+    case calls the single most expensive silent one in the field log, and it is
+    reached by creating a directory. So the question asked here is the one
+    `_nearest_store` already answers when it recommends a value: is this inside
+    the corpus root the store WILL have. `tiered` is that root, `<live>/search`
+    whether or not it is there yet, and on a store already laid out by tier it
+    is `root` itself.
+    """
+    if _pruned(directory, root):
+        return "pruned"
+    if not _within(directory, tiered):
+        return "flat"
+    return "inside"
 
 
 def _placed(machine: Machine, directory: str) -> tuple:
@@ -3047,6 +3095,31 @@ def _placed(machine: Machine, directory: str) -> tuple:
             f"is inside {store}'s corpus root {_display_path(root)} but under "
             f"a name retrieval prunes ({', '.join(sorted(EXCLUDE_DIRS))}), so "
             f"nothing written there is indexed",
+            safe,
+        )
+    if how == "flat":
+        # `root` is the STORE root here, which is what `_search_root` answers
+        # while there is no `search/` — so the corpus root this names is the
+        # one the store gets the moment anything creates it.
+        return (
+            False,
+            f"is inside {store}, which has no search/ yet, and above the "
+            f"corpus root {_display_path(os.path.join(root, 'search'))} that "
+            "store gets the moment one exists: creating it stops anything "
+            "there being retrieved",
+            os.path.join(root, "search", harness_memory.SAFE_SUBDIR),
+        )
+    if not os.path.isdir(root):
+        # CONTAINMENT IS NOT EXISTENCE: `realpath` resolves a path nothing has
+        # created, so a store that is configured and not on disk still contains
+        # every directory named under it. Passed on that, this row said what
+        # the harness writes is retrieved in the same envelope as the
+        # `corpus-root` FAIL saying the store is not there.
+        return (
+            False,
+            f"is inside {store}'s corpus root {_display_path(root)}, which is "
+            "not on disk — see corpus-root — so nothing retrieves what lands "
+            "there",
             safe,
         )
     return (
