@@ -465,3 +465,48 @@ def test_the_wrapper_guards_exactly_the_files_it_will_import() -> None:
     assert guarded == reachable, (
         sorted(guarded - reachable), sorted(reachable - guarded)
     )
+
+
+# --- which suite a new test file lands in ------------------------------------
+
+
+def test_every_test_file_is_in_the_flake_suite_map() -> None:
+    """`flake.nix` names each suite by hand, and the nix leg is where that map
+    is read.
+
+    The throw it already carries is the right behaviour in the wrong PLACE: a
+    test file added with no entry breaks `nix flake check` at EVALUATION, so
+    every other check in the flake stops running too and the whole nix leg
+    reports one error about a file nobody was thinking about. This fails in the
+    suite the author is already running, names the file, and says what to add.
+
+    A regex rather than a nix evaluation, because the point is to answer on a
+    machine with no nix on it. It fails LOUDLY when it cannot find the block: a
+    test that quietly asserts about an empty set is the same defect one level
+    up.
+    """
+    flake = (REPO / "flake.nix").read_text(encoding="utf-8")
+    block = re.search(r"\n\s*suiteNames = \{\n(.*?)\n\s*\};\n", flake, re.S)
+    assert block, (
+        "flake.nix has no `suiteNames = { ... };` block this test can read. "
+        "It was renamed or restructured — update this test with it, because an "
+        "unparsed block here checks nothing."
+    )
+    mapped = dict(re.findall(r'"([^"]+\.py)"\s*=\s*"([^"]+)";', block.group(1)))
+    assert mapped, block.group(1)
+    on_disk = {
+        path.name for path in (REPO / "tests").glob("test_*.py") if path.is_file()
+    }
+    assert on_disk, "no test files found — this test is measuring the wrong tree"
+    missing = sorted(on_disk - set(mapped))
+    assert not missing, (
+        f"tests/{missing} has no entry in flake.nix's suiteNames, so "
+        "`nix flake check` fails to EVALUATE and no check in the flake runs. "
+        "Add a line naming the suite."
+    )
+    # A name for a file that is not there is a suite that never runs: the
+    # rename half of the same fact.
+    stale = sorted(set(mapped) - on_disk)
+    assert not stale, f"suiteNames names {stale}, which is not in tests/"
+    # And two files under one name is one derivation running one of them.
+    assert len(set(mapped.values())) == len(mapped), sorted(mapped.items())
