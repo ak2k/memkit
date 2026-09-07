@@ -17,9 +17,14 @@ ordering.
   repository, which findings need history to say anything at all, and where
   Claude Code's own agent-written memories land. They default to a directory
   keyed by the git repository root and outside every store;
-  `autoMemoryDirectory` — measured on 2.1.258 and on the documentation page —
-  redirects them, and pointing it at `<store>/search` rather than the store root
-  is what keeps the harness's flat writes inside the corpus root.
+  `autoMemoryDirectory` — measured on 2.1.258, matching the documentation page —
+  redirects them, and pointing it at `<store>/search/auto-memory` rather than
+  the store root is what keeps the harness's flat writes inside the corpus root.
+  Two corrections to advice given while this page was in review: a checked-in
+  `.claude/settings.json` is honoured, so a clone can redirect where an agent
+  writes, and the value is that harness-owned subdirectory rather than the
+  corpus root itself, because the harness rewrites the frontmatter of every
+  `.md` file it writes or edits under the directory it is pointed at.
 
 ## [0.4.0] — 2026-08-31
 
