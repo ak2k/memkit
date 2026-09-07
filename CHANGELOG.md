@@ -23,8 +23,9 @@ ordering.
   Two corrections to advice given while this page was in review: a checked-in
   `.claude/settings.json` is honoured, so a clone can redirect where an agent
   writes, and the value is that harness-owned subdirectory rather than the
-  corpus root itself, because the harness rewrites the frontmatter of every
-  `.md` file it writes or edits under the directory it is pointed at.
+  corpus root itself, because the harness rewrites the frontmatter of any
+  `.md` file that already carries it, written or edited under the directory it
+  is pointed at.
 
 ## [0.4.0] — 2026-08-31
 
