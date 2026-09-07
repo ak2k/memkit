@@ -1572,7 +1572,7 @@ def _probe_budget() -> tuple:
 HOOK_WRAPPER = "bin/memkit-hook"
 
 
-def _init_command(machine: Machine) -> str:
+def _init_command(machine: Machine, flags: str = "") -> str:
     """How to reach init ON THIS CHANNEL.
 
     Skills ship only in the plugin payload, so `/memkit:init` is a command a
@@ -1580,10 +1580,19 @@ def _init_command(machine: Machine) -> str:
     rollout runbook sends to doctor first. A remedy that guessed would send
     them to a command they cannot run, which is exactly the failure the channel
     check exists one screen earlier to prevent.
+
+    `flags` goes on BOTH turns of the binary form, not just the first: the
+    digest binds the request as well as the tree, so a confirm carrying
+    different flags from the dry-run that produced it is refused as stale. A
+    remedy that showed the flag once would send the adopter into that refusal.
     """
+    tail = f" {flags}" if flags else ""
     if machine.plugin:
-        return "/memkit:init"
-    return "`memkit init --dry-run`, then `memkit init --confirm <digest>`"
+        return f"/memkit:init{tail}"
+    return (
+        f"`memkit init --dry-run{tail}`, then "
+        f"`memkit init --confirm <digest>{tail}`"
+    )
 
 
 NO_HOOK_REMEDY = (
@@ -3345,7 +3354,10 @@ def _auto_memory(machine: Machine) -> list[Check]:
             # than everything else in this row put together.
             _detail(*fixed, counted, listed),
             "Two memory systems on one project is a choice rather than a "
-            "fault. To put what the harness writes inside the store, set "
+            "fault. To put what the harness has already written inside the "
+            f"store and what it writes next along with it, run "
+            f"{_init_command(machine, '--adopt-auto-memory')} — it copies, "
+            "never moves, and names every file first. By hand: set "
             f'"{harness_memory.DIRECTORY_KEY}" to an {harness_memory.SAFE_SUBDIR}/ '
             'directory under a corpus root — "Where your agent\'s own memories '
             'land" in docs/STORE.md has the value and the trap. To run memkit '
