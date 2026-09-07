@@ -1418,7 +1418,7 @@ def _clean(value: str) -> str:
 
     Also what every adopter-controlled string goes through before it is
     rendered into the manifest: a memory named
-    `a\n  create-file    ~/.claude/settings.json\nb.md` put two correctly
+    `a\n  create-file    ~-.claude-settings.json\nb.md` put two correctly
     indented action lines into the surface a human reads before typing
     `--confirm`.
     """
@@ -1642,7 +1642,8 @@ def _rows_on_disk(store: str, config_path: str) -> tuple:
         notes.append(
             f"  no row: {len(hot)} {'memory' if len(hot) == 1 else 'memories'} "
             f"under {_display_path(os.path.join(store, 'hot'))} "
-            f"({', '.join(hot)}) {'has' if len(hot) == 1 else 'have'} no row in "
+            f"({', '.join(_clean(link) for link in hot)}) "
+            f"{'has' if len(hot) == 1 else 'have'} no row in "
             "MEMORY.md, which is hand-written and which nothing regenerates — "
             "the check below reports each one as an orphan until you add them"
         )
@@ -1869,6 +1870,10 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     continue
                 front = _frontmatter_of(text)
                 desc = _scalar_of(front.get("description", ""))
+                # NOT REACHABLE TODAY, and kept: `_normalise` either leaves a
+                # description `_scalar_of` already read or writes one through
+                # `_as_scalar`, whose output it reads back by construction. It
+                # is the guard on that construction rather than on an input.
                 if desc is None:
                     skipped.append(
                         f"{shown}: no description this store's "
