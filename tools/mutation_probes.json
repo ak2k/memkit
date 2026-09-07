@@ -1985,8 +1985,8 @@
       "name": "auto-memory-remedy-names-the-key-that-does-not-turn-it-off",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "            'alone, set \"autoMemoryEnabled\": false in '\n",
-      "new": "            'alone, set \"autoDreamEnabled\": false in '\n",
+      "old": "            'To run memkit alone, set \"autoMemoryEnabled\": false in '\n",
+      "new": "            'To run memkit alone, set \"autoDreamEnabled\": false in '\n",
       "tests": [
         "tests/test_doctor.py::test_auto_memory_armed_is_information_and_names_the_setting"
       ],
@@ -2117,7 +2117,7 @@
       "name": "auto-memory-passes-a-directory-a-checked-in-file-chose",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        if retrieved and not checkout:\n",
+      "old": "        if retrieved and not checkout and not switch_theirs:\n",
       "new": "        if retrieved:\n",
       "tests": [
         "tests/test_doctor.py::test_a_checked_in_settings_file_decides_and_is_reported_not_passed"
