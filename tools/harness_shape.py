@@ -121,8 +121,19 @@ _HOOK_EVENT_RE = re.compile(r"[A-Za-z]+")
 # --- settings ---------------------------------------------------------------
 
 
+# TEST-ONLY SEAM, and named here so it is obvious what it is. `_managed_dir()`
+# answers with a MACHINE path, which is what makes the managed scope the one
+# thing a capture reads outside `--config-dir` — and therefore the one scope no
+# test can put a file in. Read in this function and nowhere else in this
+# repository; nothing that produces a shape worth committing sets it.
+MANAGED_DIR_ENV = "MEMKIT_SHAPE_MANAGED_DIR"
+
+
 def _managed_dir() -> str:
     """`cli_doctor._managed_dir`, measured on 2.1.241 out of the binary."""
+    override = os.environ.get(MANAGED_DIR_ENV)
+    if override:
+        return override
     if sys.platform == "darwin":
         return "/Library/Application Support/ClaudeCode"
     return "/etc/claude-code"
@@ -202,6 +213,18 @@ def _settings(config_dir: str, names: _Pseudonyms, anonymise: bool) -> dict:
     scope whose file is absent is omitted rather than emitted empty, because
     "no managed settings on this machine" and "managed settings that set
     nothing" are different machines.
+
+    AND `managed` IS THE EXCEPTION TO `_harness`'s RULE, stated here because
+    the two docstrings otherwise contradict each other. That file sits at a
+    fixed platform path whatever `--config-dir` names — `cli_doctor`'s own
+    `settings_scopes` reads it the same way, for the same reason — so it is
+    the MACHINE's and not the config directory's. Correct for the flow this
+    tool is for, where the machine is the thing being captured; wrong for a
+    capture of a copied or temporary tree, which then reports the operator's
+    own managed settings under a key that reads as the captured tree's. The
+    round-trip test asserts `settings == {}` with the seam above pointed
+    somewhere empty, which is what makes that reach visible instead of
+    depending on whether the runner happens to have such a file.
     """
     found = {}
     for scope, path in (

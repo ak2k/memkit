@@ -1,0 +1,40 @@
+{
+  "//": [
+    "The 3.8 floor, for the one file that runs below this repository's own.",
+    "Run it as a THIRD pass:",
+    "  pyright -p pyrightconfig-shape38.json",
+    "",
+    "`tools/harness_shape.py` is piped over ssh into whatever `python3` a",
+    "colleague's host resolves, and the first host it was piped to ran",
+    "3.8.18. Nothing else here answers to that floor: the suite runs the tool",
+    "under 3.12, the executed floor gate runs 3.9, and the failure lands as a",
+    "traceback in somebody else's terminal.",
+    "",
+    "WHAT THIS CATCHES AND WHAT IT DOES NOT, measured on pyright 1.1.406.",
+    "It catches the typing half: a PEP-585 builtin generic subscripted at",
+    "runtime (`list[int]` outside an annotation) is an error at 3.8 and not",
+    "at 3.9, a PEP-604 union is an error below 3.10, and `sys.version_info`",
+    "comparisons narrow against 3.8. It does NOT catch a 3.9-only STDLIB",
+    "call — `str.removeprefix`, `functools.cache`, `graphlib` — because",
+    "typeshed dropped Python 3.8 and no longer carries the version guards",
+    "that would say so, which makes this config's answer identical to the",
+    "3.9 one for every stdlib member. That half is guarded instead by the",
+    "`ast` walk in tests/test_harness_shape.py, which greps the parse tree",
+    "for the specific spellings; the two are complements, not duplicates.",
+    "",
+    "`include` is one file and stays one file. Add a second only if a second",
+    "file is EXECUTED by a 3.8 interpreter — this repository's own floor is",
+    "3.9 and everything else answers to it. The file is also covered by",
+    "pyrightconfig.json, which includes tools/ wholesale at 3.12; that is the",
+    "same double-check pyrightconfig-hook39.json's files already get, and it",
+    "is the point rather than an oversight: one file, checked at both floors."
+  ],
+  "include": [
+    "tools/harness_shape.py"
+  ],
+  "pythonVersion": "3.8",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": "none"
+}

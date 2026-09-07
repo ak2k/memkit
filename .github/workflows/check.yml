@@ -210,6 +210,21 @@ jobs:
           PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
         run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig-hook39.json
 
+      # And a THIRD floor, for the one file that runs below this repository's
+      # own. `tools/harness_shape.py` is piped over ssh into whatever `python3`
+      # a colleague's host resolves, and the first host it went to ran 3.8.18 —
+      # so nothing else here answers to 3.8, and until this step there was no
+      # interpreter and no checker that did. What it catches is the typing
+      # half: a PEP-585 builtin generic subscripted at runtime is an error at
+      # 3.8 and not at 3.9. What it cannot catch is a 3.9-only stdlib call,
+      # because typeshed dropped 3.8 and no longer carries the guards; that
+      # half is the `ast` walk in tests/test_harness_shape.py. Both, or
+      # neither is a floor.
+      - name: Pyright — the 3.8 floor (the capture tool)
+        env:
+          PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
+        run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig-shape38.json
+
       # R10, the admission gate. TWO invocations, because the validator picks
       # its mode from what it is pointed at and the two modes check different
       # things — measured on 2.1.238, after the single-invocation version of

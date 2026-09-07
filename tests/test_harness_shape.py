@@ -50,19 +50,31 @@ INSTALL_OK = frozenset({"global", "native", "local", "npm", "unknown", "other"})
 HOOK_RE = re.compile(r"[A-Za-z]+|h\d+")
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
+def _run(*args: str, env=None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(TOOL), *args],
         capture_output=True,
         text=True,
         timeout=300,
+        env=env,
     )
 
 
-def _shape(*args: str) -> dict:
-    out = _run(*args)
+def _shape(*args: str, env=None) -> dict:
+    out = _run(*args, env=env)
     assert out.returncode == 0, out.stdout + out.stderr
     return json.loads(out.stdout)
+
+
+# The tool's test-only seam for the one path it reads outside `--config-dir`.
+# Spelled here rather than imported, so a rename of the variable fails these
+# cases instead of quietly reading the runner's own managed settings.
+MANAGED_DIR_ENV = "MEMKIT_SHAPE_MANAGED_DIR"
+
+
+def _managed_env(directory) -> dict:
+    directory.mkdir(parents=True, exist_ok=True)
+    return dict(os.environ, **{MANAGED_DIR_ENV: str(directory)})
 
 
 def _write(path: Path, text: str) -> Path:
@@ -156,13 +168,16 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     """
     config = _tree(tmp_path)
     out = tmp_path / "shape.json"
-    written = _run("--config-dir", str(config), "--out", str(out))
+    # Pointed at an empty directory, so `settings` below is a statement about
+    # the capture rather than about whether this runner has a managed file.
+    env = _managed_env(tmp_path / "no-managed")
+    written = _run("--config-dir", str(config), "--out", str(out), env=env)
     assert written.returncode == 0, written.stdout + written.stderr
     shape = json.loads(out.read_text(encoding="utf-8"))
     # The same capture through the other exit: a shape is a file that gets
     # committed and a stream that gets piped over ssh, and the two have to be
     # the same document.
-    assert shape == _shape("--config-dir", str(config))
+    assert shape == _shape("--config-dir", str(config), env=env)
 
     assert shape["schema"] == 1
     assert shape["tool"] == "harness_shape"
@@ -171,6 +186,10 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     # and no install method, and a null here is what proves the capture did not
     # reach for the operator's own.
     assert shape["harness"] == {"version_hint": None, "install": None}
+    # The counterpart, and the reason it needs a seam: `managed` is the one
+    # scope read from a machine path, so on a host that has such a file this
+    # capture of a temporary tree would carry it.
+    assert shape["settings"] == {}
     assert shape["projects_total"] == 8
     assert shape["memory_dirs_total"] == 7
     assert shape["skipped"] == 0
@@ -577,6 +596,45 @@ def test_the_tool_and_the_package_agree_on_what_a_corpus_is(tmp_path) -> None:
     )
 
 
+def test_the_managed_scope_anonymises_the_way_the_user_scope_does(tmp_path) -> None:
+    """The one scope read from a MACHINE path rather than from `--config-dir`,
+    and until now the one no test could reach.
+
+    Its path is fixed, so there was nowhere to put a file: every settings
+    assertion in this file is about `user`, and `managed` was covered by
+    nothing at all while carrying the same three rows. It is also the scope
+    where the richest names live, because a managed settings file is an
+    organisation's rather than a person's.
+    """
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    managed = tmp_path / "managed"
+    _write(
+        managed / "managed-settings.json",
+        json.dumps(
+            {
+                harness_memory.ENABLED_KEY: True,
+                harness_memory.DIRECTORY_KEY: f"/Users/{SENTINEL}/notes",
+                "hooks": {f"Gate--{SENTINEL}": [], "PreToolUse": []},
+                "enabledPlugins": {f"{SENTINEL}@{MARKET}": True},
+            }
+        ),
+    )
+    out = _run("--config-dir", str(config), env=_managed_env(managed))
+    assert out.returncode == 0, out.stderr
+    assert SENTINEL not in out.stdout
+    scope = json.loads(out.stdout)["settings"]["managed"]
+    assert scope == {
+        "unreadable": False,
+        "memory_keys": {
+            harness_memory.ENABLED_KEY: True,
+            harness_memory.DIRECTORY_KEY: "<path>",
+        },
+        "hooks": ["PreToolUse", "h1"],
+        "plugins": ["p1@q1"],
+    }
+
+
 ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
@@ -660,7 +718,8 @@ def test_a_settings_file_that_cannot_be_read_is_a_state_not_an_absence(
     config = tmp_path / "config"
     (config / "projects").mkdir(parents=True)
     _write(config / "settings.json", "{ not json")
-    assert _shape("--config-dir", str(config))["settings"] == {
+    env = _managed_env(tmp_path / "no-managed")
+    assert _shape("--config-dir", str(config), env=env)["settings"] == {
         "user": {
             "unreadable": True, "memory_keys": {}, "hooks": [], "plugins": []
         }
@@ -681,7 +740,9 @@ def _tool_module():
     return module
 
 
-def test_the_constants_copied_from_memkit_are_the_ones_memkit_holds() -> None:
+def test_the_constants_copied_from_memkit_are_the_ones_memkit_holds(
+    monkeypatch,
+) -> None:
     """The module docstring says running this tool against
     `harness_memory.inventory` is what keeps the copies in step.
 
@@ -690,7 +751,11 @@ def test_the_constants_copied_from_memkit_are_the_ones_memkit_holds() -> None:
     never imports — so a rename there desynchronises this tool with nothing
     going red. All four agree today; this is what says so tomorrow.
     """
+    # The seam OFF, or this compares the test's own override against the real
+    # platform path and fails for the one reason that is not drift.
+    monkeypatch.delenv(MANAGED_DIR_ENV, raising=False)
     module = _tool_module()
+    assert module.MANAGED_DIR_ENV == MANAGED_DIR_ENV
     assert module.INDEX_NAME == harness_memory.INDEX_NAME
     assert module.DIRECTORY_KEY == harness_memory.DIRECTORY_KEY
     assert module.MEMORY_KEYS == (
@@ -770,20 +835,104 @@ def test_a_description_is_measured_the_way_the_checker_measures_it(tmp_path) -> 
     assert files["block.md"]["description_len"] == 1
 
 
+# The 3.9 spellings a 3.8 grammar accepts and a 3.8 interpreter does not.
+# Attribute names first, then the (module, attribute) pairs where a bare name
+# would false-positive on somebody's own attribute, then whole modules.
+THREE_NINE_METHODS = ("removeprefix", "removesuffix")
+THREE_NINE_CALLS = (
+    ("functools", "cache"),
+    ("ast", "unparse"),
+    ("random", "randbytes"),
+    ("math", "nextafter"),
+    ("os", "pidfd_open"),
+)
+THREE_NINE_MODULES = ("zoneinfo", "graphlib")
+
+
+def _three_nine_offences(tree: ast.AST) -> list:
+    """Every 3.9-only spelling this walk knows how to see, with its line."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            found.append((node.lineno, "`|` — dict merge and PEP 604 are 3.9+"))
+        elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.BitOr):
+            found.append((node.lineno, "`|=` — dict merge is 3.9"))
+        elif isinstance(node, (ast.With, ast.AsyncWith)) and len(node.items) > 1:
+            # Conservative on purpose: an unparenthesised multi-item `with` is
+            # legal 3.8, but the parenthesised spelling is 3.9 and
+            # `feature_version` does not reject it — so the two are
+            # indistinguishable here and one file can afford the stricter rule.
+            found.append((node.lineno, "a multi-item `with` may be the 3.9 spelling"))
+        elif isinstance(node, ast.Attribute):
+            if node.attr in THREE_NINE_METHODS:
+                found.append((node.lineno, f"str.{node.attr} is 3.9"))
+            elif isinstance(node.value, ast.Name):
+                for module, attr in THREE_NINE_CALLS:
+                    if node.value.id == module and node.attr == attr:
+                        found.append((node.lineno, f"{module}.{attr} is 3.9"))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in THREE_NINE_MODULES:
+                    found.append((node.lineno, f"{alias.name} is 3.9"))
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.split(".")[0] in THREE_NINE_MODULES
+        ):
+            found.append((node.lineno, f"{node.module} is 3.9"))
+    return found
+
+
+def test_the_38_walk_sees_the_spellings_it_claims_to() -> None:
+    """The guard above is an assertion that a list is empty, which is what an
+    empty list says whether or not the walk can see anything at all.
+
+    So the walk is pointed at each spelling first. A guard nobody has watched
+    fire is the same object as a guard that does not.
+    """
+    for source in (
+        "x = {'a': 1} | {'b': 2}\n",
+        "x = {}\nx |= {'b': 2}\n",
+        "with open('a') as a, open('b') as b:\n    pass\n",
+        "x = 'ab'.removeprefix('a')\n",
+        "x = 'ab'.removesuffix('b')\n",
+        "import functools\n@functools.cache\ndef f():\n    pass\n",
+        "import ast\nx = ast.unparse(None)\n",
+        "import random\nx = random.randbytes(1)\n",
+        "import math\nx = math.nextafter(1.0, 2.0)\n",
+        "import os\nx = os.pidfd_open(1)\n",
+        "import zoneinfo\n",
+        "from graphlib import TopologicalSorter\n",
+    ):
+        # Every one of these PARSES at 3.8, which is the whole problem.
+        tree = ast.parse(source, feature_version=(3, 8))
+        assert _three_nine_offences(tree), source
+    # And a 3.8 file it must not complain about.
+    clean = ast.parse("with open('a') as a:\n    x = a.read()\n", feature_version=(3, 8))
+    assert _three_nine_offences(clean) == []
+
+
 def test_harness_shape_parses_as_python_38() -> None:
     """The floor is 3.8, not this repository's 3.9: the capture host it was
     first piped to runs 3.8.18, and it ran there unmodified.
 
-    This is a SYNTAX guard and nothing more, with two holes worth naming. A
-    walrus is allowed, `match` and `except*` are rejected — but parenthesised
-    context managers are NOT rejected, because `feature_version` gates the
-    grammar the PEG parser applies and not that spelling. And it cannot see a
-    3.9+ STDLIB call at all, since those parse fine at every feature version;
-    the two a reviewer greps for instead are `str.removeprefix` and dict `|`
-    merge, which read as ordinary 3.8 syntax and die at run time on the host.
+    TWO GUARDS, because neither is sufficient. `feature_version=(3, 8)` gates
+    the grammar the PEG parser applies — a walrus is allowed, `match` and
+    `except*` are rejected — and it is the only check that survives the ssh
+    pipe. It cannot see a parenthesised context manager, and it cannot see a
+    3.9+ stdlib call at all, because those parse fine at every feature
+    version. So the walk below greps the parse tree for the spellings a
+    reviewer was otherwise asked to grep for by hand.
+
+    `pyrightconfig-shape38.json` is the third guard and catches a different
+    thing again — a PEP-585 subscript evaluated at runtime, which is an error
+    at 3.8 and legal at 3.9. It cannot cover the stdlib half either: typeshed
+    dropped Python 3.8, so its stubs no longer carry the version guards that
+    would make `str.removeprefix` an error. Hence this list.
     """
     source = TOOL.read_text(encoding="utf-8")
-    ast.parse(source, filename=str(TOOL), feature_version=(3, 8))
+    tree = ast.parse(source, filename=str(TOOL), feature_version=(3, 8))
+    assert _three_nine_offences(tree) == []
 
 
 def test_the_tool_imports_nothing_it_could_not_find_on_a_stranger_s_machine(
