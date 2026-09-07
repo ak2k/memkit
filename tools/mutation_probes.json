@@ -4254,7 +4254,7 @@
       "name": "init-adoption-copies-a-file-name-no-row-could-point-at",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if not name.isprintable() or _label(name) != name:\n",
+      "old": "            if _label(name) != name:\n",
       "new": "            if not name.isprintable():\n",
       "tests": [
         "tests/test_init.py::test_the_ledger_is_still_the_checkers_on_a_hostile_name"
@@ -4265,8 +4265,8 @@
       "name": "init-adoption-copies-a-file-name-no-manifest-line-could-carry",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if not name.isprintable() or _label(name) != name:\n",
-      "new": "            if _label(name) != name:\n",
+      "old": "            if _label(name) != name:\n",
+      "new": "            if name.strip() != name:\n",
       "tests": [
         "tests/test_init.py::test_a_file_name_no_manifest_line_can_carry_is_skipped"
       ],

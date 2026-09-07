@@ -1817,7 +1817,10 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             # with no way out at all: a row points at a file by writing its
             # path between `(` and `)`, so a file whose name holds either one
             # is a file no row can point at, whatever the label says.
-            if not name.isprintable() or _label(name) != name:
+            # ONE TEST FOR BOTH: `_label` drops every character that is not
+            # printable before it drops the link syntax, so a name holding
+            # either one fails this.
+            if _label(name) != name:
                 skipped.append(
                     f"{shown}: the file name holds a character no manifest "
                     "line and no ledger row could carry — a link ends at the "
