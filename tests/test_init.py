@@ -2677,6 +2677,15 @@ def test_only_a_memory_directory_wired_into_a_store_is_already_redirected(
     wired.mkdir(parents=True)
     (wired / "memory").symlink_to(wired_at)
 
+    # The PROJECT directory reached through a link, rather than its `memory/`:
+    # `harness_memory` carries three link flags and each needs its own answer.
+    wired_project = store / "search" / "wired-project"
+    (wired_project / "memory").mkdir(parents=True)
+    (wired_project / "memory" / "p.md").write_text(TRAP, encoding="utf-8")
+    (profile / "claude-config" / "projects" / "-wired-project").symlink_to(
+        wired_project
+    )
+
     nowhere = profile / "linked-memories"
     nowhere.mkdir()
     (nowhere / "loose.md").write_text(TRAP, encoding="utf-8")
@@ -2687,6 +2696,7 @@ def test_only_a_memory_directory_wired_into_a_store_is_already_redirected(
     plan = _plan(profile, store=str(store), adopt_auto_memory=True)
     notes = " ".join(plan.notes)
     assert "-wired: already redirected, skipped" in notes
+    assert "-wired-project: already redirected, skipped" in notes
     assert "-linked-outside: already redirected" not in notes
     assert "1 project memory directory holds 1 memory outside every store" in notes
     # And doctor, over the same machine, counts the same one.
@@ -2756,6 +2766,171 @@ def test_a_memory_whose_row_cannot_be_read_is_named_and_not_dropped(
         ), plan.notes
     finally:
         shut.chmod(0o644)
+
+
+
+
+def test_the_managed_scope_is_asked_about_the_redirect_like_every_other(
+    profile, monkeypatch
+) -> None:
+    """MANAGED SETTINGS ARE THE ADMINISTRATOR'S, and the highest-precedence
+    scope the harness reads. A hole there is init redirecting where an agent
+    writes against site policy — the one scope whose answer the adopter in
+    front of the terminal cannot give.
+    """
+    managed = profile / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryDirectory": "/site/policy/memories"}),
+        encoding="utf-8",
+    )
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    refusal = _refuses(profile, "auto-memory-redirected", adopt_auto_memory=True)
+    assert "in managed settings" in refusal.message
+    assert "/site/policy/memories" in refusal.message
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_description_cap_is_the_checkers_own(profile) -> None:
+    """The truncation arithmetic is pinned and the constant it depends on was
+    not. One character of drift is a `DESC-LONG` at the VERIFY step, on a store
+    init has just built and just truncated a description for.
+    """
+    from memkit import memory_integrity as checker
+
+    assert init._MAX_DESC_CHARS == checker.MAX_DESC_CHARS
+    assert set(init._LEDGER_NAMES) == set(checker.LEDGER_NAMES)
+    assert init._INDEX_HEADING == checker.INDEX_HEADING
+
+
+def test_a_replaced_description_takes_the_lines_under_it(profile) -> None:
+    """A `description:` whose value continued onto indented lines is one value,
+    and replacing the first line alone leaves the rest of somebody else's
+    sentence attached to the new one — which is why this is not a regex.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {"c.md": (
+            "---\nname: c\ndescription: >\n  a folded value\n"
+            "  that runs on\nkeep: me\n---\n\nbody\n"
+        )},
+    )
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (copy,) = [a for a in plan.actions if a.path.endswith("c.md")]
+    block = copy.content.split("\n---", 1)[0]
+    assert "a folded value" not in block, block
+    assert "that runs on" not in block, block
+    # And nothing else in the block is touched.
+    assert "keep: me" in block
+    assert "a folded value" not in copy.content.split("\n---", 1)[1]
+
+
+def test_a_memory_a_sub_index_already_rows_is_not_rowed_again(profile) -> None:
+    """A sub-index owns its members' rows. Generating a second one in SEARCH.md
+    is the checker's `DOUBLE-LEDGER`, and the members are read from the
+    sub-index's own text because membership is data rather than convention.
+
+    THREE SHAPES, and the second is the one the halves disagreed about: a
+    plain member, a member reached through a symlinked FILE — where the
+    checker resolves the link and this must too — and a symlinked DIRECTORY,
+    which neither walk descends.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    search = store / "search"
+    domain = search / "domain"
+    domain.mkdir()
+    (domain / "plain.md").write_text(
+        "---\nname: plain\ndescription: a plain member\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (domain / "real.md").write_text(
+        "---\nname: real\ndescription: reached through a link\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (search / "link.md").symlink_to(domain / "real.md")
+    elsewhere = profile / "outside-tree"
+    elsewhere.mkdir()
+    (elsewhere / "never.md").write_text(
+        "---\nname: never\ndescription: below a linked directory\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (search / "linked-dir").symlink_to(elsewhere)
+    (domain / "INDEX.md").write_text(
+        "## Index\n\n- [plain](plain.md) — a plain member\n"
+        "- [real](../link.md) — reached through a link\n",
+        encoding="utf-8",
+    )
+    config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["sub_indexes"] = ["search/domain/INDEX.md"]
+    config.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+
+    plan = _plan(profile, store=str(store))
+    (ledger,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    rows = _rows_of(ledger.content)
+    # The member the sub-index rows is NOT rowed again...
+    assert "search/domain/plain.md" not in rows
+    assert "search/domain/real.md" not in rows
+    # ...the link the sub-index resolved through is rowed, because that is the
+    # row the checker's own --write generates for it...
+    assert "search/link.md" in rows
+    # ...and nothing under a symlinked directory is rowed, because neither
+    # walk descends one.
+    assert not [link for link in rows if "linked-dir" in link]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_ledger_over_a_sub_index_is_still_the_one_write_would_leave(
+    profile,
+) -> None:
+    """The fixpoint over the shape the two halves are read differently on: a
+    sub-index rowing a memory through a symlink. `--write` regenerates every
+    generated ledger, so a store where it changes nothing is a store whose
+    SEARCH.md init got right.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    search = store / "search"
+    domain = search / "domain"
+    domain.mkdir()
+    (domain / "real.md").write_text(
+        "---\nname: real\ndescription: reached through a link\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (search / "link.md").symlink_to(domain / "real.md")
+    (domain / "INDEX.md").write_text(
+        "## Index\n\n- [real](../link.md) — reached through a link\n",
+        encoding="utf-8",
+    )
+    config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["sub_indexes"] = ["search/domain/INDEX.md"]
+    config.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+
+    plan = _plan(profile, store=str(store))
+    (action,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    (store / "SEARCH.md").write_text(action.content, encoding="utf-8")
+    mine = (store / "SEARCH.md").read_text()
+    written = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config),
+         "--write"],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert (store / "SEARCH.md").read_text() == mine
 
 
 @pytest.mark.skipif(
@@ -2831,17 +3006,28 @@ def test_a_destination_that_is_a_link_is_named_and_never_written_through(
     dest.parent.mkdir(parents=True)
     outside = profile / "elsewhere" / "deep" / "planted.md"
     dest.symlink_to(outside)
+    # And one that lands back INSIDE the store: containment says nothing about
+    # it, and it is still a write at a path the manifest does not name — into
+    # `hot/`, whose ledger is hand-written and rows nothing new.
+    _harness(profile, "-home-v", {"note.md": TRAP})
+    inward = store / "search" / "projects" / "-home-v" / "note.md"
+    inward.parent.mkdir(parents=True)
+    inward.symlink_to(store / "hot" / "smuggled.md")
     plan = _plan(profile, store=str(store), adopt_auto_memory=True)
-    assert not [a for a in plan.actions if a.path == str(dest)]
+    assert not [a for a in plan.actions if a.path in (str(dest), str(inward))]
     diverged = [note for note in plan.notes if "diverged" in note]
     assert any(str(outside) in note for note in diverged), diverged
-    assert any("0 files" in note and "1 diverged" in note for note in plan.notes)
+    assert any(str(store / "hot" / "smuggled.md") in note for note in diverged), (
+        diverged
+    )
+    assert any("0 files" in note and "2 diverged" in note for note in plan.notes)
     machine = doctor.Machine()
     assert init.apply_plan(
         machine, plan, init._resolve_config(machine, None)
     ) in (init.EXIT_OK, init.EXIT_INCOMPLETE)
     assert not outside.exists(), "a copy landed outside the store"
     assert not outside.parent.exists(), "a directory was made outside the store"
+    assert not (store / "hot" / "smuggled.md").exists(), "a copy went through a link"
 
 
 def test_a_link_planted_after_the_plan_never_lands_outside_the_store(

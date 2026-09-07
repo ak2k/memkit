@@ -2263,8 +2263,8 @@
       "name": "init-the-manifest-shows-where-a-symlink-lands",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            resolved = _terminal_realpath(action.path)",
-      "new": "            resolved = os.path.abspath(action.path)",
+      "old": "    resolved = _terminal_realpath(action.path)\n",
+      "new": "    resolved = os.path.abspath(action.path)\n",
       "tests": [
         "tests/test_init.py::test_the_manifest_shows_where_a_symlink_actually_lands"
       ],
@@ -2351,8 +2351,8 @@
       "name": "init-the-preflight-sees-the-actions-the-flags-add",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    notes = _auto_memory_notes(store_path, known) + adoption_notes\n    if wire_claude_md:",
-      "new": "    _refuse_incompatible_types(actions)\n    notes = _auto_memory_notes(store_path, known) + adoption_notes\n    if wire_claude_md:",
+      "old": "    notes = (\n        _auto_memory_notes(machine, store_path, known)\n",
+      "new": "    _refuse_incompatible_types(actions)\n    notes = (\n        _auto_memory_notes(machine, store_path, known)\n",
       "tests": [
         "tests/test_init.py::test_the_plan_preflight_sees_the_actions_the_flags_add"
       ],
@@ -2648,8 +2648,8 @@
       "name": "init-the-write-goes-through-the-symlink",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    path = os.path.realpath(path)\n    if expect is not None and state_token(path) != expect:",
-      "new": "    path = os.path.abspath(path)\n    if expect is not None and state_token(path) != expect:",
+      "old": "    path = os.path.realpath(path)\n    _refuse_escape(path, confine)\n",
+      "new": "    path = os.path.abspath(path)\n    _refuse_escape(path, confine)\n",
       "tests": [
         "tests/test_init.py::test_a_write_keeps_the_mode_and_the_link_of_a_file_that_is_already_there"
       ],
@@ -4216,6 +4216,173 @@
         "tests/test_packaging.py::test_the_wheel_declares_every_console_script"
       ],
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
+    },
+    {
+      "name": "init-adoption-never-asks-the-managed-scope-about-the-redirect",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        planned = _redirect_dir(store_path)\n        for name in harness_memory.SCOPE_ORDER:\n",
+      "new": "        planned = _redirect_dir(store_path)\n        for name in harness_memory.SCOPE_ORDER[1:]:\n",
+      "tests": [
+        "tests/test_init.py::test_the_managed_scope_is_asked_about_the_redirect_like_every_other"
+      ],
+      "why": "managed settings are the administrator's and the scope the harness reads first. A hole there is init redirecting where an agent writes against site policy, on the one scope the adopter at the terminal cannot answer for."
+    },
+    {
+      "name": "init-adoption-reads-one-link-flag-of-the-three",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    return not (\n        project.linked and _store_relation(machine, project.path)[2] == \"inside\"\n    )\n",
+      "new": "    return not (\n        project.is_symlink and _store_relation(machine, project.path)[2] == \"inside\"\n    )\n",
+      "tests": [
+        "tests/test_init.py::test_only_a_memory_directory_wired_into_a_store_is_already_redirected"
+      ],
+      "why": "`harness_memory` carries three link flags because each needs a different answer. Asked about the memory directory alone, a project reached through a linked PROJECT directory that is already wired into the store gets copied a second time."
+    },
+    {
+      "name": "init-adoption-calls-any-linked-memory-directory-already-redirected",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    return not (\n        project.linked and _store_relation(machine, project.path)[2] == \"inside\"\n    )\n",
+      "new": "    return not project.linked\n",
+      "tests": [
+        "tests/test_init.py::test_only_a_memory_directory_wired_into_a_store_is_already_redirected"
+      ],
+      "why": "a link is somebody's answer only where it lands. Called already redirected wherever it points, a memory directory linked to an ordinary directory is reported as handled by init and as outside every store by doctor, and is chased by neither."
+    },
+    {
+      "name": "init-adoption-copies-a-file-name-no-row-could-point-at",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if not name.isprintable() or _label(name) != name:\n",
+      "new": "            if not name.isprintable():\n",
+      "tests": [
+        "tests/test_init.py::test_the_ledger_is_still_the_checkers_on_a_hostile_name"
+      ],
+      "why": "a row points at a file by writing its path between `(` and `)`, so a file whose name holds either one is a file no row can point at: the store init has just built fails its own check with DEAD-LINK and ORPHAN."
+    },
+    {
+      "name": "init-adoption-copies-a-file-name-no-manifest-line-could-carry",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if not name.isprintable() or _label(name) != name:\n",
+      "new": "            if _label(name) != name:\n",
+      "tests": [
+        "tests/test_init.py::test_a_file_name_no_manifest_line_can_carry_is_skipped"
+      ],
+      "why": "POSIX admits a newline in a filename and the destination path line has to keep its spacing byte for byte to name a file that exists. Copied, it puts fabricated action lines into the surface a human reads before typing --confirm."
+    },
+    {
+      "name": "init-a-name-that-would-end-its-own-row-is-copied-as-it-stands",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    return _with_scalar(text, \"name\", _as_scalar(safe)), (\n",
+      "new": "    return text, (\n",
+      "tests": [
+        "tests/test_init.py::test_a_name_that_would_end_its_own_row_is_rewritten_in_the_copy",
+        "tests/test_init.py::test_the_ledger_is_still_the_checkers_on_a_hostile_name"
+      ],
+      "why": "the label is the one half of a ledger row taken raw. A `name:` carrying `](` closes the link early, rows a link to a file that is not there and leaves the real memory with no usable row."
+    },
+    {
+      "name": "init-the-description-cap-drifts-from-the-checkers",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "_MAX_DESC_CHARS = 155\n",
+      "new": "_MAX_DESC_CHARS = 156\n",
+      "tests": [
+        "tests/test_init.py::test_the_description_cap_is_the_checkers_own"
+      ],
+      "why": "the truncation arithmetic was pinned and the constant it depends on was not. One character of drift is a DESC-LONG at the VERIFY step, on a store init has just built and just truncated a description for."
+    },
+    {
+      "name": "init-a-replaced-description-keeps-the-lines-under-it",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        rows[at] = line\n        while at + 1 < len(rows) and rows[at + 1][:1] in (\" \", \"\\t\"):\n            del rows[at + 1]\n",
+      "new": "        rows[at] = line\n",
+      "tests": [
+        "tests/test_init.py::test_a_replaced_description_takes_the_lines_under_it"
+      ],
+      "why": "a description whose value continued onto indented lines is one value. Replacing the first line alone leaves the rest of somebody else's sentence attached to the new description, which is why this is not a regex."
+    },
+    {
+      "name": "init-the-sub-indexs-own-members-are-rowed-a-second-time",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    claimed = _sub_index_members(store, config_path)\n",
+      "new": "    claimed = set()\n",
+      "tests": [
+        "tests/test_init.py::test_a_memory_a_sub_index_already_rows_is_not_rowed_again",
+        "tests/test_init.py::test_the_ledger_over_a_sub_index_is_still_the_one_write_would_leave"
+      ],
+      "why": "a sub-index owns its members' rows and membership is read from its own text. Generating a second row for one of them in SEARCH.md is the checker's DOUBLE-LEDGER, on a store init has just declared correct."
+    },
+    {
+      "name": "init-a-write-may-follow-a-link-out-of-the-store-it-named",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    if not confine or _inside(path, confine):\n        return\n",
+      "new": "    return\n",
+      "tests": [
+        "tests/test_init.py::test_a_link_planted_after_the_plan_never_lands_outside_the_store"
+      ],
+      "why": "a plan proves containment against the tree it was built over. A link planted between the two turns turns a path the manifest proved was inside the store into one that is not, and every write below follows links by design."
+    },
+    {
+      "name": "init-adoption-writes-through-a-symlinked-destination",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if os.path.islink(dest):\n                diverged.append(\n",
+      "new": "            if False:\n                diverged.append(\n",
+      "tests": [
+        "tests/test_init.py::test_a_destination_that_is_a_link_is_named_and_never_written_through"
+      ],
+      "why": "a dangling symlink at a destination reads as absent through `state_token`, so the copy is planned and the write follows the link. Pointed back inside the store it lands in hot/, whose ledger is hand-written and rows nothing new."
+    },
+    {
+      "name": "init-adoption-plans-a-copy-it-cannot-place-inside-the-store",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if not _inside(dest, store):\n                diverged.append(\n",
+      "new": "            if False:\n                diverged.append(\n",
+      "tests": [
+        "tests/test_init.py::test_a_destination_that_is_a_link_is_named_and_never_written_through"
+      ],
+      "why": "the link that moves a write is as often a directory halfway up as the leaf, and `os.makedirs` follows one as happily as `open` does: the manifest planned a copy into the store and the bytes landed outside it."
+    },
+    {
+      "name": "init-a-hot-memory-with-no-row-is-not-mentioned-before-the-confirm",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    hot = _unrowed_hot(store)\n",
+      "new": "    hot = []\n",
+      "tests": [
+        "tests/test_init.py::test_a_hot_memory_no_index_rows_is_named_before_the_confirm"
+      ],
+      "why": "the checker walks hot/ as well as search/ and generates rows for neither. A hot memory MEMORY.md does not row is an ORPHAN at the VERIFY step init runs on its own work, reported after the store is on disk with nothing in the manifest that saw it coming."
+    },
+    {
+      "name": "init-a-row-that-cannot-be-read-is-dropped-in-silence",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            notes.append(\n                f\"  no row: {_display_path(path)} could not be read \"\n                f\"({type(exc).__name__}), so SEARCH.md carries no row for it \"\n                \"and the check below will call it an orphan\"\n            )\n            continue\n",
+      "new": "            continue\n",
+      "tests": [
+        "tests/test_init.py::test_a_memory_whose_row_cannot_be_read_is_named_and_not_dropped"
+      ],
+      "why": "a row dropped in silence is a memory this ledger stops carrying, and the checker that reads the tree rather than the ledger calls that an ORPHAN."
+    },
+    {
+      "name": "init-the-manifest-folds-every-copy-into-a-count",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "                for member in members:\n                    lines.append(\n                        f\"                 {_display_path(member.path)}\"\n                    )\n",
+      "new": "                for member in []:\n                    lines.append(\n                        f\"                 {_display_path(member.path)}\"\n                    )\n",
+      "tests": [
+        "tests/test_init.py::test_the_manifest_names_every_file_the_copy_would_write"
+      ],
+      "why": "doctor's remedy for this command promises it names every file first, and consent for a command whose named harm is a wrong copy has to be given against the destinations rather than against their number."
     }
   ]
 }
