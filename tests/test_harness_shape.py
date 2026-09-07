@@ -40,6 +40,13 @@ SHAPES = REPO / "tests" / "data" / "harness_shapes"
 KEY_RE = re.compile(r"^(-|s\d+)*$")
 FILE_RE = re.compile(r"^(MEMORY\.md|m\d+\.md)$")
 PLUGIN_RE = re.compile(r"^(memkit|p\d+)(@q\d+)?$")
+# And the four rows that are not pseudonyms but still carry a string. Written
+# out here rather than imported from the tool: a gate that read the tool's own
+# allowlist would pass whatever the tool decided to allow, which is the one
+# thing an artifact gate must not do.
+VERSION_RE = re.compile(r"\d+(\.\d+)*")
+INSTALL_OK = frozenset({"global", "native", "local", "npm", "unknown", "other"})
+HOOK_RE = re.compile(r"[A-Za-z]+|h\d+")
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -216,16 +223,27 @@ def test_the_lock_is_read_from_either_place_it_has_been_seen(tmp_path) -> None:
     assert 7100 < listed["-b"]["lock_age_s"] < 7300
 
 
-SENTINEL = "loxodonta"
+# LONG, and that is the point rather than a flourish. Every sentinel in this
+# suite used to be under 21 characters, and a one-line weakening of the form
+# `return name if len(name) >= 20 else pseudonym` therefore survived the whole
+# file — while long names are exactly where real identity lives, because a
+# repository called `worktree_discipline_shared_checkouts` says more about
+# somebody than `app` does. 28 characters, alphanumeric so it survives the
+# harness's own key sanitiser unchanged, and it is planted in EVERY row of an
+# anonymised shape that can hold a free string.
+SENTINEL = "loxodontaafricanaberthae2026"
+MARKET = SENTINEL + "market"
 
 
-def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
-    """The binding rule, exercised in all four places a name can hide.
+def _sentinel_tree(tmp_path) -> Path:
+    """One config directory with the sentinel in every string-bearing row.
 
-    A body, a description, a project key and a file name — plus the two
-    settings values that are paths on somebody's machine. `--raw` is asserted
-    to LEAK the same sentinel, because a leak test that passes against empty
-    output is a leak test that will pass forever.
+    Ten of them: a project key, a SINGLE-SEGMENT project key, a file name, a
+    description, a body, an index row, the auto-memory directory, one of the
+    two switches, a hook event key, and a plugin with its marketplace — plus
+    the two `harness` rows, a `versions/` directory name and an
+    `installMethod`. The list is the point: `assert SENTINEL not in stdout` is
+    one assertion, and what makes it a gate is how many places it reaches.
     """
     config = tmp_path / "config"
     memory = _memory_dir(config, f"-Users-{SENTINEL}-src-{SENTINEL}")
@@ -238,40 +256,124 @@ def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
         memory / "MEMORY.md",
         f"# Memory index\n\n- [t]({SENTINEL}-note.md) — hook\n",
     )
+    # A key with NO separator in it, which a segment-wise pseudonymiser can be
+    # weakened to wave through: the harness spells project keys as sanitised
+    # absolute paths, so every real one starts with `-`, and a rule that only
+    # looks at multi-segment keys is untestable against a real capture.
+    bare = _memory_dir(config, SENTINEL)
+    _write(bare / "one.md", "x\n")
+    # `versions/` wins over `lastReleaseNotesSeen`, so the directory name is
+    # the version row this tree exercises; the other source is pinned by
+    # `test_a_version_that_is_not_one_never_travels`.
+    (tmp_path / ".local" / "share" / "claude" / "versions" / f"2.1.263-{SENTINEL}").mkdir(
+        parents=True
+    )
+    _write(
+        config / ".claude.json",
+        json.dumps({"installMethod": f"/Users/{SENTINEL}/.local/bin/claude"}),
+    )
     _write(
         config / "settings.json",
         json.dumps(
             {
-                "autoMemoryEnabled": True,
-                "autoMemoryDirectory": f"/home/{SENTINEL}/notes",
-                "hooks": {"UserPromptSubmit": [{"hooks": [{"command": SENTINEL}]}]},
-                "enabledPlugins": {f"{SENTINEL}@{SENTINEL}": True},
+                # NOT a boolean. The harness reads any non-null as on, so an
+                # adopter who typed a path here has a working switch and a
+                # value this tool has no business carrying.
+                "autoMemoryEnabled": f"/Users/{SENTINEL}/notes",
+                "autoDreamEnabled": True,
+                # Not `/home/…`: a rule that anonymises one platform's home
+                # and passes the other's through is the exact weakening this
+                # row exists to catch.
+                "autoMemoryDirectory": f"/Users/{SENTINEL}/Library/memory",
+                "hooks": {
+                    "UserPromptSubmit": [{"hooks": [{"command": SENTINEL}]}],
+                    f"Gate--{SENTINEL}": [],
+                },
+                "enabledPlugins": {f"{SENTINEL}@{MARKET}": True},
             }
         ),
     )
+    return config
+
+
+def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
+    """The binding rule, exercised in every place a name can hide.
+
+    `--raw` is asserted to LEAK the same sentinel, because a leak test that
+    passes against empty output is a leak test that will pass forever.
+    """
+    config = _sentinel_tree(tmp_path)
     anonymised = _run("--config-dir", str(config))
     assert anonymised.returncode == 0, anonymised.stderr
     assert SENTINEL not in anonymised.stdout
     assert SENTINEL not in anonymised.stderr
 
     shape = json.loads(anonymised.stdout)
-    entry = shape["memory_dirs"][0]
+    listed = _by_key(shape)
+    entry = listed["-s1-s2-s3-s2"]
     # And what it kept instead is the shape: the length of the key, the number
     # of segments, the length of the description, the size of the file.
-    assert entry["key"] == "-s1-s2-s3-s2"
     assert entry["key_len"] == len(f"-Users-{SENTINEL}-src-{SENTINEL}")
     names = sorted(item["name"] for item in entry["files"])
     assert names == ["MEMORY.md", "m1.md"]
     memories = [item for item in entry["files"] if item["name"] != "MEMORY.md"]
     assert memories[0]["description_len"] == len(f"about {SENTINEL}")
+    # The single-segment key is a pseudonym too — the SAME one, because the
+    # segment table is shared and a shape's whole claim about keys is that two
+    # of them shared a segment, never which.
+    assert listed["s2"]["key_len"] == len(SENTINEL)
+    assert shape["harness"] == {"version_hint": None, "install": "other"}
     user = shape["settings"]["user"]
-    assert user["memory_keys"]["autoMemoryDirectory"] == "<path>"
-    assert user["hooks"] == ["UserPromptSubmit"]
+    assert user["memory_keys"] == {
+        harness_memory.ENABLED_KEY: None,
+        harness_memory.DIRECTORY_KEY: "<path>",
+        harness_memory.DREAM_KEY: True,
+    }
+    # A pseudonym and a real event name, sorted as OUTPUT: `Gate--<sentinel>`
+    # sorts first among the real keys and last here, which is the point.
+    assert user["hooks"] == ["UserPromptSubmit", "h1"]
     assert user["plugins"] == ["p1@q1"]
 
     raw = _run("--config-dir", str(config), "--raw")
     assert raw.returncode == 0, raw.stderr
     assert SENTINEL in raw.stdout, "the anonymised pass proved nothing"
+    # And raw keeps them AS THEY ARE, which is what makes the anonymised pass
+    # above a statement about the anonymiser rather than about the reader.
+    raw_shape = json.loads(raw.stdout)
+    assert raw_shape["harness"] == {
+        "version_hint": f"2.1.263-{SENTINEL}",
+        "install": f"/Users/{SENTINEL}/.local/bin/claude",
+    }
+    assert f"Gate--{SENTINEL}" in raw_shape["settings"]["user"]["hooks"]
+
+
+def test_a_version_that_is_not_one_never_travels(tmp_path) -> None:
+    """Both sources of `version_hint`, and the install method beside it.
+
+    A version hint is whichever `versions/` entry sorts highest, and
+    `lastReleaseNotesSeen` only when there is no such directory — so a rule
+    applied to one source and not the other is a rule with a hole nobody
+    walking the happy path would find. A stock value has to SURVIVE, which is
+    the half that a redact-everything answer would fail.
+    """
+    cases = ((f"2.1.263-{SENTINEL}", None), ("2.1.258", "2.1.258"))
+    for index, (value, kept) in enumerate(cases):
+        for source in ("versions", "notes"):
+            root = tmp_path / f"{source}{index}"
+            config = root / "config"
+            config.mkdir(parents=True)
+            claude_json = {"installMethod": "native"}
+            if source == "versions":
+                (root / ".local" / "share" / "claude" / "versions" / value).mkdir(
+                    parents=True
+                )
+            else:
+                claude_json["lastReleaseNotesSeen"] = value
+            _write(config / ".claude.json", json.dumps(claude_json))
+            shape = _shape("--config-dir", str(config))
+            assert shape["harness"] == {"version_hint": kept, "install": "native"}, (
+                source, value,
+            )
 
 
 def test_raw_refuses_to_write_where_a_fixture_would_be_committed(tmp_path) -> None:
@@ -385,12 +487,25 @@ def test_the_committed_shapes_carry_no_names() -> None:
         assert shape["tool"] == "harness_shape", path.name
         assert shape["anonymised"] is True, path.name
         assert shape["memory_dirs"], (path.name, "a shape of nothing tests nothing")
+        # The two harness rows, which are adopter-controlled strings and were
+        # the only free text in either committed fixture.
+        version = shape["harness"]["version_hint"]
+        assert version is None or VERSION_RE.fullmatch(version), (path.name, version)
+        install = shape["harness"]["install"]
+        assert install is None or install in INSTALL_OK, (path.name, install)
         for entry in shape["memory_dirs"]:
             assert KEY_RE.match(entry["key"]), (path.name, entry["key"])
             for item in entry["files"]:
                 assert FILE_RE.match(item["name"]), (path.name, item["name"])
         for scope in shape["settings"].values():
-            directory = scope["memory_keys"].get("autoMemoryDirectory")
-            assert directory in (None, "<path>"), (path.name, directory)
+            for key, value in scope["memory_keys"].items():
+                if key == harness_memory.DIRECTORY_KEY:
+                    assert value in (None, "<path>"), (path.name, value)
+                else:
+                    # A switch, or the null that says it was set to something
+                    # else. Never the something else.
+                    assert value is None or isinstance(value, bool), (path.name, key)
+            for event in scope["hooks"]:
+                assert HOOK_RE.fullmatch(event), (path.name, event)
             for plugin in scope["plugins"]:
                 assert PLUGIN_RE.match(plugin), (path.name, plugin)

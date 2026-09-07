@@ -21,6 +21,15 @@ because what a 164-character key tests is the length, not the letters. So
 the failure this closes is a debugging run whose redirect happened to point at
 the repository.
 
+AND NO FREE STRING ANYWHERE ELSE. The rows that are not pseudonyms are the
+ones that leaked — a version hint, an install method, a hook event key, a
+settings switch — because each looked like a fixed vocabulary and none of them
+is: the harness writes what it is given, and what an adopter gives it is
+`2.1.263-alice-patched`, a path to their own binary, and a gate named after
+their employer. Every one of those is shape-constrained on the way out, so the
+whole of an anonymised shape is pseudonyms, numbers, booleans and values from
+a list written down here.
+
 STDLIB ONLY, AND IT RUNS ON 3.8 — below this repository's own floor, because
 the floor that binds here is the oldest interpreter on a machine worth
 capturing, and the host this tool was first piped to ran 3.8.18. It ran there
@@ -87,8 +96,25 @@ _FENCE = "---"
 _NESTED_TYPE_RE = re.compile(r"^\s+type:")
 # The harness's own index row: `- [title](file.md) — hook`.
 _INDEX_ROW_RE = re.compile(r"^\s*[-*]\s+\[[^\]]*\]\(([^)]*)\)")
-# A leading numeric run, which is all of a version string this sorts on.
+# A leading numeric run, which is all of a version string this SORTS on.
 _VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)")
+# And what a version is allowed to BE in an anonymised shape. A different
+# pattern from the one above and deliberately so: sorting wants the numeric
+# prefix of whatever it is handed, and the privacy rule wants the whole string
+# to be that prefix. `fullmatch`, never `match` — a prefix test admits
+# `2.1.263-jgomes-patched` entire, which is a colleague's username in a field
+# nobody reads and nothing checks.
+_VERSION_FULL_RE = re.compile(r"\d+(\.\d+)*")
+# `installMethod` as the harness spells it, and an ALLOWLIST rather than a
+# pattern: the field has been seen holding an absolute path to the binary, so
+# anything unrecognised becomes `other` rather than travelling. Widening this
+# costs a fixture nothing; carrying an unrecognised value costs the invariant.
+INSTALL_METHODS = ("global", "native", "local", "npm", "unknown")
+INSTALL_OTHER = "other"
+# A hook EVENT name as the harness spells every event it dispatches: letters
+# and nothing else. A settings file can carry any key under `hooks`, and the
+# ones that are not events are somebody's own gate, named after their org.
+_HOOK_EVENT_RE = re.compile(r"[A-Za-z]+")
 
 
 # --- settings ---------------------------------------------------------------
@@ -119,6 +145,15 @@ def _read_json(path: str):
 
 
 def _settings_scope(data: dict, names: _Pseudonyms, anonymise: bool) -> dict:
+    """One settings file, reduced to the memory feature's own surface.
+
+    Every value that leaves here is SHAPE-CONSTRAINED under `anonymise`, and
+    the reason is that a settings file is the adopter's, not the harness's:
+    the two switches are booleans only because the harness reads them as
+    booleans, and a string found under one is somebody's own value that this
+    tool has no business carrying. The same rule runs over the hook keys, and
+    the placeholder over the directory.
+    """
     memory_keys = {}
     for key in MEMORY_KEYS:
         if key not in data:
@@ -126,18 +161,31 @@ def _settings_scope(data: dict, names: _Pseudonyms, anonymise: bool) -> dict:
         value = data[key]
         if key == DIRECTORY_KEY:
             memory_keys[key] = PATH_PLACEHOLDER if anonymise else value
+        elif anonymise and not isinstance(value, bool):
+            # PRESENT, and not a switch. `null` says the key was set to
+            # something the harness reads as on, which is the fact a rebuilt
+            # tree needs; the value itself is the adopter's.
+            memory_keys[key] = None
         else:
             memory_keys[key] = value
     hooks = data.get("hooks")
     # EVENT NAMES ONLY. The value under each is a list of matchers and shell
     # COMMANDS — paths, flags and whatever else somebody wired up, which is the
-    # single richest source of real names in a settings file.
+    # single richest source of real names in a settings file. The KEYS are the
+    # other half of that and were carried verbatim: an event name is letters,
+    # so anything else under `hooks` is a name and gets a pseudonym.
     events = sorted(hooks) if isinstance(hooks, dict) else []
     plugins = data.get("enabledPlugins")
     listed = sorted(plugins) if isinstance(plugins, dict) else []
     return {
         "memory_keys": memory_keys,
-        "hooks": events,
+        # SORTED AFTER the pseudonyms are assigned, not before. The numbering
+        # follows the real sort order because determinism needs it to, but the
+        # ORDER of the emitted list is then a fact about the output rather
+        # than about where a redacted key fell in the alphabet.
+        "hooks": (
+            sorted(names.hook(event) for event in events) if anonymise else events
+        ),
         "plugins": [names.plugin(key) if anonymise else key for key in listed],
     }
 
@@ -171,7 +219,7 @@ def _version_sort_key(name: str) -> tuple:
     return (tuple(int(part) for part in match.group(1).split(".")), name)
 
 
-def _harness(config_dir: str) -> dict:
+def _harness(config_dir: str, anonymise: bool) -> dict:
     """A version hint and an install method, or nulls.
 
     RELATIVE TO `config_dir` AND NEVER TO `$HOME`, which is what makes a
@@ -179,6 +227,13 @@ def _harness(config_dir: str) -> dict:
     config dir under `tmp_path`, and a lookup that fell back to the operator's
     own `~/.claude.json` would put that machine's version in a fixture built
     from a tree that has none.
+
+    BOTH VALUES ARE ADOPTER-CONTROLLED, which is why neither travels
+    unrecognised. `version_hint` is a directory name under `versions/` or a
+    string out of `.claude.json`, so a hand-built `2.1.263-alice-patched` is a
+    username in a field nobody reads; `installMethod` has been seen holding an
+    absolute path to the binary. A shape says the machine had a version and an
+    install method, never which one somebody typed.
     """
     parent = os.path.dirname(os.path.abspath(config_dir))
     versions = os.path.join(parent, ".local", "share", "claude", "versions")
@@ -203,10 +258,13 @@ def _harness(config_dir: str) -> dict:
         seen = claude_json.get("lastReleaseNotesSeen")
         hint = seen if isinstance(seen, str) else None
     install = claude_json.get("installMethod")
-    return {
-        "version_hint": hint,
-        "install": install if isinstance(install, str) else None,
-    }
+    install = install if isinstance(install, str) else None
+    if anonymise:
+        if hint is not None and not _VERSION_FULL_RE.fullmatch(hint):
+            hint = None
+        if install is not None and install not in INSTALL_METHODS:
+            install = INSTALL_OTHER
+    return {"version_hint": hint, "install": install}
 
 
 # --- frontmatter ------------------------------------------------------------
@@ -304,13 +362,14 @@ class _Pseudonyms:
     survives is that two keys shared a segment, never which one.
     """
 
-    __slots__ = ("_segments", "_files", "_plugins", "_markets")
+    __slots__ = ("_segments", "_files", "_plugins", "_markets", "_hooks")
 
     def __init__(self) -> None:
         self._segments = {}
         self._files = {}
         self._plugins = {}
         self._markets = {}
+        self._hooks = {}
 
     @staticmethod
     def _assign(table: dict, value: str, prefix: str) -> str:
@@ -331,6 +390,14 @@ class _Pseudonyms:
         if name == INDEX_NAME:
             return name
         return self._assign(self._files, name, "m") + ".md"
+
+    def hook(self, event: str) -> str:
+        # An event name is letters, and the harness's whole list of them is
+        # public. Anything else under `hooks` is a key somebody chose, which
+        # is where an org name lives.
+        if _HOOK_EVENT_RE.fullmatch(event):
+            return event
+        return self._assign(self._hooks, event, "h")
 
     def plugin(self, key: str) -> str:
         plugin, sep, marketplace = key.partition("@")
@@ -492,7 +559,7 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
         "schema": SCHEMA,
         "tool": "harness_shape",
         "anonymised": anonymise,
-        "harness": _harness(config_dir),
+        "harness": _harness(config_dir, anonymise),
         "settings": _settings(config_dir, names, anonymise),
         "projects_total": len(keys),
         "memory_dirs_total": memory_dirs_total,
