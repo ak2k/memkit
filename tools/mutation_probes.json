@@ -2125,6 +2125,116 @@
       "why": "Measured on 2.1.258: a checked-in .claude/settings.json redirects auto-memory in every non-interactive run whatever the folder trust state, so the value travels with every clone. Passed over because the directory happens to be retrievable, the report stops saying that a repository is the thing deciding where this adopter's agent writes."
     },
     {
+      "name": "auto-memory-trusts-a-scope-name-instead-of-who-owns-the-file",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        checkout = not _adopter_owns(machine.settings, where)\n",
+      "new": "        checkout = where == harness_memory.CHECKOUT_SCOPE\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_checked_in_settings_file_decides_and_is_reported_not_passed"
+      ],
+      "why": "`local` settings sit in the session's own directory too: a comparison against one scope NAME passes a directory a checkout chose as though the adopter had chosen it"
+    },
+    {
+      "name": "auto-memory-discloses-a-checkout-only-when-it-turns-the-feature-off",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    switch_theirs = bool(enabled_scope) and not _adopter_owns(\n        machine.settings, enabled_scope\n    )\n",
+      "new": "    switch_theirs = enabled is False and bool(enabled_scope) and not _adopter_owns(\n        machine.settings, enabled_scope\n    )\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_checkout_that_turns_the_feature_on_is_reported_the_same_way"
+      ],
+      "why": "a clone that turns the feature ON over an adopter who turned it off is the direction that leaves two memory systems running on a machine whose owner believes there is one"
+    },
+    {
+      "name": "auto-memory-passes-an-off-switch-a-lower-scope-contradicts",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        disputed = _declared_below(\n            machine.settings, harness_memory.ENABLED_KEY, enabled_scope, enabled\n        )\n",
+      "new": "        disputed = \"\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_off_is_information_when_a_lower_scope_declares_it_otherwise"
+      ],
+      "why": "with two scopes that disagree, this row's most consequential sentence rests on a precedence order inferred rather than measured"
+    },
+    {
+      "name": "auto-memory-reads-the-config-dir-variable-the-scopes-guard",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    steered = _under_cwd(config_dir)\n",
+      "new": "    steered = False\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_config_directory_this_tree_chose_does_not_pass_its_own_inventory"
+      ],
+      "why": "$CLAUDE_CONFIG_DIR pointed inside the session's own directory is the project scope under another name, and what it enumerates decides PASS over INFO"
+    },
+    {
+      "name": "auto-memory-reads-a-settings-file-that-will-not-parse-as-one-declaring-nothing",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        f\"({_display_cap(scope.error, PARSER_SHOWN)})\"\n        for scope in scopes\n        if scope.error\n",
+      "new": "        f\"({_display_cap(scope.error, PARSER_SHOWN)})\"\n        for scope in scopes\n        if False\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it"
+      ],
+      "why": "a scope that did not parse and a scope that declares nothing are one value to every reader, so a key set in an unreadable file reads as unset and no row says which file"
+    },
+    {
+      "name": "auto-memory-passes-on-a-settings-file-it-could-not-read",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            INFO if row.status == PASS else row.status,\n",
+      "new": "            row.status,\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it"
+      ],
+      "why": "a PASS is a claim about the machine, and a file this process could not open is one that can falsify every claim the row derived from the scopes"
+    },
+    {
+      "name": "auto-memory-keeps-a-remedy-naming-the-file-that-does-not-parse",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                    \"\" if any(s in row.remedy for s in spellings) else row.remedy,\n",
+      "new": "                    row.remedy,\n",
+      "tests": [
+        "tests/test_doctor.py::test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse"
+      ],
+      "why": "telling an adopter to set a key in a file whose next read discards the edit is the half of this defect that is worse than the missing diagnostic"
+    },
+    {
+      "name": "auto-memory-passes-an-off-switch-over-memories-it-never-counted",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        left = _left_behind(outside)\n",
+      "new": "        left = \"\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown"
+      ],
+      "why": "a switch that is off stops the harness writing and moves nothing: \"memkit is the only memory system here\" is the sentence that stops an adopter looking for what it already wrote"
+    },
+    {
+      "name": "auto-memory-asks-the-store-relation-of-linked-directories-only",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        how = _store_relation(machine, project.path)[2]\n",
+      "new": "        how = _store_relation(machine, project.path)[2] if project.linked else \"\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_project_directory_inside_a_corpus_root_is_not_outside_every_store"
+      ],
+      "why": "a config directory inside a corpus root puts every project directory under it in the store with no link anywhere, and counted outside every store it is this row's loudest number wrong"
+    },
+    {
+      "name": "auto-memory-calls-a-directory-no-store-retrieves-outside-every-store",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        bucket = retrieved if how == \"inside\" else outside if not how else held\n",
+      "new": "        bucket = retrieved if how == \"inside\" else outside\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_project_directory_a_store_holds_and_never_retrieves_is_neither"
+      ],
+      "why": "inside a corpus root and under a pruned name is in the store and unreached from where it is, which is neither of the two answers the count has"
+    },
+    {
       "name": "auto-memory-passes-a-directory-an-environment-override-replaces",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
@@ -4339,6 +4449,17 @@
         "tests/test_packaging.py::test_the_wheel_declares_every_console_script"
       ],
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
+    },
+    {
+      "name": "packaging-a-test-file-with-no-suite-name-is-left-to-the-nix-leg",
+      "module": "packaging",
+      "file": "flake.nix",
+      "old": "            \"test_harness_memory.py\" = \"harness-memory-tests\";\n",
+      "new": "",
+      "tests": [
+        "tests/test_packaging.py::test_every_test_file_is_in_the_flake_suite_map"
+      ],
+      "why": "an unnamed suite file throws at EVALUATION, so `nix flake check` runs no check at all and the whole nix leg reports one error about a file nobody was thinking about"
     }
   ]
 }
