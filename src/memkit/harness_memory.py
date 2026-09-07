@@ -206,6 +206,17 @@ class ProjectMemory:
         return bool(self.is_symlink or self.linked_project or self.linked_files)
 
 
+def key_spelling(path: str) -> str:
+    """`path` with the harness's sanitiser applied and no walk of any kind.
+
+    The rule in `_SANITIZE`, reachable by a caller that has a path rather than
+    a cwd — a report re-spelling `$HOME` inside a key it is about to print
+    needs the same one-for-one substitution, and deriving it a second time is
+    how two surfaces come to disagree about a directory name.
+    """
+    return _SANITIZE.sub("-", path)
+
+
 def project_key(cwd: str) -> str:
     """The harness's own directory name for the project `cwd` is in.
 
@@ -244,7 +255,7 @@ def project_key(cwd: str) -> str:
     """
     if not os.path.isabs(cwd):
         raise ValueError(f"{cwd!r} is not an absolute directory")
-    key = _SANITIZE.sub("-", _project_path(cwd))
+    key = key_spelling(_project_path(cwd))
     if len(key) > KEY_MAX:
         # THE EXPLANATION BEFORE THE PATH, because doctor interpolates this
         # message into a detail that is bounded from the end, and the path here

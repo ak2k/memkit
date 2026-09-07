@@ -2791,6 +2791,109 @@ def test_the_switch_facts_outlive_a_project_list_that_overruns_the_detail(
     assert "the harness would write to" in row.detail
 
 
+def test_every_adopter_controlled_value_in_this_row_is_bounded(profile, monkeypatch):
+    """One rule for the whole row rather than a fix per call site, which is
+    what #14 got and why the class came back twice.
+
+    Three values in this detail have a length the adopter's own machine or a
+    clone decides — the session's cwd, the configured directory, and the
+    config directory — and `_bound` cuts from the END. Each of them alone was
+    enough to take this row's verdict out of the row while leaving a report
+    that reads as complete.
+    """
+    path = _store_config(profile, stores=["personal"])
+
+    # 1. The cwd, through the key refusal: the reason survives the path.
+    deep = profile / "deep"
+    while len(str(deep)) <= harness_memory.KEY_MAX:
+        deep = deep / "a-directory-with-a-long-enough-name"
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert f"over {harness_memory.KEY_MAX}" in row.detail
+    assert "has not measured" in row.detail
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+
+    # 2. The configured directory, which a CHECKED-IN file decides: the value
+    # is 560 characters and the three sentences that judge it are shorter than
+    # what they were cut for.
+    monkeypatch.chdir(profile / "project")
+    checked_in = profile / "project" / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    stray = str(profile / ("s" * 560))
+    checked_in.write_text(
+        json.dumps({harness_memory.DIRECTORY_KEY: stray}), encoding="utf-8"
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "outside every store" in row.detail
+    assert "travels with every clone" in row.detail
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+    checked_in.unlink()
+
+    # 3. The config directory, whose length is an environment variable's.
+    # Nested rather than one component: a 400-character NAME is longer than
+    # any filesystem here allows, and the value this guards against is a long
+    # PATH.
+    long_config = profile / ("c" * 120) / ("c" * 120) / ("c" * 120)
+    long_config.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(long_config))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "the harness would write to" in row.detail
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+
+
+def test_a_project_key_is_redacted_the_way_a_path_is(profile, monkeypatch) -> None:
+    """Every PATH in this row goes through `_display_path`, which re-spells
+    `$HOME` as `~`. The KEYS are whole absolute paths with their separators
+    replaced, and they were printed raw — so a report an adopter pastes into an
+    issue carries `-Users-<them>-work-<client>-<project>` five times over."""
+    path = _store_config(profile, stores=["personal"])
+    home = os.environ["HOME"]
+    sanitised = re.sub(r"[^A-Za-z0-9]", "-", home)
+    projects = profile / "claude-config" / "projects"
+    for name in (f"{sanitised}-work-acme", f"{sanitised}other-tree", "-elsewhere"):
+        (projects / name / "memory").mkdir(parents=True)
+        (projects / name / "memory" / "one.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert f"{sanitised}-work-acme" not in row.detail
+    assert "~-work-acme" in row.detail
+    # Only on a COMPONENT BOUNDARY: `<home>other-tree` is the key of a
+    # directory beside the home directory rather than under it, and re-spelling
+    # it `~other-tree` would name a directory that is not there. It keeps the
+    # spelling it has, which is the same answer `_display_path` gives a path
+    # that merely shares a prefix with `$HOME`.
+    assert f"{sanitised}other-tree" in row.detail
+    assert "-elsewhere" in row.detail
+
+
+def test_a_switch_holding_a_whole_object_is_quoted_as_one(profile, monkeypatch):
+    """`json.dumps(value)[:20]` on a dict prints a torn fragment that reads as
+    the whole value. What an adopter has to act on is that the key holds
+    something that is not true or false, so the quotation says it was cut."""
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled={"enabled": True, "for": ["everything"]})
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "is not true or false" in row.detail
+    quoted = f'"{harness_memory.ENABLED_KEY}" is {{"enabled": true,... in user'
+    assert quoted in row.detail
+
+
 def test_a_config_dir_under_home_names_the_directory_the_same_way(
     profile, monkeypatch
 ) -> None:

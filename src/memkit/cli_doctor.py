@@ -169,6 +169,20 @@ _LABEL_WIDTH = max(len(v) for v in LABELS.values())
 # is worse than a shorter message: it reads as complete.
 DETAIL_MAX_BYTES = 600
 
+# And what ONE PATH inside a detail may cost, because the bound above is only
+# half the rule. A path is the part of a sentence whose length somebody else
+# decides — a session's own cwd, a value out of a cloned settings file — and a
+# single long one fills the whole budget, so what gets cut is every other
+# sentence in the row. That failure is worse than a truncated path: the row
+# reads as a confident verdict with the verdict missing.
+#
+# Generous rather than tight, and measured against the longest HONEST path this
+# report prints: a derived default is a config directory plus a project key,
+# and a key is a whole absolute path with its separators replaced. Two nested
+# absolute paths in one string is 250 characters before anything is wrong. This
+# is here to stop one value eating a row, not to fit a column.
+PATH_SHOWN = 300
+
 
 # The frame's delimiters as a LITERAL, neutralised in doctor's own output.
 #
@@ -2937,6 +2951,34 @@ def _detail(*parts: str) -> str:
     return "; ".join(part for part in parts if part)
 
 
+def _shown(path: str) -> str:
+    """One path as a detail prints it: `~`-relative, and bounded.
+
+    Both halves at one call, because they were two rules applied at different
+    call sites: every path went through `_display_path` and none of them
+    through a cap, so the whole of `DETAIL_MAX_BYTES` was one value's to spend.
+    """
+    return _display_cap(_display_path(path), PATH_SHOWN)
+
+
+def _display_key(key: str) -> str:
+    """One harness project key as a detail prints it.
+
+    A KEY IS A PATH, with every character outside `[A-Za-z0-9]` replaced — so
+    `$HOME` is as legible in it as in the paths this report already re-spells,
+    and doctor's output is what an adopter pastes into an issue. Redacted on a
+    COMPONENT BOUNDARY only: a key that merely starts with the same characters
+    belongs to a different directory, and re-spelling it would name one that
+    is not there.
+    """
+    home = harness_memory.key_spelling(os.path.expanduser("~"))
+    if key == home:
+        return "~"
+    if home and key.startswith(home + "-"):
+        return "~" + key[len(home) :]
+    return key
+
+
 def _within(child: str, parent: str) -> bool:
     """Whether `child` is `parent` or sits under it, symlinks resolved.
 
@@ -3081,7 +3123,7 @@ def _placed(machine: Machine, directory: str) -> tuple:
         where = (
             f"is {store}'s corpus root itself"
             if how == "at"
-            else f"holds {store}'s corpus root {_display_path(root)}"
+            else f"holds {store}'s corpus root {_shown(root)}"
         )
         return (
             False,
@@ -3093,7 +3135,7 @@ def _placed(machine: Machine, directory: str) -> tuple:
     if how == "pruned":
         return (
             False,
-            f"is inside {store}'s corpus root {_display_path(root)} but under "
+            f"is inside {store}'s corpus root {_shown(root)} but under "
             f"a name retrieval prunes ({', '.join(sorted(EXCLUDE_DIRS))}), so "
             f"nothing written there is indexed",
             safe,
@@ -3105,7 +3147,7 @@ def _placed(machine: Machine, directory: str) -> tuple:
         return (
             False,
             f"is inside {store}, which has no search/ yet, and above the "
-            f"corpus root {_display_path(os.path.join(root, 'search'))} that "
+            f"corpus root {_shown(os.path.join(root, 'search'))} that "
             "store gets the moment one exists: creating it stops anything "
             "there being retrieved",
             os.path.join(root, "search", harness_memory.SAFE_SUBDIR),
@@ -3118,14 +3160,14 @@ def _placed(machine: Machine, directory: str) -> tuple:
         # `corpus-root` FAIL saying the store is not there.
         return (
             False,
-            f"is inside {store}'s corpus root {_display_path(root)}, which is "
+            f"is inside {store}'s corpus root {_shown(root)}, which is "
             "not on disk — see corpus-root — so nothing retrieves what lands "
             "there",
             safe,
         )
     return (
         True,
-        f"is inside {store}'s corpus root {_display_path(root)}, so what the "
+        f"is inside {store}'s corpus root {_shown(root)}, so what the "
         f"harness writes there is retrieved",
         "",
     )
@@ -3180,7 +3222,7 @@ def _odd_switch(key: str, value, scope: str) -> str:
     if not scope or isinstance(value, bool):
         return ""
     return (
-        f'"{key}" is {json.dumps(value)[:20]} in {scope} settings, '
+        f'"{key}" is {_display_cap(json.dumps(value), 20)} in {scope} settings, '
         "which is not true or false; only false turns it off"
     )
 
@@ -3432,7 +3474,10 @@ def _auto_memory(machine: Machine) -> list[Check]:
         try:
             default = harness_memory.default_dir(config_dir, machine.cwd)
         except ValueError as exc:
-            underived = f"where the harness writes for this project is unknown: {exc}"
+            underived = (
+                "where the harness writes for this project is unknown: "
+                f"{_display_cap(str(exc), PATH_SHOWN + 160)}"
+            )
     recent = ""
     candidates = (
         (
@@ -3551,17 +3596,23 @@ def _auto_memory(machine: Machine) -> list[Check]:
         source, travels = (
             _checkout_source(where) if checkout else (f"{where} settings", "")
         )
-        named = (
-            f"{_display_path(configured)} ({harness_memory.DIRECTORY_KEY} in "
-            f"{source})"
-        )
         retrieved, says, target = _placed(machine, configured)
+        # THE KEY, THE FILE AND THE VERDICT BEFORE THE VALUE, which is
+        # `_detail`'s own rule applied where it was not: this path is a
+        # clone's to choose, and a 560-character one filled the whole budget
+        # and cut three verdict sentences off the end. What was left read as a
+        # confident answer with no answer in it — a prose-shaped value could
+        # render a forged one.
+        named = (
+            f"{harness_memory.DIRECTORY_KEY} in {source} names a directory "
+            f"that {says}: {_shown(configured)}"
+        )
         if retrieved and not checkout and not switch_theirs and not environed:
             return [
                 Check(
                     "auto-memory",
                     PASS,
-                    _detail(f"{named} {says}", recent, odd_enabled),
+                    _detail(named, recent, odd_enabled),
                 )
             ]
         aside = ""
@@ -3575,7 +3626,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
         remedy = (
             f'Point it at a directory of the harness\'s own inside a corpus '
             f'root — "{harness_memory.DIRECTORY_KEY}": '
-            f'"{_display_path(target or "<store>/search/auto-memory")}"{aside} '
+            f'"{_shown(target or "<store>/search/auto-memory")}"{aside} '
             "— retrieval recurses into it and the rewrite reaches only what is "
             'in it. Or leave it there deliberately: "Where your agent\'s own '
             'memories land" in docs/STORE.md says what each choice costs.'
@@ -3589,12 +3640,12 @@ def _auto_memory(machine: Machine) -> list[Check]:
                 "auto-memory",
                 INFO,
                 _detail(
-                    f"{named} {says}",
-                    environed,
                     travels,
+                    environed,
                     switched_on,
                     recent,
                     odd_enabled,
+                    named,
                 ),
                 remedy,
                 actor=USER,
@@ -3618,14 +3669,14 @@ def _auto_memory(machine: Machine) -> list[Check]:
     elif os.path.isdir(default):
         first = (
             f"the harness writes this project's memories to "
-            f"{_display_path(default)} (project key from the git root)"
+            f"{_shown(default)} (project key from the git root)"
         )
         here, says, _target = _placed(machine, default)
         if here:
             first = f"{first}, and that directory {says}"
     else:
         first = (
-            f"the harness would write to {_display_path(default)} "
+            f"the harness would write to {_shown(default)} "
             "(derived from the git root)"
         )
 
@@ -3637,7 +3688,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
     redirected = (
         "$CLAUDE_CONFIG_DIR points inside the directory this session stands "
         "in, so both that path and what is counted in it are this tree's "
-        f"choice: {_display_path(config_dir)}"
+        f"choice: {_shown(config_dir)}"
         if steered
         else ""
     )
@@ -3653,12 +3704,17 @@ def _auto_memory(machine: Machine) -> list[Check]:
     else:
         switch_off = (
             'To run memkit alone, set "autoMemoryEnabled": false in '
-            f"{_display_path(config_dir)}/settings.json."
+            f"{_shown(config_dir)}/settings.json."
         )
+    # THE TWO FACTS THAT VOID THE PASS AHEAD OF THE ONE THE ROW IS ABOUT.
+    # `first` ends in a path and carries a second one inside `says`, so the
+    # sentence saying this whole count belongs to a directory the tree chose
+    # was the one `_bound` cut — on an ordinary machine, with no long value in
+    # sight.
     fixed = (
-        first,
         environed,
         redirected,
+        first,
         switched_on,
         recent,
         odd_enabled,
@@ -3681,7 +3737,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
             f"outside every store"
         )
         listed = ", ".join(
-            f"{project.key} ({project.memories})"
+            f"{_display_key(project.key)} ({project.memories})"
             for project in outside[:INVENTORY_SHOWN]
         )
         if len(outside) > INVENTORY_SHOWN:
