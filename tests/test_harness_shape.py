@@ -329,6 +329,22 @@ def test_the_tool_and_the_package_agree_on_what_a_corpus_is(tmp_path) -> None:
     )
 
 
+def test_harness_shape_parses_as_python_38() -> None:
+    """The floor is 3.8, not this repository's 3.9: the capture host it was
+    first piped to runs 3.8.18, and it ran there unmodified.
+
+    This is a SYNTAX guard and nothing more, with two holes worth naming. A
+    walrus is allowed, `match` and `except*` are rejected — but parenthesised
+    context managers are NOT rejected, because `feature_version` gates the
+    grammar the PEG parser applies and not that spelling. And it cannot see a
+    3.9+ STDLIB call at all, since those parse fine at every feature version;
+    the two a reviewer greps for instead are `str.removeprefix` and dict `|`
+    merge, which read as ordinary 3.8 syntax and die at run time on the host.
+    """
+    source = TOOL.read_text(encoding="utf-8")
+    ast.parse(source, filename=str(TOOL), feature_version=(3, 8))
+
+
 def test_the_tool_imports_nothing_it_could_not_find_on_a_stranger_s_machine(
 ) -> None:
     """It is piped over ssh to a host with no uv, no memkit and no copy of this

@@ -21,9 +21,12 @@ because what a 164-character key tests is the length, not the letters. So
 the failure this closes is a debugging run whose redirect happened to point at
 the repository.
 
-STDLIB ONLY, AND IT RUNS ON THE 3.9 FLOOR, because the machines worth
-capturing are other people's — reached over ssh, with no uv and no memkit on
-them, and nothing of this file on their disk at all:
+STDLIB ONLY, AND IT RUNS ON 3.8 — below this repository's own floor, because
+the floor that binds here is the oldest interpreter on a machine worth
+capturing, and the host this tool was first piped to ran 3.8.18. It ran there
+unmodified, and `tests/test_harness_shape.py` pins the syntax level so it keeps
+doing so. The machines are other people's — reached over ssh, with no uv and no
+memkit on them, and nothing of this file on their disk at all:
 
     ssh host 'sudo -n python3 - --config-dir /h/USER/.claude' < tools/harness_shape.py
 
