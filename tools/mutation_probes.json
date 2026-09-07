@@ -2117,12 +2117,69 @@
       "name": "auto-memory-passes-a-directory-a-checked-in-file-chose",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        if retrieved and not checkout and not switch_theirs:\n",
+      "old": "        if retrieved and not checkout and not switch_theirs and not environed:\n",
       "new": "        if retrieved:\n",
       "tests": [
         "tests/test_doctor.py::test_a_checked_in_settings_file_decides_and_is_reported_not_passed"
       ],
       "why": "Measured on 2.1.258: a checked-in .claude/settings.json redirects auto-memory in every non-interactive run whatever the folder trust state, so the value travels with every clone. Passed over because the directory happens to be retrievable, the report stops saying that a repository is the thing deciding where this adopter's agent writes."
+    },
+    {
+      "name": "auto-memory-passes-a-directory-an-environment-override-replaces",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        if retrieved and not checkout and not switch_theirs and not environed:\n",
+      "new": "        if retrieved and not checkout and not switch_theirs:\n",
+      "tests": [
+        "tests/test_doctor.py::test_an_environment_override_stops_the_row_naming_a_directory"
+      ],
+      "why": "Three environment variables decide where the harness writes above every settings scope, and memkit resolves none of them. Passing the configured directory while one is in effect names a directory that is not the one being written to, with this row's most confident status on it."
+    },
+    {
+      "name": "auto-memory-reads-the-disable-variable-as-a-one-way-switch",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "    if word in _ENV_ON:\n        return True, raw\n",
+      "new": "    if word in _ENV_ON:\n        return None, \"\"\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_environment_decides_the_switch_above_every_settings_scope",
+        "tests/test_doctor.py::test_an_environment_variable_that_forces_the_feature_on_is_never_a_pass"
+      ],
+      "why": "Read from the 2.1.258 code: a FALSY word in CLAUDE_CODE_DISABLE_AUTO_MEMORY makes the gate return true before it opens a settings file, so the feature runs over `autoMemoryEnabled: false` in every scope. Read as a variable that can only disable, this row PASSes `memkit is the only memory system here` on a machine with two of them."
+    },
+    {
+      "name": "auto-memory-names-a-directory-an-override-variable-replaced",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "    return tuple(name for name in OVERRIDE_ENV if os.environ.get(name))\n",
+      "new": "    return ()\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_an_environment_override_is_named_rather_than_resolved",
+        "tests/test_doctor.py::test_an_environment_override_stops_the_row_naming_a_directory"
+      ],
+      "why": "The three variables that outrank every settings scope for the directory. Reported as absent, doctor answers where the harness writes from the settings alone — which is the one thing the harness is not reading."
+    },
+    {
+      "name": "auto-memory-expands-a-tilde-the-harness-refuses-to-expand",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "        if above in (os.curdir, os.pardir) or above.startswith(os.pardir + os.sep):\n            return None\n",
+      "new": "        if above == \"\\x00\":\n            return None\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_directory_is_the_one_the_harness_normalises_to"
+      ],
+      "why": "Read from the 2.1.258 code: the validator refuses a `~/` value whose remainder normalises to `.`, `..` or below, and falls back to the DEFAULT directory. Accepted here, `~/..` is reported as the directory the harness writes to, which is a directory it never touches."
+    },
+    {
+      "name": "auto-memory-validates-the-string-rather-than-the-path-it-normalises-to",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "    path = os.path.normpath(value).rstrip(os.sep) or os.sep\n",
+      "new": "    path = value\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_directory_is_the_one_the_harness_normalises_to"
+      ],
+      "why": "The harness normalises and strips trailing separators BEFORE it tests for absolute, three characters and a NUL — so `/a/` is a two-character path it refuses. Tested in the caller's spelling, the value passes and every comparison after it is against a directory the harness does not use."
     },
     {
       "name": "cli-bare-invocation-is-a-usage-error",
