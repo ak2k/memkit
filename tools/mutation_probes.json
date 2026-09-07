@@ -2351,8 +2351,8 @@
       "name": "init-the-preflight-sees-the-actions-the-flags-add",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    notes = []\n    if wire_claude_md:",
-      "new": "    _refuse_incompatible_types(actions)\n    notes = []\n    if wire_claude_md:",
+      "old": "    notes = list(_auto_memory_notes(store_path, config_dir)) + adoption_notes\n    if wire_claude_md:",
+      "new": "    _refuse_incompatible_types(actions)\n    notes = list(_auto_memory_notes(store_path, config_dir)) + adoption_notes\n    if wire_claude_md:",
       "tests": [
         "tests/test_init.py::test_the_plan_preflight_sees_the_actions_the_flags_add"
       ],
@@ -2769,12 +2769,12 @@
       "name": "init-the-search-ledger-is-what-the-checker-would-generate",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "        f\"- [memkit-canary]({os.path.join('search', CANARY_NAME)}) — \"",
-      "new": "        f\"- [memkit-canary]({CANARY_NAME}) — \"",
+      "old": "        f\"- [{label}]({link}) — {desc}\"",
+      "new": "        f\"- [{label}]({os.path.basename(link)}) — {desc}\"",
       "tests": [
         "tests/test_init.py::test_a_second_confirm_is_a_no_op_that_still_verifies"
       ],
-      "why": "SEARCH.md is written rather than regenerated precisely so the checker run that follows is a real check of what init did instead of a verification of its own repair."
+      "why": "SEARCH.md is written rather than regenerated precisely so the checker run that follows is a real check of what init did instead of a verification of its own repair. The row's link is store-relative because that is what the checker resolves it against; a basename names a file at the root."
     },
     {
       "name": "init-the-seeded-store-is-personal-and-ungated",
