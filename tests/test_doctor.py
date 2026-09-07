@@ -3276,6 +3276,155 @@ def test_a_project_key_too_long_to_derive_is_said_rather_than_guessed(
     assert "projects/memory" not in row.detail
 
 
+def test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it(
+    profile, monkeypatch
+) -> None:
+    """One stray comma and `Settings.data` is `{}` — the same value a scope
+    that declares nothing has.
+
+    Every row that walks the scopes then answers from a file nobody read, and
+    the parser's own message had been recorded and printed by nothing since
+    the class was written. The auto-memory row is where it became load-bearing:
+    three of its keys come out of these files.
+    """
+    path = _store_config(profile, stores=["personal"])
+    broken = profile / "claude-config" / "settings.json"
+    broken.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    named = [c for c in checks if str(broken) in c.detail]
+    assert named, [c.id for c in checks]
+    for row in named:
+        assert "could not be parsed" in row.detail
+        assert "keys read as unset" in row.detail
+        # The parser's own words, not a paraphrase of them.
+        assert "double quotes" in row.detail
+        assert row.actor == doctor.USER
+        assert row.status != doctor.PASS
+
+    # Every row whose verdict came out of those files, not merely one of them.
+    assert {"auto-memory", "config-route", "plugin-enabled",
+            "registrations-count"} <= {c.id for c in named}
+
+
+def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
+    profile, monkeypatch
+) -> None:
+    """The half of that finding that is worse than the missing diagnostic.
+
+    `autoMemoryEnabled: false` in an unparseable file reads as unset, so the
+    row reached its "the feature is running" branch and told the adopter to
+    set — in that same file — the key it already sets. The next read discards
+    the edit with everything else in it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    broken = profile / "claude-config" / "settings.json"
+    broken.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "parse as JSON before setting any key in it" in row.remedy
+    assert 'set "autoMemoryEnabled": false in' not in row.remedy
+    # And the row that could not read the file is not the row that passes.
+    assert doctor.verdict([row]) != "OK" or row.status != doctor.PASS
+
+
+def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
+    profile, monkeypatch
+) -> None:
+    """"memkit is the only memory system here" is present-tense true over a
+    config directory holding nineteen memories nothing retrieves, and it is
+    the sentence that stops an adopter looking for them.
+
+    Off is still off, so this stays a PASS — what changes is that the PASS
+    carries the count and where to read about moving them.
+    """
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    for key, count in (("-home-u-work-acme", 10), ("-home-u-work-beta", 9)):
+        (projects / key / "memory").mkdir(parents=True)
+        for i in range(count):
+            (projects / key / "memory" / f"m{i}.md").write_text("x\n", encoding="utf-8")
+    _settings(profile, autoMemoryEnabled=False)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.PASS
+    assert "auto-memory is off in user settings" in row.detail
+    assert "2 project directories hold 19 memories outside every store" in row.detail
+    assert "docs/STORE.md" in row.detail
+    # And the claim the count contradicts is not made beside it.
+    assert "only memory system here" not in row.detail
+
+    # With nothing left behind, the claim is true and the row makes it.
+    for key, _ in (("-home-u-work-acme", 10), ("-home-u-work-beta", 9)):
+        shutil.rmtree(projects / key)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.PASS
+    assert "memkit is the only memory system here" in row.detail
+
+
+def test_a_project_directory_inside_a_corpus_root_is_not_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """The relation was asked only of directories reached through a link.
+
+    Being linked is how a project directory comes to be somewhere other than
+    under the config directory, but it is not the only way: point
+    `$CLAUDE_CONFIG_DIR` inside a corpus root and every project directory
+    under it is in the store, with no symlink anywhere. Counted as outside
+    every store, this row's loudest number is a miscount.
+    """
+    path = _store_config(profile, stores=["personal"], dirs={"personal": "s"})
+    corpus = profile / "s" / "search"
+    _memory(corpus, "kept.md", "valve lash after the top end")
+    inside = corpus / "claudecfg"
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(inside))
+    written = inside / "projects" / "-home-u-work-acme-payments" / "memory"
+    written.mkdir(parents=True)
+    for i in range(3):
+        (written / f"m{i}.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert "1 project directory is already inside a store's corpus root" in row.detail
+    # And "linked into a store" is kept for the directories that are.
+    assert "linked into a store" not in row.detail
+
+
+def test_a_project_directory_a_store_holds_and_never_retrieves_is_neither(
+    profile, monkeypatch
+) -> None:
+    """Inside a corpus root and under a name the indexing walk never descends
+    into: the memories are in the store and nothing reads them there.
+
+    "Outside every store" is false about it and "already inside a store" is
+    the sentence that would send an adopter away satisfied, so it is neither.
+    """
+    path = _store_config(profile, stores=["personal"], dirs={"personal": "s"})
+    corpus = profile / "s" / "search"
+    _memory(corpus, "kept.md", "the one memory retrieval reaches")
+    pruned = corpus / sorted(doctor.EXCLUDE_DIRS)[0] / "cfg"
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(pruned))
+    written = pruned / "projects" / "-home-u-work-acme" / "memory"
+    written.mkdir(parents=True)
+    (written / "one.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "outside every store" not in row.detail
+    assert (
+        "1 project directory is inside a store and not retrieved from where it is"
+        in row.detail
+    )
+
+
 def test_the_measured_harness_stamp_is_the_one_ci_measures_on() -> None:
     """A stamp that drifted from the build CI runs its scenarios against is a
     stamp reporting agreement nobody established."""

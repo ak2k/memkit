@@ -470,6 +470,108 @@ def settings_scopes(cwd: str | None = None) -> list[Settings]:
     ]
 
 
+# How much of the PARSER's own message a row quotes. `json`'s messages carry a
+# line and a column and are short; the cap is here because the string comes
+# from `str(exc)` on an arbitrary file and a row that let it run is a row one
+# settings file can empty of everything else.
+PARSER_SHOWN = 120
+
+
+def _unparsed_settings(scopes: list) -> str:
+    """What a settings file that would not parse costs the rows below it, or "".
+
+    A SCOPE THAT DID NOT PARSE IS NOT A SCOPE THAT DECLARES NOTHING, and every
+    reader here has been treating the two as one state: `data` is `{}` either
+    way, so a key set in that file reads as unset and whatever the row then
+    concludes rests on a file nobody read. `Settings` has recorded the parser's
+    message since it was written and nothing has ever printed it — which is
+    how a `settings.json` with one stray comma produced a row telling its
+    author to set, in that same file, the key it already sets.
+
+    WHAT THE HARNESS DOES WITH THE SAME FILE IS NOT CLAIMED. This says what
+    THIS process read, because the anti-pattern the field survey names is a
+    harness that meets a parse error and silently replaces the file with a
+    stub — and a diagnostic that asserted either behaviour would be guessing
+    with the adopter's configuration.
+
+    The verdict before the path, and the parser's text last: `_bound` cuts from
+    the end, and of the three facts here the one an adopter's own file decides
+    the length of is the one worth losing.
+    """
+    return "; ".join(
+        f"{scope.scope} settings could not be parsed, so its keys read as "
+        f"unset here: {_shown(scope.path)} "
+        f"({_display_cap(scope.error, PARSER_SHOWN)})"
+        for scope in scopes
+        if scope.error
+    )
+
+
+def _unparsed_remedy(scopes: list) -> str:
+    """The repair that comes before any other this report could offer.
+
+    NEVER "set the key in that file". Any remedy naming a value to add is
+    advice to edit a file whose next read will discard the edit along with
+    everything else in it, and that is the shape of this finding: the row that
+    could not read the file told its author to write to it.
+    """
+    paths = ", ".join(_shown(scope.path) for scope in scopes if scope.error)
+    return (
+        f"Make {paths} parse as JSON before setting any key in it — while it "
+        "does not, nothing in it is read here and a value added to it changes "
+        "nothing. Keep a copy first: a file this report cannot read is one "
+        "whose contents are still yours."
+    )
+
+
+def _with_unparsed(rows: list, scopes: list) -> list:
+    """Every row of a producer that reads settings, told what it could not read.
+
+    ONE WRAPPER at the producer's return rather than a sentence at each branch,
+    because the rule is about the INPUT and not about any one answer: a row
+    whose verdict came from a walk of the settings scopes is a row that a file
+    it could not open can falsify, whichever branch it took. A PASS becomes
+    INFO for that reason — the harm this whole check class exists to stop is a
+    confident answer resting on a file nobody read.
+    """
+    note = _unparsed_settings(scopes)
+    if not note:
+        return rows
+    fix = _unparsed_remedy(scopes)
+    # Both spellings, because a remedy names a settings file either way and
+    # this test is what decides whether that remedy survives.
+    spellings = tuple(
+        spelling
+        for scope in scopes
+        if scope.error
+        for spelling in (scope.path, _shown(scope.path))
+        if spelling
+    )
+    return [
+        Check(
+            row.id,
+            INFO if row.status == PASS else row.status,
+            _detail(note, row.detail),
+            # A REMEDY THAT NAMES THE UNREADABLE FILE IS DROPPED rather than
+            # appended to. Every one of them names a key to set there, and
+            # that is an instruction to write into a file whose next read
+            # discards it along with everything else — the half of this
+            # finding that is worse than the missing diagnostic.
+            " ".join(
+                part
+                for part in (
+                    fix,
+                    "" if any(s in row.remedy for s in spellings) else row.remedy,
+                )
+                if part
+            ),
+            actor=USER,
+            terminal=row.terminal,
+        )
+        for row in rows
+    ]
+
+
 def authored_configs(state_dir: str) -> set:
     """The config paths init's journal claims, whose claims still cover what is
     at them.
@@ -766,7 +868,9 @@ def _config_route(machine: Machine) -> list[Check]:
     not a route this install serves, and merging it into the first would put a
     path nobody vouched for where a reader looks for the answer.
     """
-    return _resolved_route(machine) + _repository_route(machine)
+    return _with_unparsed(
+        _resolved_route(machine) + _repository_route(machine), machine.settings
+    )
 
 
 def _repository_route(machine: Machine) -> list[Check]:
@@ -2597,12 +2701,18 @@ def _plugin_enabled(machine: Machine):
 
 @_produces("registrations-count")
 def _registrations_count(machine: Machine) -> list[Check]:
-    """Exactly one, or say which entries to choose between.
+    """Exactly one, or say which entries to choose between — over every scope
+    this process could read.
 
     Two registrations both serving one prompt is a silent lost update from
     inside: each process injects, each writes the session ledger, and the later
     write wins. What the user sees is pointers that come and go for no reason.
     """
+    return _with_unparsed(_registration_rows(machine), machine.settings)
+
+
+def _registration_rows(machine: Machine) -> list[Check]:
+    """The count, before anything qualifies it."""
     found = _memkit_registrations(machine)
     if len(found) == 1:
         return [Check("registrations-count", PASS, f"one registration: {found[0]}")]
@@ -2650,6 +2760,11 @@ def _plugin_enabled_check(machine: Machine) -> list[Check]:
     that is switched off. Only `plugin list` disagrees, and nothing sends an
     adopter there.
     """
+    return _with_unparsed(_plugin_enabled_rows(machine), machine.settings)
+
+
+def _plugin_enabled_rows(machine: Machine) -> list[Check]:
+    """The answer the scopes that parsed give."""
     enabled = _plugin_enabled(machine)
     if enabled is None:
         return [
@@ -3402,8 +3517,145 @@ def _declared_below(scopes: list, key: str, name: str, value) -> str:
     return ""
 
 
+def _default_memory_dir(machine: Machine, config_dir: str) -> tuple:
+    """`(where the harness writes for this project, why it cannot be said)`.
+
+    Exactly one of the two is ever non-empty. Both refusals are the same kind
+    of fact — a path this row cannot derive — and neither is an error: a
+    session whose directory was removed under it and a project key too long
+    for the harness's own limit are states an adopter can be in.
+    """
+    if not machine.cwd:
+        return "", (
+            "the session directory was removed underneath this run, so where "
+            "the harness writes for this project cannot be derived"
+        )
+    try:
+        return harness_memory.default_dir(config_dir, machine.cwd), ""
+    except ValueError as exc:
+        return "", (
+            "where the harness writes for this project is unknown: "
+            f"{_display_cap(str(exc), PATH_SHOWN + 160)}"
+        )
+
+
+def _consolidation_recency(default: str) -> str:
+    """What the consolidation lock says about the last background run, or "".
+
+    TWO SPELLINGS OF ONE LOCK, in the order the harness writes them: beside the
+    memory directory and inside it. The first hit answers — a stale lock in one
+    place and a fresh one in the other is one run, reported once.
+    """
+    if not default:
+        return ""
+    for candidate in (
+        os.path.join(os.path.dirname(default), CONSOLIDATE_LOCK),
+        os.path.join(default, CONSOLIDATE_LOCK),
+    ):
+        with contextlib.suppress(OSError):
+            age = int(time.time() - os.stat(candidate).st_mtime)
+            if age < CONSOLIDATE_RECENT:
+                return f"a consolidation ran {age}s ago"
+            return f"last consolidation {age // 3600}h ago"
+    return ""
+
+
+def _inventoried(machine: Machine, config_dir: str) -> tuple:
+    """The harness's project directories as `(retrieved, in a store, outside)`.
+
+    THE RELATION IS ASKED OF EVERY DIRECTORY, not only of the linked ones.
+    Being reached through a link is how a project directory comes to be
+    somewhere other than under the config directory, but it is not the only
+    way: `$CLAUDE_CONFIG_DIR` can name a directory inside a corpus root, and
+    then every project directory under it is in a store while nothing here had
+    asked. The count that said otherwise is this row's loudest number.
+
+    THREE BUCKETS, because `inside` is the only relation that is retrieved and
+    "outside every store" is a sentence about the other four being false. A
+    directory at or above a corpus root, or under a pruned name, is in the
+    store and unreached from where it is — which is neither of the two answers
+    the caller used to have.
+    """
+    retrieved: list = []
+    held: list = []
+    outside: list = []
+    for project in harness_memory.inventory(config_dir):
+        how = _store_relation(machine, project.path)[2]
+        bucket = retrieved if how == "inside" else outside if not how else held
+        bucket.append(project)
+    return retrieved, held, outside
+
+
+def _already_placed(retrieved: list, held: list) -> str:
+    """What to say about project directories a store already holds, or "".
+
+    `linked` DECIDES THE WORDING AND NOTHING ELSE: an adopter who wired a
+    directory into a store with a symlink is told it is wired, and one whose
+    config directory simply sits inside a corpus root is told the directory is
+    in there — the same relation, reached two ways, and telling the second one
+    it is "linked into a store" would send them looking for a link nobody made.
+    """
+    wired = [project for project in retrieved if project.linked]
+    plain = [project for project in retrieved if not project.linked]
+    return _detail(
+        f"{_count(len(wired), 'project directory', 'project directories')} "
+        f"{'is' if len(wired) == 1 else 'are'} already linked into a store"
+        if wired
+        else "",
+        f"{_count(len(plain), 'project directory', 'project directories')} "
+        f"{'is' if len(plain) == 1 else 'are'} already inside a store's corpus "
+        "root"
+        if plain
+        else "",
+        f"{_count(len(held), 'project directory', 'project directories')} "
+        f"{'is' if len(held) == 1 else 'are'} inside a store and not retrieved "
+        "from where it is"
+        if held
+        else "",
+    )
+
+
+def _left_behind(outside: list) -> str:
+    """The count of memories no store holds, or "".
+
+    ITS OWN SENTENCE because the branch that most needed it had no inventory
+    at all: "auto-memory is off; memkit is the only memory system here" is
+    true in the present tense over a config directory holding nineteen
+    memories nothing retrieves, and it is the sentence that stops an adopter
+    looking for them.
+    """
+    if not outside:
+        return ""
+    return (
+        f"{_count(len(outside), 'project directory', 'project directories')} "
+        f"{'holds' if len(outside) == 1 else 'hold'} "
+        f"{_count(sum(project.memories for project in outside), 'memory', 'memories')} "
+        "outside every store"
+    )
+
+
+# Where an adopter is sent for memories that are already written and already
+# outside every store. NOT a settings change: the feature being off does not
+# move a file, and the section named here is the one that says what moving
+# them costs and what carries the coupling.
+ADOPT_ADVICE = (
+    'moving them is "Where your agent\'s own memories land" in docs/STORE.md'
+)
+
+
 @_produces("auto-memory")
 def _auto_memory(machine: Machine) -> list[Check]:
+    """The harness's own memory feature, qualified by what could not be read.
+
+    THREE OF THIS ROW'S FOUR SETTINGS READS decide a PASS — both switches and
+    the directory — and a scope that would not parse answers all three the
+    same way a scope that says nothing does. So the wrapper is the row's
+    outermost rule rather than a sentence inside one branch of it.
+    """
+    return _with_unparsed(_auto_memory_rows(machine), machine.settings)
+
+
+def _auto_memory_rows(machine: Machine) -> list[Check]:
     """The harness's own memory feature, running beside memkit's.
 
     The one differentiator the field survey found unclaimed: none of the six
@@ -3463,38 +3715,8 @@ def _auto_memory(machine: Machine) -> list[Check]:
     # file the remedy names — so a repository that redirects it moved this row
     # to its most reassuring answer.
     steered = _under_cwd(config_dir)
-    default = ""
-    underived = ""
-    if not machine.cwd:
-        underived = (
-            "the session directory was removed underneath this run, so where "
-            "the harness writes for this project cannot be derived"
-        )
-    else:
-        try:
-            default = harness_memory.default_dir(config_dir, machine.cwd)
-        except ValueError as exc:
-            underived = (
-                "where the harness writes for this project is unknown: "
-                f"{_display_cap(str(exc), PATH_SHOWN + 160)}"
-            )
-    recent = ""
-    candidates = (
-        (
-            os.path.join(os.path.dirname(default), CONSOLIDATE_LOCK),
-            os.path.join(default, CONSOLIDATE_LOCK),
-        )
-        if default
-        else ()
-    )
-    for candidate in candidates:
-        with contextlib.suppress(OSError):
-            age = int(time.time() - os.stat(candidate).st_mtime)
-            if age < CONSOLIDATE_RECENT:
-                recent = f"a consolidation ran {age}s ago"
-            else:
-                recent = f"last consolidation {age // 3600}h ago"
-            break
+    default, underived = _default_memory_dir(machine, config_dir)
+    recent = _consolidation_recency(default)
 
     # `is False` and not falsiness: JSON `0`, `""`, `[]` and `{}` are every one
     # of them a value the harness goes on writing under, and read as off they
@@ -3511,11 +3733,24 @@ def _auto_memory(machine: Machine) -> list[Check]:
         _checkout_source(enabled_scope) if switch_theirs else ("", "")
     )
     if enabled is False:
+        # THE INVENTORY BEFORE THE VERDICT, and the reason this branch no
+        # longer returns without one: a switch that is off stops the harness
+        # WRITING, and every memory it wrote before is still on disk. This is
+        # the branch whose sentence stops an adopter looking for them.
+        in_store, held, outside = _inventoried(machine, config_dir)
+        left = _left_behind(outside)
+        if left:
+            left = f"{left}, and {ADOPT_ADVICE}"
+        placed = _already_placed(in_store, held)
+        # THE CLAIM ONLY WHERE THE INVENTORY BEARS IT OUT. "memkit is the only
+        # memory system here" beside a count of memories no store holds is a
+        # sentence contradicted two clauses later; off is still off, so this
+        # stays a PASS and says the narrower true thing.
         off = (
             "auto-memory is off in this process's environment"
             if forced is not None
-            else f"auto-memory is off in {enabled_scope} settings; memkit is "
-            "the only memory system here"
+            else f"auto-memory is off in {enabled_scope} settings"
+            + ("" if left else "; memkit is the only memory system here")
         )
         if forced is not None:
             # NOT A PASS, and not the settings' answer either: the variable
@@ -3529,6 +3764,8 @@ def _auto_memory(machine: Machine) -> list[Check]:
                     _detail(
                         off,
                         environed,
+                        left,
+                        placed,
                         f'"{harness_memory.ENABLED_KEY}" is also set in '
                         f"{switch_source}, and {switch_travels}"
                         if switch_theirs
@@ -3548,6 +3785,8 @@ def _auto_memory(machine: Machine) -> list[Check]:
                     _detail(
                         f"{off} while this checkout says so — the value is in "
                         f"{switch_source}, and {switch_travels}",
+                        left,
+                        placed,
                         recent,
                     ),
                     _checkout_remedy("it yourself", enabled_scope),
@@ -3572,6 +3811,8 @@ def _auto_memory(machine: Machine) -> list[Check]:
                         "wins is read from the harness's directory resolver "
                         "and inferred for this key, which resolves through an "
                         "accessor that reports no scope",
+                        left,
+                        placed,
                         recent,
                     ),
                     f"Settle it in one place: take "
@@ -3581,7 +3822,7 @@ def _auto_memory(machine: Machine) -> list[Check]:
                     actor=USER,
                 )
             ]
-        return [Check("auto-memory", PASS, _detail(off, recent))]
+        return [Check("auto-memory", PASS, _detail(off, left, placed, recent))]
 
     # The feature is running, and a file this tree carries may be why.
     switched_on = (
@@ -3615,26 +3856,32 @@ def _auto_memory(machine: Machine) -> list[Check]:
                     _detail(named, recent, odd_enabled),
                 )
             ]
-        aside = ""
-        if not target:
-            store, target, declared = _nearest_store(machine, configured)
-            aside = (
-                f" ({store}'s, of the {declared} stores you have)"
-                if declared > 1 and store
-                else ""
-            )
-        remedy = (
-            f'Point it at a directory of the harness\'s own inside a corpus '
-            f'root — "{harness_memory.DIRECTORY_KEY}": '
-            f'"{_shown(target or "<store>/search/auto-memory")}"{aside} '
-            "— retrieval recurses into it and the rewrite reaches only what is "
-            'in it. Or leave it there deliberately: "Where your agent\'s own '
-            'memories land" in docs/STORE.md says what each choice costs.'
-        )
+        # WHO DECIDES OUTRANKS WHERE IT POINTS, and the order matters for more
+        # than the string: the store walk below exists to name a value in a
+        # remedy these two branches do not use, so asking for one was a walk of
+        # every configured store whose answer was overwritten two lines later.
         if checkout:
             remedy = _checkout_remedy("where your agent writes", where)
         elif switch_theirs:
             remedy = _checkout_remedy("whether it runs at all", enabled_scope)
+        else:
+            aside = ""
+            if not target:
+                store, target, declared = _nearest_store(machine, configured)
+                aside = (
+                    f" ({store}'s, of the {declared} stores you have)"
+                    if declared > 1 and store
+                    else ""
+                )
+            remedy = (
+                f'Point it at a directory of the harness\'s own inside a '
+                f'corpus root — "{harness_memory.DIRECTORY_KEY}": '
+                f'"{_shown(target or "<store>/search/auto-memory")}"{aside} '
+                "— retrieval recurses into it and the rewrite reaches only "
+                'what is in it. Or leave it there deliberately: "Where your '
+                'agent\'s own memories land" in docs/STORE.md says what each '
+                "choice costs."
+            )
         return [
             Check(
                 "auto-memory",
@@ -3652,16 +3899,10 @@ def _auto_memory(machine: Machine) -> list[Check]:
             )
         ]
 
-    known = harness_memory.inventory(config_dir)
-    wired = []
-    outside = []
-    for project in known:
-        # Only a linked one can be anywhere but under the config directory, and
-        # a link into a corpus root is the wiring docs/STORE.md recommends —
-        # counted as a second memory system, this row alarms about the state it
-        # exists to send adopters to.
-        how = _store_relation(machine, project.path)[2] if project.linked else ""
-        (wired if how == "inside" else outside).append(project)
+    # A directory a store already holds is not a second memory system, and a
+    # link into a corpus root is the wiring docs/STORE.md recommends — counted
+    # as one, this row alarms about the state it exists to send adopters to.
+    in_store, held, outside = _inventoried(machine, config_dir)
 
     here = False
     if underived:
@@ -3680,9 +3921,6 @@ def _auto_memory(machine: Machine) -> list[Check]:
             "(derived from the git root)"
         )
 
-    dream_off = ""
-    if dream is False:
-        dream_off = f"auto-dream is off in {dream_scope}: no background consolidation"
     # THE CLAUSE BEFORE THE PATH, because `_bound` cuts from the end and the
     # path is the part an adopter's own machine decides the length of.
     redirected = (
@@ -3719,23 +3957,23 @@ def _auto_memory(machine: Machine) -> list[Check]:
         recent,
         odd_enabled,
         _odd_switch(harness_memory.DREAM_KEY, dream, dream_scope),
-        dream_off,
-        f"{_count(len(wired), 'project directory', 'project directories')} "
-        f"{'is' if len(wired) == 1 else 'are'} already linked into a store"
-        if wired
+        f"auto-dream is off in {dream_scope}: no background consolidation"
+        if dream is False
         else "",
+        _already_placed(in_store, held),
     )
-    if here and not outside and not steered and not switch_theirs and not environed:
+    if (
+        here
+        and not outside
+        and not held
+        and not steered
+        and not switch_theirs
+        and not environed
+    ):
         return [Check("auto-memory", PASS, _detail(*fixed))]
-    counted = ""
+    counted = _left_behind(outside)
     listed = ""
     if outside:
-        counted = (
-            f"{_count(len(outside), 'project directory', 'project directories')} "
-            f"{'holds' if len(outside) == 1 else 'hold'} "
-            f"{_count(sum(p.memories for p in outside), 'memory', 'memories')} "
-            f"outside every store"
-        )
         listed = ", ".join(
             f"{_display_key(project.key)} ({project.memories})"
             for project in outside[:INVENTORY_SHOWN]
