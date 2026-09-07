@@ -144,6 +144,8 @@
             "test_plugin_surface.py" = "plugin-tests";
             "test_doctor.py" = "doctor-tests";
             "test_init.py" = "init-tests";
+            "test_harness_memory.py" = "harness-memory-tests";
+            "test_harness_shape.py" = "harness-shape-tests";
           };
           # Top-level FILES only, which quietly excludes `tests/rig/` — and
           # that exclusion is deliberate rather than incidental. Those

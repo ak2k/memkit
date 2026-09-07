@@ -192,7 +192,8 @@ jobs:
         run: |
           uv python install 3.9
           .venv/bin/python -m pytest -q tests/test_packaging.py \
-            -k the_hook_and_both_subcommands_run_on_a_real_39
+            -k "the_hook_and_both_subcommands_run_on_a_real_39 or \
+                test_harness_shape_runs_on_a_real_39"
 
       # The hook's 3.9 floor, as a SECOND pyright pass with its own config —
       # executionEnvironments are rooted at a directory, and here the 3.9 hook

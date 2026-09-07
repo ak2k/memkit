@@ -445,6 +445,53 @@ def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(
     assert caught.typename == "Skipped", caught.typename
 
 
+def test_harness_shape_runs_on_a_real_39(tmp_path) -> None:
+    """The capture tool at the floor, both ways it is actually invoked.
+
+    `tools/harness_shape.py` is the one file here that runs on machines this
+    project has no other claim on: it is piped over ssh into whatever `python3`
+    a colleague's host resolves, which on a stock macOS is 3.9.6 and on an
+    older Linux is older still. Nothing else would notice a 3.10 idiom in it —
+    the suite runs it under 3.12, pyright checks it at 3.12, and the failure
+    lands as a syntax error in somebody else's terminal.
+
+    BY PATH AND ON STDIN, because those are two different executions: `python3
+    -` gives the module no `__file__` and an `argv[0]` of `-`, so a tool that
+    reads either one works from the repository and dies over the pipe.
+    """
+    interpreter = _floor_interpreter()
+    if interpreter is None:
+        if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
+            raise AssertionError(
+                f"{FLOOR_REQUIRED_ENV}=1 and no 3.9 interpreter was found — "
+                "`uv python install 3.9` provisions one"
+            )
+        pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
+    assert interpreter is not None
+    memory = tmp_path / "config" / "projects" / "-h-u-git-app" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "one.md").write_text(
+        "---\nname: one\ndescription: a fact\n---\n\nbody\n", encoding="utf-8"
+    )
+    tool = REPO / "tools" / "harness_shape.py"
+    args = ["--config-dir", str(tmp_path / "config")]
+    by_path = subprocess.run(
+        [interpreter, str(tool), *args],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert by_path.returncode == 0, by_path.stdout + by_path.stderr
+    on_stdin = subprocess.run(
+        [interpreter, "-", *args],
+        input=tool.read_text(encoding="utf-8"),
+        capture_output=True, text=True, timeout=600,
+    )
+    assert on_stdin.returncode == 0, on_stdin.stdout + on_stdin.stderr
+    assert by_path.stdout == on_stdin.stdout, "two invocations, two answers"
+    shape = json.loads(by_path.stdout)
+    assert shape["anonymised"] is True
+    assert len(shape["memory_dirs"]) == 1, shape
+
+
 def test_the_wrapper_guards_exactly_the_files_it_will_import() -> None:
     """The third copy of the 3.9 closure, and the only one nothing pinned.
 
