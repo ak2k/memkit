@@ -13746,3 +13746,817 @@ def test_every_task_outcome_is_registered_under_the_task_prefix() -> None:
     # avoid colliding with `t-*.json` files an earlier experiment already left
     # on disk. That collision comes back with the suite green.
     assert hook.TASK_STATE_PREFIX == "t-"
+
+
+# --- a store the REPOSITORY adds --------------------------------------------
+#
+# `.memkit.json` at a checkout's root may add one read-only store to what this
+# session searches, and may do nothing else at all. Three properties carry that
+# claim and each has its own case below: the store never reaches `cfg.stores`,
+# which is the list every write, adoption, checker and eval path iterates; the
+# file is applied whole or refused whole, with a reason that carries no text the
+# repository chose; and nothing out of such a store reaches a prompt unless
+# memkit's own credential scan read the whole of it.
+
+PROJECT_STORE_ID = "app-memories"
+PROJECT_STORE_DIR = "docs/memories"
+# The same memory `_injecting_repo` uses, because that one is already known to
+# produce a pointer for INJECT_PROMPT — a project-store case that failed to
+# inject for some unrelated ranking reason would look exactly like the feature
+# not working.
+PROJECT_MEMORY = (
+    "---\nname: unionfs_perms\n"
+    "description: unionfs mount permissions and the media group\n"
+    "type: reference\n---\n\n"
+    "unionfs mount permissions: FUSE default_permissions ignores the\n"
+    "supplementary groups, so the media group has to be primary.\n"
+)
+
+
+def _project_blob(**store) -> dict:
+    spec = {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR}
+    spec.update(store)
+    return {hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA, "store": spec}
+
+
+_UNSET = object()
+
+
+def _project_checkout(
+    tmp_path: Path, *, name: str = "repo", body: str = PROJECT_MEMORY, blob=_UNSET
+) -> Path:
+    """A directory `_repo_root` will answer with, carrying a project file.
+
+    A bare `.git` DIRECTORY is the marker the walk looks for and no git process
+    is needed to make one — the cases that need a real repository (a committed
+    symlink, a linked worktree) build one for themselves and skip without git.
+    """
+    repo = tmp_path / name
+    (repo / hook._DOT_GIT).mkdir(parents=True)
+    corpus = repo / PROJECT_STORE_DIR / "search"
+    corpus.mkdir(parents=True)
+    (corpus / "unionfs_perms.md").write_text(body, encoding="utf-8")
+    if blob is not _UNSET:
+        (repo / hook.PROJECT_CONFIG_NAME).write_text(
+            json.dumps(blob) if not isinstance(blob, str) else blob,
+            encoding="utf-8",
+        )
+    return repo
+
+
+class _Hung(Exception):
+    """The guard did not come back."""
+
+
+def _within(seconds: float, call):
+    """Run `call`, failing rather than hanging when it does not return.
+
+    Two of the shapes below — a character device and a FIFO with no writer —
+    are exactly the ones a plain `open()` never returns from, so a regression
+    in the guard would take the whole suite down with it instead of turning one
+    case red. A test for a hang has to be able to observe one.
+    """
+
+    def _fire(signum, frame):
+        raise _Hung(f"no answer in {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return call()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _config_at(tmp_path: Path, monkeypatch, cwd: Path, **override):
+    """A parsed user config, read from inside `cwd`.
+
+    BOTH caches are cleared: `_config` holds the hook's own parse for the
+    process and `_cwd_in_root` holds an answer that is only true for the
+    directory the session was standing in when it was asked.
+    """
+    hook._config.cache_clear()
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(cwd)
+    return _load(tmp_path, _config_blob(tmp_path, **override))
+
+
+def _refusal(tmp_path: Path, monkeypatch, repo: Path, **override) -> str:
+    cfg = _config_at(tmp_path, monkeypatch, repo, **override)
+    assert _within(10, cfg.project_store) is None
+    return cfg.project_error
+
+
+def test_a_project_file_adds_a_store_to_the_search_and_not_to_the_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The whole feature, and the one line that bounds it.
+
+    `cfg.stores` is what init, adoption, the integrity checker, the uninstall
+    story and every doctor row iterate, and what the eval intersects
+    `searched_stores()` back onto by id. A store that is only ever in the
+    second list is therefore a retrieval addition by construction — there is no
+    rule to keep, because there is no path from `searched_stores()` back to any
+    of those.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    env = _env(tmp_path)
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "p1", "prompt": INJECT_PROMPT}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+        cwd=str(repo),
+    )
+    assert out.returncode == 0, out.stderr[-400:]
+    # The pointer names the file under HOME's own abbreviation, which is what
+    # `_display_path` renders and what the model is told to open.
+    served = os.path.join(
+        repo.name, PROJECT_STORE_DIR, "search", "unionfs_perms.md"
+    )
+    assert served in out.stdout, (out.stdout, out.stderr[-400:])
+
+    # And the same config, in this process, from the same directory: the store
+    # is in what this session searches and in nothing else.
+    cfg = _config_at(tmp_path, monkeypatch, repo)
+    project = cfg.project_store()
+    assert project is not None and project.id == PROJECT_STORE_ID
+    assert project.read_only is True
+    assert [s.id for s in cfg.stores] == ["s"]
+    assert [s.id for s in cfg.searched_stores()] == ["s", PROJECT_STORE_ID]
+    # Resolved once and answered from `resolved_dir`, so no name in `roots` is
+    # invented for it and none can collide with one.
+    assert cfg.store_dir(project) == str(repo / PROJECT_STORE_DIR)
+    assert cfg.project_store() is project
+    assert cfg.project_error == ""
+
+
+def test_a_project_store_is_searched_from_a_subdirectory_and_from_a_worktree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The file is the REPOSITORY's, so every directory of the checkout gets it
+    — and a linked worktree is a checkout of its own, with its own copy of the
+    committed file, which is the opposite of the harness's project key (that
+    one folds every worktree onto a single directory).
+    """
+    if not _git_available():
+        pytest.skip("no git")
+    home = Path(os.path.realpath(str(tmp_path)))
+    repo = _project_checkout(home, blob=_project_blob())
+    deep = repo / "sub" / "deep"
+    deep.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=60)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
+        cwd=repo, check=True, timeout=60,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x"],
+        cwd=repo, check=True, timeout=60,
+    )
+    linked = home / "linked"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "--detach", str(linked)],
+        cwd=repo, check=True, timeout=60,
+    )
+    try:
+        for where, root in ((deep, repo), (linked, linked)):
+            cfg = _config_at(home, monkeypatch, where)
+            store = cfg.project_store()
+            assert store is not None, (where, cfg.project_error)
+            assert cfg.store_dir(store) == str(root / PROJECT_STORE_DIR)
+    finally:
+        hook._cwd_in_root.cache_clear()
+        hook._config.cache_clear()
+
+
+def test_a_repository_with_no_project_file_adds_nothing_and_says_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Absent is the ordinary case, not a refusal: no store, and no reason for
+    a surface to report."""
+    repo = _project_checkout(tmp_path)
+    cfg = _config_at(tmp_path, monkeypatch, repo)
+    assert cfg.project_store() is None
+    assert cfg.project_error == ""
+    assert [s.id for s in cfg.searched_stores()] == ["s"]
+    assert hook._live_dirs(cfg) == []
+
+
+def test_the_walk_that_looks_for_a_project_file_is_bounded_by_the_cwds_depth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The cost this feature adds to a prompt in a repository that carries no
+    such file, stated as a number and pinned as one.
+
+    `_repo_root` is the whole of it: two stats per ancestor level — `isdir`,
+    then `isfile` only when the first said no — plus one realpath, which uses
+    `lstat` and so does not land in this count. Counted through `os.stat`
+    itself rather than through the module's own read counters, which count
+    CALLS and not syscalls.
+    """
+    if hook._repo_root(str(tmp_path)) is not None:  # pragma: no cover - env
+        pytest.skip("the temporary directory is itself inside a checkout")
+    deep = tmp_path
+    for part in "abcdefgh":
+        deep = deep / part
+    deep.mkdir(parents=True)
+    start = os.path.realpath(str(deep))
+    levels = len(start.split(os.sep))
+    real = os.stat
+    seen = []
+
+    def counting(*args, **kwargs):
+        seen.append(args[0] if args else "")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", counting)
+    answer = hook._repo_root(start)
+    count = len(seen)
+    monkeypatch.undo()
+    assert answer is None
+    # Non-vacuity: a bound over a walk that stat'd nothing is not a bound.
+    assert count >= levels, (count, levels)
+    assert count <= 2 * levels + 1, (count, levels)
+
+
+# --- refused whole, and named ------------------------------------------------
+
+
+def _write(text):
+    def go(repo: Path) -> None:
+        (repo / hook.PROJECT_CONFIG_NAME).write_text(text, encoding="utf-8")
+
+    return go
+
+
+def _write_json(blob):
+    return _write(json.dumps(blob))
+
+
+def _replace_with(make):
+    def go(repo: Path) -> None:
+        path = repo / hook.PROJECT_CONFIG_NAME
+        if path.is_symlink() or path.exists():
+            os.remove(str(path))
+        make(str(path))
+
+    return go
+
+
+def _dir_symlinked_out(repo: Path) -> None:
+    outside = repo.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    os.symlink(str(outside), str(repo / "linked"))
+    (repo / hook.PROJECT_CONFIG_NAME).write_text(
+        json.dumps(_project_blob(dir="linked")), encoding="utf-8"
+    )
+
+
+REFUSALS = [
+    # The FILE, before anything in it is read. `.memkit.json -> /dev/zero` is a
+    # shape a checkout can carry, and a plain `open()` on it reads forever
+    # inside a hook that runs on every prompt.
+    (
+        "a character device behind a symlink",
+        _replace_with(lambda path: os.symlink("/dev/zero", path)),
+        "is not a regular file",
+    ),
+    (
+        "a FIFO with no writer",
+        _replace_with(os.mkfifo),
+        "is not a regular file",
+    ),
+    (
+        "over the size cap",
+        _write_json(
+            {
+                hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA,
+                "note": "n" * (hook.PROJECT_CONFIG_MAX_BYTES + 1),
+                "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+            }
+        ),
+        f"the limit is {hook.PROJECT_CONFIG_MAX_BYTES}",
+    ),
+    ("not JSON at all", _write("{ this is not json"), "is not valid JSON"),
+    ("JSON that is not an object", _write("[1, 2, 3]"), "does not hold a JSON object"),
+    (
+        "no version key",
+        _write_json({"store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR}}),
+        f"needs {hook.PROJECT_SCHEMA_KEY}",
+    ),
+    (
+        "a version this build does not speak",
+        _write_json(
+            {
+                hook.PROJECT_SCHEMA_KEY: 2,
+                "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+            }
+        ),
+        f"needs {hook.PROJECT_SCHEMA_KEY}",
+    ),
+    (
+        "an unknown top-level key",
+        _write_json(
+            {
+                hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA,
+                "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+                "roots": {"home": {"kind": "path", "path": "~"}},
+            }
+        ),
+        "unknown top-level key 'roots'",
+    ),
+    (
+        "a list of stores rather than one",
+        _write_json(
+            {
+                hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA,
+                "store": [{"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR}],
+            }
+        ),
+        "'store' must be an object",
+    ),
+    (
+        "an unknown key inside the store",
+        _write_json(_project_blob(live_root="home")),
+        "'store' has an unknown key 'live_root'",
+    ),
+    (
+        "an id the diagnostics could not render",
+        _write_json(_project_blob(id="../../etc")),
+        "does not match",
+    ),
+    (
+        "an id the user config already uses",
+        _write_json(_project_blob(id="s")),
+        "already the id of a configured store",
+    ),
+    (
+        "no dir",
+        _write_json({
+            hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA,
+            "store": {"id": PROJECT_STORE_ID},
+        }),
+        "'dir' must be a non-empty string",
+    ),
+    ("an absolute dir", _write_json(_project_blob(dir="/etc")), "is absolute"),
+    (
+        "a dir that climbs out",
+        _write_json(_project_blob(dir="../outside")),
+        "climbs out of it",
+    ),
+    ("a dir symlinked out of the tree", _dir_symlinked_out, "resolves outside"),
+    (
+        "a dir that is not there",
+        _write_json(_project_blob(dir="docs/nowhere")),
+        "is not a directory in this checkout",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "write", "fragment"),
+    REFUSALS,
+    ids=[case[0].replace(" ", "-") for case in REFUSALS],
+)
+def test_a_project_file_is_refused_whole_and_the_reason_names_why(
+    tmp_path: Path, monkeypatch, label: str, write, fragment: str
+) -> None:
+    """Every one of these refuses the FILE, not the field: there is no partial
+    application, so a checkout with one bad key adds nothing rather than adding
+    whatever parsed.
+
+    The two device shapes are the reason the guard opens non-blocking and
+    fstats before reading — `_within` turns a regression there into a red case
+    instead of a suite that never finishes.
+    """
+    repo = _project_checkout(tmp_path)
+    write(repo)
+    reason = _refusal(tmp_path, monkeypatch, repo)
+    assert fragment in reason, (label, reason)
+    assert hook.PROJECT_CONFIG_NAME in reason, (label, reason)
+
+
+def test_a_device_symlink_a_checkout_carries_is_refused_without_hanging(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The shape the guard exists for, arriving the way it would really arrive.
+
+    A checkout stores a symlink as its target text, so `.memkit.json ->
+    /dev/zero` travels with a clone and lands on a machine nobody created it
+    on. Materialised by a checkout here rather than by `os.symlink` alone,
+    because the claim is about what a repository can carry — and read back
+    under `_within`, because the failure this refuses is an every-prompt hook
+    that never returns.
+    """
+    if not _git_available():
+        pytest.skip("no git")
+    home = Path(os.path.realpath(str(tmp_path)))
+    repo = _project_checkout(home)
+    os.symlink("/dev/zero", str(repo / hook.PROJECT_CONFIG_NAME))
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=60)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
+        cwd=repo, check=True, timeout=60,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x"],
+        cwd=repo, check=True, timeout=60,
+    )
+    os.remove(str(repo / hook.PROJECT_CONFIG_NAME))
+    subprocess.run(
+        ["git", "checkout", "--", hook.PROJECT_CONFIG_NAME],
+        cwd=repo, check=True, timeout=60,
+    )
+    # Non-vacuity: the checkout really put a link to the device back.
+    assert os.path.islink(str(repo / hook.PROJECT_CONFIG_NAME))
+    assert os.path.realpath(str(repo / hook.PROJECT_CONFIG_NAME)) == "/dev/zero"
+    assert "is not a regular file" in _refusal(home, monkeypatch, repo)
+
+
+def test_a_project_file_that_only_annotates_itself_is_admitted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`note` is the one key that may be there and mean nothing, on both
+    levels — the same tolerance the shipped fixture config has. Without this
+    the table above would pass on a reader that refused everything."""
+    repo = _project_checkout(tmp_path)
+    (repo / hook.PROJECT_CONFIG_NAME).write_text(
+        json.dumps(
+            {
+                hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA,
+                "note": "read by nobody",
+                "store": {
+                    "id": PROJECT_STORE_ID,
+                    "dir": PROJECT_STORE_DIR,
+                    "note": "nor this",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = _config_at(tmp_path, monkeypatch, repo)
+    store = cfg.project_store()
+    assert store is not None, cfg.project_error
+    assert store.id == PROJECT_STORE_ID
+
+
+def test_a_refused_dir_is_refused_before_the_store_is_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Validation precedes every store read, so a `dir` pointing somewhere it
+    may not point does not get one file's worth of read out of the tree it
+    named before being turned down.
+
+    `builtins.open` is what the module reads memories through; the config file
+    itself goes through `os.open`/`os.fdopen`, which is why the second counter
+    below is the non-vacuity half — without it this would pass on a reader that
+    never opened anything at all.
+    """
+
+
+    def refuse(spelling: str) -> None:
+        repo = _project_checkout(tmp_path, name=f"repo-{abs(hash(spelling))}")
+        if spelling == "linked":
+            _dir_symlinked_out(repo)
+        else:
+            (repo / hook.PROJECT_CONFIG_NAME).write_text(
+                json.dumps(_project_blob(dir=spelling)), encoding="utf-8"
+            )
+        opened: list = []
+        descriptors: list = []
+        real_open, real_os_open = builtins.open, os.open
+
+        def counting_open(file, *args, **kwargs):
+            opened.append(str(file))
+            return real_open(file, *args, **kwargs)
+
+        def counting_os_open(path, *args, **kwargs):
+            descriptors.append(str(path))
+            return real_os_open(path, *args, **kwargs)
+
+        cfg = _config_at(tmp_path, monkeypatch, repo)
+        monkeypatch.setattr(builtins, "open", counting_open)
+        monkeypatch.setattr(os, "open", counting_os_open)
+        assert cfg.project_store() is None
+        monkeypatch.undo()
+        assert cfg.project_error, spelling
+        # The guard really ran...
+        assert any(
+            path.endswith(hook.PROJECT_CONFIG_NAME) for path in descriptors
+        ), (spelling, descriptors)
+        # ...and nothing under the checkout was read.
+        assert not [path for path in opened if str(repo) in path], (spelling, opened)
+
+    for dir_spelling in ("../outside", "/etc", "linked"):
+        refuse(dir_spelling)
+
+
+def test_a_refusal_reason_carries_no_text_the_repository_chose(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The reason is read by an agent — `--debug-config` prints it and doctor
+    carries it — so it is fixed strings plus values put through `sanitize` and
+    capped. A repository writes what it likes into a key name; it does not get
+    to write onto that surface.
+    """
+    hostile = "\x1b[31mred\x07" + "k" * 500
+    repo = _project_checkout(tmp_path)
+    (repo / hook.PROJECT_CONFIG_NAME).write_text(
+        json.dumps(
+            {
+                hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA,
+                hostile: 1,
+                "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+            }
+        ),
+        encoding="utf-8",
+    )
+    reason = _refusal(tmp_path, monkeypatch, repo)
+    assert "\x1b" not in reason and "\x07" not in reason, repr(reason)
+    assert "k" * 500 not in reason
+    assert hook._ELLIPSIS in reason, reason
+    assert len(reason) < 200, len(reason)
+    # And the same rule on the other value a repository picks freely.
+    repo2 = _project_checkout(tmp_path, name="repo2")
+    (repo2 / hook.PROJECT_CONFIG_NAME).write_text(
+        json.dumps(_project_blob(id="\x1b[31m" + "i" * 400)), encoding="utf-8"
+    )
+    reason2 = _refusal(tmp_path, monkeypatch, repo2)
+    assert "\x1b" not in reason2 and "i" * 400 not in reason2, repr(reason2)
+
+
+# --- the kill switch, in the one file no repository can write ----------------
+
+
+def test_the_kill_switch_is_read_from_the_users_own_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`"project_config": false` there, and nowhere else. The hook's config
+    path is baked into its wrapper and the values inside it are never
+    env-overridable on the hook path, so no repository can reach this — and
+    with the switch off the file is not opened at all."""
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    cfg = _config_at(tmp_path, monkeypatch, repo, project_config=False)
+    real_os_open = os.open
+    touched: list = []
+
+    def counting(path, *args, **kwargs):
+        touched.append(str(path))
+        return real_os_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", counting)
+    assert cfg.project_store() is None
+    monkeypatch.undo()
+    assert not [p for p in touched if p.endswith(hook.PROJECT_CONFIG_NAME)], touched
+    assert cfg.project_error == ""
+    assert [s.id for s in cfg.searched_stores()] == ["s"]
+    # Explicitly on is the default spelled out, and it is not what "off" means.
+    on = _config_at(tmp_path, monkeypatch, repo, project_config=True)
+    assert on.project_store() is not None, on.project_error
+
+
+def test_a_project_config_switch_of_the_wrong_type_is_a_named_error(
+    tmp_path: Path,
+) -> None:
+    """Present and not a boolean is an error, the same rule `canary_nonce` and
+    `search_cli` follow: a config that says `"false"` is one somebody believes
+    they turned off."""
+    with pytest.raises(hook.ConfigError) as exc:
+        _load(tmp_path, _config_blob(tmp_path, project_config="false"))
+    assert "project_config" in str(exc.value)
+
+
+def test_with_no_config_at_all_a_project_file_is_never_looked_for(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The shipped default is inert, and this feature does not change that: the
+    hook reaches a project file only through a config it already parsed."""
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    hook._config.cache_clear()
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv(hook.CONFIG_ENV, raising=False)
+    monkeypatch.setattr(hook, "_CONFIG_PATH", None)
+    try:
+        assert hook._config() is None
+        assert hook._search_dirs() == []
+    finally:
+        hook._config.cache_clear()
+        hook._cwd_in_root.cache_clear()
+
+
+# --- the credential scan -----------------------------------------------------
+
+
+SECRET_SHAPES = [
+    ("a private key header", "-----BEGIN OPENSSH PRIVATE KEY-----"),
+    ("an aws key id", "AKIA0123456789ABCDEF"),
+    ("an sk- token", "sk-0123456789abcdefghijklmno"),
+    ("a github token", "ghp_" + "a" * 36),
+    ("a bearer header", "Authorization: Bearer abcdefghij.klmnopqrstu"),
+    ("an assignment", "password: correct-horse-battery"),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "text"), SECRET_SHAPES, ids=[s[0].replace(" ", "-") for s in SECRET_SHAPES]
+)
+def test_the_credential_scan_matches_the_shapes_it_names(label: str, text: str) -> None:
+    assert hook._secret_re().search(text) is not None, label
+
+
+def test_the_credential_scan_leaves_prose_alone_and_compiles_once() -> None:
+    """The last branch is an ASSIGNMENT shape rather than the bare word, so a
+    memory that talks about passwords is not floored for saying so. What a
+    false positive costs is one pointer, and `lex_secret` is what makes even
+    that visible.
+
+    Compiled lazily and kept: a module-level compile is what the import-cost
+    test exists to keep out of a file that is imported on every prompt.
+    """
+    for prose in (
+        "Change your password in the settings panel before the audit.",
+        "the token is rotated by hand every week",
+        "secret sauce: it is the ratio",
+    ):
+        assert hook._secret_re().search(prose) is None, prose
+    assert hook._secret_re() is hook._secret_re()
+
+
+def _project_relevance(monkeypatch, tmp_path: Path, body: str):
+    """`_relevance` over one file in a project-store root, with the index's own
+    side channel standing in for the ranker."""
+    root = tmp_path / "corpus"
+    root.mkdir(exist_ok=True)
+    path = str(root / "unionfs_perms.md")
+    Path(path).write_text(body, encoding="utf-8")
+    real = os.path.realpath(str(root))
+    monkeypatch.setitem(hook._LEX_MATCHED, path, ["unionfs", "permissions"])
+    hook._LEX_COUNTS["lex_secret"] = 0
+    monkeypatch.setattr(hook, "_PROJECT_ROOTS", {real})
+    return hook._relevance(["unionfs", "permissions"], path, real)
+
+
+def test_a_project_store_candidate_carrying_a_credential_yields_no_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The refusal is the module's own no-evidence tuple rather than a flag, so
+    the candidate is dropped by `_passes_floor` through the path every weak hit
+    takes — and its `[section: ...]` label is never rendered, because nothing
+    downstream ever sees it."""
+    clean = _project_relevance(monkeypatch, tmp_path, PROJECT_MEMORY)
+    assert clean == (["unionfs", "permissions"], 2, "reference")
+    assert hook._LEX_COUNTS["lex_secret"] == 0
+    planted = _project_relevance(
+        monkeypatch, tmp_path, PROJECT_MEMORY + "\nAKIA0123456789ABCDEF\n"
+    )
+    assert planted == ([], 2, "?")
+    assert hook._LEX_COUNTS["lex_secret"] == 1
+    assert hook._passes_floor(*planted) is False
+
+
+def test_a_project_store_candidate_over_the_scan_cap_is_refused_unread(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Invariant, restated as the code enforces it: nothing from a project
+    store reaches a prompt unless the scan read ALL of it. A scan that saw the
+    first 64 KiB of a larger file has cleared nothing, so the file is refused
+    rather than ranked on the part that was read.
+
+    A user's own store is unaffected — its bound is INDEX_FILE_MAX_BYTES, four
+    megabytes — which is what the second half checks.
+    """
+    padding = "\nunionfs mount permissions and the media group.\n"
+    big = PROJECT_MEMORY + padding * (hook.SECRET_SCAN_MAX_BYTES // len(padding) + 2)
+    assert len(big.encode("utf-8")) > hook.SECRET_SCAN_MAX_BYTES
+    assert hook._secret_re().search(big) is None, "the size floor, not the pattern"
+    assert _project_relevance(monkeypatch, tmp_path, big) == ([], 2, "?")
+    assert hook._LEX_COUNTS["lex_secret"] == 1
+
+    # The same file under a root nobody said was a project store: read as ever.
+    root = tmp_path / "corpus"
+    path = str(root / "unionfs_perms.md")
+    hook._LEX_COUNTS["lex_secret"] = 0
+    monkeypatch.setattr(hook, "_PROJECT_ROOTS", set())
+    assert hook._relevance(["unionfs", "permissions"], path, os.path.realpath(str(root)))[0]
+    assert hook._LEX_COUNTS["lex_secret"] == 0
+
+
+def test_the_project_roots_survive_the_side_channel_clear_inside_recall(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The order that made this a fail-OPEN and not a detail: `_live_dirs` runs
+    at the top of recall(), recall() then zeroes the `_LEX_*` side channels,
+    and `_eligible` — the only caller of `_relevance` on the prompt path — runs
+    after recall() has RETURNED. A set cleared with those maps would be empty
+    at the one moment it is read, and the scan and the size floor would
+    silently never fire.
+
+    So `_live_dirs` rebuilds it and nothing clears it, and this asserts the
+    property at the moment that matters rather than the mechanism.
+    """
+    (tmp_path / "state").mkdir()
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path / "state"))
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    hook._config.cache_clear()
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(repo)
+    cfg = _load(tmp_path, _config_blob(tmp_path))
+    monkeypatch.setattr(hook, "_config", lambda *a, **k: cfg)
+    hook._PROJECT_ROOTS.clear()
+    try:
+        hits = hook.recall(INJECT_PROMPT, stats={})
+        expected = os.path.realpath(str(repo / PROJECT_STORE_DIR / "search"))
+        # AFTER recall() returned, which is where `_eligible` reads it.
+        assert {expected} == hook._PROJECT_ROOTS
+        assert hits, "the fixture retrieved nothing, so the claim is vacuous"
+        assert all(hook._LEX_ROOT[h] == expected for h in hits), hook._LEX_ROOT
+    finally:
+        # `_config` is monkeypatched here and restored with the patch; this one
+        # is the module's own cache and answers for whatever directory it was
+        # first asked from.
+        hook._cwd_in_root.cache_clear()
+
+
+def test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log(
+    tmp_path: Path,
+) -> None:
+    """End to end, through the shipped file, because the counter has to survive
+    a route it did not used to: recall() folds `_LEX_COUNTS` into the record
+    before `_eligible` runs, so `lex_secret` reaches the log only because each
+    emitter folds them again on the way out.
+    """
+    env = _env(tmp_path)
+    control = _project_checkout(tmp_path, name="clean", blob=_project_blob())
+    planted = _project_checkout(
+        tmp_path,
+        name="dirty",
+        body=PROJECT_MEMORY + "\nAKIA0123456789ABCDEF\n",
+        blob=_project_blob(),
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+
+    def drive(session: str, repo: Path) -> tuple:
+        out = subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps({"session_id": session, "prompt": INJECT_PROMPT}),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+            cwd=str(repo),
+        )
+        assert out.returncode == 0, out.stderr[-400:]
+        return out.stdout, json.loads(log.read_text().splitlines()[-1])
+
+    # The control, and it is what makes the case below mean anything: the same
+    # prompt in the same shape of checkout DOES produce a pointer.
+    shown, clean_rec = drive("p2", control)
+    assert "unionfs_perms.md" in shown, shown
+    assert "lex_secret" not in clean_rec, clean_rec
+
+    hidden, rec = drive("p3", planted)
+    assert "unionfs_perms.md" not in hidden, hidden
+    assert rec["lex_secret"] == 1, rec
+    assert "AKIA" not in hidden
+
+
+def test_debug_config_names_the_repository_store_and_its_refusal(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The surface an operator is sent to when nothing appeared. A store no
+    line of their config names is the one they cannot otherwise account for, so
+    it is reported apart from the loop over the configured ones."""
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    config = tmp_path / "user.json"
+    config.write_text(json.dumps(_config_blob(tmp_path)), encoding="utf-8")
+    monkeypatch.chdir(repo)
+    try:
+        hook._use_config(str(config))
+        hook._print_config(hook._config_state())
+        shown = capsys.readouterr().out
+        assert f"project {PROJECT_STORE_ID}:" in shown, shown
+        assert str(repo / PROJECT_STORE_DIR) in shown, shown
+        assert "1 file" in shown, shown
+
+        (repo / hook.PROJECT_CONFIG_NAME).write_text("{ nope", encoding="utf-8")
+        hook._use_config(str(config))
+        hook._print_config(hook._config_state())
+        refused = capsys.readouterr().out
+        assert "is not valid JSON" in refused, refused
+        assert f"project {PROJECT_STORE_ID}:" not in refused, refused
+
+        # And the switch, named on the surface an operator is sent to.
+        config.write_text(
+            json.dumps(_config_blob(tmp_path, project_config=False)), encoding="utf-8"
+        )
+        hook._use_config(str(config))
+        hook._print_config(hook._config_state())
+        off = capsys.readouterr().out
+        assert "'project_config': false" in off, off
+    finally:
+        hook._use_config(None)
