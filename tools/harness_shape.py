@@ -283,24 +283,37 @@ def _harness(config_dir: str, anonymise: bool) -> dict:
 # --- frontmatter ------------------------------------------------------------
 
 
-def _folded_len(fence: list, start: int) -> int:
-    """The length of one `description:` scalar, continuation lines included.
+def _description_len(line: str) -> int:
+    """The length of one `description:` value, as the code that judges it counts.
 
     A LENGTH, which is the whole of what a shape says about a description: the
     rule that fires on one is `>155 characters`, so the number is what a
     rebuilt corpus has to reproduce and the text is what it must not carry.
-    Folded the way YAML folds it, one space per line break, and a lone block
-    indicator is dropped because `>` is syntax rather than description.
+    Which makes it the CHECKER's number or nothing, and the checker is
+    `memory_integrity._scalar` — so this counts what that counts.
+
+    ONE LINE, no folding. Neither real reader folds: the checker's frontmatter
+    parser skips every indented continuation as a nested key, and the recall
+    hook's regex is `(.+)$` without DOTALL. A folded length was a number
+    nothing in this repository decides anything on.
+
+    AND WITHOUT THE QUOTES, which `_scalar` strips before comparing against
+    its cap. Measured over the 72 harness-written memories on one machine: 50
+    were recorded two characters long, and one sat at 154 by the checker and
+    156 here — crossing the boundary the shape exists to reproduce, on the
+    side that fires a rule the machine does not.
+
+    A lone `>` or `|` is a block scalar, which the checker refuses outright as
+    DESC-BAD and the hook reads as a one-character description. The number
+    here is what is written; adjudicating between them is the consumer's.
     """
-    head = fence[start].split(":", 1)[1]
-    parts = [head.strip()]
-    for line in fence[start + 1 :]:
-        if line[:1] not in (" ", "\t") or not line.strip():
-            break
-        parts.append(line.strip())
-    if parts and parts[0] in (">", "|", ">-", "|-", ">+", "|+"):
-        parts = parts[1:]
-    return len(" ".join(part for part in parts if part).strip())
+    value = line.split(":", 1)[1].strip()
+    if value[:1] in ('"', "'") and len(value) >= 2 and value[-1] == value[0]:
+        inner = value[1:-1]
+        value = inner.replace("''", "'") if value[0] == "'" else inner.replace(
+            '\\"', '"'
+        )
+    return len(value)
 
 
 def _frontmatter(text: str) -> dict:
@@ -332,7 +345,7 @@ def _frontmatter(text: str) -> dict:
     has_name = has_type = has_description = False
     description_len = None
     in_metadata = False
-    for index, line in enumerate(fence):
+    for line in fence:
         if line.strip() and line[:1] not in (" ", "\t"):
             in_metadata = line.startswith("metadata:")
         if line.startswith("name:"):
@@ -341,7 +354,7 @@ def _frontmatter(text: str) -> dict:
             has_type = True
         if not has_description and line.startswith("description:"):
             has_description = True
-            description_len = _folded_len(fence, index)
+            description_len = _description_len(line)
     return {
         "has_frontmatter": True,
         "has_description": has_description,
@@ -437,14 +450,19 @@ class _Pseudonyms:
 def _lock_age(project_dir: str, memory_dir: str, now: float):
     """Age of the consolidation lock in seconds, or None.
 
-    The memory directory first and the project directory second, because the
-    lock has been seen in both and the inner one is the current spelling. Never
-    negative: a lock stamped in the future is a clock that disagrees, not a
-    consolidation that has not started yet.
+    THE PROJECT DIRECTORY FIRST, then the memory directory — `cli_doctor`'s
+    own order, and the reason to copy it rather than reason about it is that
+    both files can exist at once. That is exactly the state this function's
+    docstring used to name as why it looks in two places: a lock that moved
+    from the outer spelling to the inner one. Taking the inner one first, a
+    tree rebuilt from `lock_age_s` reports an age doctor never would.
+
+    Never negative: a lock stamped in the future is a clock that disagrees,
+    not a consolidation that has not started yet.
     """
     for candidate in (
-        os.path.join(memory_dir, CONSOLIDATE_LOCK),
         os.path.join(project_dir, CONSOLIDATE_LOCK),
+        os.path.join(memory_dir, CONSOLIDATE_LOCK),
     ):
         try:
             stamp = os.stat(candidate).st_mtime

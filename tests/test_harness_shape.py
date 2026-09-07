@@ -18,6 +18,7 @@ them afterwards would skip if one were ever removed.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import os
 import re
@@ -28,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from memkit import harness_memory
+from memkit import cli_doctor, harness_memory, memory_integrity
 
 REPO = Path(__file__).resolve().parent.parent
 TOOL = REPO / "tools" / "harness_shape.py"
@@ -81,7 +82,9 @@ def _by_key(shape: dict) -> dict:
 
 
 DESCRIPTION = "a fact worth keeping"
-FOLDED = "one line and another"
+# QUOTED because it holds `": "`, which is 50 of the 72 harness-written
+# memories on the capture host and the case the recorded length was wrong for.
+QUOTED = "about memory: a fact"
 
 
 def _tree(tmp_path: Path) -> Path:
@@ -116,7 +119,7 @@ def _tree(tmp_path: Path) -> Path:
     outside = tmp_path / "elsewhere"
     _write(
         outside / "linked.md",
-        "---\ndescription: >\n  one line\n  and another\ntype: user\n---\n\nbody\n",
+        f'---\ndescription: "{QUOTED}"\ntype: user\n---\n\nbody\n',
     )
     linked = config / "projects" / "-h-u-git-linked"
     linked.mkdir(parents=True)
@@ -214,9 +217,9 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     assert linked["symlink_target_kind"] == "external"
     assert linked["index"] is None
     assert len(linked["files"]) == 1
-    # A folded scalar is one description, and its length is the folded length —
-    # the number the >155-character rule is decided on.
-    assert linked["files"][0]["description_len"] == len(FOLDED)
+    # WITHOUT the quotes, which is how the checker counts before deciding the
+    # >155-character rule — see the description case below.
+    assert linked["files"][0]["description_len"] == len(QUOTED)
     assert linked["files"][0]["has_type"] is True
     assert linked["files"][0]["has_name"] is False
 
@@ -258,12 +261,12 @@ def test_the_lock_is_read_from_either_place_it_has_been_seen(tmp_path) -> None:
     inner = _memory_dir(config, "-a")
     _write(inner / "one.md", "x\n")
     stale = time.time() - 7200
-    lock = inner / ".consolidate-lock"
+    lock = inner / cli_doctor.CONSOLIDATE_LOCK
     lock.write_text("", encoding="utf-8")
     os.utime(lock, (stale, stale))
     outer = _memory_dir(config, "-b")
     _write(outer / "one.md", "x\n")
-    beside = outer.parent / ".consolidate-lock"
+    beside = outer.parent / cli_doctor.CONSOLIDATE_LOCK
     beside.write_text("", encoding="utf-8")
     os.utime(beside, (stale, stale))
     listed = _by_key(_shape("--config-dir", str(config), "--raw"))
@@ -662,6 +665,109 @@ def test_a_settings_file_that_cannot_be_read_is_a_state_not_an_absence(
             "unreadable": True, "memory_keys": {}, "hooks": [], "plugins": []
         }
     }
+
+
+def _tool_module():
+    """`tools/harness_shape.py` loaded as a module, which it otherwise is not.
+
+    It is a dev tool outside the installed package and it imports nothing from
+    memkit on purpose, so loading the file is the only way to hold its copied
+    constants next to the originals.
+    """
+    spec = importlib.util.spec_from_file_location("harness_shape_under_test", TOOL)
+    assert spec is not None and spec.loader is not None, TOOL
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_constants_copied_from_memkit_are_the_ones_memkit_holds() -> None:
+    """The module docstring says running this tool against
+    `harness_memory.inventory` is what keeps the copies in step.
+
+    True only for the constants `harness_memory` owns. `CONSOLIDATE_LOCK` and
+    `_managed_dir()` are copied from `cli_doctor`, which the equivalence test
+    never imports — so a rename there desynchronises this tool with nothing
+    going red. All four agree today; this is what says so tomorrow.
+    """
+    module = _tool_module()
+    assert module.INDEX_NAME == harness_memory.INDEX_NAME
+    assert module.DIRECTORY_KEY == harness_memory.DIRECTORY_KEY
+    assert module.MEMORY_KEYS == (
+        harness_memory.ENABLED_KEY,
+        harness_memory.DIRECTORY_KEY,
+        harness_memory.DREAM_KEY,
+    )
+    assert module.CONSOLIDATE_LOCK == cli_doctor.CONSOLIDATE_LOCK
+    assert module._managed_dir() == cli_doctor._managed_dir()
+
+
+def test_the_lock_the_doctor_would_read_is_the_one_recorded(tmp_path) -> None:
+    """Both spellings at once, which is the state the two-place lookup exists
+    for and the only one in which the ORDER is observable.
+
+    `cli_doctor` takes the project directory's lock first and this took the
+    memory directory's, so a tree rebuilt from `lock_age_s` reports an age
+    doctor never would. The case above cannot see it: its two projects hold
+    one lock each, so either order answers the same.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-both")
+    _write(memory / "one.md", "x\n")
+    now = time.time()
+    for parent, age in ((memory, 900), (memory.parent, 7200)):
+        lock = parent / cli_doctor.CONSOLIDATE_LOCK
+        lock.write_text("", encoding="utf-8")
+        os.utime(lock, (now - age, now - age))
+    entry = _by_key(_shape("--config-dir", str(config), "--raw"))["-both"]
+    assert 7100 < entry["lock_age_s"] < 7300, "the memory directory's lock won"
+
+
+def test_a_description_is_measured_the_way_the_checker_measures_it(tmp_path) -> None:
+    """The number is only worth carrying if it is the CHECKER's number.
+
+    `>155 characters` is decided by `memory_integrity._scalar`, which strips a
+    matching pair of quotes and undoes their escapes before measuring — and 50
+    of the 72 harness-written memories on the capture host are quoted, so this
+    was two characters long over most of a real machine, with one file sitting
+    at 154 by the checker and 156 here. The expected lengths come from
+    `_scalar` itself rather than from literals: a copy pinned to a number
+    somebody typed is a copy that drifts from what it is a copy of.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    raws = (
+        "a plain one",
+        '"about memory: a fact"',
+        '"say \\"hi\\""',
+        "'it''s here'",
+    )
+    for number, raw in enumerate(raws):
+        _write(memory / f"m{number}.md", f"---\ndescription: {raw}\n---\n\nbody\n")
+    # A continued description, which NEITHER reader folds: the checker's
+    # frontmatter parser skips the indented line as a nested key, and the
+    # recall hook's regex is `(.+)$` with no DOTALL.
+    _write(
+        memory / "continued.md",
+        "---\ndescription: first line\n  and a continuation\n---\n\nbody\n",
+    )
+    # And a block scalar, which the checker refuses as DESC-BAD before
+    # measuring anything and the hook reads as one character.
+    _write(
+        memory / "block.md",
+        "---\ndescription: >\n  one line\n  and another\n---\n\nbody\n",
+    )
+    files = {
+        item["name"]: item
+        for item in _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
+    }
+    for number, raw in enumerate(raws):
+        value, error = memory_integrity._scalar(raw)
+        assert error is None, (raw, error)
+        assert value is not None
+        assert files[f"m{number}.md"]["description_len"] == len(value), raw
+    assert files["continued.md"]["description_len"] == len("first line")
+    assert files["block.md"]["description_len"] == 1
 
 
 def test_harness_shape_parses_as_python_38() -> None:
