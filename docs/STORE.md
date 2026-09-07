@@ -227,14 +227,15 @@ to date against.
 Claude Code keeps a memory of its own, and by default none of it reaches your
 store. Measured on 2.1.238, the version CI installs: it writes agent-curated
 memories to `~/.claude/projects/<project key>/memory/`, one directory per
-project. The key is the git repository root, sanitized by replacing `/` and `.`
-with `-`, so every subdirectory of one repository shares one directory; outside
-a repository the cwd is used instead. A linked worktree maps to its main
+project. Measured on 2.1.258 and on the documentation page, the key is the git
+repository root, sanitized by replacing `/` and `.` with `-`, so every
+subdirectory of one repository shares one directory; outside a repository the
+cwd is used instead. A linked worktree maps to its main
 checkout's root, so a repository's worktrees share that directory too.
 
 ```bash
 # /Users/you/.config/nix -> -Users-you--config-nix
-dir=$(git rev-parse --show-toplevel 2>/dev/null || pwd); echo "$dir" | tr './' '-'
+dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$PWD/.git")" | tr './' '-'
 ```
 
 Left there they are outside every store: nothing retrieves them and nothing
@@ -255,17 +256,15 @@ In `~/.claude/settings.json` that sends every project's memories to your persona
 store, which is the one to set once and forget about. In a checkout's
 `.claude/settings.local.json` it sends that project's memories to that project's
 store. **Not its checked-in `.claude/settings.json`** — the harness ignores
-`autoMemoryDirectory` there deliberately, so that cloning a repository cannot
-redirect where your agent writes.
+`autoMemoryDirectory` in that file, measured on 2.1.258.
 
 A symlink does the same job, and is the route to know when that setting is not
 yours to set. Move what is already written before you swap, or it is orphaned:
 
 ```bash
-store=~/notes; root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+store=~/notes; root=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$PWD/.git")")
 dir=~/.claude/projects/$(echo "$root" | tr './' '-')/memory
-mv "$dir"/*.md "$store"/search/ && rmdir "$dir"
-ln -s "$store"/search "$dir"
+mv "$dir"/*.md "$store"/search/ && rmdir "$dir" && ln -s "$store"/search "$dir"
 ```
 
 `memkit doctor` reports whether the feature is on and names the directory it
