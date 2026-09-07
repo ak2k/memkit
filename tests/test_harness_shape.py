@@ -555,6 +555,70 @@ def test_a_pathological_index_is_read_to_the_cap_and_says_so(tmp_path) -> None:
     assert entry["index"]["dangling_rows"] == 0
 
 
+def test_out_refuses_to_write_through_a_symlink_somebody_else_planted(
+    tmp_path,
+) -> None:
+    """`--out` names a destination, and `open(path, "w")` follows a link
+    already sitting at that name and truncates whatever it points at.
+
+    Over `sudo -n` on a shared capture host — which is the documented way this
+    runs — that is a write primitive: anybody who can create a file in the
+    directory the operator writes shapes into chooses what gets overwritten.
+    O_NOFOLLOW on the final component, and an exit rather than a silent skip.
+    """
+    victim = _write(tmp_path / "IMPORTANT.txt", "keep me\n")
+    out = tmp_path / "shape.json"
+    os.symlink(victim, out)
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    refused = _run("--config-dir", str(config), "--out", str(out))
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert victim.read_text(encoding="utf-8") == "keep me\n", "it wrote anyway"
+    # And it says which refusal this is: O_NOFOLLOW reports ELOOP, which reads
+    # as a broken filesystem to whoever is standing at the terminal.
+    assert "refuses to follow one" in refused.stderr, refused.stderr
+
+    # And the ordinary destination still writes, including over itself.
+    plain = tmp_path / "plain.json"
+    for _ in range(2):
+        assert _run("--config-dir", str(config), "--out", str(plain)).returncode == 0
+    assert json.loads(plain.read_text(encoding="utf-8"))["anonymised"] is True
+
+
+def test_memkit_is_kept_by_name_whichever_way_the_key_is_spelled(tmp_path) -> None:
+    """The exception exists so a shape says whether memkit was installed on the
+    machine that was captured, and it only fired on the `<plugin>@<market>`
+    spelling — a bare key anonymised to `p<n>` and took the fact with it.
+
+    Neither branch had a test. Both do now, and the marketplace stays a
+    pseudonym in both: where somebody hosts their own marketplace is not a
+    fact a shape is allowed to keep.
+    """
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    _write(
+        config / "settings.json",
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "memkit": True,
+                    "memkit@memkit": True,
+                    f"memkit@{SENTINEL}": True,
+                    SENTINEL: True,
+                }
+            }
+        ),
+    )
+    out = _run("--config-dir", str(config), env=_managed_env(tmp_path / "no-managed"))
+    assert out.returncode == 0, out.stderr
+    assert SENTINEL not in out.stdout
+    # Sorted as OUTPUT, so the list order says nothing about where a redacted
+    # key fell among the real ones.
+    assert json.loads(out.stdout)["settings"]["user"]["plugins"] == [
+        "memkit", "memkit@q1", "memkit@q2", "p1",
+    ]
+
+
 def test_the_tool_and_the_package_agree_on_what_a_corpus_is(tmp_path) -> None:
     """The shape is measured by one walk and consumed by another, and the two
     have to name the same directories.
@@ -850,13 +914,38 @@ THREE_NINE_MODULES = ("zoneinfo", "graphlib")
 
 
 def _three_nine_offences(tree: ast.AST) -> list:
-    """Every 3.9-only spelling this walk knows how to see, with its line."""
+    """Every 3.9-only spelling this walk knows how to see, with its line.
+
+    `|` is the one that needs care in both directions. Bitwise OR on integers
+    is ordinary 3.8 — `os.O_WRONLY | os.O_CREAT` is in this very tool — so a
+    blanket ban on `BitOr` is a guard that fires on correct code, which is the
+    fastest way to get a guard deleted. What it looks for instead is the two
+    spellings that are not integers: a dict DISPLAY on either side of the
+    operator, and any `|` inside an annotation, which is PEP 604. A merge of
+    two dict-valued NAMES is invisible here, and pyright cannot see it either
+    now that typeshed has dropped 3.8; that one is on review.
+    """
     found = []
+    annotated = set()
+    for node in ast.walk(tree):
+        for holder in (
+            getattr(node, "annotation", None), getattr(node, "returns", None)
+        ):
+            if holder is not None:
+                annotated.update(id(inner) for inner in ast.walk(holder))
+    dicts = (ast.Dict, ast.DictComp)
     for node in ast.walk(tree):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-            found.append((node.lineno, "`|` — dict merge and PEP 604 are 3.9+"))
-        elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.BitOr):
-            found.append((node.lineno, "`|=` — dict merge is 3.9"))
+            if id(node) in annotated:
+                found.append((node.lineno, "`|` in an annotation is PEP 604, 3.10"))
+            elif isinstance(node.left, dicts) or isinstance(node.right, dicts):
+                found.append((node.lineno, "`dict | dict` merge is 3.9"))
+        elif (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, ast.BitOr)
+            and isinstance(node.value, dicts)
+        ):
+            found.append((node.lineno, "`dict |= dict` merge is 3.9"))
         elif isinstance(node, (ast.With, ast.AsyncWith)) and len(node.items) > 1:
             # Conservative on purpose: an unparenthesised multi-item `with` is
             # legal 3.8, but the parenthesised spelling is 3.9 and
@@ -892,7 +981,9 @@ def test_the_38_walk_sees_the_spellings_it_claims_to() -> None:
     """
     for source in (
         "x = {'a': 1} | {'b': 2}\n",
+        "x = {'a': 1}\ny = x | {'b': 2}\n",
         "x = {}\nx |= {'b': 2}\n",
+        "def f(a: int | None) -> str | None:\n    return None\n",
         "with open('a') as a, open('b') as b:\n    pass\n",
         "x = 'ab'.removeprefix('a')\n",
         "x = 'ab'.removesuffix('b')\n",
@@ -907,9 +998,17 @@ def test_the_38_walk_sees_the_spellings_it_claims_to() -> None:
         # Every one of these PARSES at 3.8, which is the whole problem.
         tree = ast.parse(source, feature_version=(3, 8))
         assert _three_nine_offences(tree), source
-    # And a 3.8 file it must not complain about.
-    clean = ast.parse("with open('a') as a:\n    x = a.read()\n", feature_version=(3, 8))
-    assert _three_nine_offences(clean) == []
+    # And the 3.8 spellings it must NOT complain about — a guard that fires on
+    # correct code is a guard somebody deletes rather than reads.
+    for clean in (
+        "with open('a') as a:\n    x = a.read()\n",
+        "import os\nx = os.O_WRONLY | os.O_CREAT | os.O_TRUNC\n",
+        "def f(a, b):\n    return a | b\n",
+        "from typing import Optional\ndef f(a: Optional[int]) -> Optional[str]:\n"
+        "    return None\n",
+    ):
+        tree = ast.parse(clean, feature_version=(3, 8))
+        assert _three_nine_offences(tree) == [], clean
 
 
 def test_harness_shape_parses_as_python_38() -> None:

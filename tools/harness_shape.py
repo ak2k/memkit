@@ -199,7 +199,10 @@ def _settings_scope(data: dict, names: _Pseudonyms, anonymise: bool) -> dict:
         "hooks": (
             sorted(names.hook(event) for event in events) if anonymise else events
         ),
-        "plugins": [names.plugin(key) if anonymise else key for key in listed],
+        # Sorted after the pseudonyms are assigned, for the reason above.
+        "plugins": (
+            sorted(names.plugin(key) for key in listed) if anonymise else listed
+        ),
     }
 
 
@@ -455,15 +458,18 @@ class _Pseudonyms:
         return self._assign(self._hooks, event, "h")
 
     def plugin(self, key: str) -> str:
-        plugin, sep, marketplace = key.partition("@")
-        if not sep:
-            return self._assign(self._plugins, key, "p")
         # memkit by name, its marketplace not: whether memkit is installed is
         # the fact a shape is allowed to keep, and where somebody hosts their
-        # own marketplace is not.
+        # own marketplace is not. WHICHEVER WAY THE KEY IS SPELLED — the
+        # exception used to fire only on `<plugin>@<marketplace>`, so a bare
+        # `memkit` anonymised to `p<n>` and took with it the fact the
+        # exception exists to keep.
+        plugin, sep, marketplace = key.partition("@")
         left = plugin if plugin == KEPT_PLUGIN else self._assign(
             self._plugins, plugin, "p"
         )
+        if not sep:
+            return left
         return left + "@" + self._assign(self._markets, marketplace, "q")
 
 
@@ -821,7 +827,31 @@ def main(argv=None) -> int:
         sys.stdout.write(text)
         return 0
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as handle:
+    try:
+        # O_NOFOLLOW, because `open(path, "w")` follows a link already sitting
+        # at that name and truncates what it points at. This runs under
+        # `sudo -n` on hosts it is a guest on, so a link somebody else planted
+        # in the destination directory is a choice about what gets
+        # overwritten — and no capture is worth writing through one.
+        fd = os.open(
+            args.out,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            # The mode a plain `open(path, "w")` would have created: this
+            # change is about not following a link, not about tightening
+            # permissions, and umask applies to both the same way.
+            0o666,
+        )
+    except OSError as exc:
+        # O_NOFOLLOW reports ELOOP, which reads as a broken filesystem rather
+        # than as the refusal it is.
+        why = (
+            "a symlink sits at this name, and --out refuses to follow one"
+            if os.path.islink(args.out)
+            else (exc.strerror or str(exc))
+        )
+        sys.stderr.write(f"harness_shape: {args.out}: {why}\n")
+        return 2
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
     return 0
 
