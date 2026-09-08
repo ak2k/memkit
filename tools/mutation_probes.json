@@ -2029,8 +2029,8 @@
       "name": "inventory-counts-a-directory-whose-name-ends-in-md",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "                    if entry.name.endswith(\".md\") and entry.is_file()\n",
-      "new": "                    if entry.name.endswith(\".md\")\n",
+      "old": "                        if not entry.is_file():\n                            continue\n",
+      "new": "",
       "tests": [
         "tests/test_harness_memory.py::test_a_directory_named_like_a_memory_is_not_one"
       ],
