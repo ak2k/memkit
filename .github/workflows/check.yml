@@ -131,13 +131,13 @@ jobs:
       # assumed prefix otherwise leaves every check green and every adopter's
       # plugin inert.
       # The store-guidance cases paste the documented commands into both
-      # shells an adopter uses, so half of them need zsh. They used to SKIP
-      # where it was absent, under this job's name — which branch protection
-      # requires — so the shell is installed here rather than assumed of the
-      # image, and the cases fail rather than skip if this step stops working.
+      # shells an adopter uses, so half of them need zsh. They fail rather
+      # than skip where it is absent, under this job's name — which branch
+      # protection requires — so the shell is installed here rather than
+      # assumed of the image.
       - name: zsh (the store-guidance cases are pasted into it)
         run: |
-          command -v zsh || sudo apt-get install -y --no-install-recommends zsh
+          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }
           zsh --version
 
       - name: Test suites (hook pytest + integrity unittest)
