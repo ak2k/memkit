@@ -3419,6 +3419,38 @@ def test_a_project_key_no_row_could_point_at_is_skipped(profile, key) -> None:
     assert checker._generate(store / "SEARCH.md", entries) == ledger
 
 
+def test_a_red_integrity_check_still_redirects_the_harness(
+    profile, monkeypatch, capsys
+) -> None:
+    """VERIFY is not the last action and its answer is about a store that is
+    already on disk. Returning the moment the checker is unhappy left the
+    memories copied into the store AND the harness still writing outside it —
+    the half-state the redirect exists to end, and reachable from any of the
+    inputs that turn the check red. The code is still INCOMPLETE, the
+    checker's own output is still printed, and the manifest order is
+    untouched: what changed is only when the code is returned.
+    """
+    _harness(profile, "-home-u", {"ok.md": TRAP})
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    )
+    ops = [a.op for a in plan.pending]
+    assert ops.index(init.VERIFY) < ops.index(init.SETTINGS_WRITE), ops
+    monkeypatch.setattr(
+        init,
+        "_run_checker",
+        lambda m, c: (1, "ORPHAN: ./hot/x.md — no row in MEMORY.md"),
+    )
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    assert "ORPHAN: ./hot/x.md" in capsys.readouterr().err
+    settings = json.loads(
+        (profile / "claude-config" / "settings.json").read_text(encoding="utf-8")
+    )
+    assert settings["autoMemoryDirectory"].startswith(str(profile / "notes"))
+
+
 def test_a_description_taken_from_a_file_name_cannot_end_its_own_line(
     profile,
 ) -> None:

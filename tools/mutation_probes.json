@@ -4284,6 +4284,17 @@
       "why": "a link is somebody's answer only where it lands. Called already redirected wherever it points, a memory directory linked to an ordinary directory is reported as handled by init and as outside every store by doctor, and is chased by neither."
     },
     {
+      "name": "init-a-red-integrity-check-strands-the-actions-after-it",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            incomplete = code\n    return incomplete\n",
+      "new": "            return code\n    return incomplete\n",
+      "tests": [
+        "tests/test_init.py::test_a_red_integrity_check_still_redirects_the_harness"
+      ],
+      "why": "VERIFY reports on a store that is already on disk and the settings write comes after it. Returned at the VERIFY, a red check leaves the memories copied into the store AND the harness still writing outside it, with no redirect — the half-state the feature exists to end."
+    },
+    {
       "name": "init-adoption-copies-a-project-key-no-row-could-point-at",
       "module": "init",
       "file": "src/memkit/cli_init.py",

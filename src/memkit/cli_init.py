@@ -2869,6 +2869,8 @@ def _package_path() -> str:
 def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
     """Perform the plan, journalling each mutation as it happens."""
     journal = Journal(machine.state_dir, plan.digest)
+    # The exit code a red integrity check earns, held until the loop is done.
+    incomplete = EXIT_OK
     for action in plan.pending:
         try:
             code = _perform(machine, journal, action, config_path)
@@ -2905,8 +2907,18 @@ def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
             )
             return EXIT_INCOMPLETE
         if code != EXIT_OK:
-            return code
-    return EXIT_OK
+            # A CHECKER THAT IS UNHAPPY IS NOT A REASON TO STOP WRITING.
+            # VERIFY is the only action that reports a code, it reports it
+            # about a store that is already on disk, and the actions after it
+            # are what makes that store the place the harness writes to.
+            # Returned from here it left the memories copied AND the harness
+            # still writing outside the store — the exact half-state the
+            # redirect exists to end, reached by any of the several inputs
+            # that turn the check red. What is deferred is the code, not a
+            # guard: every action after this one is performed under all of its
+            # own, and a refusal from one still stops the run.
+            incomplete = code
+    return incomplete
 
 
 def _perform(
