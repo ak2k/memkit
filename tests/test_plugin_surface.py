@@ -3341,6 +3341,12 @@ _OWN_FILE_OUTCOMES = {
     "gets them rewritten": "rewritten",
     "gets them rewritten too": "rewritten",
 }
+_LINK_REACHES = {
+    "reaches nothing: the harness writes where that file sends it, not to the "
+    "directory the key names": "unreachable",
+    "is the route left: the harness still writes to the directory the key "
+    "names": "reachable",
+}
 
 
 def _prose(section: str) -> str:
@@ -3578,6 +3584,22 @@ def _unset_target_streams(section: str) -> str:
     )
 
 
+def _blocked_link_reach(section: str) -> str:
+    """What the page says the link reaches where a checked-in setting blocks it.
+
+    Read rather than skipped over: the sentence sat between two anchors of the
+    precedence case's regex, so the paragraph could be returned to offering the
+    link as the route out of the one state the link cannot reach.
+    """
+    return _stated(
+        section,
+        r"the flag below refuses \(`auto-memory-redirected`\) and this link "
+        r"([^.]+)\.",
+        _LINK_REACHES,
+        "what the link reaches where a checked-in setting declares the value",
+    )
+
+
 def _settings_precedence(section: str) -> list:
     """The settings scopes the page lists, highest first."""
     # The scope names carry periods of their own, so the list is delimited by
@@ -3631,13 +3653,20 @@ def _shell_argv(shell: str) -> list:
     return ["bash", "-c"] if shell == "bash" else [_needs_zsh(), "-f", "-c"]
 
 
-def _sealed_env(home: Path, pwd: str | None = None) -> dict:
+def _sealed_env(
+    home: Path, pwd: str | None = None, config_dir: Path | None = None
+) -> dict:
     """The environment wholesale, so nothing of the developer's leaks in.
 
     An inherited `GIT_CONFIG_GLOBAL`, `init.defaultBranch` or `CLAUDE_CONFIG_DIR`
     would make these cases pass or fail for a reason belonging to the machine.
     `pwd` is the logical path an interactive shell carries after a `cd` through
     a symlink, and the only state in which `pwd` and `pwd -P` differ.
+
+    `config_dir` is the harness's config directory, and one cell puts it
+    somewhere that is NOT `$HOME/.claude`: the page derives `$dir` under
+    `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, and where the two spellings name one
+    path the page can lose the variable without a case noticing.
 
     `GIT_CEILING_DIRECTORIES` stops `rev-parse` walking out of the tmpdir: the
     cases that assert what the block prints OUTSIDE a repository would key on
@@ -3649,7 +3678,7 @@ def _sealed_env(home: Path, pwd: str | None = None) -> dict:
         "GIT_CEILING_DIRECTORIES": str(home.parent),
         "HOME": str(home),
         "PATH": os.environ["PATH"],
-        "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+        "CLAUDE_CONFIG_DIR": str(config_dir if config_dir is not None else home / ".claude"),
         "LC_ALL": "C",
         "TERM": "dumb",
         "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -3687,9 +3716,13 @@ def _harness_key(path: Path, pattern: str, physical: bool = True) -> str:
     return re.sub(pattern, "-", os.path.realpath(str(path)) if physical else str(path))
 
 
-def _shell_out(shell: str, script: str, cwd: Path, home: Path, pwd: str | None = None):
+def _shell_out(
+    shell: str, script: str, cwd: Path, home: Path,
+    pwd: str | None = None, config_dir: Path | None = None,
+):
     return subprocess.run(
-        _shell_argv(shell) + [script], cwd=str(cwd), env=_sealed_env(home, pwd),
+        _shell_argv(shell) + [script], cwd=str(cwd),
+        env=_sealed_env(home, pwd, config_dir),
         capture_output=True, text=True, timeout=60,
     )
 
@@ -3948,7 +3981,11 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         # reader's link survives a `$target` that is already taken.
         target.write_text("in the way\n", encoding="utf-8")
 
-    dir_ = home / ".claude" / "projects" / _harness_key(repo, pattern) / "memory"
+    # The cell that runs the page's own `$dir` definition runs with the config
+    # dir somewhere the default never names, so the `${CLAUDE_CONFIG_DIR:-...}`
+    # the page writes has two branches here rather than one path twice.
+    config_dir = home / ("cfg" if cell == "repoint-dir-from-the-page" else ".claude")
+    dir_ = config_dir / "projects" / _harness_key(repo, pattern) / "memory"
     dir_.parent.mkdir(parents=True)
     if cell == "guard-dir-is-a-directory":
         dir_.mkdir()
@@ -3989,7 +4026,17 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert len(halves) == 2, line
         line = '&& mkdir "$dir" && ln -sn'.join(halves)
     script = "\n".join([*prelude, *assignments, line])
-    out = _shell_out(shell, script, repo, home)
+    out = _shell_out(shell, script, repo, home, config_dir=config_dir)
+
+    if cell == "repoint-dir-from-the-page":
+        # The page's line ends by SHOWING what is there, and the next paragraph
+        # tells the reader to act on what it shows: a definition that stops at
+        # the assignment leaves that instruction pointing at nothing.
+        shown = [ln for ln in out.stdout.splitlines() if str(dir_) in ln]
+        assert len(shown) == 1, (script, out.stdout)
+        # `ls -ld` runs before the repoint, so what it shows is the shape the
+        # page tells the reader to look for.
+        assert shown[0].startswith("l"), (script, shown[0])
 
     if cell == "repoint-harness-recreated-dir":
         assert out.returncode == 0, (script, out.stdout, out.stderr)
@@ -4162,9 +4209,15 @@ def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
     # was offered as that route while the page's own account of the setting
     # says the harness writes where the setting sends it, which the link never
     # touches.
+    # What the link reaches there is the reason the reader is routed at all,
+    # so it is read rather than spanned: the clause used to sit inside a `.*?`
+    # and could be inverted back to offering the link with every case green.
+    assert _blocked_link_reach(section) == "unreachable", (
+        "the page offers the link where the file it names sends the harness elsewhere"
+    )
     found = re.search(
         r"Where a checkout's checked-in (`[^`]+`) declares `autoMemoryDirectory` "
-        r"already, .*? The route left there is that checkout's own (`[^`]+`), "
+        r"already, (?:[^.]+)\. The route left there is that checkout's own (`[^`]+`), "
         r"which the harness reads (above|below) it",
         prose,
     )
