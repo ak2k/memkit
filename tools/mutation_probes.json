@@ -4370,7 +4370,7 @@
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
       "old": "        if not statmod.S_ISREG(os.fstat(fd).st_mode):\n            raise OSError(f\"not a regular file: {path}\")\n",
-      "new": "",
+      "new": "        pass\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_candidate_that_is_not_a_regular_file_is_refused_not_awaited"
       ],
