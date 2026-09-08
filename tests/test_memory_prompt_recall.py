@@ -14766,6 +14766,56 @@ def test_a_project_file_nested_past_the_parsers_budget_refuses_rather_than_raise
     assert reason == hook.sanitize(reason), repr(reason)
 
 
+def test_the_order_the_refusals_are_made_in_is_the_order_they_answer_in(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Two joins the module's own comments call load-bearing, pinned.
+
+    Each row hands the guard an input that matches TWO consecutive checks, so
+    the sentence that comes back says which one ran first — the only thing
+    that tells the order apart from the set. Reordering either pair leaves
+    every existing refusal row green, because each of those matches one check
+    alone.
+
+    The first join is `open, fstat, decide, read`: the size is decided off the
+    descriptor's own stat, before any byte is read, and what is not a regular
+    file is refused before either. The second is the `..` refusal standing in
+    front of the realpath containment, which exists for the SENTENCE — a
+    spelling that climbs out is told so in the words its author can act on,
+    rather than in the words a symlink out of the tree earns.
+    """
+    # JOIN ONE, first pair: over the cap AND not valid JSON. The fstat decides.
+    over = "{" + "n" * hook.PROJECT_CONFIG_MAX_BYTES
+    assert len(over) > hook.PROJECT_CONFIG_MAX_BYTES
+    with pytest.raises(ValueError):
+        json.loads(over)
+    repo = _project_checkout(tmp_path, name="over", blob=over)
+    size = (repo / hook.PROJECT_CONFIG_NAME).stat().st_size
+    assert _refusal(tmp_path, monkeypatch, repo) == (
+        f"{hook.PROJECT_CONFIG_NAME} is {size} bytes; the limit is "
+        f"{hook.PROJECT_CONFIG_MAX_BYTES}"
+    )
+
+    # JOIN ONE, second pair: a FIFO is nothing the size gate or the parser
+    # could ever answer about, and the not-regular refusal is why.
+    fifo = _project_checkout(tmp_path, name="fifo")
+    os.mkfifo(str(fifo / hook.PROJECT_CONFIG_NAME))
+    assert _refusal(tmp_path, monkeypatch, fifo) == (
+        f"{hook.PROJECT_CONFIG_NAME} is not a regular file"
+    )
+
+    # JOIN TWO: a `dir` that spells `..` AND resolves outside the checkout.
+    outside = tmp_path / "elsewhere" / "search"
+    outside.mkdir(parents=True)
+    climber = _project_checkout(
+        tmp_path, name="climber", blob=_project_blob(dir="../elsewhere")
+    )
+    assert _refusal(tmp_path, monkeypatch, climber) == (
+        f"{hook.PROJECT_CONFIG_NAME}: 'dir' must stay inside the repository, "
+        "and '../elsewhere' climbs out of it"
+    )
+
+
 def test_a_device_symlink_a_checkout_carries_is_refused_without_hanging(
     tmp_path: Path, monkeypatch
 ) -> None:
