@@ -4164,6 +4164,12 @@ def _secret_re() -> re.Pattern[str]:
     wrong is one pointer, visible as `lex_secret` in the soak record rather
     than silent.
 
+    The separator may be preceded by ONE closing quote, because a fenced JSON
+    block is an ordinary thing for a checked-in memory to hold and there the
+    key is spelled `"api_key":` — requiring the separator to follow the
+    keyword immediately reads every quoted key as prose, `private_key`
+    included, whose commonest spelling is that one.
+
     BOUNDED on both sides of that keyword, which is what keeps the scan linear
     in the bytes it reads. An unbounded `[A-Za-z0-9_]*` in front of an
     alternation makes the engine try every split of the run at every start
@@ -4209,7 +4215,8 @@ def _secret_re() -> re.Pattern[str]:
                     r"(?i:authorization:\s*bearer\s+[A-Za-z0-9._~+/-]{20,})",
                     r"(?i:[A-Za-z0-9_]{0,64}"
                     r"(?:password|passwd|secret|token|api_?key|private_key)"
-                    r"[A-Za-z0-9_]{0,64})\s*[:=]\s*\S{8,}",
+                    r"[A-Za-z0-9_]{0,64})"
+                    r"""["']?\s*[:=]\s*\S{8,}""",
                 )
             )
         )

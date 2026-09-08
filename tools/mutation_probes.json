@@ -4531,6 +4531,17 @@
       "why": "an api key and a private key are assignments like any other, and the branch that reads them is the only thing standing between one and a served pointer"
     },
     {
+      "name": "project-store-scan-requires-the-separator-to-touch-the-keyword",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "[\"']?\\s*[:=]\\s*\\S{8,}",
+      "new": "\\s*[:=]\\s*\\S{8,}",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_each_added_credential_shape_costs_the_candidate_its_pointer"
+      ],
+      "why": "a fenced JSON block spells the key quoted, so without the optional closing quote every quoted credential in a committed memory reads as prose"
+    },
+    {
       "name": "project-store-scan-knows-the-vendor-prefixes",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",

@@ -15130,6 +15130,10 @@ SECRET_SHAPES = [
 # (label, the shape planted in a memory, prose that only NAMES it). One row per
 # shape added to the backstop, and the prose column is what says the shape is
 # still what decides — a memory that documents a credential is not one.
+#
+# The JSON rows spell each key the way a fenced block in a committed memory
+# spells it, quoted, rather than the way this file's author reaches for it:
+# the quoted spelling is the one a corpus actually carries.
 ADDED_SECRET_SHAPES = [
     (
         "api-key",
@@ -15150,6 +15154,26 @@ ADDED_SECRET_SHAPES = [
         "stripe-live-key",
         "rk_live_51Hf8c1d2e3b4a59687d0c",
         "only rk_live_ and sk_live_ keys are ever loaded in production",
+    ),
+    (
+        "json-api-key",
+        '{"api_key": "0f8c1d2e3b4a59687d0c"}',
+        'a fenced block naming "api_key" is how the platform team documents it',
+    ),
+    (
+        "json-password",
+        '{"password": "hunter2password"}',
+        'the "password" field is filled in at deploy time, never in a memory',
+    ),
+    (
+        "json-aws-secret",
+        '{"aws_secret_access_key": "wJalrXUtnFEMIK7MDENG"}',
+        'every sample here writes "aws_secret_access_key" with its value struck',
+    ),
+    (
+        "json-private-key",
+        '{"private_key": "-----BEGIN X-----"}',
+        'the "private_key" entry is minted by the vault and never committed',
     ),
 ]
 
