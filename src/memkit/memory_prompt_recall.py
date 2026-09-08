@@ -595,7 +595,7 @@ def _repo_common_dir(root: str):
 #   NOTHING THE REPOSITORY WROTE IS RENDERED RAW. A refusal reason is read by
 #   an agent, so it is assembled from fixed strings plus values put through
 #   `sanitize` and capped. The store `id` is checked against a strict pattern
-#   for the same reason: it lands in `--debug-config` and in doctor's detail.
+#   for the same reason: it lands in `--debug-config`, which an agent reads.
 #
 # The link is FOLLOWED rather than refused once it resolves to a regular file
 # inside the cap. A repository that points its own config file elsewhere on
@@ -611,8 +611,8 @@ def _repo_common_dir(root: str):
 # it is a store nobody can grep for.
 PROJECT_VALUE_MAX_CHARS = 64
 # What a store id may be, and it is deliberately narrower than a path: this
-# string is rendered into `--debug-config` and into doctor's detail, both of
-# which an agent reads.
+# string is rendered onto `--debug-config`'s `project` line, which an agent
+# reads.
 PROJECT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 _PROJECT_TOP_KEYS = frozenset((PROJECT_SCHEMA_KEY, "store", "note"))
 _PROJECT_STORE_KEYS = frozenset(("id", "dir", "note"))
