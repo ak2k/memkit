@@ -112,32 +112,82 @@ def _write_config(home: Path, *, gate_root: str | None = None) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def _state_dir_follows_home(monkeypatch) -> None:
+    """Drop the runner's `XDG_*` before any case runs, so the module's state
+    directory is decided by the HOME each case redirects.
+
+    The same defect as the child-environment one below, on the half of this
+    file that never spawns anything: a case that sets HOME in-process and then
+    asserts on `$HOME/.cache/memory-recall` is silently asserting about the
+    runner's cache directory instead wherever `XDG_CACHE_HOME` is exported —
+    36 cases here, and the mutation sweep's baseline with them.
+
+    DROPPED rather than pinned, because these cases put HOME in several
+    different places and the state directory has to follow whichever one the
+    case chose. The cases that are ABOUT `XDG_CACHE_HOME` set it themselves
+    afterwards and are unaffected.
+    """
+    for name in (
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _sealed_env(tmp_path: Path, **extra: str) -> dict:
+    """The environment for ANY spawned hook in this file: the runner's, with
+    HOME redirected to `tmp_path` and every variable that decides WHERE the
+    hook keeps state pinned underneath it.
+
+    A bare copy of the environment with HOME swapped is not enough, and the
+    gap is not theoretical.
+    The module honours `XDG_CACHE_HOME` over `$HOME/.cache` for its state
+    directory, so on a machine that exports one, a case that redirected HOME
+    and then asserted on `tmp_path/.cache/memory-recall/log.jsonl` was reading
+    a directory the RUNNER chose — a whole population of cases whose verdict
+    came from the environment, and a mutation sweep whose baseline they took
+    down with them. The rest of the XDG set is pinned for the same reason
+    ahead of its first reader rather than after one.
+
+    The pin is under `tmp_path` rather than dropped: unset means `$HOME/.cache`
+    here, which is the same directory, but naming it keeps the assertion and
+    the environment saying one thing instead of two.
+
+    `PYTHONDONTWRITEBYTECODE` is deliberately INHERITED. It decides what a
+    child pays to import, not where anything is written, and the import-cost
+    cases below supply their own cache precisely because that number is the
+    runner's fact to state rather than this helper's to hide.
+    """
+    env = dict(
+        os.environ,
+        HOME=str(tmp_path),
+        XDG_CACHE_HOME=str(tmp_path / ".cache"),
+        XDG_CONFIG_HOME=str(tmp_path / ".config"),
+        XDG_DATA_HOME=str(tmp_path / ".local" / "share"),
+        XDG_STATE_HOME=str(tmp_path / ".local" / "state"),
+    )
+    env.update(extra)
+    return env
+
+
 def _env(tmp_path: Path, *, stores: bool = True) -> dict:
-    """Environment for a spawned hook: a redirected HOME and a config that
-    points at it. Both are needed — without the config the hook is inert by
-    design and every injection case below would pass vacuously.
+    """A sealed environment plus a config that points at the redirected HOME.
+    Both are needed — without the config the hook is inert by design and every
+    injection case below would pass vacuously.
 
     `stores=False` writes the config and NOT the directories, which is how a
     case reaches `gate:nodirs` on purpose: configured stores that are not on
     disk are dropped, so the hook gets past every prompt-shaped gate and then
     finds nothing to search. That is the outcome that proves a prompt was not
     gated for its shape.
-
-    `XDG_CACHE_HOME` is PINNED and not merely inherited: the module honours it
-    over `$HOME/.cache`, so on a machine that sets it the state directory these
-    cases read `log.jsonl` and the session ledger out of was somewhere else
-    entirely — a whole population of tests whose verdict came from the runner's
-    environment, and a mutation sweep whose baseline they took down with them.
     """
     if stores:
         for rel in (PROJECT_DIR, PERSONAL_DIR):
             (tmp_path / rel / "search").mkdir(parents=True, exist_ok=True)
-    return dict(
-        os.environ,
-        HOME=str(tmp_path),
-        XDG_CACHE_HOME=str(tmp_path / ".cache"),
-        MEMKIT_CONFIG=str(_write_config(tmp_path)),
-    )
+    return _sealed_env(tmp_path, MEMKIT_CONFIG=str(_write_config(tmp_path)))
 
 
 # --- _interleave -------------------------------------------------------------
@@ -4044,7 +4094,7 @@ def _unconfigured(tmp_path: Path) -> dict:
     may well have a real memkit wired up, and inheriting it would point these
     cases at the operator's own stores.
     """
-    env = dict(os.environ, HOME=str(tmp_path))
+    env = _sealed_env(tmp_path)
     env.pop(hook.CONFIG_ENV, None)
     return env
 
@@ -4058,7 +4108,7 @@ def _unhonourable(tmp_path: Path) -> dict:
     """
     path = tmp_path / "unhonourable.json"
     path.write_text(json.dumps({"schema": hook.SCHEMA + 1}))
-    return dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(path))
+    return _sealed_env(tmp_path, MEMKIT_CONFIG=str(path))
 
 
 def _last_record(tmp_path: Path) -> dict:
@@ -4186,7 +4236,7 @@ def _flat_store(tmp_path: Path, names: tuple[str, ...]) -> tuple[Path, dict]:
         "roots": {"notes": {"kind": "path", "path": str(notes)}},
         "stores": [{"id": "notes", "dir": ".", "live_root": "notes"}],
     }))
-    return notes, dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+    return notes, _sealed_env(tmp_path, MEMKIT_CONFIG=str(config))
 
 
 def test_the_diagnostic_names_the_corpus_it_will_actually_read(tmp_path) -> None:
@@ -4359,7 +4409,7 @@ def test_a_config_naming_stores_that_are_not_there_is_inert(tmp_path) -> None:
     said the machine was fine was the one reached by following the
     instructions.
     """
-    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(_write_config(tmp_path)))
+    env = _sealed_env(tmp_path, MEMKIT_CONFIG=str(_write_config(tmp_path)))
     out = _cli(tmp_path, "--search", "sprocket backlash gearbox", env=env)
     assert out.returncode == hook.EXIT_INERT
     assert "inert" in out.stderr and "memkit.json" in out.stderr
@@ -5351,7 +5401,7 @@ def test_a_malformed_store_list_leaves_the_hook_inert_and_says_why(
     """
     config = tmp_path / "broken.json"
     config.write_text(json.dumps(_config_blob(tmp_path, stores=[123])))
-    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+    env = _sealed_env(tmp_path, MEMKIT_CONFIG=str(config))
 
     out = subprocess.run(
         ["python3", HOOK],
@@ -5948,7 +5998,7 @@ def _plugin_home(tmp_path: Path, *, data: bool = True) -> tuple[dict, Path]:
     own and comes from the wrapper; `CLAUDE_PLUGIN_DATA` is the harness's and
     may be absent, which is the case the gate must survive.
     """
-    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_PLUGIN="1")
+    env = _sealed_env(tmp_path, MEMKIT_PLUGIN="1")
     env.pop("MEMKIT_CONFIG", None)
     plugin_data = tmp_path / "plugindata"
     if data:
@@ -6055,7 +6105,7 @@ def test_without_the_marker_the_gate_cannot_fire_at_all(tmp_path) -> None:
     its ordinary `gate:nodirs` record to the shared state dir, and leaves no
     marker even though the data directory is right there and writable.
     """
-    env = dict(os.environ, HOME=str(tmp_path), CLAUDE_PLUGIN_DATA=str(tmp_path / "pd"))
+    env = _sealed_env(tmp_path, CLAUDE_PLUGIN_DATA=str(tmp_path / "pd"))
     env.pop("MEMKIT_CONFIG", None)
     env.pop("MEMKIT_PLUGIN", None)
     (tmp_path / "pd").mkdir()
@@ -7065,7 +7115,7 @@ def test_two_registrations_serving_one_session_each_record_the_other(
     config_b = tmp_path / "second.json"
     config_b.write_text(config_a.read_text())
     other_hook = _second_installation(tmp_path)
-    env = dict(os.environ, HOME=str(tmp_path))
+    env = _sealed_env(tmp_path)
     env.pop("MEMKIT_CONFIG", None)
 
     def run(hook_file: str, config: Path, prompt: str) -> None:
@@ -7110,7 +7160,7 @@ def test_a_plugin_and_a_settings_entry_on_one_config_are_still_detected(
     _corpus_of_three(tmp_path)
     config = _write_config(tmp_path)
     other_hook = _second_installation(tmp_path)
-    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+    env = _sealed_env(tmp_path, MEMKIT_CONFIG=str(config))
 
     for hook_file, prompt, marker in (
         (HOOK, PROMPTS[0], None),
@@ -7158,7 +7208,7 @@ def test_a_dual_registered_machine_records_the_duplicate_a_bounded_number_of_tim
     _corpus_of_three(tmp_path)
     config = _write_config(tmp_path)
     other_hook = _second_installation(tmp_path)
-    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+    env = _sealed_env(tmp_path, MEMKIT_CONFIG=str(config))
     env.pop("MEMKIT_PLUGIN", None)
 
     # BOTH registrations on EVERY prompt, which is what dual-registered means
@@ -7205,7 +7255,7 @@ def test_the_duplicate_claim_is_atomic_between_concurrent_registrations(
     _corpus_of_three(tmp_path)
     config = _write_config(tmp_path)
     other_hook = _second_installation(tmp_path)
-    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(config))
+    env = _sealed_env(tmp_path, MEMKIT_CONFIG=str(config))
     env.pop("MEMKIT_PLUGIN", None)
     # A stamp from a third registration, so BOTH racers see a foreign one.
     state = tmp_path / ".cache" / "memory-recall"
@@ -7262,7 +7312,7 @@ def test_one_registration_never_reports_itself_as_a_duplicate(tmp_path) -> None:
     every session, on every machine.
     """
     _corpus_of_three(tmp_path)
-    env = dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(_write_config(tmp_path)))
+    env = _sealed_env(tmp_path, MEMKIT_CONFIG=str(_write_config(tmp_path)))
     for prompt in PROMPTS:
         out = subprocess.run(
             ["python3", HOOK],
@@ -8271,7 +8321,7 @@ def test_a_hostile_description_is_sanitized_on_the_way_out_of_the_hook(
         "type: reference\n---\n\n# Flange torque\n\nflange fastener passes.\n"
     )
     out = _hook(
-        dict(os.environ, HOME=str(tmp_path), MEMKIT_CONFIG=str(_write_config(tmp_path))),
+        _sealed_env(tmp_path, MEMKIT_CONFIG=str(_write_config(tmp_path))),
         "flange fastener tightening sequence and passes",
         session="frame1",
     )

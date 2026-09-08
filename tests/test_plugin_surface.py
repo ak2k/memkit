@@ -4002,6 +4002,10 @@ def test_the_wrapper_execs_the_byte_identical_hook(root, tmp_path) -> None:
     env = dict(
         os.environ,
         HOME=str(tmp_path),
+        # Pinned, not inherited: the record this compares across the two
+        # invocations is read out of the redirected HOME, and the hook honours
+        # `XDG_CACHE_HOME` over it.
+        XDG_CACHE_HOME=str(tmp_path / ".cache"),
         CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
     )
     env.pop("MEMKIT_CONFIG", None)
