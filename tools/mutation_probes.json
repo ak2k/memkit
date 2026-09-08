@@ -4342,7 +4342,7 @@
       "name": "init-adoption-copies-a-file-name-no-row-could-point-at",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if _label(name) != name:\n",
+      "old": "            if _link_target(name) != name:\n",
       "new": "            if not name.isprintable():\n",
       "tests": [
         "tests/test_init.py::test_the_ledger_is_still_the_checkers_on_a_hostile_name"
@@ -4353,12 +4353,23 @@
       "name": "init-adoption-copies-a-file-name-no-manifest-line-could-carry",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if _label(name) != name:\n",
+      "old": "            if _link_target(name) != name:\n",
       "new": "            if name.strip() != name:\n",
       "tests": [
         "tests/test_init.py::test_a_file_name_no_manifest_line_can_carry_is_skipped"
       ],
       "why": "POSIX admits a newline in a filename and the destination path line has to keep its spacing byte for byte to name a file that exists. Copied, it puts fabricated action lines into the surface a human reads before typing --confirm."
+    },
+    {
+      "name": "init-adoption-tests-a-file-name-by-the-label-rule-not-the-links",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if _link_target(name) != name:\n",
+      "new": "            if _label(name) != name:\n",
+      "tests": [
+        "tests/test_init.py::test_a_file_name_no_row_could_point_at_is_skipped"
+      ],
+      "why": "a label may carry a space and a link destination may not: the reader ends the link at the first one. Tested by the label's rule, `al pha.md` is copied and rows a link to `search/projects/-home-u/al`, and the store init has just built fails its own check with DEAD-LINK."
     },
     {
       "name": "init-a-name-that-would-end-its-own-row-is-copied-as-it-stands",

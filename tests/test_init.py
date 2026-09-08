@@ -3470,6 +3470,49 @@ def test_a_file_name_no_manifest_line_can_carry_is_skipped(profile) -> None:
     ]) + len({a.group for a in plan.pending if a.group})
 
 
+def test_a_file_name_no_row_could_point_at_is_skipped(profile) -> None:
+    """The file name is the OTHER half of the path a generated row points at,
+    and a space in it is not a character a link destination can carry: the
+    reader ends the link at the space, so `al pha.md` rows a link to
+    `search/projects/-home-u/al`, a path that is not there. Copied, the store
+    init has just built fails init's own integrity check with DEAD-LINK.
+
+    A sound file beside it still adopts: this refuses a file, not a run.
+    """
+    _harness(profile, "-home-u", {"al pha.md": TRAP, "beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert any(
+        "al pha.md" in line
+        and "no manifest line and no ledger row could carry" in line
+        for line in manifest.stdout.splitlines()
+    ), manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == ["beta.md"]
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "search/projects/-home-u/beta.md" in ledger
+    assert "al pha" not in ledger
+    # The store init just built still passes the check it will be measured by.
+    from memkit import memory_integrity as checker
+
+    entries = []
+    for path in sorted((store / "search").rglob("*.md")):
+        if path.name in checker.LEDGER_NAMES:
+            continue
+        front = checker._frontmatter(path)
+        value, error = checker._scalar(front.get("description", ""))
+        assert error is None, (path, error)
+        entries.append(
+            (front.get("name") or path.stem, os.path.relpath(path, store), value)
+        )
+    assert checker._generate(store / "SEARCH.md", entries) == ledger
+
+
 @pytest.mark.parametrize(
     "key",
     ["-home-u with spaces", "-home-u\ttab", "key(paren)", "key)close"],

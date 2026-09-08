@@ -1998,14 +1998,16 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             # with no way out at all: a row points at a file by writing its
             # path between `(` and `)`, so a file whose name holds either one
             # is a file no row can point at, whatever the label says.
-            # ONE TEST FOR BOTH: `_label` drops every character that is not
-            # printable before it drops the link syntax, so a name holding
-            # either one fails this.
-            if _label(name) != name:
+            # ONE TEST FOR BOTH, AND IT IS THE KEY'S TEST: the name is the
+            # other half of the same path a row points at, so it answers to
+            # the same rule — `_link_target` drops what is not printable, then
+            # the link syntax, then whitespace, and a space in a destination
+            # ends the link at the space just as surely as a `)` does.
+            if _link_target(name) != name:
                 skipped.append(
                     f"{shown}: the file name holds a character no manifest "
                     "line and no ledger row could carry — a link ends at the "
-                    "first `)` and a line at the first newline"
+                    "first `)`, at a space, or at a newline"
                 )
                 continue
             if name in project.linked_files:
