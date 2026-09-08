@@ -8219,6 +8219,10 @@ def search_cli(argv: list[str]) -> int:
         shown=len(lines),
         **_floored_stat(floored),
     )
+    # The fourth emitter, folding for the same reason the other three do:
+    # `_eligible` above is where the credential scan increments, and it ran
+    # after recall() had already folded what it knew.
+    rec.update(_lex_fired())
     _soak_log(rec)
 
     if not lines:

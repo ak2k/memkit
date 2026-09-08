@@ -4386,6 +4386,17 @@
         "tests/test_memory_prompt_recall.py::test_a_nul_byte_in_dir_is_refused_rather_than_taking_a_surface_down"
       ],
       "why": "a NUL byte raises ValueError, and an uncaught one exits --debug-config"
+    },
+    {
+      "name": "search-cli-record-drops-the-side-channel-fold",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    # The fourth emitter, folding for the same reason the other three do:\n    # `_eligible` above is where the credential scan increments, and it ran\n    # after recall() had already folded what it knew.\n    rec.update(_lex_fired())\n    _soak_log(rec)\n",
+      "new": "    _soak_log(rec)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_search_clis_record_says_a_credential_was_floored_too"
+      ],
+      "why": "a credential floored under --search is invisible in the soak log"
     }
   ]
 }

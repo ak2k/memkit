@@ -14883,6 +14883,33 @@ def test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log(
     assert "AKIA" not in hidden
 
 
+def test_the_search_clis_record_says_a_credential_was_floored_too(
+    tmp_path: Path,
+) -> None:
+    """The fourth emitter. The rule is "`_soak_log` is only ever handed a
+    record that has just been through `_lex_fired`", and it was stated for the
+    three `done()` sites and written into three of them — so a credential
+    floored under `--search` was floored silently, on the path an operator
+    reaches for when they want to see what retrieval did.
+    """
+    env = _env(tmp_path)
+    repo = _project_checkout(
+        tmp_path,
+        body=PROJECT_MEMORY + "\nAKIA0123456789ABCDEF\n",
+        blob=_project_blob(),
+    )
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    out = subprocess.run(
+        ["python3", HOOK, "--search", INJECT_PROMPT],
+        capture_output=True, text=True, timeout=60, env=env, cwd=str(repo),
+    )
+    assert "unionfs_perms.md" not in out.stdout, out.stdout
+    assert "AKIA" not in out.stdout, out.stdout
+    rec = json.loads(log.read_text().splitlines()[-1])
+    assert rec["outcome"] == "cli", rec
+    assert rec["lex_secret"] == 1, rec
+
+
 def test_debug_config_names_the_repository_store_and_its_refusal(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
