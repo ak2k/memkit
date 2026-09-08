@@ -1147,6 +1147,69 @@ def test_the_eval_scores_a_corpus_holding_a_symlinked_memory(
     assert shown == passed[: hook.MAX_HITS], (shown, passed)
 
 
+def test_the_eval_floors_a_repository_chosen_credential_the_way_the_hook_does(
+    tmp_path, monkeypatch
+) -> None:
+    """The eval scores a candidate with the arguments the hook passes, or it is
+    measuring a retriever no session meets.
+
+    Whether a REPOSITORY chose the corpus is one of those arguments: it is what
+    turns on the credential scan. Dropped, the eval scores a file the hook
+    floors — and this gate's whole claim is that a case cannot pass on a hit
+    production would refuse.
+
+    The user's own corpus is the control: the same body, scored the same way it
+    always was, because nothing about it is repository-chosen.
+    """
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path / "state"))
+    (tmp_path / "state").mkdir()
+    body = (
+        "---\nname: shims\ndescription: sprocket notes\ntype: reference\n---\n\n"
+        "sprocket backlash gearbox shim stack\n"
+    )
+    planted = body + "AKIA0123456789ABCDEF\n"
+    prompt = "sprocket backlash gearbox shim stack"
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".memkit.json").write_text(
+        json.dumps(
+            {
+                hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA,
+                "store": {"id": "app", "dir": "docs/memories"},
+            }
+        )
+    )
+    repo_corpus = repo / "docs" / "memories" / "search"
+    repo_corpus.mkdir(parents=True)
+    (repo_corpus / "shims.md").write_text(planted)
+
+    mine = tmp_path / "mine" / "search"
+    mine.mkdir(parents=True)
+    (mine / "shims.md").write_text(planted)
+
+    def scored(corpus: Path) -> list[str]:
+        hits = hook.recall(prompt, dirs=[str(corpus)])
+        assert [Path(h).name for h in hits] == ["shims.md"], hits
+        # What the hook's own injection path would do with the same hit.
+        terms = list(dict.fromkeys((hook.build_query(prompt) or "").split()))
+        mine_ = [
+            Path(h).name
+            for h in hits
+            if hook._passes_floor(
+                *hook._relevance(
+                    terms, h, hook._lex_root(h), hook._lex_read_only(h)
+                )
+            )
+        ]
+        passed, _ = ev.pointers(hook, prompt, hits)
+        assert passed == mine_, (passed, mine_)
+        return passed
+
+    assert scored(repo_corpus) == [], "the repository's planted file was scored"
+    assert scored(mine) == ["shims.md"], "the user's own corpus moved"
+
+
 def test_a_same_named_file_in_another_store_is_not_the_delivery() -> None:
     """The gate compared basenames, so a pointer to the wrong store's file
     satisfied a case whose target was never delivered.

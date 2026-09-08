@@ -4498,6 +4498,17 @@
       "why": "without the mark a line a repository chose is byte-identical to one out of the operator's own store"
     },
     {
+      "name": "the-eval-scores-a-candidate-the-hook-would-floor",
+      "module": "project_config",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "hook._lex_root(h), hook._lex_read_only(h)",
+      "new": "hook._lex_root(h)",
+      "tests": [
+        "tests/test_eval.py::test_the_eval_floors_a_repository_chosen_credential_the_way_the_hook_does"
+      ],
+      "why": "the gate must score a candidate with the arguments the hook passes, or a case passes on a hit production refuses"
+    },
+    {
       "name": "credential-scan-flags-are-not-scoped-to-their-branch",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",

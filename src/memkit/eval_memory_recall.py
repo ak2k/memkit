@@ -357,7 +357,13 @@ def pointers(hook, prompt: str, hits: list[str]) -> tuple[list[str], list[str]]:
     passed = [
         pathlib.Path(h).name
         for h in hits
-        if hook._passes_floor(*hook._relevance(terms, h, hook._lex_root(h)))
+        # Every argument the hook's own call site passes, read through the
+        # accessors that own the shape: whether a REPOSITORY chose the corpus
+        # is what turns on the credential scan, so an eval that omits it scores
+        # a file production floors.
+        if hook._passes_floor(
+            *hook._relevance(terms, h, hook._lex_root(h), hook._lex_read_only(h))
+        )
     ]
     return passed, passed[: hook.MAX_HITS]
 
