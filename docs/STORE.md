@@ -335,6 +335,13 @@ its place.
 
 `[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
 
+That race ends at rc 0 all the same, and `ls -ld "$dir"` then shows a directory
+where it showed a link. Where it shows a directory holding one link named for
+`$target`, the harness recreated `$dir`, and with the harness quit this puts
+the link back:
+
+`rm -r "$dir" && ln -sn "$target" "$dir"`
+
 `$target` is the harness's directory under the corpus root:
 `$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
 it does not — a store with no `search/` has `$store` itself for a corpus root.

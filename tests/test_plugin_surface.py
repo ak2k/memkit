@@ -3279,13 +3279,31 @@ def _key_derivation_block(section: str) -> str:
     return blocks[0]
 
 
-def _repoint_line(section: str) -> str:
-    """The repoint command, which the page prints as inline code, not a fence."""
-    lines = [ln for ln in section.splitlines() if "ln -sn" in ln]
-    assert len(lines) == 1, f"{len(lines)} lines carry `ln -sn`"
+def _inline_command(section: str, opens: str) -> str:
+    """One of the two commands the section prints as inline code, not a fence.
+
+    Both carry `ln -sn` — the repoint and the way back out of the race the
+    paragraph above it warns about — so each is found by what it opens with,
+    and the count of lines carrying `ln -sn` is asserted: a THIRD is a worked
+    example the cells would run in place of the instruction.
+    """
+    carriers = [ln for ln in section.splitlines() if "ln -sn" in ln]
+    assert len(carriers) == 2, f"{len(carriers)} lines carry `ln -sn`"
+    lines = [ln for ln in carriers if ln.startswith(f"`{opens}")]
+    assert len(lines) == 1, f"{len(lines)} lines open with `{opens}`"
     spans = re.findall(r"`([^`]+)`", lines[0])
     assert len(spans) == 1, (len(spans), lines[0])
     return spans[0]
+
+
+def _repoint_line(section: str) -> str:
+    """The repoint command, which the page prints as inline code, not a fence."""
+    return _inline_command(section, '[ -L "$dir" ]')
+
+
+def _recovery_line(section: str) -> str:
+    """The command the page gives for a `$dir` the harness recreated mid-repoint."""
+    return _inline_command(section, 'rm -r "$dir"')
 
 
 def _dir_line(section: str) -> str:
@@ -3328,6 +3346,10 @@ _VARIABLE_COUNTS = {"both": 2, "all three": 3, "all four": 4}
 _RECREATED_DIR_OUTCOMES = {
     "leaves the link inside `$dir` rather than in its place": "inside",
     "leaves the link where it belongs": "in-place",
+}
+_RACED_DIR_DETECTIONS = {
+    "a directory holding one link named for `$target`": "raced",
+    "a symlink": "done",
 }
 _STOPPED_LINE_STREAMS = {
     "a status and nothing on stderr": "silent",
@@ -3565,6 +3587,21 @@ def _recreated_dir_outcome(section: str) -> str:
         r"a recreation between `rm` and `ln` ([^.]+)\.",
         _RECREATED_DIR_OUTCOMES,
         "what a `$dir` recreated between the two commands does",
+    )
+
+
+def _raced_dir_detection(section: str) -> str:
+    """What the page says `ls -ld "$dir"` shows once the harness won that race.
+
+    The raced chain ends at rc 0 and leaves a directory, which the page's other
+    sentence describes as the state it does not repoint — so without this the
+    reader reads a damaged `$dir` as a repoint there was never anything to do.
+    """
+    return _stated(
+        section,
+        r"Where it shows ([^,]+), the harness recreated `\$dir`",
+        _RACED_DIR_DETECTIONS,
+        "what `ls -ld` shows once the harness recreated `$dir`",
     )
 
 
@@ -4075,6 +4112,24 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` is still a link")
         assert os.path.islink(dir_ / target.name), (script, _file_map(dir_))
         assert os.readlink(dir_ / target.name) == str(target), (script, _file_map(dir_))
+        # The way back. The chain reported rc 0 and `ls -ld` now shows what the
+        # page elsewhere calls a `$dir` it will not repoint, so the state has to
+        # be told apart from a repoint already done — and the exit has to be run
+        # rather than described, since the cell has the state in hand.
+        assert _raced_dir_detection(section) == "raced", "the page claims otherwise"
+        assert [entry.name for entry in dir_.iterdir()] == [target.name], _file_map(dir_)
+        back = _shell_out(
+            shell, "\n".join([*assignments, _recovery_line(section)]),
+            repo, home, config_dir=config_dir,
+        )
+        assert back.returncode == 0, (back.stdout, back.stderr)
+        assert os.path.islink(dir_), (back.stdout, _file_map(dir_.parent))
+        assert os.readlink(dir_) == str(target), os.readlink(dir_)
+        # And it costs the store nothing: everything is where it was, plus the
+        # directory `mkdir -p` was asked for.
+        assert _file_map(store) == {
+            **before, str(target.relative_to(store)): "dir"
+        }, (script, _file_map(store))
         return
 
     if cell in _REPOINT_SUCCEEDS:
