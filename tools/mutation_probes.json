@@ -4714,6 +4714,17 @@
         "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
       ],
       "why": "`VERSION_RE.fullmatch` on a non-string raises a TypeError out of the gate rather than refusing the fixture, so the one record whose values are adopter-controlled strings was the one record whose values were never typed."
+    },
+    {
+      "name": "harness-shape-a-destination-naming-no-file-falls-through-to-the-symlink-refusal",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if os.path.basename(args.out) in (\"\", os.curdir, os.pardir):\n            # Before the symlink check below, which these spellings fail for a\n            # reason it does not have: `abspath` drops the trailing separator\n            # and `realpath` keeps it, so the two disagree with no link\n            # anywhere, and the operator is told to look for one.\n            sys.stderr.write(\n                f\"harness_shape: {args.out}: this names a directory and not a \"\n                f\"file to create; --out writes one file, so name it inside \"\n                f\"that directory\\n\"\n            )\n            return 2\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+      ],
+      "why": "`abspath` drops a trailing separator and `realpath` keeps it, so `--out dir/`, `--out dir/.` and `--out dir/..` made the two spellings of the parent disagree and were refused as “a symlink stands in this path” with no link anywhere — an operator sent hunting for a staged attack by a typo. A refusal names the reason it found."
     }
   ]
 }

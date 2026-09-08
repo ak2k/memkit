@@ -1077,6 +1077,9 @@ def _destination(name: str, root: Path) -> tuple:
         # Not a symlink to it: a link is refused one step earlier, so this is
         # the only spelling that reaches the destination open at all.
         return Path(os.devnull), 2, "this name is not a file"
+    if name == "a destination naming no file":
+        # A `str` and not a `Path`, which drops the trailing separator.
+        return str(outside) + os.sep, 2, "names a directory and not a file"
     if name == "a fresh path":
         return outside / "fresh" / "deep" / "shape.json", 0, None
     raise AssertionError(name)
@@ -1117,6 +1120,7 @@ def _files_under(directory: Path) -> dict:
         "a fifo at the name",
         "a directory at the name",
         "the null device itself",
+        "a destination naming no file",
         "a fresh path",
     ],
 )
@@ -1155,6 +1159,13 @@ def test_out_writes_only_where_its_refusals_were_answered_about(
             # because `/var` is itself a link — so the message says which path
             # to pass rather than reading as an attack somebody staged.
             assert "on macOS /var is itself a link" in run.stderr
+        else:
+            # A refusal names the reason it found. Every spelling below this
+            # line fails for something other than a link standing in the path,
+            # and being told to hunt for one that is not there is its own
+            # defect: a trailing separator reached that message for four
+            # rounds because two spellings of the parent disagree about it.
+            assert "a symlink stands in" not in run.stderr, run.stderr
     else:
         assert json.loads(out.read_text(encoding="utf-8"))["anonymised"] is True
     assert _files_under(repo) == before, "it wrote through the destination"

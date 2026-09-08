@@ -1313,6 +1313,17 @@ def main(argv=None) -> int:
 
     landing = None
     if args.out:
+        if os.path.basename(args.out) in ("", os.curdir, os.pardir):
+            # Before the symlink check below, which these spellings fail for a
+            # reason it does not have: `abspath` drops the trailing separator
+            # and `realpath` keeps it, so the two disagree with no link
+            # anywhere, and the operator is told to look for one.
+            sys.stderr.write(
+                f"harness_shape: {args.out}: this names a directory and not a "
+                f"file to create; --out writes one file, so name it inside "
+                f"that directory\n"
+            )
+            return 2
         parent = os.path.dirname(os.path.abspath(args.out))
         resolved = _landing_dir(args.out)
         if resolved != parent:
