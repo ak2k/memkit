@@ -234,9 +234,10 @@ of one repository shares one directory; outside a repository the cwd is used
 instead. The path is the physical one, so a checkout reached through a symlink
 keys on the symlink's target. A linked worktree maps to its main checkout's
 root, so a repository's worktrees share that directory too; a submodule keys on
-itself. Read from the code on 2.1.258 and not exercised: the config dir is
-`$CLAUDE_CONFIG_DIR` when that is set, `~/.claude` otherwise, and a key past
-200 characters is truncated there and given a base36 hash suffix.
+itself. Measured on 2.1.258: the config dir is `$CLAUDE_CONFIG_DIR` when that
+is set. Read from the code on 2.1.258 and not exercised: it is `~/.claude`
+otherwise, and a key past 200 characters is truncated there and given a base36
+hash suffix.
 
 ```bash
 # needs git 2.31+; a "fatal:" here means the key fell back to the cwd
@@ -292,7 +293,10 @@ key the block above prints — becomes a symlink into the store. Retrieval then
 reads what the harness writes, and the harness goes on writing to the path it
 already knows. Point the link at a directory of the harness's own, for the
 reason the setting has one: a corpus directory that also holds your own memory
-files gets them rewritten.
+files gets them rewritten. Where a scope you do not write declares
+`autoMemoryDirectory` already — a clone's checked-in `.claude/settings.json`,
+or managed policy — the flag below refuses (`auto-memory-redirected`) and this
+link is the route left.
 
 **What the shape costs.** The link is per project, so the next repository needs
 its own. It is tied to the physical path the key derives from, so a checkout
@@ -305,13 +309,18 @@ lands there as new files: they carry no ledger row until the checker's
 once.** It copies what the harness has written into the store and redirects the
 harness there, listing every path in one manifest you approve before anything
 is written. That is the route this page recommends, and the reason it no longer
-prints a chain of shell to do the same work by hand.
+prints a chain of shell to do the same work by hand. It writes the setting into
+your user settings, the bottom of the precedence list above, so where a checkout
+carries a checked-in `.claude/settings.json` that sets it too, set
+`.claude/settings.local.json` in that checkout instead: untracked, and above
+both. Its refusal is order-dependent, too — it reads the cwd when it runs, so a
+clone made afterwards is checked by nothing.
 
 **One case still wants a hand.** An earlier revision of this page pointed that
 directory at the corpus root itself. Where `ls -ld "$dir"` shows a symlink,
 repoint it at the harness's own directory:
 
-`[ -L "$dir" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
+`[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
 
 `$target` is the harness's directory under the corpus root:
 `$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
@@ -323,9 +332,8 @@ root stay where they are and stay retrievable. Where `$dir` is not a link the
 first test fails and nothing after it runs. Both variables are yours to set
 before the line runs.
 
-`memkit doctor` reports whether the feature is on and names the directory it
-believes is in use — but it derives that path from the cwd, so what it names is
-the default and not a `memoryDir` you have moved.
+`memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
+honours and names the directory in use, or the derived default when it is unset.
 
 ### Before you wire it up
 
