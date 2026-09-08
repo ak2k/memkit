@@ -8126,7 +8126,10 @@ def _print_config(state: tuple) -> int:
         live = display.store_dir(store, "live")
         gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
         state_shown = _store_state(display, store, shown_searched)
-        print(f"store {store.id}: {live} [{store.role}; {gated}; {state_shown}]")
+        print(
+            f"store {store.id}: {_display_path(live)} "
+            f"[{store.role}; {gated}; {state_shown}]"
+        )
         # WHERE retrieval will actually look, and how much is there. Without
         # these two facts a green line above is compatible with an empty
         # corpus and with a corpus the tiering rule has moved out from under:
@@ -8137,13 +8140,17 @@ def _print_config(state: tuple) -> int:
         if state_shown == "searched":
             corpus = _search_root(live)
             count = _corpus_files(corpus)
-            print(f"  corpus:  {corpus} — {count} file{'' if count == 1 else 's'}")
+            print(
+                f"  corpus:  {_display_path(corpus)} — "
+                f"{count} file{'' if count == 1 else 's'}"
+            )
             if corpus != live:
                 stranded = _corpus_files(live) - count
                 if stranded > 0:
                     print(
                         f"  ! {stranded} markdown file"
-                        f"{'' if stranded == 1 else 's'} under {live} "
+                        f"{'' if stranded == 1 else 's'} under "
+                        f"{_display_path(live)} "
                         f"{'is' if stranded == 1 else 'are'} outside the corpus "
                         "root and will not be retrieved — move them into "
                         f"{os.path.basename(corpus)}/"
@@ -8170,15 +8177,17 @@ def _print_config(state: tuple) -> int:
         # raw-spec read inside the class that owns it.
         _, source = display.root_with_source(store.live_root)
         print(
-            f"  ! via {source}: this run resolved {live} [{state_shown}]; "
-            f"the hook will read {hook_live} [{hook_state}]"
+            f"  ! via {source}: this run resolved {_display_path(live)} "
+            f"[{state_shown}]; "
+            f"the hook will read {_display_path(hook_live)} [{hook_state}]"
         )
     # WHAT THE REPOSITORY ADDED, reported apart from the loop above because it
     # is not in `display.stores` and must never look as though it were: this is
     # the one store on this surface that no line of the user's config names,
     # and "where did that corpus come from" is the question this output exists
     # to answer. Its id is repository-chosen prose and gets the capped
-    # sanitiser; its paths get `_display_path` and nothing else, because
+    # sanitiser; its paths get `_display_path` — as every path above does, so
+    # that one field is not read in two spellings — and nothing else, because
     # `sanitize`'s whitespace collapse is what turns a directory named with two
     # spaces into a directory that is not there — on the line whose whole job
     # is to be pasted into `open()`.

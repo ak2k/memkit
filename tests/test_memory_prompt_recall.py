@@ -4255,7 +4255,7 @@ def test_the_diagnostic_names_the_corpus_it_will_actually_read(tmp_path) -> None
     # The corpus root and its size, both, because either alone leaves a failure
     # invisible: the right directory with nothing in it, or a count taken
     # somewhere the hook will not look.
-    assert f"corpus:  {notes} — 3 files" in flat.stdout, flat.stdout
+    assert "corpus:  ~/notes — 3 files" in flat.stdout, flat.stdout
     assert "outside the corpus root" not in flat.stdout, flat.stdout
     before = _cli(tmp_path, "--search", "unionfs beta", env=env)
     assert "beta.md" in before.stdout, before.stdout
@@ -4265,7 +4265,7 @@ def test_the_diagnostic_names_the_corpus_it_will_actually_read(tmp_path) -> None
     (notes / "alpha.md").rename(notes / "search" / "alpha.md")
     part = _cli(tmp_path, "--debug-config", env=env)
     assert part.returncode == hook.EXIT_OK, part.stderr
-    assert f"corpus:  {notes / 'search'} — 1 file" in part.stdout, part.stdout
+    assert "corpus:  ~/notes/search — 1 file" in part.stdout, part.stdout
     assert "2 markdown files" in part.stdout, part.stdout
     assert "outside the corpus root and will not be retrieved" in part.stdout
     assert "move them into search/" in part.stdout, part.stdout
@@ -14718,6 +14718,29 @@ def test_a_nul_byte_in_dir_is_refused_rather_than_taking_a_surface_down(
     served, debug = _prompt_and_debug(tmp_path, repo)
     assert "unionfs_perms.md" not in served, served
     assert "'dir' does not resolve" in debug, debug
+
+
+def test_the_diagnostic_spells_every_corpus_the_same_way(tmp_path: Path) -> None:
+    """One field, one spelling, whichever block prints it.
+
+    The repository's store is deliberately not in `cfg.stores`, so its lines
+    come from a second block — and the two had drifted apart, absolute for a
+    configured store and `~`-relative for the project one. This is the surface
+    an operator reads to tell those two apart, so a difference in form reads
+    as a difference in kind.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    _, debug = _prompt_and_debug(tmp_path, repo)
+    corpora = [
+        line.split("corpus:", 1)[1].strip()
+        for line in debug.splitlines()
+        if line.strip().startswith("corpus:")
+    ]
+    # Non-vacuity: both blocks really printed — a configured store and the
+    # repository's — so the agreement below is over two spellings and not one.
+    assert f"[read-only; from {hook.PROJECT_CONFIG_NAME} in this repository]" in debug
+    assert len(corpora) >= 2, debug
+    assert all(c.startswith("~/") for c in corpora), (corpora, debug)
 
 
 def test_a_corpus_root_that_leaves_the_checkout_serves_nothing(

@@ -3341,6 +3341,11 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         notes = Path(tmp) / "notes"
         notes.mkdir()
+        # HOME is a SIBLING of the store, not its parent: the diagnostic
+        # `~`-contracts through `relpath`, which would normalise away the very
+        # `/./` this case exists to catch.
+        home = Path(tmp) / "home"
+        home.mkdir()
         (notes / "pgbouncer.md").write_text(
             "---\ndescription: PgBouncer in transaction mode breaks "
             "session-scoped features.\n---\n\n# PgBouncer\n\nbody\n"
@@ -3353,7 +3358,7 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
             ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
              "--config", str(config), "--search", "pgbouncer transaction pooling"],
             capture_output=True, text=True, timeout=60,
-            env={"PATH": os.environ["PATH"], "HOME": tmp},
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
         )
         assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr)
         assert "pgbouncer.md" in out.stdout, out.stdout
@@ -3366,7 +3371,7 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
             ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
              "--config", str(config), "--debug-config"],
             capture_output=True, text=True, timeout=60,
-            env={"PATH": os.environ["PATH"], "HOME": tmp},
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
         )
         assert diag.returncode == hook.EXIT_OK, diag.stderr
         # The exact directory, with nothing appended: a raw join of `.` prints

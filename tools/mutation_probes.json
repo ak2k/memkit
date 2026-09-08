@@ -4662,6 +4662,17 @@
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
       "why": "one directory has more than one spelling — a case variant on a case-insensitive filesystem, a link reached from either side — and string containment gives the same directory two answers at the two doors, which is the whole defect this walk removes"
+    },
+    {
+      "name": "the-project-corpus-line-is-spelled-its-own-way",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        print(\n            f\"  corpus:  {_display_path(corpus)} — \"\n            f\"{count} file{'' if count == 1 else 's'}\"\n        )\n",
+      "new": "        print(\n            f\"  corpus:  {corpus} — \"\n            f\"{count} file{'' if count == 1 else 's'}\"\n        )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_diagnostic_spells_every_corpus_the_same_way"
+      ],
+      "why": "the one surface an operator reads to tell a configured store from a repository's would print the same field two ways, and the difference in form reads as a difference in kind"
     }
   ]
 }
