@@ -2762,6 +2762,13 @@ class Journal:
         self.path = os.path.join(state_dir, INIT_JOURNAL_NAME)
         self.manifest = manifest
         self.run = _sha(f"{manifest}{time.time()}{os.getpid()}")[:12]
+        # WHAT THIS RUN'S OWN WRITES LEFT, per path. The settings write refuses
+        # a file that moved out from under the manifest, and one run can write
+        # the same settings file twice — a flag per key — so it has to be able
+        # to tell its own predecessor's landing from somebody else's edit. The
+        # journal is where that is already recorded; this is the same record
+        # kept in memory, because the question is only ever about this run.
+        self.landed: dict = {}
 
     def record(
         self,
@@ -2802,6 +2809,7 @@ class Journal:
         # new one, not the atomicity of the torn write, so it closes at this
         # level rather than needing a short `write()` to be atomic.
         append_record(self.path, line, fsync=True)
+        self.landed[action.path] = after
 
 
 class _Lock:
@@ -3204,6 +3212,30 @@ def _perform(
         payload = action.payload if isinstance(action.payload, dict) else {}
         with _Lock(machine.state_dir) as lock:
             if action.op == SETTINGS_WRITE:
+                # RE-DERIVED IS NOT THE SAME AS UNREAD. Merging a key forward
+                # into whatever is there publishes that content under a digest
+                # taken against a file the adopter saw — and this file decides
+                # where an agent writes its memories, so the bytes beside the
+                # key matter. The sibling config merge asks the same question
+                # in the same shape; the difference is that a peer init's
+                # claim can answer it there, and here nothing but this run's
+                # own earlier write can, since a flag per key writes the file
+                # twice.
+                now = state_token(action.path)
+                if now != action.before and now != journal.landed.get(
+                    action.path
+                ):
+                    raise Refusal(
+                        "changed-underfoot",
+                        f"{_display_path(action.path)} is not what the "
+                        f"manifest you approved described ({action.before}). "
+                        "Something outside memkit wrote it between that "
+                        "manifest and this write — the last action, after an "
+                        "integrity check that can run for minutes — and "
+                        "setting a key in a file nobody read would publish "
+                        "the rest of it under the digest you approved. Re-run "
+                        "`init --dry-run` for a manifest of what is left.",
+                    )
                 content = _settings_with(action.path, payload)
             else:
                 content = _appended(

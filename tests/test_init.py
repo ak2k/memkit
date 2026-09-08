@@ -1823,27 +1823,59 @@ def test_an_unreadable_claude_md_is_refused_rather_than_truncated(profile):
     assert "could not be read" in refusal.message
 
 
-def test_the_settings_write_re_reads_under_the_lock(profile) -> None:
-    """init is invoked from inside a live session, so the harness owns and
-    actively writes that file for the whole run — and the settings write is the
-    LAST action, after an integrity-checker subprocess that may take minutes.
-    Anything the harness wrote in between was silently lost."""
+def test_a_settings_file_that_moved_under_the_manifest_is_not_written(
+    profile,
+) -> None:
+    """THE SIBLING'S QUESTION, ASKED HERE TOO. init is invoked from inside a
+    live session, so the harness owns that file for the whole run — and the
+    settings write is the LAST action, after an integrity-checker subprocess
+    that may take minutes. Setting one key into whatever is there by then
+    re-writes the rest of the file as well, under a digest taken against the
+    file the adopter actually read: content nobody saw, published as theirs.
+    The config merge beside it has refused that shape since it was written.
+    """
     machine = doctor.Machine()
     settings = profile / "claude-config" / "settings.json"
     settings.write_text('{"theme": "dark"}', encoding="utf-8")
     plan = _plan(profile, auto_dream_off=True, store=str(profile / "notes"))
     (action,) = [a for a in plan.actions if a.op == init.SETTINGS_WRITE]
-    # The harness writes while the plan is in flight.
-    settings.write_text(
-        json.dumps({"theme": "dark", "enabledPlugins": {"other@x": True}}),
-        encoding="utf-8",
-    )
+    # Something writes while the plan is in flight.
+    moved = json.dumps({"theme": "dark", "enabledPlugins": {"other@x": True}})
+    settings.write_text(moved, encoding="utf-8")
     journal = init.Journal(str(machine.state_dir), plan.digest)
     os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
-    init._perform(machine, journal, action, init._resolve_config(machine, None))
+    with pytest.raises(init.Refusal) as refusal:
+        init._perform(
+            machine, journal, action, init._resolve_config(machine, None)
+        )
+    assert refusal.value.name == "changed-underfoot", refusal.value.name
+    assert settings.read_text(encoding="utf-8") == moved, "it wrote anyway"
+
+
+def test_the_settings_write_lands_when_nothing_moved_under_it(profile) -> None:
+    """The other half, and the case a run with two flags is: one settings file,
+    two writes, and the second must be able to tell its predecessor's landing
+    from somebody else's edit — or a plain `--auto-dream-off
+    --adopt-auto-memory` refuses itself.
+    """
+    machine = doctor.Machine()
+    settings = profile / "claude-config" / "settings.json"
+    settings.write_text('{"theme": "dark"}', encoding="utf-8")
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    plan = _plan(
+        profile,
+        auto_dream_off=True,
+        adopt_auto_memory=True,
+        store=str(profile / "notes"),
+    )
+    writes = [a for a in plan.pending if a.op == init.SETTINGS_WRITE]
+    assert len({a.path for a in writes}) == 1 and len(writes) == 2, writes
+    code = init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert code == init.EXIT_OK, code
     blob = json.loads(settings.read_text())
-    assert blob["autoDreamEnabled"] is False
-    assert blob["enabledPlugins"] == {"other@x": True}, blob
+    assert blob["theme"] == "dark", blob
+    assert blob["autoDreamEnabled"] is False, blob
+    assert blob[harness_memory.DIRECTORY_KEY], blob
 
 
 def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:

@@ -4561,6 +4561,18 @@
         "tests/test_init.py::test_adoption_never_lands_an_index_for_a_directory_it_left_behind"
       ],
       "why": "the index arm above asks what the rest of the loop left behind, and an answer read before the loop has finished is not that answer: `MEMORY.md` sorts ahead of most memory names, so in directory order it is decided while nothing has been copied yet and every project loses the index it should have kept."
+    },
+    {
+      "name": "init-the-settings-write-takes-a-file-that-moved-under-it",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "                now = state_token(action.path)\n                if now != action.before and now != journal.landed.get(\n                    action.path\n                ):\n                    raise Refusal(\n                        \"changed-underfoot\",\n                        f\"{_display_path(action.path)} is not what the \"\n                        f\"manifest you approved described ({action.before}). \"\n                        \"Something outside memkit wrote it between that \"\n                        \"manifest and this write — the last action, after an \"\n                        \"integrity check that can run for minutes — and \"\n                        \"setting a key in a file nobody read would publish \"\n                        \"the rest of it under the digest you approved. Re-run \"\n                        \"`init --dry-run` for a manifest of what is left.\",\n                    )\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_a_settings_file_that_moved_under_the_manifest_is_not_written",
+        "tests/test_init.py::test_the_settings_write_lands_when_nothing_moved_under_it"
+      ],
+      "why": "this is the LAST action, taken after an integrity check that can run for minutes, on the file that decides where an agent writes its memories. Setting one key into whatever is there by then re-serialises the rest of the file too — content nobody read, landed under the digest the adopter approved. The config merge beside it has refused exactly that shape since it was written."
     }
   ]
 }
