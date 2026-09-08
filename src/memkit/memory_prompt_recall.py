@@ -645,9 +645,11 @@ def _project_store(root: str, taken):
         # O_RDONLY so opening one is not itself a write.
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as exc:
-        # Absent — a dangling link included — is not a refusal. Anything else
-        # is, because a file that is there and unreadable is a state the
-        # repository can see and fix.
+        # `lexists`, so only NOTHING AT ALL under that name is the ordinary
+        # case. A dangling link is a name the checkout deliberately wrote and
+        # this hook could not follow, and on the every-prompt path the useful
+        # answer is the one that says so — a file that is there and unreadable
+        # is a state the repository can see and fix.
         if not os.path.lexists(path):
             return None, ""
         return None, (
@@ -4022,8 +4024,17 @@ def _relevance(
             else:
                 with _open_regular(target) as f:
                     body = f.read(SECRET_SCAN_MAX_BYTES + 1)
-                # One past the cap catches a file that grew between the stat
-                # and the read; the pattern match is the scan proper.
+                # An EOF SENTINEL, not a size bound. The byte gate is the
+                # `stat` above; this compares CHARACTERS against it, and that
+                # is sound only because under `errors="replace"` a character
+                # never costs less than one byte — so a file that passed the
+                # stat cannot produce more than the cap in characters, and
+                # asking for one past it and getting fewer is the proof that
+                # the scan read the whole file. The only way to trip it is a
+                # file that grew between the stat and the read, which is
+                # exactly the case it exists to refuse. Rewriting this read
+                # into bytes mode would lose that proof, not tighten it.
+                # The pattern match is the scan proper.
                 refused = (
                     len(body) > SECRET_SCAN_MAX_BYTES
                     or _secret_re().search(body) is not None
