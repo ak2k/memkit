@@ -4355,12 +4355,17 @@ def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
 def _uncommented(text: str) -> str:
     """The file with everything a `#` comments out removed.
 
-    A name matched anywhere in a file is satisfied by a comment mentioning it,
-    which is exactly what deleting the thing the comment describes leaves
-    behind — so the construct is matched, and only in what runs. A comment on
-    the END of a code line is that same edit with the comment moved, so the cut
-    is at the `#` wherever one opens a comment, and quoted `#` is left alone
-    because both files this reads carry it inside strings.
+    A construct matched anywhere in a file is satisfied by a comment mentioning
+    it, which is exactly what deleting the thing the comment describes leaves
+    behind — so a construct is matched only in what runs. A comment on the END
+    of a code line is that same edit with the comment moved, so the cut is at
+    the `#` wherever one opens a comment, and quoted `#` is left alone because
+    both files this reads carry it inside strings.
+
+    A NAME is a different case and does not come through here: `MEMKIT_NO_ZSH`
+    is asserted absent from the raw text of both files, which no quoting shape
+    can defeat and no scanner can be wrong about. This is for the constructs —
+    the list the build reads, and the steps the runner takes.
     """
     kept = []
     for line in text.splitlines():
@@ -4433,21 +4438,25 @@ def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
     and a `run:` line spell the same arming five ways, and an assertion that
     knows one spelling is an assertion that misses four.
     """
-    flake = _uncommented((REPO / "flake.nix").read_text(encoding="utf-8"))
-    workflow = _uncommented(
-        (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
-    )
+    flake = (REPO / "flake.nix").read_text(encoding="utf-8")
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    # Over the RAW text of both files. Neither spells the marker anywhere, not
+    # even in a comment, so any occurrence at all is an arming — which is a
+    # smaller assertion than a comment scanner and one that no quoting can get
+    # past. The price is that the name may not be written down here.
     assert "MEMKIT_NO_ZSH" not in flake
     assert "MEMKIT_NO_ZSH" not in workflow
     # The nix leg: zsh among the inputs of the builder every suite is made
     # with, as an element of the list the build reads.
-    builder = re.search(r'runCommand "memkit-\$\{name\}" \{(.*?)\n\s*\} ', flake, re.S)
+    builder = re.search(
+        r'runCommand "memkit-\$\{name\}" \{(.*?)\n\s*\} ', _uncommented(flake), re.S
+    )
     assert builder, "the shared suite builder is no longer recognisable"
     assert "pkgs.zsh" in _nix_list(builder.group(1), "nativeBuildInputs"), builder.group(1)
     # The python leg: the gating job installs the shell, and then runs the
     # suite that needs it. Either one alone leaves the cells uncovered under a
     # context branch protection requires.
-    steps = _workflow_steps(_workflow_job(workflow, "python"))
+    steps = _workflow_steps(_workflow_job(_uncommented(workflow), "python"))
     installs = [i for i, step in enumerate(steps) if re.search(r"\bzsh --version\b", step)]
     # The whole suite, which is the invocation these cells ride in: a pytest
     # naming a file is some other step's narrower gate.

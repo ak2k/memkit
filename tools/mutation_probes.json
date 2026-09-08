@@ -4214,6 +4214,50 @@
         "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
       ],
       "why": "a route that does not outrank the scope it routes around is not a route, and this is the reader whose checked-in settings the flag refuses"
+    },
+    {
+      "name": "zsh-gate-the-suite-builder-drops-the-shell",
+      "module": "docs",
+      "file": "flake.nix",
+      "old": "nativeBuildInputs = [ pkgs.git pkgs.zsh ];",
+      "new": "nativeBuildInputs = [ pkgs.git ];",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "the nix suites are half the gate for the store-guidance cases, and without the shell in the builder's inputs they fail for a reason nobody reads as a missing dependency"
+    },
+    {
+      "name": "zsh-gate-the-skip-marker-is-armed-in-the-flake",
+      "module": "docs",
+      "file": "flake.nix",
+      "old": "MEMKIT_NO_CHECKOUT = \"1\";",
+      "new": "MEMKIT_NO_CHECKOUT = \"1\";\n              MEMKIT_NO_ZSH = \"1\";",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "the marker turns the zsh half into skips under a check name that reports green, which is the failure the guard exists for and the one no probe reached"
+    },
+    {
+      "name": "zsh-gate-the-ci-step-that-installs-the-shell-is-deleted",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      - name: zsh (the store-guidance cases are pasted into it)\n        run: |\n          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n",
+      "new": "",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "the python job is the required context, and an image that stops shipping zsh would leave the store-guidance cases failing there with nothing saying why"
+    },
+    {
+      "name": "zsh-gate-the-shell-is-installed-after-the-suite-runs",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      - name: zsh (the store-guidance cases are pasted into it)\n        run: |\n          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n\n      - name: Test suites (hook pytest + integrity unittest)\n        run: .venv/bin/python -m pytest -q\n",
+      "new": "      - name: Test suites (hook pytest + integrity unittest)\n        run: .venv/bin/python -m pytest -q\n\n      - name: zsh (the store-guidance cases are pasted into it)\n        run: |\n          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "installed after the suite has run it is installed for nothing, and every step still reads correct in isolation"
     }
   ]
 }

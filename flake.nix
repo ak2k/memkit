@@ -113,7 +113,9 @@
           # zsh is here for the same reason: the store-guidance cases paste the
           # documented commands into both shells an adopter uses, and where one
           # of them is absent they fail unless the context declares itself
-          # without it (MEMKIT_NO_ZSH, which nothing here sets).
+          # without it. No build here declares that, and the suite asserts the
+          # marker's name appears nowhere in this file at all — so writing it
+          # down, even in a comment, is what turns the assertion red.
           suite =
             name: file:
             pkgs.runCommand "memkit-${name}" {
