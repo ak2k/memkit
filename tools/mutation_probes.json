@@ -4487,6 +4487,17 @@
       "why": "a credential floored for a subagent is floored silently, on the surface with the least oversight"
     },
     {
+      "name": "a-repository-chosen-pointer-is-marked-as-one",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        + (f\" {PROJECT_MARK}\" if _lex_read_only(path) else \"\")\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not"
+      ],
+      "why": "without the mark a line a repository chose is byte-identical to one out of the operator's own store"
+    },
+    {
       "name": "credential-scan-flags-are-not-scoped-to-their-branch",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",

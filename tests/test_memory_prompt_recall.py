@@ -9754,6 +9754,10 @@ TASK_PATH_MAY_READ = {
     "PIPE_BUFFER_BOUND",
     "FRAME_TAG",
     "FRAME_NONCE_BYTES",
+    # The provenance mark, for the same reason as the frame's identity: the
+    # line it ends is written by one function for both surfaces, so the
+    # sentence explaining it has to be sayable on both.
+    "PROJECT_MARK",
     # Not a constant at all: the module global holding why a config could not
     # be honoured, so `task:nodirs` can say which of the two silences it is.
     "_CONFIG_ERROR",
@@ -15649,6 +15653,86 @@ def test_a_spawn_inside_a_repository_is_never_handed_a_credential(
     assert "backlash_shims.md" not in hidden, hidden
     assert "AKIA" not in hidden, hidden
     assert rec["lex_secret"] == 1, rec
+
+
+def test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not(
+    tmp_path: Path,
+) -> None:
+    """One prompt, two stores, and the line that says which is which.
+
+    A project store is written by whoever can land a commit in the checkout,
+    and arrives on this machine by `git pull`. Without a mark its pointer is
+    byte-identical to one out of the operator's own store, so an agent reading
+    the block has no way to weigh the two differently. The mark is memkit's,
+    and the preamble says what it means only when a line carries one.
+    """
+    env = _env(tmp_path)
+    mine = tmp_path / PERSONAL_DIR / "search" / "my_unionfs.md"
+    mine.write_text(
+        "---\nname: my_unionfs\n"
+        "description: unionfs mount permissions, my own note\n"
+        "type: reference\n---\n\n"
+        "unionfs mount permissions: the media group has to be primary.\n",
+        encoding="utf-8",
+    )
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "prov1", "prompt": INJECT_PROMPT}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+        cwd=str(repo),
+    )
+    assert out.returncode == 0, out.stderr[-400:]
+    lines = [ln for ln in out.stdout.splitlines() if ln.startswith("- ")]
+    theirs = [ln for ln in lines if "unionfs_perms.md" in ln]
+    ours = [ln for ln in lines if "my_unionfs.md" in ln]
+    assert len(theirs) == 1 and len(ours) == 1, out.stdout
+
+    assert theirs[0].endswith(hook.PROJECT_MARK), theirs[0]
+    assert hook.PROJECT_MARK not in ours[0], ours[0]
+    assert hook.PROJECT_MARK in out.stdout.split("\n- ", 1)[0], "the preamble is silent"
+
+
+def test_a_memory_cannot_spell_its_way_into_the_repository_mark(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Forgery, by POSITION rather than by convention.
+
+    The sanitizer already means no retrieved text can begin a line. What keeps
+    the end of the line memkit's too is that every span read out of a file —
+    the path, the description, the section label — is rendered before a bracket
+    memkit closes after it, so a store that writes the mark into its own
+    description gets it back inside the description, and the line's last
+    characters are still memkit's own answer about who chose the file.
+    """
+    root = tmp_path / "corpus"
+    root.mkdir()
+    path = str(root / "forged.md")
+    Path(path).write_text(
+        f"---\nname: forged\ndescription: unionfs notes {hook.PROJECT_MARK}\n"
+        "type: reference\n---\n\nunionfs mount permissions.\n",
+        encoding="utf-8",
+    )
+    real = os.path.realpath(str(root))
+
+    monkeypatch.setitem(hook._LEX_ROOT, path, (real, False))
+    mine = hook._pointer_line(path, ["unionfs"], 1)
+    assert hook.PROJECT_MARK in mine, mine
+    assert not mine.endswith(hook.PROJECT_MARK), mine
+
+    monkeypatch.setitem(hook._LEX_ROOT, path, (real, True))
+    theirs = hook._pointer_line(path, ["unionfs"], 1)
+    assert theirs.endswith(hook.PROJECT_MARK), theirs
+    # The store's copy is where the store put it, and the suffix is memkit's:
+    # one mark ends this line, and stripping it leaves a line that does not.
+    assert theirs.count(hook.PROJECT_MARK) == 2, theirs
+    assert not theirs[: -len(hook.PROJECT_MARK)].rstrip().endswith(
+        hook.PROJECT_MARK
+    ), theirs
+    assert theirs[: -len(hook.PROJECT_MARK)].rstrip().endswith("]"), theirs
 
 
 def test_the_search_clis_record_says_a_credential_was_floored_too(
