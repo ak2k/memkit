@@ -748,13 +748,30 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
         if not is_dir:
             continue
         memory_dirs_total += 1
+        listed = []
         try:
             with os.scandir(memory_dir) as entries:
-                listed = sorted(
-                    (entry.name, entry.is_symlink())
-                    for entry in entries
-                    if entry.name.endswith(".md") and entry.is_file()
-                )
+                for entry in entries:
+                    if not entry.name.endswith(".md"):
+                        continue
+                    try:
+                        # `is_file` FOLLOWS, and stays following: a dangling
+                        # link is not a memory to `harness_memory.inventory`
+                        # either, and these two are held to the same answer.
+                        # What changes is the blast radius — `DirEntry.is_file`
+                        # swallows FileNotFoundError and nothing else, so a
+                        # link somebody looped (ELOOP) or a file the capture
+                        # cannot stat (EACCES, which `sudo -n` into an NFS
+                        # home under root-squash reaches) used to throw away
+                        # the listing of every memory beside it.
+                        if not entry.is_file():
+                            continue
+                        found = (entry.name, entry.is_symlink())
+                    except OSError:
+                        read_errors += 1
+                        continue
+                    listed.append(found)
+            listed.sort()
         except OSError:
             # One unreadable directory is a fact about the machine, not a
             # reason to report nothing about the other three thousand.

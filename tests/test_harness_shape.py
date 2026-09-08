@@ -943,6 +943,39 @@ def test_a_half_failed_capture_counts_what_it_could_not_read(tmp_path) -> None:
     assert files["one.md"]["has_frontmatter"] is False
 
 
+@pytest.mark.skipif(ROOT, reason="root reads a file nobody else can")
+def test_one_entry_that_cannot_be_measured_does_not_take_its_siblings(
+    tmp_path,
+) -> None:
+    """The blast radius of a single bad name in a memory directory.
+
+    `DirEntry.is_file` swallows FileNotFoundError and lets every other OSError
+    out, and the handler that caught it wrapped the whole listing — so one
+    `ln -s loop.md loop.md`, which anyone who can write in the tree can leave
+    there, deleted the directory and every real memory in it from the capture.
+    It was booked as `skipped` besides, which says the directory could not be
+    listed when in fact it could.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    _write(memory / "good.md", "---\nname: good\n---\n\nbody\n")
+    unreadable = _write(memory / "locked.md", "x\n")
+    unreadable.chmod(0o000)
+    os.symlink("loop.md", memory / "loop.md")
+    try:
+        shape = _shape("--config-dir", str(config), "--raw")
+    finally:
+        unreadable.chmod(0o600)
+    entry = _by_key(shape)["-a"]
+    # The loop is a name in this directory and never a file, so it is not
+    # listed; the file whose bytes are unreadable is a file, and what could not
+    # be measured is its frontmatter.
+    assert [row["name"] for row in entry["files"]] == ["good.md", "locked.md"]
+    assert shape["skipped"] == 0
+    # One for the loop, one for the head that could not be read.
+    assert shape["read_errors"] == 2
+
+
 @pytest.mark.skipif(ROOT, reason="root reads a directory nobody else can")
 def test_a_projects_directory_that_cannot_be_listed_is_an_exit(tmp_path) -> None:
     """The failure the deployment reaches: piped over ssh under `sudo -n` into

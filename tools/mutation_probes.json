@@ -4382,6 +4382,17 @@
         "tests/test_harness_shape.py::test_the_machines_policy_file_travels_only_with_its_own_machines_tree"
       ],
       "why": "managed-settings.json is the one file read off the machine rather than out of --config-dir, and on a corporate laptop it is where an employer's hook keys and plugin names live. Read for every capture, it files them under a key that reads as the captured tree's — and the tree a fixture is built from is a copied or temporary one."
+    },
+    {
+      "name": "harness-shape-one-unmeasurable-entry-discards-its-whole-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                    except OSError:\n                        read_errors += 1\n                        continue\n",
+      "new": "                    except OSError:\n                        raise\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_one_entry_that_cannot_be_measured_does_not_take_its_siblings"
+      ],
+      "why": "Letting the error out puts the directory-level handler back in charge, and one name that cannot be measured then deletes every memory beside it from the capture — a self-referential link anyone who can write in the tree can leave, or a file `sudo -n` cannot stat over an NFS home. It is booked as a directory that could not be listed, which is not what happened."
     }
   ]
 }
