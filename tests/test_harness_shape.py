@@ -1420,6 +1420,41 @@ def test_one_entry_that_cannot_be_measured_does_not_take_its_siblings(
     assert shape["read_errors"] == 2
 
 
+@pytest.mark.skipif(ROOT, reason="root reads a file nobody else can")
+def test_an_index_that_cannot_be_read_is_not_an_index_with_no_rows(
+    tmp_path,
+) -> None:
+    """An index whose bytes are unreachable recorded zero rows and zero
+    dangling rows, which is the answer an empty index gives — so a rebuilt
+    corpus reproduced a measurement nobody took. Unknown is the answer the
+    linked-out index already gives, and the read failure is what says why."""
+    config = tmp_path / "config"
+    locked = _memory_dir(config, "-a")
+    _write(locked / "real.md", "x\n")
+    blocked_index = _write(locked / "MEMORY.md", "- [a](real.md) — hook\n")
+    blocked_index.chmod(0o000)
+    empty = _memory_dir(config, "-b")
+    _write(empty / "real.md", "x\n")
+    _write(empty / "MEMORY.md", "# Memory index\n")
+    try:
+        shape = _shape("--config-dir", str(config), "--raw")
+    finally:
+        blocked_index.chmod(0o600)
+    listed = _by_key(shape)
+    assert listed["-a"]["index"] is None
+    # The index that could be read and holds no rows keeps saying so, which is
+    # the state the null is now distinguishable from.
+    assert listed["-b"]["index"] == {
+        "rows": 0, "dangling_rows": 0, "truncated": False
+    }
+    # The file is still listed, and the failure is counted once rather than
+    # twice for the two reads of the same name.
+    assert [row["name"] for row in listed["-a"]["files"]] == [
+        "MEMORY.md", "real.md"
+    ]
+    assert shape["read_errors"] == 1
+
+
 @pytest.mark.skipif(ROOT, reason="root reads a directory nobody else can")
 def test_a_projects_directory_that_cannot_be_listed_is_an_exit(tmp_path) -> None:
     """The failure the deployment reaches: piped over ssh under `sudo -n` into

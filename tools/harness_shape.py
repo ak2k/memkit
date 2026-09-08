@@ -688,17 +688,20 @@ def _index(memory_dir: str, listed: list):
     still listed, with its `is_symlink` flag — a null index beside a linked
     `MEMORY.md` is a directory whose index was not read, and a null index
     beside no `MEMORY.md` at all is a directory that has none.
+
+    None ALSO when the index is there and its bytes could not be read: a mode
+    the capture has no rights to, a name that is not a plain file, the NFS
+    home under `sudo -n`. Zeroes said the index had no rows, which is a
+    measurement nobody took and is what a genuinely empty index records; the
+    read failure is counted, once, on the file's own pass through the
+    directory listing.
     """
     path = os.path.join(memory_dir, INDEX_NAME)
     if os.path.islink(path) and not _resolves_inside(path, memory_dir):
         return None
-    try:
-        with _open_regular(path, errors="replace") as handle:
-            text = handle.read(FRONTMATTER_BYTES + 1)
-    except OSError:
-        return {"rows": 0, "dangling_rows": 0, "truncated": False}
-    truncated = len(text) > FRONTMATTER_BYTES
-    head = text[:FRONTMATTER_BYTES]
+    head, truncated = _read_head(path)
+    if head is None:
+        return None
     lines = head.splitlines()
     if truncated and lines and not head.endswith(("\n", "\r")):
         # What the cap cut is a fragment of a line — UNLESS it fell on a line
