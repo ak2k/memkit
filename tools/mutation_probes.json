@@ -4601,8 +4601,8 @@
       "name": "the-eval-reads-the-per-hit-root-as-a-bare-string",
       "module": "project_config",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        if hook._passes_floor(*hook._relevance(terms, h, hook._lex_root(h)))\n",
-      "new": "        if hook._passes_floor(*hook._relevance(terms, h, hook._LEX_ROOT.get(h, \"\")))\n",
+      "old": "            *hook._relevance(terms, h, hook._lex_root(h), hook._lex_read_only(h))\n",
+      "new": "            *hook._relevance(terms, h, hook._LEX_ROOT.get(h, \"\"), hook._lex_read_only(h))\n",
       "tests": [
         "tests/test_eval.py::test_the_eval_scores_a_corpus_holding_a_symlinked_memory"
       ],
@@ -4634,8 +4634,8 @@
       "name": "the-scan-run-behind-the-keyword-is-unbounded",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "                    r\"[A-Za-z0-9_]{0,64})\\s*[:=]\\s*\\S{8,}\",\n",
-      "new": "                    r\"[A-Za-z0-9_]*)\\s*[:=]\\s*\\S{8,}\",\n",
+      "old": "                    r\"[A-Za-z0-9_]{0,64})\"\n",
+      "new": "                    r\"[A-Za-z0-9_]*)\"\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_credential_scan_costs_no_more_than_the_bytes_it_reads"
       ],
