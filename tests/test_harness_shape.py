@@ -512,7 +512,11 @@ def test_raw_refuses_a_redirect_from_inside_a_checkout(tmp_path) -> None:
             cwd=str(tree), timeout=300,
         )
     assert refused.returncode == 2, refused.stderr
-    assert "--raw refuses a redirect" in refused.stderr
+    # It names the file, because fd 1 can be asked what it is; the message
+    # that names only the working directory is the fallback for a kernel that
+    # will not answer.
+    assert "git worktree" in refused.stderr
+    assert str(target) in refused.stderr
     assert target.read_text(encoding="utf-8") == "", "it refused and wrote anyway"
 
     # The three spellings that are not a redirect, from the same directory.
@@ -535,6 +539,49 @@ def test_raw_refuses_a_redirect_from_inside_a_checkout(tmp_path) -> None:
         )
     assert allowed.returncode == 0, allowed.stderr
     assert json.loads(mine.read_text(encoding="utf-8"))["anonymised"] is False
+
+
+def test_the_redirect_is_judged_by_where_it_lands_not_where_it_started(
+    tmp_path,
+) -> None:
+    """The working directory was standing in for the destination, and it is
+    wrong in both directions.
+
+    One step outside the checkout is all it took: `cd /tmp && harness_shape
+    --raw > repo/tests/data/oops.json` wrote real keys, real file names and a
+    real install path into the repository and exited 0. The mirror image
+    refused a capture of your own machine redirected safely outside the tree,
+    which is what the flag is for. fd 1 knows its own name — `F_GETPATH` on
+    darwin, `/proc/self/fd` on linux — so the question can be asked about the
+    file that is actually being written.
+    """
+    tree = tmp_path / "repo"
+    (tree / "tests" / "data").mkdir(parents=True)
+    (tree / ".git").mkdir()
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    argv = [sys.executable, str(TOOL), "--config-dir", str(config), "--raw"]
+
+    landing_inside = tree / "tests" / "data" / "oops.json"
+    with landing_inside.open("w") as handle:
+        refused = subprocess.run(
+            argv, stdout=handle, stderr=subprocess.PIPE, text=True,
+            cwd=str(tmp_path), timeout=300,
+        )
+    assert refused.returncode == 2, refused.stderr
+    assert "git worktree" in refused.stderr
+    assert landing_inside.read_text(encoding="utf-8") == "", "it refused and wrote"
+
+    landing_outside = tmp_path / "mine.json"
+    with landing_outside.open("w") as handle:
+        allowed = subprocess.run(
+            argv, stdout=handle, stderr=subprocess.PIPE, text=True,
+            cwd=str(tree), timeout=300,
+        )
+    assert allowed.returncode == 0, allowed.stderr
+    assert json.loads(
+        landing_outside.read_text(encoding="utf-8")
+    )["anonymised"] is False
 
 
 def test_an_index_row_is_judged_without_leaving_the_directory(tmp_path) -> None:
@@ -598,6 +645,25 @@ def test_out_refuses_to_write_through_a_symlink_somebody_else_planted(
     # And it says which refusal this is: O_NOFOLLOW reports ELOOP, which reads
     # as a broken filesystem to whoever is standing at the terminal.
     assert "refuses to follow one" in refused.stderr, refused.stderr
+
+    # ONE LEVEL UP IS THE SAME WRITE PRIMITIVE. O_NOFOLLOW guards the last
+    # component, so a link standing anywhere else in the path chose the file
+    # that got truncated and the refusal never fired.
+    (tmp_path / "real").mkdir()
+    os.symlink(tmp_path / "victim", tmp_path / "real" / "linkdir")
+    behind = _write(tmp_path / "victim" / "target.json", "keep me too\n")
+    through = tmp_path / "real" / "linkdir" / "target.json"
+    refused = _run("--config-dir", str(config), "--out", str(through))
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert behind.read_text(encoding="utf-8") == "keep me too\n", "it wrote anyway"
+    assert "a symlink stands in this path" in refused.stderr, refused.stderr
+
+    # And a refused destination leaves nothing behind: `makedirs` ran before
+    # the refusal, so a rejected `--out` still created directories — through
+    # the very link it was about to refuse.
+    deeper = tmp_path / "real" / "linkdir" / "made" / "shape.json"
+    assert _run("--config-dir", str(config), "--out", str(deeper)).returncode == 2
+    assert not (tmp_path / "victim" / "made").exists(), "it made the directory"
 
     # And the ordinary destination still writes, including over itself.
     plain = tmp_path / "plain.json"

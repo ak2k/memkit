@@ -4316,6 +4316,28 @@
         "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
       ],
       "why": "The harness reads any non-null as on, so an adopter who typed a path into autoMemoryEnabled has a working switch and a string this tool would otherwise carry. What a rebuilt tree needs is that the key was set, which the null says."
+    },
+    {
+      "name": "harness-shape-raw-redirect-is-judged-by-the-working-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        destination = args.out or _stdout_destination()\n",
+      "new": "        destination = args.out\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_redirect_is_judged_by_where_it_lands_not_where_it_started"
+      ],
+      "why": "Without fd 1's own name the refusal falls back to the working directory, which is the wrong question in both directions: a --raw capture redirected into the repository from one step outside it lands with real keys, real file names and a real install path, exit 0 and nothing on stderr."
+    },
+    {
+      "name": "harness-shape-out-follows-a-symlinked-destination-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    resolved = os.path.realpath(parent)\n",
+      "new": "    resolved = parent\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_refuses_to_write_through_a_symlink_somebody_else_planted"
+      ],
+      "why": "O_NOFOLLOW guards the final component only. Unresolved, the destination directory is followed and the file behind it truncated — the same write primitive the last-component refusal exists to close, one level up, on a host this runs as a guest on."
     }
   ]
 }

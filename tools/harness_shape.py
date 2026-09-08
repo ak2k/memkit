@@ -780,6 +780,41 @@ def _stdout_is_a_file() -> bool:
         return False
 
 
+def _stdout_destination():
+    """The path a redirected stdout writes to, or None if it cannot be had.
+
+    THE DESTINATION IS THE QUESTION, and the working directory was standing in
+    for it: a `--raw` run started outside a checkout and redirected into one
+    was allowed, and one started inside it and redirected safely outside was
+    refused. Both answers were about the wrong directory.
+
+    `F_GETPATH` on darwin and `/proc/self/fd` on linux, which are the two
+    platforms this is piped to; a kernel that answers neither leaves the
+    caller with the cwd test, which over-refuses rather than under-refuses.
+    """
+    if not _stdout_is_a_file():
+        return None
+    fd = sys.stdout.fileno()
+    if sys.platform.startswith("linux"):
+        try:
+            return os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            return None
+    if sys.platform == "darwin":
+        try:
+            import fcntl
+        except ImportError:
+            return None
+        try:
+            # 50 is `F_GETPATH`, which the fcntl module does not name.
+            answer = fcntl.fcntl(fd, 50, b"\0" * 1024)
+        except (OSError, ValueError):
+            return None
+        if isinstance(answer, bytes):
+            return answer.split(b"\0", 1)[0].decode("utf-8", "replace") or None
+    return None
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="harness_shape.py",
@@ -805,20 +840,20 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.raw:
-        if args.out and _inside_worktree(
-            os.path.dirname(os.path.abspath(args.out))
-        ):
-            sys.stderr.write(
-                f"harness_shape: --raw refuses to write inside a git worktree "
-                f"({args.out}); a shape committed with real names is the one "
-                f"mistake this tool exists to prevent\n"
-            )
-            return 2
-        if not args.out and _stdout_is_a_file() and _inside_worktree(os.getcwd()):
-            # THE SPELLING THE DOCSTRING NAMES. "A debugging run whose
-            # redirect happened to point at the repository" is `--raw >
-            # somewhere`, and the guard above sees only the run where somebody
-            # typed the destination and could read it back.
+        destination = args.out or _stdout_destination()
+        if destination is not None:
+            if _inside_worktree(os.path.dirname(os.path.abspath(destination))):
+                sys.stderr.write(
+                    f"harness_shape: --raw refuses to write inside a git "
+                    f"worktree ({destination}); a shape committed with real "
+                    f"names is the one mistake this tool exists to prevent\n"
+                )
+                return 2
+        elif _stdout_is_a_file() and _inside_worktree(os.getcwd()):
+            # THE FALLBACK, for a kernel that will not name fd 1. The working
+            # directory is the wrong question — a redirect from outside a
+            # checkout into one is the leak, and this cannot see it — so it is
+            # what is left rather than what is asked, and it over-refuses.
             sys.stderr.write(
                 "harness_shape: --raw refuses a redirect to a file from "
                 "inside a git worktree; pass --out so the destination can be "
@@ -842,7 +877,23 @@ def main(argv=None) -> int:
     if not args.out:
         sys.stdout.write(text)
         return 0
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    parent = os.path.dirname(os.path.abspath(args.out))
+    resolved = os.path.realpath(parent)
+    if resolved != parent:
+        # O_NOFOLLOW guards the LAST component only, so a link one level up
+        # chose the file that got truncated: `--out real/linkdir/shape.json`
+        # wrote through `linkdir` and overwrote whatever `target.json` behind
+        # it was. Refused rather than followed, and the resolved path is named
+        # so an operator whose home really is reached through a link — or who
+        # named /tmp on a mac — can pass that path instead.
+        sys.stderr.write(
+            f"harness_shape: {args.out}: a symlink stands in this path, which "
+            f"chooses what gets overwritten; it resolves to {resolved}\n"
+        )
+        return 2
+    # AFTER the refusals, not before: a rejected --out used to leave the
+    # directories it had already created behind it.
+    os.makedirs(parent, exist_ok=True)
     try:
         # O_NOFOLLOW, because `open(path, "w")` follows a link already sitting
         # at that name and truncates what it points at. This runs under
