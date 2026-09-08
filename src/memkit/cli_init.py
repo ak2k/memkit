@@ -1924,6 +1924,24 @@ def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
         for project in known
         if not _adoptable(machine, project)
     )
+    # THE LIMIT IS ON DERIVING A KEY, NOT ON READING ONE. `KEY_MAX` refuses
+    # inside `project_key`, which adoption never calls: adoption reads names
+    # the harness already chose, and a directory the harness itself wrote over
+    # the limit is a real one holding real memories, so refusing it would
+    # leave them behind. What the adopter cannot see is that such a name is a
+    # truncation with a hash after it, so the directory landing in the store
+    # is not the project path — and the hash is not one this package measures.
+    hashed = [
+        project for project in mine
+        if len(project.key) > harness_memory.KEY_MAX
+    ]
+    out.extend(
+        f"{_findable(project.key)}: over {harness_memory.KEY_MAX} characters, "
+        "so the harness truncated the project path and hashed the rest — this "
+        "directory name does not spell the project it belongs to, and memkit "
+        "cannot say which one it is"
+        for project in hashed
+    )
     return out
 
 

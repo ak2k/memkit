@@ -4729,6 +4729,17 @@
         "tests/test_init.py::test_an_already_redirected_key_is_named_in_a_spelling_the_disk_holds"
       ],
       "why": "the same line for the other skip reason, and the same defect: a project passed over is named to be looked at, so a rendering that deletes bytes names a directory that is not there."
+    },
+    {
+      "name": "init-a-hashed-project-key-adopts-with-nothing-said-about-it",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    hashed = [\n        project for project in mine\n        if len(project.key) > harness_memory.KEY_MAX\n    ]\n    out.extend(\n        f\"{_findable(project.key)}: over {harness_memory.KEY_MAX} characters, \"\n        \"so the harness truncated the project path and hashed the rest — this \"\n        \"directory name does not spell the project it belongs to, and memkit \"\n        \"cannot say which one it is\"\n        for project in hashed\n    )\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_a_key_over_the_harness_limit_adopts_and_says_it_is_hashed"
+      ],
+      "why": "`KEY_MAX` refuses only inside `project_key`, which adoption never calls, so a directory the harness truncated and hashed adopts like any other — correctly, since the memories in it are real. What is then invisible is that the directory landing in the store spells no project path, and the hash naming it is one this package has not measured: an adopter reading the manifest would take the name for the project."
     }
   ]
 }

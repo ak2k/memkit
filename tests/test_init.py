@@ -3722,6 +3722,39 @@ def test_an_already_redirected_key_is_named_in_a_spelling_the_disk_holds(
     assert "'-home-u\\tdone': already redirected, skipped" in notes, notes
 
 
+def test_a_key_over_the_harness_limit_adopts_and_says_it_is_hashed(
+    profile,
+) -> None:
+    """`KEY_MAX` governs DERIVING a key from a cwd; adoption reads names the
+    harness already chose. A directory the harness wrote over the limit holds
+    real memories, so refusing it would leave them behind — but its name is a
+    truncated path with an unmeasured hash after it, which is the one thing
+    the adopter cannot tell by looking, so the manifest says it.
+    """
+    at_limit = "-home-u" + "a" * (harness_memory.KEY_MAX - 7)
+    over_limit = "-home-u" + "b" * (harness_memory.KEY_MAX + 43)
+    assert len(at_limit) == harness_memory.KEY_MAX
+    _harness(profile, at_limit, {"alpha.md": TRAP})
+    _harness(profile, over_limit, {"beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert f"'{over_limit}': over 200 characters, so the harness truncated" in (
+        manifest.stdout
+    ), manifest.stdout
+    # The control: a key AT the limit is one the harness spelled out in full.
+    assert f"'{at_limit}': over" not in manifest.stdout
+    # Both adopt, and the store init just built passes its own VERIFY.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert (adopted / at_limit / "alpha.md").read_text(encoding="utf-8") == TRAP
+    assert (adopted / over_limit / "beta.md").read_text(encoding="utf-8") == TRAP
+    assert "Adoption: 2 files" in out.stdout, out.stdout
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )
