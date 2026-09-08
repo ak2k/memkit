@@ -4528,6 +4528,17 @@
         "tests/test_init.py::test_a_store_that_is_itself_a_symlink_is_still_adopted_into"
       ],
       "why": "the plan and the write have to ask the same question, and this is the write's half. Containment lets a link planted below the store between the two moments send every copy to a path no manifest line and no ledger row names — the plan's own guard exists because that is not the same as landing outside, and a write-time guard that asks the weaker one re-opens exactly what the plan closed."
+    },
+    {
+      "name": "init-adoption-rows-a-spelling-the-disk-does-not-hold",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        spelled = _as_spelled(base, entries, target)\n        if spelled is not None and spelled != project.key:\n            diverged.append(\n                f\"{_display_path(target)} is the directory this store already \"\n                f\"holds as `{_clean(spelled)}` — this filesystem does not tell \"\n                \"the two spellings apart, so every copy would land in that one \"\n                \"while the row named this one, and nothing was written for \"\n                \"this project\"\n            )\n            continue\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_a_key_the_store_already_holds_another_spelling_of_diverges"
+      ],
+      "why": "the destination guard above is made of path strings and `os.path.realpath` does not canonicalise case, so on a case-insensitive filesystem — APFS, the default on macOS — a key differing from an existing directory only in case passes every one of them. The copy lands in the directory that is there, the row names the spelling that is not, the checker calls it an orphan, `memory-integrity --write` repairs the row to the on-disk name and the next init writes the key's spelling back: the two rewriting each other forever, with no link involved at all."
     }
   ]
 }

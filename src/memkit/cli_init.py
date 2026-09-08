@@ -1834,6 +1834,25 @@ def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
     return out
 
 
+def _as_spelled(base: str, entries: list, target: str) -> str | None:
+    """The name `base` really holds `target` under, or None if it holds none.
+
+    `os.path.realpath` follows links and does not canonicalise CASE, so on a
+    case-insensitive filesystem — APFS, the default on macOS — a path opens a
+    directory whose name is spelled some other way and every comparison
+    between the two still says they are the same path. The ledger row has to
+    carry the name the checker enumerates off disk, so the name is asked of
+    the OS by identity rather than derived from a rule about which spellings a
+    given filesystem folds together — which is a property of the mount and not
+    of the string.
+    """
+    for name in entries:
+        with contextlib.suppress(OSError):
+            if os.path.samefile(os.path.join(base, name), target):
+                return name
+    return None
+
+
 def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     """(actions, ledger rows, notes) for every harness memory this would adopt.
 
@@ -1852,6 +1871,11 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     than landing inside the store, and the one the checker measures.
     """
     base = os.path.join(store, "search", ADOPT_DIRNAME)
+    # What that directory already holds, read once: planning writes nothing,
+    # so it does not change under the loop below.
+    entries: list = []
+    with contextlib.suppress(OSError):
+        entries = os.listdir(base)
     actions: list = []
     rows: list = []
     skipped: list = []
@@ -1905,6 +1929,25 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 f"{_display_path(_terminal_realpath(target))} — every copy "
                 "into it would land at a path this manifest does not name, so "
                 "nothing was written for this project"
+            )
+            continue
+        # AND SPELLED THE WAY THE DISK SPELLS IT. The comparison above is made
+        # of path strings, and a case-insensitive filesystem hands the same
+        # directory to two of them: a key `-home-U` opens the `-home-u` that is
+        # already there and every path test still passes. The bytes then land
+        # in the directory that exists and the row names the one that does not
+        # — the checker calls it an orphan, `memory-integrity --write` repairs
+        # the row to the on-disk name, and the next init writes the key's own
+        # spelling back, which is the oscillation the guard above exists to
+        # stop, reached without a single link.
+        spelled = _as_spelled(base, entries, target)
+        if spelled is not None and spelled != project.key:
+            diverged.append(
+                f"{_display_path(target)} is the directory this store already "
+                f"holds as `{_clean(spelled)}` — this filesystem does not tell "
+                "the two spellings apart, so every copy would land in that one "
+                "while the row named this one, and nothing was written for "
+                "this project"
             )
             continue
         group = (

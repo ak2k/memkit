@@ -3484,6 +3484,69 @@ def test_a_project_key_no_row_could_point_at_is_skipped(profile, key) -> None:
     assert checker._generate(store / "SEARCH.md", entries) == ledger
 
 
+def _folds_case(where) -> bool:
+    """Whether this filesystem hands the same directory to two spellings."""
+    probe = where / "case-probe"
+    probe.mkdir(exist_ok=True)
+    (probe / "a").write_text("", encoding="utf-8")
+    return (probe / "A").exists()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_key_the_store_already_holds_another_spelling_of_diverges(
+    profile,
+) -> None:
+    """A ROW MAY NOT NAME A SPELLING THE DISK DOES NOT HOLD. The destination
+    guard is made of path strings, and APFS — the default on macOS — hands the
+    same directory to `-home-U` and `-home-u`: every comparison passes, the
+    copy lands in the directory that is there and the row names the one that
+    is not. The checker calls that an orphan, `memory-integrity --write`
+    repairs the row to the on-disk name, and the next init writes the key's
+    spelling back — the two rewriting each other every run, which is the
+    failure the guard's own reasoning is about, reached with no link at all.
+
+    Three turns, because one is not enough to see it: init, the repair, and a
+    dry-run that has to have nothing left to say.
+    """
+    if not _folds_case(profile):
+        pytest.skip("a case-sensitive filesystem tells the two keys apart")
+    _harness(profile, "-home-U", {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": BARE})
+    store = profile / "notes"
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    (adopted / "-home-u").mkdir(parents=True)
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "already holds as `-home-u`" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert list((adopted / "-home-u").iterdir()) == [], "the copy went in anyway"
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "-home-U" not in ledger, ledger
+    assert "alpha.md" not in ledger, ledger
+    # The control, in the same run: a key the disk holds as itself adopts.
+    assert "search/projects/-home-ok/beta.md" in ledger, ledger
+
+    # Turn two: the repair the exit code advertises has nothing to repair.
+    config = init._resolve_config(doctor.Machine(), None)
+    written = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config),
+         "--write"],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert (store / "SEARCH.md").read_text(encoding="utf-8") == ledger
+
+    # Turn three: and init has nothing to put back.
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+
 def test_a_red_integrity_check_still_redirects_the_harness(
     profile, monkeypatch, capsys
 ) -> None:
