@@ -1769,7 +1769,7 @@ def _rows_on_disk(store: str, config_path: str) -> tuple:
         try:
             text, why = _regular_text(path, errors="replace")
         except FileNotFoundError:
-            why = "cannot be read (FileNotFoundError)"
+            text, why = "", "cannot be read (FileNotFoundError)"
         if why:
             # NAMED, not suppressed. A row silently dropped here is a memory
             # this ledger stops carrying, and the checker that reads the tree
