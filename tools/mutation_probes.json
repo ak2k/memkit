@@ -4674,6 +4674,17 @@
         "tests/test_init.py::test_a_destination_the_adopter_edited_is_named_as_one_this_run_left_alone"
       ],
       "why": "adoption copies and never overwrites, so a destination the adopter edited is declined — and a red check on that file is one no re-run clears, because the next manifest has nothing to say about it. Without the clause the adopter reads the exit code's own recovery and runs the two turns forever."
+    },
+    {
+      "name": "init-the-index-rule-calls-a-file-in-the-store-left-behind",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "                    if n not in _LEDGER_NAMES\n                    and n not in copying\n                    and n not in divergent\n",
+      "new": "                    if n not in _LEDGER_NAMES\n                    and n not in copying\n",
+      "tests": [
+        "tests/test_init.py::test_a_file_the_store_already_holds_is_not_called_one_left_behind"
+      ],
+      "why": "a destination that diverged produces no action, because adoption declines to overwrite it — but the file is in the store, so the rule that asks what was left OUTSIDE it must not count the name. The line named a state the file was not in, and withheld an index every one of whose rows resolves."
     }
   ]
 }

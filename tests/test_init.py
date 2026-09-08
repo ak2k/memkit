@@ -3672,6 +3672,49 @@ def test_adoption_never_lands_an_index_for_a_directory_it_left_behind(
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )
+def test_a_file_the_store_already_holds_is_not_called_one_left_behind(
+    profile,
+) -> None:
+    """A SKIP LINE NAMES A FILE BY WHAT ACTUALLY HAPPENED TO IT.
+
+    The index rule asks what the copy loop left outside the store, and it read
+    that off the actions the loop produced — so a destination that DIVERGED,
+    which produces no action because adoption declines to overwrite, counted as
+    a file left behind. It is not: it is in the store, under bytes the adopter
+    put there. The line named a state the file was not in, and it withheld an
+    index every one of whose rows resolves.
+    """
+    _harness(profile, "-home-u", {
+        "MEMORY.md": "# index\n\n- [beta](beta.md) — the second memory\n",
+        "alpha.md": TRAP,
+        "beta.md": BARE,
+    })
+    store = profile / "notes"
+    first = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert first.returncode == init.EXIT_OK, first.stdout + first.stderr
+    out = _confirm(
+        profile, _digest_of(first), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == [
+        "MEMORY.md", "alpha.md", "beta.md"
+    ]
+
+    # The adopter edits what landed, so the next run declines to overwrite it.
+    beta = adopted / "beta.md"
+    beta.write_text(beta.read_text(encoding="utf-8") + "\ntheirs\n", "utf-8")
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert f"diverged: {beta} exists and differs" in again.stdout, again.stdout
+    assert "left behind" not in again.stdout, again.stdout
+    assert "-home-u/MEMORY.md: it is an index" not in again.stdout, again.stdout
+    assert beta.read_text(encoding="utf-8").endswith("theirs\n")
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
 def test_adoption_never_lands_an_index_rowing_a_memory_that_is_not_there(
     profile,
 ) -> None:

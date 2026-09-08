@@ -2081,6 +2081,12 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             f"-> {_display_path(target)}{os.sep}"
         )
         mine: list = []
+        # THE NAMES THIS STORE ALREADY HOLDS A DIFFERENT FILE UNDER. Nothing
+        # is written for them and they are not in `mine`, but the file a row
+        # points at is there — so the index rule below must not count them as
+        # files left outside the store. Their own `diverged:` line says what
+        # actually happened to each.
+        divergent: set = set()
         # LEDGER NAMES LAST, and stable so nothing else moves. A ledger is
         # copied with no rewriting at all, rows included, so whether it can be
         # copied depends on what the rest of this loop leaves behind — and an
@@ -2140,6 +2146,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             # it: out of the store where it pointed out, and into `hot/` — an
             # index nothing regenerates — where it pointed back in.
             if os.path.islink(dest):
+                divergent.add(name)
                 diverged.append(
                     f"{_display_path(dest)} is a symlink to "
                     f"{_display_path(_terminal_realpath(dest))} — a copy would "
@@ -2149,6 +2156,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 continue
             spelled_file = _as_spelled(target, held_entries, dest)
             if spelled_file is not None and spelled_file != name:
+                divergent.add(name)
                 diverged.append(
                     f"{_display_path(dest)} is the file this store already "
                     f"holds as `{_clean(spelled_file)}` — this filesystem does "
@@ -2180,7 +2188,9 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 copying = {os.path.basename(action.path) for action in mine}
                 omitted = [
                     _clean(n) for n in project.files
-                    if n not in _LEDGER_NAMES and n not in copying
+                    if n not in _LEDGER_NAMES
+                    and n not in copying
+                    and n not in divergent
                 ]
                 reasons = []
                 if unresolved:
@@ -2244,12 +2254,14 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 )
             held, readable = _held_text(dest)
             if not readable:
+                divergent.add(name)
                 diverged.append(
                     f"{_display_path(dest)} exists and cannot be read, so what "
                     f"is there was not compared with {_display_path(source)}"
                 )
                 continue
             if held is not None and held != text:
+                divergent.add(name)
                 diverged.append(
                     f"{_display_path(dest)} exists and differs from "
                     f"{_display_path(source)} — left exactly as it is"
