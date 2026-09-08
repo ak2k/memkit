@@ -1148,6 +1148,10 @@ def test_out_writes_into_the_directory_it_judged_however_the_name_moves(
     went to the one that had taken its place — with `--raw`, into a git
     checkout, exit 0. The destination's parent is opened once and the file is
     created relative to that descriptor, so a rename cannot come between them.
+
+    The count is what makes this a gate rather than a coin toss: a build that
+    opens the name has to lose only one of these runs, and on a loaded machine
+    the flipping thread can be starved for a long stretch of them.
     """
     config = tmp_path / "config"
     memory = config / "projects" / "-Users-realname-src-realrepo" / "memory"
@@ -1174,7 +1178,7 @@ def test_out_writes_into_the_directory_it_judged_however_the_name_moves(
     flipper = threading.Thread(target=flip)
     flipper.start()
     try:
-        for _ in range(50):
+        for _ in range(200):
             _run("--config-dir", str(config), "--raw", "--out", str(dest / "leak.json"))
             assert not (checkout / "leak.json").exists(), (
                 "real names landed in a checkout the run never named"
