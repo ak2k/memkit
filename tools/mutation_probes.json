@@ -4529,6 +4529,17 @@
         "tests/test_memory_prompt_recall.py::test_each_added_credential_shape_costs_the_candidate_its_pointer"
       ],
       "why": "a live vendor key carries no keyword to anchor an assignment on, so its prefix is the whole recogniser"
+    },
+    {
+      "name": "the-eval-reads-the-per-hit-root-as-a-bare-string",
+      "module": "project_config",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if hook._passes_floor(*hook._relevance(terms, h, hook._lex_root(h)))\n",
+      "new": "        if hook._passes_floor(*hook._relevance(terms, h, hook._LEX_ROOT.get(h, \"\")))\n",
+      "tests": [
+        "tests/test_eval.py::test_the_eval_scores_a_corpus_holding_a_symlinked_memory"
+      ],
+      "why": "the per-hit root is only consulted for a candidate that is a link, so a reader out of step with the writer's value shape scores every ordinary corpus and aborts the project's own gate on the first store that commits one"
     }
   ]
 }

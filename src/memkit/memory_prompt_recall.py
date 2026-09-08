@@ -2841,6 +2841,18 @@ _LEX_MATCHED: dict[str, list[str]] = {}
 # repository chose this".
 _LEX_ROOT: dict[str, tuple[str, bool]] = {}
 
+
+def _lex_root(path: str) -> str:
+    """The resolved store root `path` was found under, "" for a path no entry
+    point filed.
+
+    An accessor rather than a `.get(..., ("", False))[0]` at each site because
+    one reader lives OUTSIDE this module — the eval reaches the hook through an
+    untyped handle, so no checker sees it — and every reader that wants only
+    the root is then indifferent to what else rides in the value.
+    """
+    return _LEX_ROOT.get(path, ("", False))[0]
+
 # What the ranker actually scored each hit: path -> rank/best_rank, the same
 # top-normalized number FLOOR_LEX is compared against, so 1.0 is that dir's
 # best chunk and FLOOR_LEX is the weakest thing kept. Logged, never acted on.
@@ -5900,7 +5912,7 @@ def _pointer_line(
     was rather than anything about the memory, so the same evidence reads
     weaker the more the parent wrote.
     """
-    desc = _description(path, _LEX_ROOT.get(path, ("", False))[0])
+    desc = _description(path, _lex_root(path))
     shown = ", ".join(matched[:6]) + (", …" if len(matched) > 6 else "")
     evidence = (
         f"matches {len(matched)} terms from this brief"

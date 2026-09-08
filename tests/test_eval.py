@@ -1114,6 +1114,39 @@ def test_a_memory_with_no_description_still_reads_back_as_delivered(
     assert ev._delivered_names(other) == {"has_description.md"}, other
 
 
+def test_the_eval_scores_a_corpus_holding_a_symlinked_memory(
+    tmp_path, monkeypatch
+) -> None:
+    """The eval reads the hook's per-hit root the way the hook writes it.
+
+    `_LEX_ROOT`'s value carries whether a repository chose the root, and the
+    root is only ever CONSULTED for a candidate that is a link — so a reader
+    holding the wrong shape scores every ordinary corpus and then aborts the
+    whole run on the first store that commits one, which `_store_path`'s own
+    rule deliberately admits.
+
+    The corpus here holds one, which is what makes this fail on a reader that
+    is out of step: no other fixture corpus in the tree does.
+    """
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path / "state"))
+    (tmp_path / "state").mkdir()
+    root = tmp_path / "memories" / "search"
+    root.mkdir(parents=True)
+    real = root / "real.md"
+    real.write_text(
+        "---\nname: real\ndescription: sprocket notes\ntype: reference\n---\n\n"
+        "sprocket backlash gearbox shim stack\n"
+    )
+    (root / "linked.md").symlink_to(real)
+
+    prompt = "sprocket backlash gearbox shim stack"
+    hits = hook.recall(prompt, dirs=[str(root)])
+    assert {Path(h).name for h in hits} == {"real.md", "linked.md"}, hits
+    passed, shown = ev.pointers(hook, prompt, hits)
+    assert set(passed) == {"real.md", "linked.md"}, passed
+    assert shown == passed[: hook.MAX_HITS], (shown, passed)
+
+
 def test_a_same_named_file_in_another_store_is_not_the_delivery() -> None:
     """The gate compared basenames, so a pointer to the wrong store's file
     satisfied a case whose target was never delivered.
