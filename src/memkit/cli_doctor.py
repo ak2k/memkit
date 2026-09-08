@@ -206,13 +206,57 @@ PATH_SHOWN = 300
 _FRAME_LITERAL = re.compile(r"</?" + re.escape(FRAME_TAG))
 
 
+# What may follow a home spelling without the match being a different name.
+# TWO RULES AND NOT ONE: a key's own separator is the character a path uses to
+# start a component, so `-home-u-git-app` is a directory under `-home-u` while
+# `/home/u-git-app` is not one under `/home/u`. A single rule either leaves the
+# key spelling of home in the report or renames a sibling to a directory that
+# is not there.
+_PATH_TAIL = r"(?![\w.-])"
+_KEY_TAIL = r"(?!\w)"
+
+
+def _homes() -> tuple:
+    """Every spelling of the home directory a string could carry, compiled.
+
+    FOUR ROUTES, ONE REDACTION. Home reaches a row as the path the environment
+    spells it, as the path that resolves to — the two differ for as long as
+    `$HOME` is a symlink, and the harness derives its project keys from the
+    resolved one — and as either of those with every separator replaced, which
+    is what a project key is. Each route was closed where it was found, for one
+    branch of one check; applied here, where every detail and every remedy
+    passes, the rule holds whichever branch of whichever check produced the row.
+
+    LONGEST FIRST, so a spelling nested inside another does not leave the tail
+    of the longer one standing on its own.
+    """
+    paths: list = []
+    for path in (os.path.expanduser("~"), os.path.realpath(os.path.expanduser("~"))):
+        if path and path != os.sep and path not in paths:
+            paths.append(path)
+    keys: list = []
+    for key in (harness_memory.key_spelling(path) for path in paths):
+        if key and key not in keys:
+            keys.append(key)
+    spellings = [(path, _PATH_TAIL) for path in paths]
+    spellings += [(key, _KEY_TAIL) for key in keys]
+    return tuple(
+        re.compile(re.escape(spelling) + tail)
+        for spelling, tail in sorted(spellings, key=lambda pair: -len(pair[0]))
+    )
+
+
 def _bound(text: str) -> str:
-    """One display string, sanitized and bounded, in that order.
+    """One display string, sanitized, redacted and bounded, in that order.
 
     Sanitizing after bounding would let a truncation land inside an escape
-    sequence and produce a string the sanitizer never saw whole.
+    sequence and produce a string the sanitizer never saw whole. Redacting
+    before the cut for the same shape of reason: a home spelling the cut landed
+    inside is one no substitution can reach afterwards.
     """
     text = _FRAME_LITERAL.sub("(" + FRAME_TAG, sanitize(text))
+    for spelling in _homes():
+        text = spelling.sub("~", text)
     raw = text.encode("utf-8")
     if len(raw) <= DETAIL_MAX_BYTES:
         return text

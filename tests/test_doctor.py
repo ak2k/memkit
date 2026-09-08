@@ -219,6 +219,39 @@ def test_every_string_in_the_envelope_is_bounded_in_bytes() -> None:
     check.detail.encode("utf-8").decode("utf-8")
 
 
+def test_no_spelling_of_home_survives_the_choke_point(tmp_path, monkeypatch) -> None:
+    """Home reaches a row by four spellings, and one place sees all four.
+
+    Two paths, because `$HOME` is a symlink on more machines than not and the
+    harness builds a project key from the resolved one while this report's own
+    re-speller reads the environment's; and each of those again with every
+    separator replaced, which is what a project key is.
+
+    A SIBLING IS NOT A CHILD: a directory whose name merely starts with home's
+    is a different directory, and re-spelling it names one that is not there.
+    The two rules differ because a key's own separator is `-`, so `-old` after
+    a key is a child while `-old` after a path is a sibling.
+    """
+    real = tmp_path / "resolved"
+    real.mkdir()
+    link = tmp_path / "home"
+    link.symlink_to(real)
+    monkeypatch.setenv("HOME", str(link))
+    resolved = os.path.realpath(str(link))
+    key = harness_memory.key_spelling(resolved)
+
+    assert doctor._bound(str(link)) == "~"
+    assert doctor._bound(f"{link}/.claude/settings.json") == "~/.claude/settings.json"
+    assert doctor._bound(f"could not read {resolved}/x") == "could not read ~/x"
+    assert doctor._bound(harness_memory.key_spelling(str(link))) == "~"
+    assert doctor._bound(f"{key}-git-app (2), one more") == "~-git-app (2), one more"
+
+    for tail in ("_old", "-old", "old"):
+        assert doctor._bound(f"{link}{tail}/notes.md") == f"{link}{tail}/notes.md"
+    for tail in ("_old", "old"):
+        assert doctor._bound(f"{key}{tail}") == f"{key}{tail}"
+
+
 # --- the closed vocabularies -------------------------------------------------
 
 
