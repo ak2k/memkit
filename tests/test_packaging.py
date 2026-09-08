@@ -432,6 +432,26 @@ def _require_floor_interpreter(version: str = FLOOR_VERSION) -> str:
     return interpreter
 
 
+def test_of_version_believes_the_answer_and_not_the_name(tmp_path) -> None:
+    """The guard against a lying `python3.8`, checked without needing a liar.
+
+    Every floor case rests on this one comparison, and on a machine whose
+    `python3.8` really is 3.8 the whole gate stays green with the comparison
+    deleted — the failure it exists for is invisible exactly where it is run.
+    So ask it here instead, of an interpreter that is present and is not the
+    version asked for: the running one answers for itself, refuses to answer
+    for its predecessor, and a path that cannot be executed at all is no
+    interpreter of any version rather than an exception out of the gate.
+    """
+    running = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    mismatch = f"{sys.version_info[0]}.{sys.version_info[1] - 1}"
+    assert _of_version(sys.executable, running) == sys.executable
+    assert _of_version(sys.executable, mismatch) is None
+    unrunnable = tmp_path / f"python{mismatch}"
+    unrunnable.write_text("", encoding="utf-8")
+    assert _of_version(str(unrunnable), mismatch) is None
+
+
 def test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path) -> None:
     """The floor, EXECUTED — which is what a static pass cannot do.
 

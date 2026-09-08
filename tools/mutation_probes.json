@@ -4218,6 +4218,17 @@
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
     },
     {
+      "name": "packaging-a-floor-interpreter-is-taken-on-its-name",
+      "module": "packaging",
+      "file": "tests/test_packaging.py",
+      "old": "    return interpreter if out.stdout.strip() == version else None\n",
+      "new": "    return interpreter\n",
+      "tests": [
+        "tests/test_packaging.py::test_of_version_believes_the_answer_and_not_the_name"
+      ],
+      "why": "a pyenv or Nix shim called python3.8 forwards to whatever it wraps, so a floor case that trusts the name runs 3.12 and reports the floor green"
+    },
+    {
       "name": "harness-shape-file-keeps-a-long-stem",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
