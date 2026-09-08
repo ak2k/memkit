@@ -1538,6 +1538,19 @@ def _clean(value: str) -> str:
     return "".join(c for c in value if c.isprintable()).strip()
 
 
+def _findable(value: str) -> str:
+    """`_clean`'s counterpart for a name the reader has to go find on disk.
+
+    DELETING THE BYTE RENAMES THE THING. `_clean` is right for text nobody
+    types back, and wrong for the one line telling an adopter which directory
+    was passed over: a key holding a tab was reported as `keywithtab`, a
+    spelling `ls` matches nothing with. Escaping keeps every byte accounted
+    for and still ends the line where the line ends, which is the whole of
+    what `_clean` was protecting.
+    """
+    return "".join(c for c in repr(value) if c.isprintable())
+
+
 # What a ledger ROW's label may not carry. A row is
 # `- [label](link) — description`, so a `]` in the label ends the link early
 # and everything after it is markdown nobody wrote.
@@ -1906,7 +1919,7 @@ def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
     else:
         out.append("No harness auto-memory to adopt.")
     out.extend(
-        f"{_clean(project.key)}: already redirected, skipped "
+        f"{_findable(project.key)}: already redirected, skipped "
         f"({_display_path(project.path)})"
         for project in known
         if not _adoptable(machine, project)
@@ -2043,7 +2056,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
         # the space, and a newline ends the manifest line above it.
         if _link_target(project.key) != project.key:
             skipped.append(
-                f"{_clean(project.key)}: the project key holds a character "
+                f"{_findable(project.key)}: the project key holds a character "
                 "no manifest line and no ledger row could carry — a link "
                 "ends at the first `)`, at a space, or at a newline"
             )

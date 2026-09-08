@@ -2912,8 +2912,8 @@ def test_only_a_memory_directory_wired_into_a_store_is_already_redirected(
 
     plan = _plan(profile, store=str(store), adopt_auto_memory=True)
     notes = " ".join(plan.notes)
-    assert "-wired: already redirected, skipped" in notes
-    assert "-wired-project: already redirected, skipped" in notes
+    assert "'-wired': already redirected, skipped" in notes
+    assert "'-wired-project': already redirected, skipped" in notes
     assert "-linked-outside: already redirected" not in notes
     assert "1 project memory directory holds 1 memory outside every store" in notes
     # And doctor, over the same machine, counts the same one.
@@ -3664,6 +3664,64 @@ def test_a_project_key_no_row_could_point_at_is_skipped(profile, key) -> None:
     assert checker._generate(store / "SEARCH.md", entries) == ledger
 
 
+@pytest.mark.parametrize(
+    ("key", "spelled"),
+    [("-home-u\ttab", "'-home-u\\ttab'"), ("-home-u\nnl", "'-home-u\\nnl'")],
+)
+def test_a_skipped_key_is_named_in_a_spelling_the_disk_holds(
+    profile, key, spelled
+) -> None:
+    """A skip line is an instruction to go look at something, so the name it
+    prints has to be one `ls` will match. Deleting the byte that made the key
+    unusable named `-home-utab`, a directory nobody has.
+    """
+    _harness(profile, key, {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert spelled in manifest.stdout, manifest.stdout
+    # The escaping is what keeps the byte on one line: still not one forged
+    # action line, and still no raw control character in the surface.
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    rendered = plan.render()
+    assert "\t" not in rendered and "\r" not in rendered
+    ops = {init.CREATE_DIR, init.CREATE_FILE, init.SETTINGS_WRITE,
+           init.MERGE_CONFIG, init.VERIFY, init.APPEND_LINE, init.REWRITE_FILE}
+    printed = [
+        line for line in rendered.splitlines()
+        if line[:2] == "  " and line[2:3] != " " and line.split()[0] in ops
+    ]
+    assert len(printed) == len([
+        a for a in plan.pending if not a.group
+    ]) + len({a.group for a in plan.pending if a.group})
+
+
+def test_an_already_redirected_key_is_named_in_a_spelling_the_disk_holds(
+    profile, monkeypatch
+) -> None:
+    """The sibling skip line, for the same reason: it tells the adopter which
+    project directory was passed over, so it has to spell one that is there.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+    wired_at = store / "search" / "wired-memories"
+    wired_at.mkdir()
+    (wired_at / "wired.md").write_text(TRAP, encoding="utf-8")
+    wired = profile / "claude-config" / "projects" / "-home-u\tdone"
+    wired.mkdir(parents=True)
+    (wired / "memory").symlink_to(wired_at)
+
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    notes = "\n".join(plan.notes)
+    assert "'-home-u\\tdone': already redirected, skipped" in notes, notes
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )
@@ -4022,7 +4080,7 @@ def test_store_membership_is_asked_of_the_config_being_written(profile) -> None:
     base.pop("MEMKIT_CONFIG", None)
     manifest = _run("--dry-run", *named, env=base)
     assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
-    assert "-home-linked: already redirected, skipped" in manifest.stdout, (
+    assert "'-home-linked': already redirected, skipped" in manifest.stdout, (
         manifest.stdout
     )
     # The control: the same request with the environment naming that config.

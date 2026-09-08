@@ -4707,6 +4707,28 @@
         "tests/test_init.py::test_a_write_judges_and_writes_one_resolution_of_the_name_it_was_given"
       ],
       "why": "the containment guard judges a resolution of the name, and a write that resolves the same name again is asking a second question of whatever the name points at by then. A link swapped between the two sends the bytes to a path nothing judged, under a guard that has already said yes."
+    },
+    {
+      "name": "init-a-skipped-key-is-named-in-a-spelling-the-disk-does-not-hold",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "f\"{_findable(project.key)}: the project key holds a character \"",
+      "new": "f\"{_clean(project.key)}: the project key holds a character \"",
+      "tests": [
+        "tests/test_init.py::test_a_skipped_key_is_named_in_a_spelling_the_disk_holds"
+      ],
+      "why": "the skip line exists to send the adopter to a directory, and `_clean` deletes the byte that made the key unusable instead of showing it: a key holding a tab is reported under a name `ls` matches nothing with, so the one project the run declined to copy is the one the adopter cannot find."
+    },
+    {
+      "name": "init-an-already-redirected-key-is-named-in-a-spelling-the-disk-does-not-hold",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "f\"{_findable(project.key)}: already redirected, skipped \"",
+      "new": "f\"{_clean(project.key)}: already redirected, skipped \"",
+      "tests": [
+        "tests/test_init.py::test_an_already_redirected_key_is_named_in_a_spelling_the_disk_holds"
+      ],
+      "why": "the same line for the other skip reason, and the same defect: a project passed over is named to be looked at, so a rendering that deletes bytes names a directory that is not there."
     }
   ]
 }
