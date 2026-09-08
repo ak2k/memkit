@@ -763,6 +763,15 @@ def _project_store(root: str, taken):
         )
     if not _inside(root_real, resolved):
         return None, f"{PROJECT_CONFIG_NAME}: 'dir' resolves outside the repository"
+    # PROPER containment, and only here: what this file costs a prompt is one
+    # more directory searched, and the whole checkout is not one more
+    # directory. `.`, `./` and `docs/..` are the same request spelled three
+    # ways, so the refusal is made on what the spelling resolved to.
+    if resolved == root_real:
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: 'dir' must name a directory inside the "
+            "repository, not the repository itself"
+        )
     if not os.path.isdir(resolved):
         return None, f"{PROJECT_CONFIG_NAME}: 'dir' is not a directory in this checkout"
     # AND AGAIN on the directory that is actually WALKED, which is not `dir`:

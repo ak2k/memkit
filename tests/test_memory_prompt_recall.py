@@ -14187,6 +14187,25 @@ REFUSALS = [
         "climbs out of it",
     ),
     ("a dir symlinked out of the tree", _dir_symlinked_out, "resolves outside"),
+    # One more directory searched is the cap this file's cost is bounded by,
+    # and a monorepo's every `*.md` is not one more directory. All three of
+    # these are the same request, so the refusal is made on what they resolved
+    # to rather than on how they were spelled.
+    (
+        "a dir that is the checkout",
+        _write_json(_project_blob(dir=".")),
+        "not the repository itself",
+    ),
+    (
+        "a dir that is the checkout with a slash",
+        _write_json(_project_blob(dir="./")),
+        "not the repository itself",
+    ),
+    (
+        "a dir that climbs back to the checkout",
+        _write_json(_project_blob(dir="docs/..")),
+        "not the repository itself",
+    ),
     # `dir` itself is inside the checkout in both of these. What leaves it is
     # the level below — the directory retrieval actually walks.
     (

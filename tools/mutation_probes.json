@@ -4408,6 +4408,17 @@
         "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
       ],
       "why": "`True == 1` and `1.0 == 1`, so the schema gate stops separating two files"
+    },
+    {
+      "name": "project-dir-may-be-the-whole-checkout",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if resolved == root_real:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' must name a directory inside the \"\n            \"repository, not the repository itself\"\n        )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "`dir: \".\"` makes every *.md in a monorepo a candidate on every prompt"
     }
   ]
 }
