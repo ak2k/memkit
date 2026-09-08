@@ -14433,6 +14433,53 @@ def test_a_project_file_is_refused_whole_and_the_reason_names_why(
     reason = _refusal(tmp_path, monkeypatch, repo)
     assert fragment in reason, (label, reason)
     assert hook.PROJECT_CONFIG_NAME in reason, (label, reason)
+    # Every row, not just the ones that carry a value: a reason is rendered on
+    # a line-oriented surface an agent reads, and half of what it quotes is
+    # text the repository wrote. Sanitising an already-sanitised string is the
+    # identity, so a reason that survives it unchanged is a reason no `\n` and
+    # no direction mark got into. `"app\n"` as an id is the row that makes this
+    # bite; the claim is asserted everywhere because the next value a reason
+    # learns to quote gets it for free.
+    assert reason == hook.sanitize(reason), (label, repr(reason))
+
+
+def test_a_project_file_that_grew_after_the_fstat_is_refused_on_the_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The `+ 1` on the read, which the size row above cannot reach.
+
+    The fstat decides, and then the read happens — so between them the file is
+    whatever a build step or another session made it. Asking for one byte more
+    than the cap is what makes "it grew" visible at all: a read of exactly the
+    cap comes back full and indistinguishable from a file that was always that
+    size, and what would be parsed is 4096 characters of a longer document.
+
+    Staged by making the fstat report a size the file no longer has, which is
+    the same window with the timing taken out of it.
+    """
+    repo = _project_checkout(tmp_path)
+    blob = dict(_project_blob())
+    blob["note"] = "n" * (hook.PROJECT_CONFIG_MAX_BYTES + 1)
+    text = json.dumps(blob)
+    assert len(text) > hook.PROJECT_CONFIG_MAX_BYTES
+    # Non-vacuity: the head the mutant would parse is not valid JSON by
+    # accident, so the two refusals are told apart by their reasons alone.
+    (repo / hook.PROJECT_CONFIG_NAME).write_text(text, encoding="utf-8")
+
+    real_fstat = os.fstat
+
+    def stale(fd, *args, **kw):
+        st = real_fstat(fd, *args, **kw)
+        if stat.S_ISREG(st.st_mode) and st.st_size > hook.PROJECT_CONFIG_MAX_BYTES:
+            fields = list(st)
+            fields[6] = hook.PROJECT_CONFIG_MAX_BYTES
+            return os.stat_result(fields)
+        return st
+
+    monkeypatch.setattr(os, "fstat", stale)
+    reason = _refusal(tmp_path, monkeypatch, repo)
+    monkeypatch.undo()
+    assert f"is over {hook.PROJECT_CONFIG_MAX_BYTES} bytes" in reason, reason
 
 
 def test_a_device_symlink_a_checkout_carries_is_refused_without_hanging(

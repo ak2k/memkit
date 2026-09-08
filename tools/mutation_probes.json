@@ -4441,6 +4441,72 @@
         "tests/test_memory_prompt_recall.py::test_a_pipe_where_the_shared_repository_is_named_leaves_the_gate_shut"
       ],
       "why": "commondir is named by the checkout's own .git file and nothing vouches for it"
+    },
+    {
+      "name": "project-refusal-reasons-are-rendered-unsanitised",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    return _display_cap(sanitize(str(value)), PROJECT_VALUE_MAX_CHARS)\n",
+      "new": "    return _display_cap(str(value), PROJECT_VALUE_MAX_CHARS)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "a reason quotes text the repository wrote onto a line-oriented surface"
+    },
+    {
+      "name": "prompt-record-drops-the-side-channel-fold",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            rec.update(_lex_fired())\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log"
+      ],
+      "why": "a credential floored on the prompt path is floored silently"
+    },
+    {
+      "name": "credential-scan-flags-are-not-scoped-to-their-branch",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"(?i:authorization:\\s*bearer\\s+[A-Za-z0-9._~+/-]{20,})\",\n",
+      "new": "                    r\"(?i)authorization:\\s*bearer\\s+[A-Za-z0-9._~+/-]{20,}\",\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_credential_scan_matches_the_shapes_it_names"
+      ],
+      "why": "a bare (?i) in the middle of an alternation is a re.error on 3.11+"
+    },
+    {
+      "name": "project-config-size-cap-is-not-consulted",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if st.st_size > PROJECT_CONFIG_MAX_BYTES:\n            return None, (\n                f\"{PROJECT_CONFIG_NAME} is {st.st_size} bytes; the limit is \"\n                f\"{PROJECT_CONFIG_MAX_BYTES}\"\n            )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "the fstat is what refuses an oversize file before a byte is read"
+    },
+    {
+      "name": "project-config-read-is-not-one-past-the-cap",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            text = f.read(PROJECT_CONFIG_MAX_BYTES + 1)\n",
+      "new": "            text = f.read(PROJECT_CONFIG_MAX_BYTES)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_that_grew_after_the_fstat_is_refused_on_the_read"
+      ],
+      "why": "a file that grew after the fstat is otherwise parsed from its head"
+    },
+    {
+      "name": "project-store-dir-is-resolved-through-the-user-roots",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if store.resolved_dir:\n            return store.resolved_dir\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_adds_a_store_to_the_search_and_not_to_the_config"
+      ],
+      "why": "a project store has no name in roots, so nothing else can answer for it"
     }
   ]
 }
