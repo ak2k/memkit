@@ -4517,6 +4517,17 @@
       "why": "Opening a FIFO waits for somebody to write to the other end, and this runs unattended over ssh on a host the operator may get one run at: the capture hangs with nothing on stdout, indistinguishable from a slow NFS walk, and every other guard in the file is about a shape that is wrong rather than one that never arrives."
     },
     {
+      "name": "harness-shape-a-settings-read-runs-until-the-machine-gives-out",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if not stat.S_ISREG(os.fstat(fd).st_mode):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_device_that_never_ends_is_refused_rather_than_read_forever"
+      ],
+      "why": "O_NONBLOCK makes the open return and this is what makes the read END. A character device at a settings path never reaches EOF, so without it the capture reads until the host gives out — 23 GiB in five seconds — on a machine this tool is a guest on and gets one unattended run at. A FIFO and /dev/null both answer an empty read, which is why the case that names the rule could only ever test the other half of it."
+    },
+    {
       "name": "harness-shape-a-declared-null-switch-is-recorded-as-set",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",

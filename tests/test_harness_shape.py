@@ -1742,6 +1742,46 @@ def test_a_name_that_is_not_a_file_is_answered_rather_than_waited_on(
     assert [item["name"] for item in _by_key(shape)["-s1"]["files"]] == ["m1.md"]
 
 
+def test_a_device_that_never_ends_is_refused_rather_than_read_forever(
+    tmp_path,
+) -> None:
+    """The other half of the rule the case above only tests one side of.
+
+    `O_NONBLOCK` makes the open return; `S_ISREG` on the fd is what makes the
+    READ end. A FIFO and `/dev/null` cannot tell the two apart — both answer
+    an empty read, and the capture books `unreadable` either way — so the
+    guard that stands between a settings path and an unbounded read had
+    nothing asserting it. `/dev/zero` is decisive: the device never reaches
+    EOF, and a build without the check reads until the machine gives out.
+
+    THE ORDER HERE IS THE POINT. The guard is asserted directly, before
+    anything is asked to read that name, so a build without it fails on the
+    line below rather than filling memory from a device with no end — 23 GiB
+    in five seconds, measured. Only then is the whole capture run, and what
+    it must do is answer in milliseconds.
+    """
+    if not os.path.exists("/dev/zero"):
+        pytest.skip("no /dev/zero on this platform")
+    with pytest.raises(OSError):
+        _tool_module()._open_regular("/dev/zero")
+
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    os.symlink("/dev/zero", str(config / "settings.json"))
+    try:
+        run = subprocess.run(
+            [sys.executable, str(TOOL), "--config-dir", str(config)],
+            capture_output=True, text=True, timeout=15,
+            env=_managed_env(tmp_path / "none"),
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("the capture is still reading a device that never ends")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert json.loads(run.stdout)["settings"] == {
+        "user": {"unreadable": True, "memory_keys": {}, "hooks": [], "plugins": []}
+    }
+
+
 def _tool_module():
     """`tools/harness_shape.py` loaded as a module, which it otherwise is not.
 
