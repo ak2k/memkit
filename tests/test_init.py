@@ -2469,31 +2469,21 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(
     store would leave an adopter with a redirect nothing acts on and a
     directory to clean up.
 
-    EVERY SCOPE, and not just the one init writes. `managed` and `local` both
+    EVERY SCOPE THAT OUTRANKS THE ONE INIT WRITES. `managed` and `local` both
     outrank `user`, so a switch read from either of them is the one deciding
     whether the harness writes anything at all — and each is asserted here by
     name, because a loop that skipped one would leave that adopter's memories
     copied and a redirect written under a feature nobody turned on.
 
+    The USER scope is not one of them: that is the scope `--auto-memory-off`
+    writes, and its case is the convergence test below.
+
     The flag that turns it off is not refused by the same rule: it writes one
     boolean and has to stay idempotent.
     """
     _harness(profile, "-home-u", {"note.md": TRAP})
-    (profile / "claude-config" / "settings.json").write_text(
-        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
-    )
-    refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
-    assert "user settings" in refusal.message
-    # Neither refusal is evaluated for the other flag, and neither is
-    # evaluated for a plain init.
-    assert _plan(profile, auto_memory_off=True).actions
-    assert _plan(profile).actions
-
     # `settings.local.json` in the checkout, which the harness reads ahead of
     # user settings.
-    (profile / "claude-config" / "settings.json").write_text(
-        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
-    )
     checkout = profile / "project" / ".claude"
     checkout.mkdir(parents=True)
     (checkout / "settings.local.json").write_text(
@@ -2501,6 +2491,10 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(
     )
     refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
     assert "local settings" in refusal.message
+    # Neither refusal is evaluated for the other flag, and neither is
+    # evaluated for a plain init.
+    assert _plan(profile, auto_memory_off=True).actions
+    assert _plan(profile).actions
     (checkout / "settings.local.json").unlink()
 
     # And managed settings, the administrator's — the one scope the adopter in
@@ -2513,6 +2507,64 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(
     )
     refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
     assert "managed settings" in refusal.message
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_switching_auto_memory_off_first_still_leaves_adoption_a_path(
+    profile,
+) -> None:
+    """NO STATE MEMKIT WROTE MAKES A MEMKIT FLAG UNRECOVERABLE.
+
+    `--auto-memory-off` writes `"autoMemoryEnabled": false` into user settings.
+    Refusing `--adopt-auto-memory` on that same boolean made the second flag
+    unusable because of the first, and the two are mutually exclusive — so no
+    invocation undoes it and the only way back was hand-editing the settings
+    file. Both orders converge instead, and the manifest discloses the off
+    state it adopts under.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    off = _dry(profile, "--store", str(store), "--auto-memory-off")
+    assert off.returncode == init.EXIT_OK, off.stdout + off.stderr
+    landed = _confirm(
+        profile, _digest_of(off), "--store", str(store), "--auto-memory-off"
+    )
+    assert landed.returncode == init.EXIT_OK, landed.stdout + landed.stderr
+    settings = profile / "claude-config" / "settings.json"
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "autoMemoryEnabled": False
+    }
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "switched off" in manifest.stdout, manifest.stdout
+    assert "BEFORE it was switched off" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    copied = store / "search" / init.ADOPT_DIRNAME / "-home-u" / "note.md"
+    assert copied.is_file(), out.stdout
+    written = json.loads(settings.read_text(encoding="utf-8"))
+    assert written["autoMemoryEnabled"] is False
+    assert written[harness_memory.DIRECTORY_KEY], written
+
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+    # The other order was never broken, and stays that way.
+    other = _dry(profile, "--store", str(store), "--auto-memory-off")
+    assert other.returncode == init.EXIT_OK, other.stdout + other.stderr
+    assert "Nothing to write" in other.stdout, other.stdout
 
 
 def test_the_adoption_manifest_names_every_directory_and_every_file(profile) -> None:

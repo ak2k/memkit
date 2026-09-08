@@ -4640,6 +4640,17 @@
         "tests/test_init.py::test_the_settings_write_lands_when_nothing_moved_under_it"
       ],
       "why": "this is the LAST action, taken after an integrity check that can run for minutes, on the file that decides where an agent writes its memories. Setting one key into whatever is there by then re-serialises the rest of the file too — content nobody read, landed under the digest the adopter approved. The config merge beside it has refused exactly that shape since it was written."
+    },
+    {
+      "name": "init-adoption-refuses-the-off-state-it-wrote-itself",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        for name in _scopes_outranking_user():\n            scope = by_scope.get(name)\n            # `is False` and not falsiness: JSON `0`, `\"\"` and `[]` are all",
+      "new": "        for name in harness_memory.SCOPE_ORDER:\n            scope = by_scope.get(name)\n            # `is False` and not falsiness: JSON `0`, `\"\"` and `[]` are all",
+      "tests": [
+        "tests/test_init.py::test_switching_auto_memory_off_first_still_leaves_adoption_a_path"
+      ],
+      "why": "the user scope is the one `--auto-memory-off` itself writes, so refusing on a `false` found there makes one memkit flag unusable because of state another memkit flag wrote — and the two are mutually exclusive, so nothing memkit offers undoes it. Hand-editing the harness settings file was the only way back."
     }
   ]
 }

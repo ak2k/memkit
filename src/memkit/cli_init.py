@@ -806,12 +806,22 @@ def check_refusals(
         # THE SCOPE SET FOR THE BOOLEAN IS A FAIL-SAFE CHOICE AND NOT A
         # MEASURED ONE. `harness_memory.switch` resolves this key in the
         # precedence the harness was measured to use and answers with the one
-        # scope that decides it; this reads ALL of them and refuses on any
-        # `false` it finds. The two differ only where a lower scope says false
-        # and a higher one says true, and the costs are not symmetric: a
-        # refusal costs a flag the adopter drops, and a redirect written for a
-        # feature nobody turned on costs a directory they now have to clean up.
-        for name in harness_memory.SCOPE_ORDER:
+        # scope that decides it; this reads every scope ABOVE the one init
+        # writes and refuses on any `false` it finds there. The two differ only
+        # where a lower scope says false and a higher one says true, and the
+        # costs are not symmetric: a refusal costs a flag the adopter drops,
+        # and a redirect written for a feature nobody turned on costs a
+        # directory they now have to clean up.
+        #
+        # THE USER SCOPE IS EXCLUDED because it is the scope `--auto-memory-off`
+        # itself writes. Refusing on it would make one memkit flag unusable
+        # because of state another memkit flag wrote, with a hand edit of the
+        # settings file the only way back; the two flags are mutually exclusive,
+        # so no single invocation can undo it. Adopting what the harness wrote
+        # BEFORE it was switched off is legal — the copy is of files that
+        # already exist — and the off state is disclosed in the manifest
+        # instead.
+        for name in _scopes_outranking_user():
             scope = by_scope.get(name)
             # `is False` and not falsiness: JSON `0`, `""` and `[]` are all
             # values the harness goes on writing under.
@@ -2598,6 +2608,27 @@ def build_plan(
             "before that — the hook reads the tree, not the ledger — so a "
             "missing row costs a line in an index and not a memory."
         )
+        # THE OFF STATE THIS ADOPTS UNDER, said out loud. Copying what the
+        # harness already wrote is still worth doing while the feature is off,
+        # but the redirect half of the flag then points at a directory nothing
+        # will add to, and an adopter who set that boolean in an earlier turn
+        # is owed the sentence rather than a refusal they cannot clear.
+        by_scope = {scope.scope: scope for scope in machine.settings}
+        user_scope = by_scope.get(USER)
+        if (
+            user_scope is not None
+            and user_scope.data.get(harness_memory.ENABLED_KEY) is False
+        ):
+            notes.append(
+                f'Auto-memory is switched off: "{harness_memory.ENABLED_KEY}": '
+                "false is set in user settings "
+                f"({_display_path(user_scope.path)}). This copies what the "
+                "harness wrote BEFORE it was switched off, and the redirect "
+                "above takes effect only if you turn it back on — nothing new "
+                "lands in that directory while the boolean is false. Setting "
+                "it back to true is an edit to that file; memkit has no flag "
+                "that does it."
+            )
     if auto_memory_off:
         target = _settings_path(machine)
         actions.append(
