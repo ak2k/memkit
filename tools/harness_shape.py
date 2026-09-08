@@ -175,8 +175,8 @@ def _managed_dir() -> str:
     return "/etc/claude-code"
 
 
-def _open_regular(path: str, errors: str = "strict", binary: bool = False):
-    """`path` open for reading, or an `OSError` — and never a wait.
+def _regular_fd(path: str) -> int:
+    """A descriptor on `path`, or an `OSError` — and never a wait.
 
     Two things `open()` will not do here. A FIFO blocks the open until
     somebody writes to the other end, and a capture is unattended, on a host
@@ -188,9 +188,9 @@ def _open_regular(path: str, errors: str = "strict", binary: bool = False):
     every caller here gets for anything that is not a plain file is the
     OSError it already books as a state or a counted read error.
 
-    `binary` is for the one caller that CAPS its read: a cap counted in bytes
-    has to be applied to bytes, and a text stream's `read(n)` counts
-    characters.
+    The guard is the descriptor and not the stream, so the two readers below
+    are the same open: one text, one bytes for the read that is CAPPED, a cap
+    counted in bytes having to be applied to bytes.
     """
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     try:
@@ -199,9 +199,17 @@ def _open_regular(path: str, errors: str = "strict", binary: bool = False):
     except BaseException:
         os.close(fd)
         raise
-    if binary:
-        return os.fdopen(fd, "rb")
-    return os.fdopen(fd, encoding="utf-8", errors=errors)
+    return fd
+
+
+def _open_regular(path: str, errors: str = "strict"):
+    """`path` open for reading as text, through the guard above."""
+    return os.fdopen(_regular_fd(path), encoding="utf-8", errors=errors)
+
+
+def _open_regular_bytes(path: str):
+    """`path` open for reading as bytes, through the guard above."""
+    return os.fdopen(_regular_fd(path), "rb")
 
 
 def _read_json(path: str):
@@ -576,7 +584,7 @@ def _read_head(path: str) -> tuple:
     always given for bytes that are not UTF-8.
     """
     try:
-        with _open_regular(path, binary=True) as handle:
+        with _open_regular_bytes(path) as handle:
             raw = handle.read(FRONTMATTER_BYTES + 1)
     except OSError:
         return None, False
