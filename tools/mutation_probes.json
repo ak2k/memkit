@@ -4284,6 +4284,17 @@
       "why": "a link is somebody's answer only where it lands. Called already redirected wherever it points, a memory directory linked to an ordinary directory is reported as handled by init and as outside every store by doctor, and is chased by neither."
     },
     {
+      "name": "init-adoption-rows-skip-the-sub-index-exclusion",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    claimed = _sub_index_members(store_path, config_path)\n    for row in rows:\n        if row[1] in claimed:\n            continue\n",
+      "new": "    for row in rows:\n",
+      "tests": [
+        "tests/test_init.py::test_an_adopted_memory_a_sub_index_rows_is_not_rowed_again"
+      ],
+      "why": "a declared sub-index owns its members' rows and `_rows_on_disk` already refuses to generate a second one. The adoption rows merged in after it put back a row the adopter had moved, and the store failed the check init runs on its own work with DOUBLE-LEDGER."
+    },
+    {
       "name": "init-a-settings-scope-that-will-not-parse-reads-as-declaring-nothing",
       "module": "init",
       "file": "src/memkit/cli_init.py",
@@ -4298,8 +4309,8 @@
       "name": "init-auto-memory-off-never-asks-the-scopes-that-outrank-the-one-it-writes",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "        for name in _scopes_outranking_user():\n            scope = by_scope.get(name)\n            value = scope.data.get(harness_memory.ENABLED_KEY) if scope else None\n",
-      "new": "        for name in ():\n            scope = by_scope.get(name)\n            value = scope.data.get(harness_memory.ENABLED_KEY) if scope else None\n",
+      "old": "        for name in _scopes_outranking_user():\n            scope = by_scope.get(name)\n            if scope is None:\n                continue\n            value = scope.data.get(harness_memory.ENABLED_KEY)\n",
+      "new": "        for name in ():\n            scope = by_scope.get(name)\n            if scope is None:\n                continue\n            value = scope.data.get(harness_memory.ENABLED_KEY)\n",
       "tests": [
         "tests/test_init.py::test_auto_memory_off_will_not_promise_what_a_higher_scope_overrules"
       ],

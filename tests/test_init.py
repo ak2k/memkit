@@ -2967,6 +2967,48 @@ def test_a_memory_a_sub_index_already_rows_is_not_rowed_again(profile) -> None:
     assert not [link for link in rows if "linked-dir" in link]
 
 
+def test_an_adopted_memory_a_sub_index_rows_is_not_rowed_again(profile) -> None:
+    """The exclusion above is applied where the rows are read off disk, and
+    the adoption rows were merged in after it without going through it. So the
+    one path that writes NEW rows was the one that skipped the guard: an
+    adopter who moved an adopted memory's row into a sub-index of their own
+    got it put back on the next run, and the store then failed the check init
+    runs on its own work with DOUBLE-LEDGER.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    out = _confirm(
+        profile,
+        _digest_of(_dry(profile, "--store", str(store), "--adopt-auto-memory")),
+        "--store", str(store), "--adopt-auto-memory",
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    link = "search/projects/-home-u/note.md"
+    search = store / "SEARCH.md"
+    assert link in search.read_text(encoding="utf-8")
+
+    # The adopter moves the row into a sub-index of their own and declares it.
+    adopted = store / "search" / "projects" / "-home-u"
+    (adopted / "INDEX.md").write_text(
+        "## Index\n\n- [app trap](note.md) — app trap one\n", encoding="utf-8"
+    )
+    search.write_text(
+        "".join(
+            line for line in search.read_text(encoding="utf-8").splitlines(True)
+            if link not in line
+        ),
+        encoding="utf-8",
+    )
+    config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["sub_indexes"] = ["search/projects/-home-u/INDEX.md"]
+    config.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (ledger,) = [a for a in plan.actions if a.path == str(search)]
+    assert link not in _rows_of(ledger.content), ledger.content
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )

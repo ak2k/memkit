@@ -875,7 +875,9 @@ def check_refusals(
         by_scope = {scope.scope: scope for scope in machine.settings}
         for name in _scopes_outranking_user():
             scope = by_scope.get(name)
-            value = scope.data.get(harness_memory.ENABLED_KEY) if scope else None
+            if scope is None:
+                continue
+            value = scope.data.get(harness_memory.ENABLED_KEY)
             # `false` up there is not a conflict — the feature is already off
             # and the note below says which scope did it. Anything else
             # declared is a value that WINS over the one being written, so the
@@ -2130,7 +2132,16 @@ def build_plan(
     ledger_rows[canary_link] = (
         "memkit-canary", canary_link, _canary_description(nonce),
     )
+    # THROUGH THE SUB-INDEX EXCLUSION `_rows_on_disk` APPLIES, because these
+    # are rows for the same store and a declared sub-index owns its members'
+    # rows outright. Merged in raw, a row the adopter had moved into one came
+    # back into SEARCH.md on the next run and the store failed the check init
+    # runs on its own work with DOUBLE-LEDGER — the one path that writes new
+    # rows being the one that skipped the guard beside it.
+    claimed = _sub_index_members(store_path, config_path)
     for row in rows:
+        if row[1] in claimed:
+            continue
         ledger_rows[row[1]] = row
     actions = [
         Action(
