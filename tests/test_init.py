@@ -3484,6 +3484,58 @@ def test_a_project_key_no_row_could_point_at_is_skipped(profile, key) -> None:
     assert checker._generate(store / "SEARCH.md", entries) == ledger
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_adoption_never_lands_an_index_for_a_directory_it_left_behind(
+    profile,
+) -> None:
+    """WHATEVER ADOPTION LANDS IS GREEN. `MEMORY.md` is a ledger name, so it is
+    copied byte for byte and nothing regenerates it — rows and all, including
+    the rows it carries for siblings adoption itself declined to copy. Landing
+    it put a row for a file that is not there into the store, and the integrity
+    check init runs over its own work then went red on adoption's own skip
+    rules: a failure the feature manufactured out of nothing but its own
+    correctness.
+
+    The mechanism is the smallest one that holds it: a ledger is decided after
+    the files it indexes, and it is copied only when every one of them was.
+    """
+    memory = _harness(profile, "-home-u", {
+        "MEMORY.md": "# index\n\n- [gone](gone.md) — a row for a file "
+                     "adoption skips\n",
+        "note.md": TRAP,
+    })
+    outside = profile / "outside.md"
+    outside.write_text("# gone\n\noutside the directory being copied\n",
+                       encoding="utf-8")
+    (memory / "gone.md").symlink_to(outside)
+    # The control, beside it: a directory copied whole keeps its index.
+    _harness(profile, "-home-ok", {"MEMORY.md": "# idx\n", "beta.md": BARE})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-u/gone.md: the file is a symlink" in manifest.stdout
+    assert "-home-u/MEMORY.md: it is an index" in manifest.stdout, manifest.stdout
+    assert "gone.md was left behind" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    whole = store / "search" / init.ADOPT_DIRNAME / "-home-ok"
+    assert sorted(p.name for p in whole.iterdir()) == ["MEMORY.md", "beta.md"]
+    # The check init just ran on its own work, run again by hand.
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
 def _folds_case(where) -> bool:
     """Whether this filesystem hands the same directory to two spellings."""
     probe = where / "case-probe"

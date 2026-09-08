@@ -4539,6 +4539,28 @@
         "tests/test_init.py::test_a_key_the_store_already_holds_another_spelling_of_diverges"
       ],
       "why": "the destination guard above is made of path strings and `os.path.realpath` does not canonicalise case, so on a case-insensitive filesystem — APFS, the default on macOS — a key differing from an existing directory only in case passes every one of them. The copy lands in the directory that is there, the row names the spelling that is not, the checker calls it an orphan, `memory-integrity --write` repairs the row to the on-disk name and the next init writes the key's spelling back: the two rewriting each other forever, with no link involved at all."
+    },
+    {
+      "name": "init-adoption-copies-an-index-of-a-directory-it-left-behind",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if name in _LEDGER_NAMES:\n                copying = {os.path.basename(a.path) for a in mine}\n                omitted = [\n                    _clean(n) for n in project.files\n                    if n not in _LEDGER_NAMES and n not in copying\n                ]\n                if omitted:\n                    skipped.append(\n                        f\"{shown}: it is an index of the directory it came \"\n                        \"from, copied with no rewriting, and this store is \"\n                        \"not getting that directory whole — \"\n                        f\"{', '.join(omitted)} \"\n                        f\"{'was' if len(omitted) == 1 else 'were'} left \"\n                        \"behind, so any row it carries for those is a row for \"\n                        \"a file that is not there\"\n                    )\n                    continue\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_adoption_never_lands_an_index_for_a_directory_it_left_behind"
+      ],
+      "why": "a ledger name is copied byte for byte and nothing regenerates it, so an index landed beside files adoption declined to copy rows files that are not in the store. The integrity check init runs over its own work then fails on adoption's own skip rules — a red check, and with it a store the adopter is told is broken, manufactured out of nothing but the feature being careful."
+    },
+    {
+      "name": "init-adoption-decides-an-index-before-the-files-it-rows",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        for name in sorted(project.files, key=lambda n: n in _LEDGER_NAMES):\n",
+      "new": "        for name in project.files:\n",
+      "tests": [
+        "tests/test_init.py::test_adoption_never_lands_an_index_for_a_directory_it_left_behind"
+      ],
+      "why": "the index arm above asks what the rest of the loop left behind, and an answer read before the loop has finished is not that answer: `MEMORY.md` sorts ahead of most memory names, so in directory order it is decided while nothing has been copied yet and every project loses the index it should have kept."
     }
   ]
 }

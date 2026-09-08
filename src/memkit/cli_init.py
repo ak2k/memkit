@@ -1955,7 +1955,11 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             f"-> {_display_path(target)}{os.sep}"
         )
         mine: list = []
-        for name in project.files:
+        # LEDGER NAMES LAST, and stable so nothing else moves. A ledger is
+        # copied with no rewriting at all, rows included, so whether it can be
+        # copied depends on what the rest of this loop leaves behind — and an
+        # answer read before the loop finishes is not that answer.
+        for name in sorted(project.files, key=lambda n: n in _LEDGER_NAMES):
             # THROUGH `_clean`, EVERY TIME. A filename is adopter-controlled
             # text that lands in the surface a human reads before typing
             # `--confirm`, and a newline in one forges a whole manifest line.
@@ -1963,6 +1967,29 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             # which strips the same characters and keeps the spacing a path
             # needs.
             shown = f"{_clean(project.key)}/{_clean(name)}"
+            # AN INDEX IS A CLAIM ABOUT THE DIRECTORY AROUND IT. A ledger name
+            # is copied byte for byte and nothing regenerates it, so the rows
+            # it carries for siblings this loop declined to copy arrive in the
+            # store pointing at files that are not there — and the integrity
+            # check init runs over its own work goes red on adoption's own
+            # skip rules. Whatever adoption lands passes that check.
+            if name in _LEDGER_NAMES:
+                copying = {os.path.basename(a.path) for a in mine}
+                omitted = [
+                    _clean(n) for n in project.files
+                    if n not in _LEDGER_NAMES and n not in copying
+                ]
+                if omitted:
+                    skipped.append(
+                        f"{shown}: it is an index of the directory it came "
+                        "from, copied with no rewriting, and this store is "
+                        "not getting that directory whole — "
+                        f"{', '.join(omitted)} "
+                        f"{'was' if len(omitted) == 1 else 'were'} left "
+                        "behind, so any row it carries for those is a row for "
+                        "a file that is not there"
+                    )
+                    continue
             # AND A NAME NO LINE CAN CARRY IS NOT COPIED AT ALL. Sanitising
             # the note leaves the destination path line, which must keep its
             # spacing byte for byte to name a file that exists — so the only
