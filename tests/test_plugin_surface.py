@@ -3346,6 +3346,10 @@ _SEARCH_ORDERS = {
     "the simpler order": "search-first"
 }
 _FLAT_MEMORY_OUTCOMES = {"stay where they are and stay retrievable": "kept"}
+_RM_REACHES = {
+    "removes the link and never what it points at": "link-only",
+    "removes the link and what it points at with it": "through",
+}
 _DIR_SHAPES = {"symlink": "link"}
 _VARIABLE_COUNTS = {"both": 2, "all three": 3, "all four": 4}
 _RECREATED_DIR_OUTCOMES = {
@@ -3562,6 +3566,16 @@ def _flat_memories_outcome(section: str) -> str:
         r"so memories already lying flat in the corpus root ([^.]+)\.",
         _FLAT_MEMORY_OUTCOMES,
         "what becomes of memories lying flat in the corpus root",
+    )
+
+
+def _rm_reach(section: str) -> str:
+    """How far the page says its `rm` reaches, which is a claim about flags."""
+    return _stated(
+        section,
+        r"`rm` ([^,]+), so memories already lying flat in the corpus root",
+        _RM_REACHES,
+        "how far the page's `rm` reaches",
     )
 
 
@@ -4291,6 +4305,29 @@ def test_the_recovery_for_a_recreated_dir_refuses_what_ls_ld_cannot_show(
         # `$target` is not there, so the first test fails and nothing runs.
         assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` became a link")
         assert _file_map(dir_) == dir_before, (script, _file_map(dir_))
+
+
+def test_no_rm_the_page_prints_reaches_past_the_link_it_removes() -> None:
+    """The safety sentence, read against the flags the page's own `rm`s carry.
+
+    The sentence is what tells a reader their memories survive the repoint, and
+    it is a claim about flags: `rm -rf` on a `$dir` a shell completed with a
+    trailing `/` follows the link and empties the corpus root, leaving the link
+    itself healthy-looking. Both commands the page prints are read, so neither
+    can be edited into a recursive force-delete under a sentence still promising
+    it removes nothing but the link.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    assert _rm_reach(section) == "link-only", "the page claims otherwise"
+    flagged = [
+        found.split()
+        for line in (_repoint_line(section), _recovery_line(section))
+        for found in re.findall(r"\brm\b((?:\s+-\S+)*)", line)
+    ]
+    # Two invocations, one per command: an `rm` that went missing is a page
+    # whose sentence is about a command it no longer prints.
+    assert len(flagged) == 2, flagged
+    assert flagged == [[], []], flagged
 
 
 def test_a_zsh_case_fails_rather_than_skips_where_no_context_declares_it(
