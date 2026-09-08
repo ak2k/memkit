@@ -3337,6 +3337,10 @@ _UNSET_TARGET_STREAMS = {
     "does say so on stderr": "loud",
     "says nothing on stderr": "silent",
 }
+_NOUNSET_STREAMS = {
+    "the shell's own message instead, and the line stops before it runs": "shell",
+    "no different, and the line stops on the same test": "unchanged",
+}
 _OWN_FILE_OUTCOMES = {
     "gets them rewritten": "rewritten",
     "gets them rewritten too": "rewritten",
@@ -3597,6 +3601,23 @@ def _blocked_link_reach(section: str) -> str:
         r"([^.]+)\.",
         _LINK_REACHES,
         "what the link reaches where a checked-in setting declares the value",
+    )
+
+
+def _nounset_streams(section: str) -> str:
+    """What the page says an unset variable does under `set -u`.
+
+    The two sentences above it are true only under the options a shell starts
+    with, and the reader this page is written for pastes `set -euo pipefail`
+    before anything: under it the shell reports the unset name itself and no
+    test of the line ever runs, which is a different account of both streams
+    and of where the line stops.
+    """
+    return _stated(
+        section,
+        r"Under `set -u` all three are ([^.]+)\.",
+        _NOUNSET_STREAMS,
+        "what an unset variable does under `set -u`",
     )
 
 
@@ -3866,14 +3887,24 @@ _REPOINT_SUCCEEDS = (
 # well as under none. `set -e` turns a status the block handles into an abort,
 # and the page's stated reader runs `set -euo pipefail` as a matter of course:
 # under it the block used to stop at its first line with no key, no message and
-# rc 128, which is the documented fallback never running. The repoint line is
-# not on this axis — `set -u` makes an unset variable a message from the shell,
-# and half its cells are about what an unset variable does.
+# rc 128, which is the documented fallback never running.
+#
+# The repoint line is on an axis of its own, and only for the three cells about
+# an unset variable: `set -u` makes an unset name a message from the shell
+# before any test of the line runs, which is a different outcome from the one
+# the page's sentence gives for default options — so the page states both and
+# each is run where it applies.
 _SHELL_OPTIONS = ("", "set -euo pipefail")
+_UNSET_OPTIONS = ("", "set -u")
+_OPTION_IDS = {"": "", "set -euo pipefail": "-errexit", "set -u": "-nounset"}
 _STORE_IN_GIT_CASES = tuple(
     (cell, opts)
     for cell in _STORE_IN_GIT_CELLS
-    for opts in (_SHELL_OPTIONS if cell.startswith("key-") else ("",))
+    for opts in (
+        _SHELL_OPTIONS if cell.startswith("key-")
+        else _UNSET_OPTIONS if cell.endswith("-unset")
+        else ("",)
+    )
 )
 
 
@@ -3883,7 +3914,7 @@ _STORE_IN_GIT_CASES = tuple(
     _STORE_IN_GIT_CASES,
     # The default-options run keeps the cell's own name, so what a case is
     # called does not change with the axis it gained.
-    ids=[f"{cell}-errexit" if opts else cell for cell, opts in _STORE_IN_GIT_CASES],
+    ids=[f"{cell}{_OPTION_IDS[opts]}" for cell, opts in _STORE_IN_GIT_CASES],
 )
 def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, shell) -> None:
     """The page's two commands, run on real filesystems.
@@ -3927,7 +3958,7 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert printed, (script, out.stdout, out.stderr)
         assert printed[-1] == want, (script, out.stdout, want)
         return
-    assert not opts, (cell, opts)
+    assert not opts or cell.endswith("-unset"), (cell, opts)
 
     pattern = _key_rule(section)
     with_search, without_search = _target_rule(section)
@@ -4025,7 +4056,7 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         halves = line.split("&& ln -sn")
         assert len(halves) == 2, line
         line = '&& mkdir "$dir" && ln -sn'.join(halves)
-    script = "\n".join([*prelude, *assignments, line])
+    script = "\n".join([*([opts] if opts else []), *prelude, *assignments, line])
     out = _shell_out(shell, script, repo, home, config_dir=config_dir)
 
     if cell == "repoint-dir-from-the-page":
@@ -4079,14 +4110,21 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
     else:
         assert os.path.islink(dir_), "the reader's link was removed"
         assert os.readlink(dir_) == str(corpus), (script, os.readlink(dir_))
-    if cell in ("guard-store-unset", "guard-dir-unset"):
+    if opts:
+        # The options half of the page's account, run: under `set -u` the shell
+        # names the variable itself and the line stops before its first test,
+        # whichever of the three is missing.
+        assert _nounset_streams(section) == "shell", "the page claims otherwise"
+        assert cell[len("guard-"):-len("-unset")] in out.stderr, (script, out.stderr)
+        assert not out.stdout, (script, out.stdout)
+    elif cell in ("guard-store-unset", "guard-dir-unset"):
         # Which streams the stopped line uses is the page's claim, and it is
         # the only explanation a reader is offered for the status.
         if _stopped_line_streams(section) == "silent":
             assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
         else:
             assert out.stderr.strip(), (script, out.stdout, out.stderr)
-    if cell == "guard-target-unset":
+    elif cell == "guard-target-unset":
         if _unset_target_streams(section) == "loud":
             assert out.stderr.strip(), (script, out.stdout, out.stderr)
         else:
