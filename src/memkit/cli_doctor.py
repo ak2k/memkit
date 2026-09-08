@@ -3841,10 +3841,21 @@ ADOPT_ADVICE = (
 def _auto_memory(machine: Machine) -> list[Check]:
     """The harness's own memory feature, qualified by what could not be read.
 
-    THREE OF THIS ROW'S FOUR SETTINGS READS decide a PASS — both switches and
-    the directory — and a scope that would not parse answers all three the
+    THREE OF THIS ROW'S FOUR SETTINGS READS decide its status — both switches
+    and the directory — and a scope that would not parse answers all three the
     same way a scope that says nothing does. So the wrapper is the row's
     outermost rule rather than a sentence inside one branch of it.
+
+    AND NO BRANCH OF THIS ROW PASSES. Every answer here is assembled from a
+    settings walk, an environment this one process inherited, and a directory
+    listing — three readings of a machine that a variable set in another
+    session, a file this user cannot open, or a harness release read from a
+    minified bundle can each make wrong, and the module says so at every one of
+    them. A PASS is this report's claim that a question is CLOSED, and no
+    branch here can close it: whichever one answers, something it did not read
+    could contradict the answer. The narrower promise is the one that holds —
+    say what was read and let a reader weigh it — so the settled answer is INFO
+    with no remedy, and its detail is word for word what a PASS carried.
     """
     return _with_unparsed(_auto_memory_rows(machine), machine.settings)
 
@@ -4053,7 +4064,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     actor=USER,
                 )
             ]
-        return [Check("auto-memory", PASS, _detail(off, left, placed, recent))]
+        return [Check("auto-memory", INFO, _detail(off, left, placed, recent))]
 
     # The feature is running, and a file this tree carries may be why.
     switched_on = (
@@ -4082,7 +4093,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             return [
                 Check(
                     "auto-memory",
-                    PASS,
+                    INFO,
                     _detail(named, recent, odd_enabled),
                 )
             ]
@@ -4204,7 +4215,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         and not switch_theirs
         and not environed
     ):
-        return [Check("auto-memory", PASS, _detail(*fixed))]
+        return [Check("auto-memory", INFO, _detail(*fixed))]
     counted = _left_behind(outside)
     listed = ""
     if outside:

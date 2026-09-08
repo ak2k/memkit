@@ -2186,7 +2186,7 @@
       "old": "            INFO if row.status == PASS else row.status,\n",
       "new": "            row.status,\n",
       "tests": [
-        "tests/test_doctor.py::test_a_pass_never_stands_on_a_scope_that_would_not_parse"
+        "tests/test_doctor.py::test_the_wrapper_downgrades_a_pass_and_leaves_every_other_status"
       ],
       "why": "a PASS is a claim about the machine, and a file this process could not open is one that can falsify every claim the row derived from the scopes"
     },
@@ -2249,8 +2249,8 @@
       "name": "auto-memory-passes-the-derived-directory-under-an-environment-override",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        and not switch_theirs\n        and not environed\n    ):\n        return [Check(\"auto-memory\", PASS, _detail(*fixed))]\n",
-      "new": "        and not switch_theirs\n    ):\n        return [Check(\"auto-memory\", PASS, _detail(*fixed))]\n",
+      "old": "        and not switch_theirs\n        and not environed\n    ):\n        return [Check(\"auto-memory\", INFO, _detail(*fixed))]\n",
+      "new": "        and not switch_theirs\n    ):\n        return [Check(\"auto-memory\", INFO, _detail(*fixed))]\n",
       "tests": [
         "tests/test_doctor.py::test_an_override_leaves_the_derived_row_a_remedy_and_somebody_to_act_on_it"
       ],

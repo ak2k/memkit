@@ -415,6 +415,13 @@ def _config_file(path, *, schema=1, stores=(), search_cli=None) -> str:
     return str(path)
 
 
+# The auto-memory row's settled answer. That check never passes — every branch
+# of it rests on a settings walk, on an environment this one process inherited
+# and on a directory listing — so what separates "nothing to act on here" from
+# "here is what to change" is the remedy rather than the status.
+SETTLED = (doctor.INFO, "")
+
+
 def _only(checks, check_id):
     rows = [c for c in checks if c.id == check_id]
     assert rows, [c.id for c in checks]
@@ -2220,7 +2227,7 @@ def test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone(
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
         "auto-memory",
     )
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "auto-memory is off in user settings" in row.detail
     # And the directory it would have used is not reported as a second system,
     # which is what the branch order buys.
@@ -2248,7 +2255,7 @@ def test_a_directory_inside_a_store_is_retrieved_and_passes(profile, monkeypatch
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
         "auto-memory",
     )
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "personal" in row.detail and str(corpus) in row.detail
     assert "user settings" in row.detail
 
@@ -2275,7 +2282,7 @@ def test_a_gated_store_still_holds_what_the_harness_writes_into_it(
     assert cfg is not None
     assert [s.id for s in cfg.searched_stores()] == ["personal"], "not gated out"
     (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "project" in row.detail
 
 
@@ -2520,7 +2527,7 @@ def test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved(
     ordinary.mkdir()
     _settings(profile, autoMemoryDirectory=str(ordinary))
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
 
     # SEVERAL components down, which is the shape one guarding test on a
     # one-component fixture could not tell from a basename comparison.
@@ -2589,7 +2596,7 @@ def test_a_corpus_root_under_a_pruned_name_indexes_nothing_at_all(
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, other)),
         "auto-memory",
     )
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
 
 
 def test_a_pair_that_stops_resolving_is_answered_as_reaching_nothing(
@@ -2640,7 +2647,7 @@ def test_a_store_configured_and_not_on_disk_retrieves_nothing(
     mine.mkdir()
     machine = _machine(profile, monkeypatch, path)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
 
 
 def test_nested_stores_answer_the_same_whichever_is_declared_first(
@@ -2681,7 +2688,7 @@ def test_nested_stores_answer_the_same_whichever_is_declared_first(
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
         "auto-memory",
     )
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
 
 
 def test_a_flat_store_does_not_pass_a_directory_a_search_dir_would_unretrieve(
@@ -2714,7 +2721,7 @@ def test_a_flat_store_does_not_pass_a_directory_a_search_dir_would_unretrieve(
     # and it passes before the directory exists.
     _settings(profile, autoMemoryDirectory=str(flat / "search" / "auto-memory"))
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
 
 
 def test_a_memory_directory_linked_into_a_store_is_already_wired(
@@ -2742,7 +2749,7 @@ def test_a_memory_directory_linked_into_a_store_is_already_wired(
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
         "auto-memory",
     )
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "outside every store" not in row.detail
     assert "is retrieved" in row.detail and "personal" in row.detail
 
@@ -2795,7 +2802,7 @@ def test_only_false_turns_the_switches_off(profile, monkeypatch) -> None:
 
     _settings(profile, autoMemoryEnabled=False)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "auto-memory is off in user settings" in row.detail
 
     # The same rule for the consolidation switch, whose off-line is the only
@@ -2841,7 +2848,7 @@ def test_an_environment_variable_that_forces_the_feature_on_is_never_a_pass(
     # A word in neither list decides nothing, and the settings answer again.
     monkeypatch.setenv(harness_memory.DISABLE_ENV, "banana")
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "auto-memory is off in user settings" in row.detail
 
 
@@ -3269,7 +3276,7 @@ def test_a_checked_in_settings_file_decides_and_is_reported_not_passed(
     checked_in.unlink()
     _settings(profile, autoMemoryDirectory=str(mine))
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "user settings" in row.detail
 
 
@@ -3338,7 +3345,7 @@ def test_off_is_information_when_a_lower_scope_declares_it_otherwise(
     # One declaring scope, and every candidate order picks it: PASS.
     _settings(profile, autoDreamEnabled=True)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "auto-memory is off in managed settings" in row.detail
 
 
@@ -3424,7 +3431,7 @@ def test_a_checkout_that_turns_the_feature_off_is_reported_not_believed(
     checked_in.unlink()
     _settings(profile, autoMemoryEnabled=False)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "auto-memory is off in user settings" in row.detail
 
 
@@ -3487,9 +3494,11 @@ def test_a_pass_never_stands_on_a_scope_that_would_not_parse(
     the one that did not is the one that outranks them.
 
     `.claude/settings.json` in the session's own directory declares nothing
-    while it is malformed, so the user scope decides and the row reaches its
-    "memkit is the only memory system here" PASS — over a file that may set
-    the same key the other way and that a `git checkout` repairs.
+    while it is malformed, so the user scope decides and the row answers
+    "memkit is the only memory system here" — over a file that may set the same
+    key the other way and that a `git checkout` repairs. What the wrapper adds
+    is the file's name and the reason, on a row that would otherwise read as an
+    answer.
     """
     path = _store_config(profile, stores=["personal"])
     _settings(profile, autoMemoryEnabled=False)
@@ -3512,7 +3521,40 @@ def test_a_pass_never_stands_on_a_scope_that_would_not_parse(
     assert "could not be parsed" not in row.detail
     checked_in.unlink()
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_the_wrapper_downgrades_a_pass_and_leaves_every_other_status(
+    profile, monkeypatch
+) -> None:
+    """The wrapper's own rule, asked of the wrapper.
+
+    Which of the producers it wraps can reach a PASS is not a fixed fact — a
+    row that stops passing for reasons of its own takes the only exercise of
+    this rule with it, and the downgrade goes unguarded while every one of
+    those producers still depends on it. So the rows here are built rather
+    than produced.
+    """
+    (profile / "claude-config" / "settings.json").write_text(
+        '{"autoMemoryEnabled": false,,}', encoding="utf-8"
+    )
+    passed, failed = doctor._with_unparsed(
+        [
+            doctor.Check("plugin-enabled", doctor.PASS, "what it read"),
+            doctor.Check("corpus-root", doctor.FAIL, "what it read", "the repair"),
+        ],
+        doctor.settings_scopes(),
+    )
+    assert passed.status == doctor.INFO
+    assert passed.remedy
+    # Every other status is the producer's to keep: a FAIL that became INFO
+    # because some other file would not parse is a defect reported as a note.
+    assert failed.status == doctor.FAIL
+    assert failed.remedy.endswith("the repair")
+    for row in (passed, failed):
+        assert "could not be parsed" in row.detail
+        assert "what it read" in row.detail
+        assert row.actor == doctor.USER
 
 
 def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
@@ -3795,8 +3837,8 @@ def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
     config directory holding nineteen memories nothing retrieves, and it is
     the sentence that stops an adopter looking for them.
 
-    Off is still off, so this stays a PASS — what changes is that the PASS
-    carries the count and where to read about moving them.
+    Off is still off, so this stays the settled answer — what changes is that
+    it carries the count and where to read about moving them.
     """
     path = _store_config(profile, stores=["personal"])
     projects = profile / "claude-config" / "projects"
@@ -3809,7 +3851,7 @@ def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
         "auto-memory",
     )
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "auto-memory is off in user settings" in row.detail
     assert "2 project directories hold 19 memories outside every store" in row.detail
     assert "docs/STORE.md" in row.detail
@@ -3820,7 +3862,7 @@ def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
     for key, _ in (("-home-u-work-acme", 10), ("-home-u-work-beta", 9)):
         shutil.rmtree(projects / key)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert (row.status, row.remedy) == SETTLED, row.detail
     assert "memkit is the only memory system here" in row.detail
 
 
