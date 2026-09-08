@@ -896,6 +896,35 @@ def test_the_fallback_for_a_kernel_that_will_not_name_fd_one_still_refuses(
             )["anonymised"] is False
 
 
+def _recorded_lookups(module, monkeypatch) -> list:
+    """Every question `_index` puts to the filesystem, as `(name, dir_fd)`.
+
+    BOTH spellings are recorded and not only the one in use: a lookup that
+    names a whole path is exactly what reaching through an intermediate
+    component looks like, and a recorder watching the descriptor call alone
+    would pass a walk that had stopped making it.
+    """
+    asked = []
+    stat, lexists, open_dir = module.os.stat, module.os.path.lexists, module._open_dir
+
+    def recording_stat(path, *args, **kwargs):
+        asked.append((path, kwargs.get("dir_fd")))
+        return stat(path, *args, **kwargs)
+
+    def recording_lexists(path):
+        asked.append((path, None))
+        return lexists(path)
+
+    def recording_open_dir(path, dir_fd=None):
+        asked.append((path, dir_fd))
+        return open_dir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(module.os, "stat", recording_stat)
+    monkeypatch.setattr(module.os.path, "lexists", recording_lexists)
+    monkeypatch.setattr(module, "_open_dir", recording_open_dir)
+    return asked
+
+
 def test_an_index_row_is_judged_without_leaving_the_directory(tmp_path) -> None:
     """`dangling_rows` used to be decided by joining adopter-authored text onto
     the memory directory and stat-ing whatever came out.
@@ -951,20 +980,71 @@ def test_a_row_one_directory_down_is_looked_at_rather_than_written_off(
     # the ones the count changed for.
     assert entry["index"] == {"rows": 5, "dangling_rows": 3, "truncated": False}
     module = _tool_module()
-    asked = []
-    lexists = os.path.lexists
-
-    def recording(path):
-        asked.append(path)
-        return lexists(path)
-
-    monkeypatch.setattr(module.os.path, "lexists", recording)
+    asked = _recorded_lookups(module, monkeypatch)
     assert module._index(str(memory), ["MEMORY.md", "sibling.md"]) == {
         "rows": 5, "dangling_rows": 3, "truncated": False,
     }
-    assert [os.path.relpath(path, str(memory)) for path in asked] == [
-        "hot/beads.md", "nowhere.md",
+    # WHICH ROWS the filesystem is asked about, which is the half of this the
+    # count alone does not say: `hot/beads.md` one directory down and
+    # `nowhere.md`, and neither `/etc/hosts` nor `../sibling.md`. Component by
+    # component from the directory's own descriptor, so `hot` is a question of
+    # its own and the leaves arrive under their last component alone.
+    assert [name for name, dir_fd in asked if dir_fd is not None] == [
+        "hot", "beads.md", "nowhere.md",
     ]
+
+
+def test_a_row_is_not_reached_through_a_linked_component(
+    tmp_path, monkeypatch,
+) -> None:
+    """The escape rule judges the STRING, and `lexists` follows every
+    component but the last.
+
+    So `link-out/x.md` passes the rule — nothing about that text escapes —
+    and the lookup then walks through `link-out` and stats a file outside the
+    directory being captured: the stat the rule exists to prevent, one
+    component over. The row also scored as SATISFIED, on the strength of
+    somebody else's file existing.
+    """
+    config = tmp_path / "config"
+    outside = tmp_path / "elsewhere"
+    _write(outside / "x.md", "x\n")
+    memory = _memory_dir(config, "-a")
+    _write(memory / "own.md", "x\n")
+    os.symlink(outside, memory / "link-out")
+    # And the row a walk by descriptor must still count as PRESENT: a dead
+    # link one directory down is a file that is there to be moved, which is
+    # what the row is about — so the last component is not followed either.
+    (memory / "hot").mkdir()
+    os.symlink(tmp_path / "gone.md", memory / "hot" / "dead.md")
+    _write(
+        memory / "MEMORY.md",
+        "- [a](own.md) — hook\n"
+        "- [b](link-out/x.md) — hook\n"
+        "- [c](hot/dead.md) — hook\n",
+    )
+    entry = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]
+    assert entry["index"] == {"rows": 3, "dangling_rows": 1, "truncated": False}
+
+    module = _tool_module()
+    asked = _recorded_lookups(module, monkeypatch)
+    assert module._index(str(memory), ["MEMORY.md", "own.md"]) == {
+        "rows": 3, "dangling_rows": 1, "truncated": False,
+    }
+    # And nothing was asked by a name at all: every question is one component
+    # put to a descriptor the walk already holds, which is what keeps a linked
+    # component from being followed rather than what notices afterwards.
+    assert asked, "a walk that asks nothing proves nothing"
+    for name, dir_fd in asked:
+        if dir_fd is None:
+            # The one question put by name is the directory being walked.
+            assert os.path.realpath(name) == os.path.realpath(str(memory)), name
+        else:
+            assert os.sep not in name, name
+    # `link-out` is asked for as a DIRECTORY and refused, so the row is
+    # dangling because the walk stopped rather than because it looked.
+    assert ("link-out", None) not in asked
+    assert "link-out" in [name for name, dir_fd in asked if dir_fd is not None]
 
 
 def test_what_is_opened_is_decided_by_where_the_link_lands(tmp_path) -> None:

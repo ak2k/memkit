@@ -714,6 +714,36 @@ def _outside(target: str) -> bool:
     )
 
 
+def _row_present(root: int, target: str) -> bool:
+    """Whether `target` names something in the directory `root` is open on.
+
+    COMPONENT BY COMPONENT, each asked of the level above it. `lexists` leaves
+    only the LAST component unfollowed and follows every one before it, so a
+    row reading `link-out/x.md` stats somebody else's file through a name in
+    here — the same stat the string rule exists to prevent, one component
+    over, under a `sudo -n` that was given this directory and not the target.
+
+    `O_NOFOLLOW` on each intermediate component is what makes that a dangling
+    row rather than a walk out of the directory, and the last is a `stat` that
+    does not follow either: a row pointing at a dead symlink counts as
+    present, because the file is there to be moved and that is what the row is
+    about.
+    """
+    parts = os.path.normpath(target).split(os.sep)
+    current = os.dup(root)
+    try:
+        for part in parts[:-1]:
+            below = _open_dir(part, dir_fd=current)
+            os.close(current)
+            current = below
+        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+    except OSError:
+        return False
+    finally:
+        os.close(current)
+    return True
+
+
 def _index(memory_dir: str, listed: list):
     """Row counts for `MEMORY.md`, and how many of the rows point at nothing.
 
@@ -756,20 +786,27 @@ def _index(memory_dir: str, listed: list):
         lines.pop()
     present = set(listed)
     rows = dangling = 0
-    for line in lines:
-        match = _INDEX_ROW_RE.match(line)
-        if match is None:
-            continue
-        rows += 1
-        target = match.group(1).strip()
-        if target in present:
-            continue
-        # `lexists`, so a row pointing at a dead symlink counts as present:
-        # the file is there to be moved, which is what the row is about.
-        if _outside(target) or not os.path.lexists(
-            os.path.join(memory_dir, target)
-        ):
-            dangling += 1
+    try:
+        # ONCE, and every row is judged from it: a directory reopened by name
+        # per row is a different directory each time somebody wants it to be.
+        root = _open_dir(os.path.realpath(memory_dir))
+    except OSError:
+        # No descriptor on the directory the rows are about, so no row in it
+        # can be looked at — a count nobody took, which is what None says.
+        return None
+    try:
+        for line in lines:
+            match = _INDEX_ROW_RE.match(line)
+            if match is None:
+                continue
+            rows += 1
+            target = match.group(1).strip()
+            if target in present:
+                continue
+            if _outside(target) or not _row_present(root, target):
+                dangling += 1
+    finally:
+        os.close(root)
     return {"rows": rows, "dangling_rows": dangling, "truncated": truncated}
 
 

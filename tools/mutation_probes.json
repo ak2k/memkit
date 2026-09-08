@@ -4835,6 +4835,39 @@
         "tests/test_harness_shape.py::test_a_file_the_rule_declined_to_open_states_no_read"
       ],
       "why": "A memory file that is a link out of the directory is never opened, and `false` here puts four `false` frontmatter flags and a null length in its record — the record of a file that was read and carries none. A rebuilt corpus would reproduce the flags and not the file."
+    },
+    {
+      "name": "harness-shape-an-index-row-is-looked-up-by-its-whole-name",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            if _outside(target) or not _row_present(root, target):\n",
+      "new": "            if _outside(target) or not os.path.lexists(\n                os.path.join(memory_dir, target)\n            ):\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_is_not_reached_through_a_linked_component"
+      ],
+      "why": "The escape rule reads the string only, so `link-out/x.md` passes it; a lookup by whole name then follows every component but the last and stats a file outside the directory being captured, and scores the row satisfied on the strength of somebody else's file existing."
+    },
+    {
+      "name": "harness-shape-an-index-walk-follows-an-intermediate-component",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            below = _open_dir(part, dir_fd=current)\n",
+      "new": "            below = os.open(\n                part, os.O_RDONLY | getattr(os, \"O_DIRECTORY\", 0), dir_fd=current\n            )\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_is_not_reached_through_a_linked_component"
+      ],
+      "why": "`O_NOFOLLOW` on each intermediate component is the whole of what keeps the walk inside the directory: without it a link planted at a middle component is descended, which is the lookup by whole name again with the descriptors doing the following."
+    },
+    {
+      "name": "harness-shape-an-index-row-naming-a-dead-link-is-booked-dangling",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n",
+      "new": "        os.stat(parts[-1], dir_fd=current)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_is_not_reached_through_a_linked_component"
+      ],
+      "why": "A row pointing at a dead symlink counts as present: the file is there to be moved, which is what the row is about. Following the last component books it dangling, and also follows a live one out of the directory."
     }
   ]
 }
