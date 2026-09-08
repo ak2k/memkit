@@ -329,8 +329,12 @@ Creating `search/` afterwards takes that directory back out of retrieval, so
 making `search/` first is the simpler order. `rm` removes the link and never
 what it points at, so memories already lying flat in the corpus root stay
 where they are and stay retrievable. Where `$dir` is not a link the first test
-fails and nothing after it runs. Both variables are yours to set before the
-line runs.
+fails and nothing after it runs. `$store` is your store's root and `$dir` is
+the directory the block above printed; all three are yours to set before the
+line runs, and an unset `$store` or `$dir` fails a test rather than a command,
+so the line stops with a status and nothing on stderr. Quit the harness
+first — it recreates `$dir` at startup, and a recreation between `rm` and
+`ln` leaves the link inside `$dir` rather than in its place.
 
 `memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
 honours and names the directory in use, or the derived default when it is unset.
