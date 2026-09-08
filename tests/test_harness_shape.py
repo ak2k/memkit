@@ -1077,10 +1077,10 @@ def test_the_committed_shapes_carry_no_names() -> None:
         # A committed fixture is a COMPLETE capture. A half-failed one is a
         # tree nobody can rebuild, and it looks exactly like a small machine.
         assert shape["skipped"] == 0, path.name
-        # `.get`, and only until the fixtures are re-captured: a shape taken
-        # before this counter existed has no key to read, and the alternative
-        # is a gate that is red on an artifact nothing is wrong with.
-        assert shape.get("read_errors", 0) == 0, path.name
+        # Subscripted, never `.get`: a fixture without this counter predates
+        # the field set the tool emits, and a default that stands in for it
+        # reads as a complete capture. The KeyError is the right failure.
+        assert shape["read_errors"] == 0, path.name
         # The two harness rows, which are adopter-controlled strings and were
         # the only free text in either committed fixture.
         version = shape["harness"]["version_hint"]
@@ -1103,3 +1103,63 @@ def test_the_committed_shapes_carry_no_names() -> None:
                 assert HOOK_RE.fullmatch(event), (path.name, event)
             for plugin in scope["plugins"]:
                 assert PLUGIN_RE.match(plugin), (path.name, plugin)
+
+
+def _field_sets(shape: dict) -> dict:
+    """The field names a shape uses, one set per kind of record.
+
+    A set of frozensets rather than one union, so a shape whose records
+    disagree among themselves shows up here as two entries rather than as a
+    single wider set.
+    """
+    dirs, files, indexes, scopes = set(), set(), set(), set()
+    for entry in shape["memory_dirs"]:
+        dirs.add(frozenset(entry))
+        files.update(frozenset(item) for item in entry["files"])
+        if entry["index"] is not None:
+            indexes.add(frozenset(entry["index"]))
+    for scope in shape["settings"].values():
+        scopes.add(frozenset(scope))
+    return {
+        "shape": {frozenset(shape)},
+        "memory_dir": dirs,
+        "file": files,
+        "index": indexes,
+        "scope": scopes,
+    }
+
+
+def test_a_committed_shape_carries_the_field_set_the_tool_emits_today(
+    tmp_path,
+) -> None:
+    """One `schema` number, one document. Both fixtures declared schema 1 while
+    one of them predated five fields and still carried a sixth the tool had
+    stopped emitting — so a consumer that branched on the number got a
+    `KeyError` off the older file.
+
+    The expectation is TAKEN FROM A LIVE CAPTURE rather than typed out here:
+    what makes a committed shape usable is that it is the document this tool
+    produces, and a list maintained beside the tool is another copy to drift.
+    Subset over a set of frozensets is equality for every record kind a
+    fixture has any of, and vacuous for one it has none of — a capture with no
+    index is a machine, not a defect.
+    """
+    fixtures = sorted(SHAPES.glob("*.json")) if SHAPES.is_dir() else []
+    if not fixtures:
+        pytest.skip("no shapes captured yet")
+    emitted = _field_sets(_shape("--config-dir", str(_tree(tmp_path / "plain"))))
+    # A second tree for the settings scope, which the first one has none of.
+    settings = _field_sets(
+        _shape(
+            "--config-dir",
+            str(_sentinel_tree(tmp_path / "settings")),
+            env=_managed_env(tmp_path / "no-managed"),
+        )
+    )
+    for kind, found in settings.items():
+        emitted[kind] |= found
+    for path in fixtures:
+        shape = json.loads(path.read_text(encoding="utf-8"))
+        for kind, found in _field_sets(shape).items():
+            stale = [sorted(record) for record in found - emitted[kind]]
+            assert not stale, (path.name, kind, stale)

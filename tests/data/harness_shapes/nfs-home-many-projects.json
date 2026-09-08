@@ -8,6 +8,7 @@
   },
   "settings": {
     "user": {
+      "unreadable": false,
       "memory_keys": {},
       "hooks": [],
       "plugins": []
@@ -16,16 +17,19 @@
   "projects_total": 3923,
   "memory_dirs_total": 3918,
   "skipped": 0,
+  "read_errors": 0,
   "memory_dirs": [
     {
       "key": "-",
       "key_len": 1,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 634,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -35,6 +39,7 @@
         {
           "name": "m1.md",
           "size": 2392,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 192,
@@ -44,15 +49,17 @@
         {
           "name": "m2.md",
           "size": 1502,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 87,
+          "description_len": 85,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m3.md",
           "size": 1195,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 74,
@@ -62,17 +69,18 @@
         {
           "name": "m4.md",
           "size": 1720,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 108,
+          "description_len": 106,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 4,
         "rows": 4,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -80,11 +88,13 @@
       "key": "-s1-s2",
       "key_len": 12,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 700,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -94,6 +104,7 @@
         {
           "name": "m5.md",
           "size": 1294,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 117,
@@ -103,6 +114,7 @@
         {
           "name": "m6.md",
           "size": 1931,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 206,
@@ -112,15 +124,17 @@
         {
           "name": "m7.md",
           "size": 965,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 105,
+          "description_len": 103,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m8.md",
           "size": 1305,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 136,
@@ -129,9 +143,9 @@
         }
       ],
       "index": {
-        "lines": 6,
         "rows": 4,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -139,23 +153,26 @@
       "key": "-s1-s2-s3-s4-s5-s6-s7",
       "key_len": 51,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "m9.md",
           "size": 1501,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 80,
+          "description_len": 76,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m10.md",
           "size": 1529,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 82,
+          "description_len": 80,
           "has_name": true,
           "has_type": true
         }
@@ -167,11 +184,13 @@
       "key": "-s1-s2-s3-s8-s4-s9-s10",
       "key_len": 43,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 841,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -181,6 +200,7 @@
         {
           "name": "m11.md",
           "size": 2473,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 126,
@@ -190,6 +210,7 @@
         {
           "name": "m12.md",
           "size": 1758,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 112,
@@ -199,15 +220,17 @@
         {
           "name": "m13.md",
           "size": 1288,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 84,
+          "description_len": 80,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m14.md",
           "size": 3185,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 109,
@@ -216,9 +239,9 @@
         }
       ],
       "index": {
-        "lines": 4,
         "rows": 4,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -226,11 +249,13 @@
       "key": "-s1-s2-s3-s8-s4-s11-s12-s13",
       "key_len": 42,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 2706,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -240,6 +265,7 @@
         {
           "name": "m15.md",
           "size": 599,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 95,
@@ -249,6 +275,7 @@
         {
           "name": "m16.md",
           "size": 1352,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 166,
@@ -258,6 +285,7 @@
         {
           "name": "m17.md",
           "size": 1312,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 136,
@@ -267,114 +295,137 @@
         {
           "name": "m18.md",
           "size": 1070,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 134,
+          "description_len": 130,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m19.md",
           "size": 1068,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 139,
+          "description_len": 137,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m20.md",
           "size": 1291,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 130,
+          "description_len": 128,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m21.md",
           "size": 1441,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 158,
+          "description_len": 156,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m22.md",
           "size": 1098,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 118,
+          "description_len": 116,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m23.md",
           "size": 2281,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 178,
+          "description_len": 176,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m24.md",
           "size": 1189,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 130,
+          "description_len": 124,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m25.md",
           "size": 1321,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 183,
+          "description_len": 181,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m26.md",
           "size": 2012,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 122,
+          "description_len": 120,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m27.md",
           "size": 1162,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 143,
+          "description_len": 141,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m28.md",
           "size": 1144,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 162,
+          "description_len": 156,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m29.md",
           "size": 1397,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 165,
+          "description_len": 163,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m30.md",
           "size": 1417,
+          "is_symlink": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 159,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m31.md",
+          "size": 1041,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 165,
@@ -382,28 +433,20 @@
           "has_type": true
         },
         {
-          "name": "m31.md",
-          "size": 1041,
-          "has_frontmatter": true,
-          "has_description": true,
-          "description_len": 169,
-          "has_name": true,
-          "has_type": true
-        },
-        {
           "name": "m32.md",
           "size": 948,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 100,
+          "description_len": 98,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 17,
         "rows": 17,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -411,11 +454,13 @@
       "key": "-s1-s2-s3-s8-s4-s14-s15",
       "key_len": 35,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 1064,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -425,24 +470,27 @@
         {
           "name": "m33.md",
           "size": 1880,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 158,
+          "description_len": 156,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m34.md",
           "size": 935,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 92,
+          "description_len": 90,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m35.md",
           "size": 407,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 105,
@@ -452,15 +500,17 @@
         {
           "name": "m36.md",
           "size": 744,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 143,
+          "description_len": 141,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m37.md",
           "size": 1438,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 159,
@@ -470,35 +520,38 @@
         {
           "name": "m38.md",
           "size": 1260,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 136,
+          "description_len": 134,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m39.md",
           "size": 733,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 82,
+          "description_len": 80,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m40.md",
           "size": 1154,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 133,
+          "description_len": 131,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 8,
         "rows": 8,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -506,11 +559,13 @@
       "key": "-s1-s2-s3-s8-s4-s14-s16",
       "key_len": 42,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 2984,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -520,15 +575,17 @@
         {
           "name": "m41.md",
           "size": 1601,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 107,
+          "description_len": 105,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m42.md",
           "size": 923,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 167,
@@ -538,6 +595,7 @@
         {
           "name": "m43.md",
           "size": 797,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 113,
@@ -547,6 +605,7 @@
         {
           "name": "m44.md",
           "size": 1479,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 76,
@@ -556,15 +615,17 @@
         {
           "name": "m45.md",
           "size": 1567,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 127,
+          "description_len": 125,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m46.md",
           "size": 1945,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 99,
@@ -574,15 +635,7 @@
         {
           "name": "m47.md",
           "size": 1503,
-          "has_frontmatter": true,
-          "has_description": true,
-          "description_len": 131,
-          "has_name": true,
-          "has_type": true
-        },
-        {
-          "name": "m48.md",
-          "size": 1941,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 129,
@@ -590,8 +643,19 @@
           "has_type": true
         },
         {
+          "name": "m48.md",
+          "size": 1941,
+          "is_symlink": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 125,
+          "has_name": true,
+          "has_type": true
+        },
+        {
           "name": "m49.md",
           "size": 1083,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 123,
@@ -601,24 +665,27 @@
         {
           "name": "m50.md",
           "size": 1159,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 100,
+          "description_len": 98,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m51.md",
           "size": 1005,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 85,
+          "description_len": 81,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m52.md",
           "size": 1355,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 95,
@@ -628,6 +695,7 @@
         {
           "name": "m53.md",
           "size": 1029,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 87,
@@ -637,60 +705,67 @@
         {
           "name": "m54.md",
           "size": 1366,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 160,
+          "description_len": 158,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m55.md",
           "size": 1736,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 108,
+          "description_len": 106,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m56.md",
           "size": 1548,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 111,
+          "description_len": 109,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m57.md",
           "size": 2143,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 111,
+          "description_len": 109,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m58.md",
           "size": 1313,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 170,
+          "description_len": 168,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m59.md",
           "size": 863,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 102,
+          "description_len": 100,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m60.md",
           "size": 854,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 95,
@@ -700,6 +775,7 @@
         {
           "name": "m61.md",
           "size": 983,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 88,
@@ -708,9 +784,9 @@
         }
       ],
       "index": {
-        "lines": 23,
         "rows": 21,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -718,11 +794,13 @@
       "key": "-s1-s2-s3-s8-s4-s14-s17-s18",
       "key_len": 47,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 829,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -732,6 +810,7 @@
         {
           "name": "m62.md",
           "size": 885,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 146,
@@ -740,16 +819,18 @@
         },
         {
           "name": "m63.md",
-          "size": 2087,
+          "size": 2538,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 141,
+          "description_len": 185,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m64.md",
           "size": 901,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 120,
@@ -759,6 +840,7 @@
         {
           "name": "m65.md",
           "size": 836,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 88,
@@ -768,26 +850,28 @@
         {
           "name": "m66.md",
           "size": 796,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 119,
+          "description_len": 117,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m67.md",
           "size": 1109,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 165,
+          "description_len": 151,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 6,
         "rows": 6,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -795,11 +879,13 @@
       "key": "-s1-s2-s3-s8-s4-s19-s20-s21",
       "key_len": 53,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 715,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -809,62 +895,68 @@
         {
           "name": "m68.md",
           "size": 1484,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 187,
+          "description_len": 185,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m69.md",
           "size": 1712,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 149,
+          "description_len": 147,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m70.md",
           "size": 1646,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 166,
+          "description_len": 164,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m71.md",
           "size": 3233,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 166,
+          "description_len": 164,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m72.md",
           "size": 911,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 154,
+          "description_len": 152,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m73.md",
           "size": 1425,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 172,
+          "description_len": 170,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 5,
         "rows": 5,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -872,11 +964,13 @@
       "key": "-s1-s2-s3-s8-s4-s4-s9-s22",
       "key_len": 55,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 161,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -886,17 +980,18 @@
         {
           "name": "m74.md",
           "size": 896,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 78,
+          "description_len": 76,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 3,
         "rows": 1,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -904,11 +999,13 @@
       "key": "-s1-s2-s3-s8-s4-s4-s16",
       "key_len": 46,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 117,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -918,17 +1015,18 @@
         {
           "name": "m75.md",
           "size": 689,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 69,
+          "description_len": 67,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 3,
         "rows": 1,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -936,11 +1034,13 @@
       "key": "-s1-s2-s3-s8-s4-s4-s23",
       "key_len": 44,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 976,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -950,24 +1050,27 @@
         {
           "name": "m76.md",
           "size": 930,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 103,
+          "description_len": 101,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m77.md",
           "size": 1406,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 109,
+          "description_len": 107,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m78.md",
           "size": 1582,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 77,
@@ -977,6 +1080,7 @@
         {
           "name": "m79.md",
           "size": 1441,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 119,
@@ -986,6 +1090,7 @@
         {
           "name": "m80.md",
           "size": 1204,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 73,
@@ -995,35 +1100,38 @@
         {
           "name": "m81.md",
           "size": 1254,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 85,
+          "description_len": 83,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m82.md",
           "size": 1473,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 106,
+          "description_len": 104,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m83.md",
           "size": 1813,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 88,
+          "description_len": 86,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 8,
         "rows": 8,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -1031,11 +1139,13 @@
       "key": "-s1-s2-s3-s8-s4-s24-s25",
       "key_len": 42,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 180,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -1045,17 +1155,18 @@
         {
           "name": "m84.md",
           "size": 2942,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 128,
+          "description_len": 126,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 1,
         "rows": 1,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -1063,11 +1174,13 @@
       "key": "-s1-s2-s3-s8-s4-s26-s27-s28",
       "key_len": 49,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 1103,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -1077,6 +1190,7 @@
         {
           "name": "m85.md",
           "size": 1437,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 156,
@@ -1086,42 +1200,47 @@
         {
           "name": "m86.md",
           "size": 1360,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 109,
+          "description_len": 107,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m87.md",
           "size": 2307,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 128,
+          "description_len": 126,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m88.md",
           "size": 1476,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 161,
+          "description_len": 157,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m89.md",
           "size": 1695,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 194,
+          "description_len": 192,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m90.md",
           "size": 1449,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 137,
@@ -1131,17 +1250,18 @@
         {
           "name": "m91.md",
           "size": 5859,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 133,
+          "description_len": 131,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 6,
         "rows": 6,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -1149,11 +1269,13 @@
       "key": "-s1-s2-s3-s8-s4-s26-s29-s30-s31",
       "key_len": 55,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 383,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -1163,15 +1285,17 @@
         {
           "name": "m92.md",
           "size": 1499,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 111,
+          "description_len": 109,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m93.md",
           "size": 1166,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 96,
@@ -1181,17 +1305,18 @@
         {
           "name": "m94.md",
           "size": 1294,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 140,
+          "description_len": 138,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 3,
         "rows": 3,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -1199,11 +1324,13 @@
       "key": "-s1-s2-s3-s8-s4-s17-s32",
       "key_len": 38,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 3865,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -1213,60 +1340,67 @@
         {
           "name": "m95.md",
           "size": 1197,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 109,
+          "description_len": 107,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m96.md",
           "size": 1824,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 261,
+          "description_len": 259,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m97.md",
           "size": 1461,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 167,
+          "description_len": 165,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m98.md",
           "size": 1157,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 128,
+          "description_len": 126,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m99.md",
           "size": 930,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 77,
+          "description_len": 75,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m100.md",
           "size": 1265,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 139,
+          "description_len": 137,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m101.md",
           "size": 1016,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 111,
@@ -1276,24 +1410,27 @@
         {
           "name": "m102.md",
           "size": 1211,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 99,
+          "description_len": 97,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m103.md",
           "size": 1178,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 118,
+          "description_len": 114,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m104.md",
           "size": 1615,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 98,
@@ -1303,24 +1440,37 @@
         {
           "name": "m105.md",
           "size": 1783,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 136,
+          "description_len": 134,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m106.md",
           "size": 1496,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 155,
+          "description_len": 153,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m107.md",
           "size": 1239,
+          "is_symlink": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 88,
+          "has_name": true,
+          "has_type": true
+        },
+        {
+          "name": "m108.md",
+          "size": 1008,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 90,
@@ -1328,17 +1478,9 @@
           "has_type": true
         },
         {
-          "name": "m108.md",
-          "size": 1008,
-          "has_frontmatter": true,
-          "has_description": true,
-          "description_len": 92,
-          "has_name": true,
-          "has_type": true
-        },
-        {
           "name": "m109.md",
           "size": 1155,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 101,
@@ -1348,24 +1490,27 @@
         {
           "name": "m110.md",
           "size": 1278,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 123,
+          "description_len": 119,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m111.md",
           "size": 3731,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 178,
+          "description_len": 176,
           "has_name": true,
           "has_type": true
         },
         {
           "name": "m112.md",
           "size": 2633,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 233,
@@ -1375,6 +1520,7 @@
         {
           "name": "m113.md",
           "size": 2122,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 95,
@@ -1384,6 +1530,7 @@
         {
           "name": "m114.md",
           "size": 836,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 61,
@@ -1393,6 +1540,7 @@
         {
           "name": "m115.md",
           "size": 1193,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 140,
@@ -1401,9 +1549,9 @@
         }
       ],
       "index": {
-        "lines": 21,
         "rows": 21,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -1411,11 +1559,13 @@
       "key": "-s1-s2-s3-s33-s34-s35-s36",
       "key_len": 52,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 133,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -1425,17 +1575,18 @@
         {
           "name": "m116.md",
           "size": 1068,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 102,
+          "description_len": 100,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 1,
         "rows": 1,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -1443,11 +1594,13 @@
       "key": "-s1-s2-s26-s27",
       "key_len": 23,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 130,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -1457,17 +1610,18 @@
         {
           "name": "m117.md",
           "size": 1810,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
-          "description_len": 143,
+          "description_len": 141,
           "has_name": true,
           "has_type": true
         }
       ],
       "index": {
-        "lines": 1,
         "rows": 1,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     },
@@ -1475,11 +1629,13 @@
       "key": "-s37-s26-s2",
       "key_len": 15,
       "is_symlink": false,
+      "project_is_symlink": false,
       "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
           "size": 285,
+          "is_symlink": false,
           "has_frontmatter": false,
           "has_description": false,
           "description_len": null,
@@ -1489,6 +1645,7 @@
         {
           "name": "m118.md",
           "size": 2699,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 130,
@@ -1498,6 +1655,7 @@
         {
           "name": "m119.md",
           "size": 1034,
+          "is_symlink": false,
           "has_frontmatter": true,
           "has_description": true,
           "description_len": 105,
@@ -1506,9 +1664,9 @@
         }
       ],
       "index": {
-        "lines": 2,
         "rows": 2,
-        "dangling_rows": 0
+        "dangling_rows": 0,
+        "truncated": false
       },
       "lock_age_s": null
     }
