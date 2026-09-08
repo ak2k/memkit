@@ -3288,6 +3288,21 @@ def _repoint_line(section: str) -> str:
     return spans[0]
 
 
+def _dir_line(section: str) -> str:
+    """The command the page gives for `$dir`, printed as inline code too.
+
+    `$dir` is the one variable of the three the cells could build for
+    themselves, and building it here is what let the page define it as
+    something else — a reader following that definition reaches a silent no-op
+    the page's own next sentence misexplains. So it comes off the page.
+    """
+    lines = [ln for ln in section.splitlines() if ln.startswith("`dir=")]
+    assert len(lines) == 1, f"{len(lines)} lines define `$dir`"
+    spans = re.findall(r"`([^`]+)`", lines[0])
+    assert len(spans) == 1, (len(spans), lines[0])
+    return spans[0]
+
+
 # The page states its rules in English. These are the spellings this file
 # knows how to run: a rule read out of the page and looked up here fails
 # loudly the moment the page starts saying something else, which a rule
@@ -3310,6 +3325,18 @@ _SEARCH_ORDERS = {
 _FLAT_MEMORY_OUTCOMES = {"stay where they are and stay retrievable": "kept"}
 _DIR_SHAPES = {"symlink": "link"}
 _VARIABLE_COUNTS = {"both": 2, "all three": 3, "all four": 4}
+_RECREATED_DIR_OUTCOMES = {
+    "leaves the link inside `$dir` rather than in its place": "inside",
+    "leaves the link where it belongs": "in-place",
+}
+_STOPPED_LINE_STREAMS = {
+    "a status and nothing on stderr": "silent",
+    "a message on stderr": "loud",
+}
+_UNSET_TARGET_STREAMS = {
+    "does say so on stderr": "loud",
+    "says nothing on stderr": "silent",
+}
 _OWN_FILE_OUTCOMES = {
     "gets them rewritten": "rewritten",
     "gets them rewritten too": "rewritten",
@@ -3513,6 +3540,41 @@ def _named_variable_count(section: str) -> int:
         r"(all \w+|both) (?:are|is) yours to set before the",
         _VARIABLE_COUNTS,
         "how many variables the reader sets",
+    )
+
+
+def _recreated_dir_outcome(section: str) -> str:
+    """What the page says a `$dir` recreated between `rm` and `ln` gets.
+
+    The section's one safety instruction. It is the reason the reader is told
+    to quit the harness, so the cell that builds that race takes its expected
+    outcome from the sentence rather than from a comment beside it.
+    """
+    return _stated(
+        section,
+        r"a recreation between `rm` and `ln` ([^.]+)\.",
+        _RECREATED_DIR_OUTCOMES,
+        "what a `$dir` recreated between the two commands does",
+    )
+
+
+def _stopped_line_streams(section: str) -> str:
+    """What the page says a line stopped by an unset `$store` or `$dir` prints."""
+    return _stated(
+        section,
+        r"so the line stops with ([^,;.]+)[,;.]",
+        _STOPPED_LINE_STREAMS,
+        "what a line stopped by an empty test prints",
+    )
+
+
+def _unset_target_streams(section: str) -> str:
+    """What the page says an unset `$target` prints, which is the other case."""
+    return _stated(
+        section,
+        r"an unset `\$target` fails `mkdir`, which ([^.]+)\.",
+        _UNSET_TARGET_STREAMS,
+        "what an unset `$target` prints",
     )
 
 
@@ -3739,12 +3801,16 @@ _STORE_IN_GIT_CELLS = (
     "key-non-git",
     "key-non-git-through-a-symlink",
     "repoint-link-to-corpus-root",
+    "repoint-dir-from-the-page",
     "repoint-flat-store",
     "repoint-link-outside-the-store",
     "repoint-target-is-a-link",
+    "repoint-harness-recreated-dir",
     "guard-dir-is-a-directory",
     "guard-store-missing",
     "guard-store-unset",
+    "guard-dir-unset",
+    "guard-target-unset",
     "guard-store-not-a-directory",
     "guard-target-is-a-file",
 )
@@ -3753,6 +3819,7 @@ _STORE_IN_GIT_CELLS = (
 # in the list is a state where it must stop, and stop having changed nothing.
 _REPOINT_SUCCEEDS = (
     "repoint-link-to-corpus-root",
+    "repoint-dir-from-the-page",
     "repoint-flat-store",
     "repoint-link-outside-the-store",
     "repoint-target-is-a-link",
@@ -3769,9 +3836,10 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell)
     submodule to itself, and a directory outside any repository to itself —
     including one whose path has an underscore and a space, since `tr` maps
     bytes and the paste is unquoted prose, and one reached through a symlink,
-    since the page names which of a symlink's two paths is keyed.
+    since the page names which of a symlink's two paths is keyed. Each runs
+    twice, once under the shell options an agent sets before pasting anything.
 
-    The nine repoint cells cover the line and its guard. The state the
+    The repoint cells cover the line and its guard. The state the
     previous revision of this page left behind — `$dir` a symlink to the
     corpus root — repoints cleanly with every stored file where it was, in a
     store with `search/` and in a flat one; an ordinary directory, a `$store`
@@ -3874,13 +3942,36 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell)
         f"dir={shlex.quote(str(dir_))}",
         f"target={shlex.quote(str(target))}",
     ]
-    if cell == "guard-store-unset":
-        # The reader who sets only the variables an earlier revision of the
-        # page counted. `[ -d "" ]` is false, so the line stops with a status
-        # and no message, which is the outcome worth having a cell for.
-        assignments = [ln for ln in assignments if not ln.startswith("store=")]
-    script = "\n".join([*assignments, _repoint_line(section)])
+    # One cell per variable the line reads. The page's sentence rests on an
+    # asymmetry — two of the three stop a test and one stops a command — and
+    # an asymmetry with one case measured is an asymmetry nobody has measured.
+    for unset in ("store", "dir", "target"):
+        if cell == f"guard-{unset}-unset":
+            assignments = [ln for ln in assignments if not ln.startswith(f"{unset}=")]
+    prelude = []
+    if cell == "repoint-dir-from-the-page":
+        # `$dir` from the page's own definition, run: everywhere else these
+        # cells build that path themselves, which is what let the page define
+        # it as something the reader cannot repoint.
+        assignments = [ln for ln in assignments if not ln.startswith("dir=")]
+        prelude = [_key_derivation_block(section), _dir_line(section)]
+    line = _repoint_line(section)
+    if cell == "repoint-harness-recreated-dir":
+        # The race the page's safety instruction is about, made deterministic:
+        # the harness recreating `$dir` between the two commands.
+        halves = line.split("&& ln -sn")
+        assert len(halves) == 2, line
+        line = '&& mkdir "$dir" && ln -sn'.join(halves)
+    script = "\n".join([*prelude, *assignments, line])
     out = _shell_out(shell, script, repo, home)
+
+    if cell == "repoint-harness-recreated-dir":
+        assert out.returncode == 0, (script, out.stdout, out.stderr)
+        assert _recreated_dir_outcome(section) == "inside", "the page claims otherwise"
+        assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` is still a link")
+        assert os.path.islink(dir_ / target.name), (script, _file_map(dir_))
+        assert os.readlink(dir_ / target.name) == str(target), (script, _file_map(dir_))
+        return
 
     if cell in _REPOINT_SUCCEEDS:
         assert out.returncode == 0, (script, out.stdout, out.stderr)
@@ -3916,10 +4007,18 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell)
     else:
         assert os.path.islink(dir_), "the reader's link was removed"
         assert os.readlink(dir_) == str(corpus), (script, os.readlink(dir_))
-    if cell == "guard-store-unset":
-        # Nothing on stdout or stderr: the page's own next sentence is the
-        # only explanation a reader is offered for the status.
-        assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
+    if cell in ("guard-store-unset", "guard-dir-unset"):
+        # Which streams the stopped line uses is the page's claim, and it is
+        # the only explanation a reader is offered for the status.
+        if _stopped_line_streams(section) == "silent":
+            assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
+        else:
+            assert out.stderr.strip(), (script, out.stdout, out.stderr)
+    if cell == "guard-target-unset":
+        if _unset_target_streams(section) == "loud":
+            assert out.stderr.strip(), (script, out.stdout, out.stderr)
+        else:
+            assert not out.stderr, (script, out.stdout, out.stderr)
     if cell == "guard-store-missing":
         assert not named_store.exists(), f"{named_store} was created"
     if not target_existed:

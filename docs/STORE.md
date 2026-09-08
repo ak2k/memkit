@@ -245,7 +245,8 @@ hash suffix.
 root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 case $root in */.git) root=${root%/.git} ;;
   *) root=$(git rev-parse --path-format=absolute --show-toplevel || pwd -P) ;; esac
-printf '%s\n' "$root" | tr -c 'A-Za-z0-9\n' '-'
+key=$(printf '%s\n' "$root" | tr -c 'A-Za-z0-9\n' '-')
+printf '%s\n' "$key"
 ```
 
 The common dir is the main checkout's `.git` from a linked worktree, which is
@@ -317,8 +318,16 @@ both. Its refusal is order-dependent, too — it reads the cwd when it runs, so 
 clone made afterwards is checked by nothing.
 
 **One case still wants a hand.** An earlier revision of this page pointed that
-directory at the corpus root itself. Where `ls -ld "$dir"` shows a symlink,
-repoint it at the harness's own directory:
+directory at the corpus root itself. With `$key` still set by the block above,
+this names the harness's memory directory for this repository and shows what
+is there:
+
+`dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$key/memory; ls -ld "$dir"`
+
+Where `ls -ld "$dir"` shows a symlink, repoint it at the harness's own
+directory. Quit the harness first — it recreates `$dir` at startup, and a
+recreation between `rm` and `ln` leaves the link inside `$dir` rather than in
+its place.
 
 `[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
 
@@ -329,12 +338,10 @@ Creating `search/` afterwards takes that directory back out of retrieval, so
 making `search/` first is the simpler order. `rm` removes the link and never
 what it points at, so memories already lying flat in the corpus root stay
 where they are and stay retrievable. Where `$dir` is not a link the first test
-fails and nothing after it runs. `$store` is your store's root and `$dir` is
-the directory the block above printed; all three are yours to set before the
-line runs, and an unset `$store` or `$dir` fails a test rather than a command,
-so the line stops with a status and nothing on stderr. Quit the harness
-first — it recreates `$dir` at startup, and a recreation between `rm` and
-`ln` leaves the link inside `$dir` rather than in its place.
+fails and nothing after it runs. `$store` is your store's root, and all three
+are yours to set before the line runs: an unset `$store` or `$dir` fails a
+test rather than a command, so the line stops with a status and nothing on
+stderr, while an unset `$target` fails `mkdir`, which does say so on stderr.
 
 `memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
 honours and names the directory in use, or the derived default when it is unset.
