@@ -568,9 +568,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("cli_doctor.py", "Machine.config", "except", 2): (
         "anything else out of the loader is kept as text, so doctor survives it"
     ),
-    ("cli_doctor.py", "_redacted", "if->exit", 1): (
-        "empty text, no home, or a home of / is returned unredacted"
-    ),
     ("cli_doctor.py", "_display_key", "if->exit", 1): (
         "a key that IS the home spelling shows as ~"
     ),

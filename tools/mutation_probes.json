@@ -2172,8 +2172,8 @@
       "name": "auto-memory-reads-a-settings-file-that-will-not-parse-as-one-declaring-nothing",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "            f\"({_display_cap(_redacted(scope.error), PARSER_SHOWN)})\"\n            for scope in scopes\n            if scope.failure\n",
-      "new": "            f\"({_display_cap(_redacted(scope.error), PARSER_SHOWN)})\"\n            for scope in scopes\n            if False\n",
+      "old": "            f\"({_display_cap(scope.error, PARSER_SHOWN)})\"\n            for scope in scopes\n            if scope.failure\n",
+      "new": "            f\"({_display_cap(scope.error, PARSER_SHOWN)})\"\n            for scope in scopes\n            if False\n",
       "tests": [
         "tests/test_doctor.py::test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it"
       ],

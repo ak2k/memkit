@@ -598,7 +598,7 @@ def _unparsed_settings(scopes: list) -> str:
         "; ".join(
             f"{scope.scope} settings {_FAILED[scope.failure]}, so its keys read "
             f"as unset here: {_shown(scope.path)} "
-            f"({_display_cap(_redacted(scope.error), PARSER_SHOWN)})"
+            f"({_display_cap(scope.error, PARSER_SHOWN)})"
             for scope in scopes
             if scope.failure
         ),
@@ -3240,24 +3240,6 @@ def _shown(path: str) -> str:
     return _display_cap(_display_path(path), PATH_SHOWN)
 
 
-def _redacted(text: str) -> str:
-    """`text` with the home directory re-spelled `~` wherever it appears in it.
-
-    `_shown` re-spells a path this report BUILT; this one re-spells the paths
-    inside a string it was HANDED. `str(exc)` for an `OSError` ends in the
-    absolute path the call failed on, so a row that printed one carried a
-    second, raw copy of a path it had just taken the trouble to shorten.
-
-    ON A COMPONENT BOUNDARY, the rule `_display_key` already applies: a
-    directory whose name merely starts with home's is a different directory,
-    and re-spelling it would name one that is not there.
-    """
-    home = os.path.expanduser("~")
-    if not text or not home or home == os.sep:
-        return text
-    return re.sub(re.escape(home) + r"(?![^\W_]|[-.])", "~", text)
-
-
 def _display_key(key: str) -> str:
     """One harness project key as a detail prints it.
 
@@ -3734,7 +3716,7 @@ def _default_memory_dir(machine: Machine, config_dir: str) -> tuple:
     except ValueError as exc:
         return "", (
             "where the harness writes for this project is unknown: "
-            f"{_display_cap(_redacted(str(exc)), PATH_SHOWN + 160)}"
+            f"{_display_cap(str(exc), PATH_SHOWN + 160)}"
         )
 
 

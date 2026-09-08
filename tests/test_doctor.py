@@ -3777,6 +3777,45 @@ def test_no_row_of_the_envelope_spells_the_home_directory_out(
                 assert spelling not in check.remedy, (name, check.id)
 
 
+def test_a_directory_beside_home_keeps_the_name_it_has(profile, monkeypatch) -> None:
+    """`~_old/x` names a directory that is not there.
+
+    The rule was already "on a component boundary", and the lookahead spelling
+    it read was `[^\\W_]` — word characters except the underscore — so a name
+    starting with home's and continuing with `_` was the one shape the boundary
+    did not hold for. What the row then printed was a path an adopter cannot
+    open, inside the note whose whole purpose is naming the file to repair.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    # THE CAPS LIFTED: the parser's own message carries the path at its END,
+    # and a cut that lands before it answers this for the wrong reason.
+    monkeypatch.setattr(doctor, "PARSER_SHOWN", 2000)
+    monkeypatch.setattr(doctor, "NOTE_SHOWN", 4000)
+    for tail in ("_old", "-old", "old"):
+        beside = profile / f"home{tail}"
+        (beside / ".claude").mkdir(parents=True)
+        refused = beside / ".claude" / doctor.SETTINGS_NAME
+        refused.write_text("{}", encoding="utf-8")
+        monkeypatch.chdir(beside)
+        refused.chmod(0o000)
+        try:
+            (row,) = _only(
+                doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+                "auto-memory",
+            )
+        finally:
+            refused.chmod(0o600)
+        assert "could not be read" in row.detail, tail
+        assert str(beside) in row.detail, tail
+        # THE PATH ROUTE, and only it: a project key is a lossy spelling, so
+        # `<home>-old` and `<home>/old` really do key to one directory name and
+        # an absence asserted over the key would be unsatisfiable.
+        assert f"~{tail}/.claude" not in row.detail, tail
+
+
 def test_the_note_about_an_unread_scope_cannot_eat_the_rows_own_verdict(
     profile, monkeypatch
 ) -> None:
