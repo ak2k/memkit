@@ -1394,23 +1394,102 @@ def test_the_tool_imports_nothing_it_could_not_find_on_a_stranger_s_machine(
     )
 
 
+def _fixture_files(directory: Path) -> list:
+    """Every file below `directory`, whatever it is called.
+
+    RECURSIVE and suffix-agnostic. `glob("*.json")` covered the top level of a
+    directory whose natural organisation is one subdirectory per host, so an
+    un-anonymised capture one level down went through the whole file green,
+    and so did one at the top level under any other suffix. Everything under
+    here is a fixture and has to pass; nothing here is skipped for being
+    called something the gate did not expect.
+    """
+    return sorted(path for path in directory.rglob("*") if path.is_file())
+
+
+def _fixture_shape(path: Path) -> dict:
+    """The shape in `path`, or a failure — never a skip.
+
+    A file under the fixtures directory that is not a shape is the thing this
+    gate is for: it is either a capture nobody finished or one nobody meant to
+    commit, and both are worth a red test.
+    """
+    try:
+        shape = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise AssertionError(f"{path}: not a shape this gate can read: {exc}") from exc
+    assert isinstance(shape, dict), path
+    return shape
+
+
+def _tracked_fixtures():
+    """The files git holds under the fixtures directory, or None outside a
+    checkout.
+
+    The walk above says every file present is gated; this says the files
+    present are the ones that were reviewed. A shape that arrived some other
+    way — copied in while debugging, or written by a capture aimed at the
+    wrong directory — is then a red test rather than a fixture nobody chose.
+    An unpacked archive is not a checkout and has no answer to give, which is
+    why this is allowed to have none.
+    """
+    found = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", "--", str(SHAPES)],
+        capture_output=True, text=True, timeout=300,
+    )
+    if found.returncode != 0:
+        return None
+    return sorted(REPO / name for name in found.stdout.split("\0") if name)
+
+
+def test_the_artifact_gate_finds_a_fixture_wherever_it_was_put(tmp_path) -> None:
+    """What the gate enumerates is the gate.
+
+    An un-anonymised shape at `harness_shapes/hosts/prod-laptop.json` passed
+    every case in this file, and so did one at the top level under a suffix
+    nobody globbed for — the gate was reading its own expectations rather than
+    the directory. Held here on a planted tree rather than on the real one,
+    because a case that writes into `tests/data/` to prove a point is a case
+    that leaves a fixture behind when it fails.
+    """
+    planted = {
+        "top.json",
+        "hosts/prod-laptop.json",
+        "hosts/archive/older.shape",
+        "notes.txt",
+    }
+    for name in planted:
+        _write(tmp_path / name, "{}\n")
+    assert {
+        str(path.relative_to(tmp_path)) for path in _fixture_files(tmp_path)
+    } == planted
+    # And a file that is not a shape fails rather than being passed over.
+    with pytest.raises(AssertionError):
+        _fixture_shape(_write(tmp_path / "notes.txt", "not a shape at all\n"))
+    with pytest.raises(AssertionError):
+        _fixture_shape(_write(tmp_path / "list.json", "[]\n"))
+
+
 def test_the_committed_shapes_carry_no_names() -> None:
     """The artifact gate: every shape checked into this repository, whatever it
-    is called.
+    is called and wherever under the fixtures directory it sits.
 
     Read off the directory rather than from a list of names, so a fixture is
     covered by the commit that adds it and nothing has to be remembered. It
     skips only while there are no fixtures at all, which is the window between
     the tool landing and the first capture being reviewed.
     """
-    fixtures = sorted(SHAPES.glob("*.json")) if SHAPES.is_dir() else []
+    fixtures = _fixture_files(SHAPES) if SHAPES.is_dir() else []
     if not fixtures:
         pytest.skip(
             "no shapes captured yet — "
             "`python3 tools/harness_shape.py --out tests/data/harness_shapes/<name>.json`"
         )
+    tracked = _tracked_fixtures()
+    if tracked is not None:
+        assert fixtures == tracked, "a file under the fixtures directory nobody committed"
     for path in fixtures:
-        shape = json.loads(path.read_text(encoding="utf-8"))
+        shape = _fixture_shape(path)
         assert shape["schema"] == 1, path.name
         assert shape["tool"] == "harness_shape", path.name
         assert shape["anonymised"] is True, path.name
@@ -1490,7 +1569,7 @@ def test_a_committed_shape_carries_the_field_set_the_tool_emits_today(
     fixture has any of, and vacuous for one it has none of — a capture with no
     index is a machine, not a defect.
     """
-    fixtures = sorted(SHAPES.glob("*.json")) if SHAPES.is_dir() else []
+    fixtures = _fixture_files(SHAPES) if SHAPES.is_dir() else []
     if not fixtures:
         pytest.skip("no shapes captured yet")
     emitted = _field_sets(_shape("--config-dir", str(_tree(tmp_path / "plain"))))
@@ -1505,7 +1584,7 @@ def test_a_committed_shape_carries_the_field_set_the_tool_emits_today(
     for kind, found in settings.items():
         emitted[kind] |= found
     for path in fixtures:
-        shape = json.loads(path.read_text(encoding="utf-8"))
+        shape = _fixture_shape(path)
         for kind, found in _field_sets(shape).items():
             stale = [sorted(record) for record in found - emitted[kind]]
             assert not stale, (path.name, kind, stale)

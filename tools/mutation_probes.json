@@ -4426,6 +4426,17 @@
         "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
       ],
       "why": "A hard link is the one link O_NOFOLLOW cannot see, and it is the same write primitive: a second name for the destination inode, so the capture truncates a file whose real name is somewhere else entirely."
+    },
+    {
+      "name": "harness-shape-artifact-gate-enumerates-the-top-level-only",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "    return sorted(path for path in directory.rglob(\"*\") if path.is_file())\n",
+      "new": "    return sorted(directory.glob(\"*.json\"))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_finds_a_fixture_wherever_it_was_put"
+      ],
+      "why": "One subdirectory per host is how a second machine's captures get organised, and a flat glob gates none of them: an un-anonymised shape at harness_shapes/hosts/prod-laptop.json passed all 28 cases, and so did one at the top level under any other suffix. The gate that decides whether a real name reaches the repository is the enumeration, not the assertions under it."
     }
   ]
 }
