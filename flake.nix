@@ -110,10 +110,13 @@
           # cannot run here — and without the marker they SKIP everywhere,
           # including the plain-python leg where they are the gate. `pkgs.git`
           # above is not the missing half: git is present, the checkout is not.
+          # zsh is here for the same reason: the store-guidance cases paste the
+          # documented commands into both shells an adopter uses, and they skip
+          # rather than fail where one of them is absent.
           suite =
             name: file:
             pkgs.runCommand "memkit-${name}" {
-              nativeBuildInputs = [ pkgs.git ];
+              nativeBuildInputs = [ pkgs.git pkgs.zsh ];
               MEMKIT_NO_CHECKOUT = "1";
             } ''
               cd ${inputs.self}

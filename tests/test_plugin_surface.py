@@ -17,6 +17,7 @@ what it decides is what it exports into the process it replaces itself with.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -3240,6 +3241,277 @@ def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
     assert actual, pointers[0]
     assert claimed.groups() == actual.groups(), (claimed.groups(), actual.groups())
 
+
+# --- the git-store section, executed rather than read ------------------------
+#
+# Two commands on that page are the whole of what an adopter types by hand: the
+# block that derives the harness's project key, and the one line that repoints
+# a memory directory that an earlier revision of the page left as a symlink to
+# the corpus root. Eight review rounds found defects in them by hand, which is
+# an expensive way to learn that prose nobody executes is prose nobody checks.
+# So both are extracted from the committed markdown and run on real
+# filesystems, under every shell an adopter is likely to paste them into.
+
+
+def _store_in_git_section(text: str) -> str:
+    """The "Keep your store in git" section, sliced by HEADING.
+
+    By content and never by line number, for the reason `_worked_memory_block`
+    gives: an extraction anchored to a position goes on passing about whatever
+    text moved into that position. A heading that is renamed or removed takes
+    the section with it, and every case below then fails to extract — which is
+    the failure this wants, not a silent pass over the wrong prose.
+    """
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("## Keep your store in git")]
+    assert len(starts) == 1, f"{len(starts)} sections named 'Keep your store in git'"
+    start = starts[0]
+    ends = [i for i, ln in enumerate(lines) if i > start and ln.startswith("## ")]
+    return "".join(lines[start : ends[0] if ends else len(lines)])
+
+
+def _key_derivation_block(section: str) -> str:
+    """The one ```bash fence in that section: the project-key derivation."""
+    blocks = re.findall(r"```bash\n(.*?)```", section, re.S)
+    assert len(blocks) == 1, f"{len(blocks)} bash fences in the git-store section"
+    assert "tr -c" in blocks[0], blocks[0]
+    return blocks[0]
+
+
+def _repoint_line(section: str) -> str:
+    """The repoint command, which the page prints as inline code, not a fence."""
+    lines = [ln for ln in section.splitlines() if "ln -sn" in ln]
+    assert len(lines) == 1, f"{len(lines)} lines carry `ln -sn`"
+    spans = re.findall(r"`([^`]+)`", lines[0])
+    assert len(spans) == 1, (len(spans), lines[0])
+    return spans[0]
+
+
+def _shell_argv(shell: str) -> list:
+    if shell == "bash":
+        return ["bash", "-c"]
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip(
+            "no zsh on PATH. The nix suites are the gate for this half — "
+            "`pkgs.zsh` is in the `suite` function's nativeBuildInputs — so a "
+            "skip here is a local machine, never CI."
+        )
+    return [zsh, "-f", "-c"]
+
+
+def _sealed_env(home: Path) -> dict:
+    """The environment wholesale, so nothing of the developer's leaks in.
+
+    An inherited `GIT_CONFIG_GLOBAL`, `init.defaultBranch` or `CLAUDE_CONFIG_DIR`
+    would make these cases pass or fail for a reason belonging to the machine.
+    """
+    return {
+        "HOME": str(home),
+        "PATH": os.environ["PATH"],
+        "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+        "LC_ALL": "C",
+        "TERM": "dumb",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+
+
+def _in_fixture(args: list, cwd: Path, home: Path) -> None:
+    out = subprocess.run(
+        ["git", *args], cwd=str(cwd), env=_sealed_env(home),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, (args, out.stdout, out.stderr)
+
+
+def _fixture_repo(path: Path, home: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    _in_fixture(["init", "-q", "-b", "main"], path, home)
+    (path / "f.txt").write_text("x\n", encoding="utf-8")
+    _in_fixture(["add", "f.txt"], path, home)
+    _in_fixture(["commit", "-qm", "c"], path, home)
+    return path
+
+
+def _harness_key(path: Path) -> str:
+    """What the harness derives, restated here rather than read from the page."""
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(path)))
+
+
+def _shell_out(shell: str, script: str, cwd: Path, home: Path):
+    return subprocess.run(
+        _shell_argv(shell) + [script], cwd=str(cwd), env=_sealed_env(home),
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def _file_map(root: Path) -> dict:
+    """Every file under `root` by relative path and sha256, links unfollowed."""
+    seen: dict = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        for name in list(dirnames):
+            if (here / name).is_symlink():
+                seen[str((here / name).relative_to(root))] = "link:" + os.readlink(here / name)
+                dirnames.remove(name)
+        for name in filenames:
+            entry = here / name
+            seen[str(entry.relative_to(root))] = (
+                "link:" + os.readlink(entry) if entry.is_symlink()
+                else hashlib.sha256(entry.read_bytes()).hexdigest()
+            )
+    return seen
+
+
+def _derivation_fixture(cell: str, home: Path) -> tuple:
+    """(the directory to run in, the key the harness would derive for it)."""
+    main = _fixture_repo(home / "repo", home)
+    if cell == "key-main-checkout":
+        return main, _harness_key(main)
+    if cell == "key-main-subdir":
+        deep = main / "a" / "b"
+        deep.mkdir(parents=True)
+        # A subdirectory keys on the repository, not on itself.
+        return deep, _harness_key(main)
+    if cell == "key-linked-worktree":
+        linked = home / "wt"
+        _in_fixture(["worktree", "add", "-q", "-b", "wtb", str(linked)], main, home)
+        # The common dir is the main checkout's, which is why the block reads it.
+        return linked, _harness_key(main)
+    if cell == "key-submodule":
+        inner = _fixture_repo(home / "inner", home)
+        sup = _fixture_repo(home / "super", home)
+        _in_fixture(
+            ["-c", "protocol.file.allow=always", "submodule", "add", "-q", str(inner), "sub"],
+            sup, home,
+        )
+        _in_fixture(["commit", "-qm", "add sub"], sup, home)
+        # A submodule's common dir sits under the superproject, so the `case`
+        # falls through to `--show-toplevel` and the submodule keys on itself.
+        return sup / "sub", _harness_key(sup / "sub")
+    # Outside a repository the cwd is used, and this one carries the two
+    # characters the key rewrites and a shell would split on.
+    outside = home / "no_git dir"
+    outside.mkdir()
+    return outside, _harness_key(outside)
+
+
+_STORE_IN_GIT_CELLS = (
+    "key-main-checkout",
+    "key-main-subdir",
+    "key-linked-worktree",
+    "key-submodule",
+    "key-non-git",
+    "repoint-link-to-search",
+    "guard-dir-is-a-directory",
+    "guard-store-missing",
+)
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+@pytest.mark.parametrize("cell", _STORE_IN_GIT_CELLS)
+def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell) -> None:
+    """The page's two commands, run on real filesystems.
+
+    Every state here is one the page routes a reader into. The five derivation
+    cells cover what the prose claims about the key: a subdirectory and a
+    linked worktree resolve to the main checkout, a submodule to itself, and a
+    directory outside any repository to itself — including one whose path has
+    an underscore and a space, since `tr` maps bytes and the paste is unquoted
+    prose.
+
+    The three repoint cells cover the guard. The state the previous revision of
+    this page left behind — `$dir` a symlink to the corpus root — repoints
+    cleanly with every stored file unchanged; an ordinary directory and a
+    `$store` that is not there change nothing at all. What is asserted is exit
+    status and the filesystem, never a utility's message: `mv` and `mkdir`
+    word their failures differently under bash and zsh and between GNU and BSD
+    coreutils, and a test that reads them is a test of the machine.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+
+    if cell.startswith("key-"):
+        where, want = _derivation_fixture(cell, home)
+        out = _shell_out(shell, _key_derivation_block(section), where, home)
+        assert out.returncode == 0, (out.stdout, out.stderr)
+        assert out.stdout.strip().splitlines()[-1] == want, (out.stdout, want)
+        return
+
+    repo = _fixture_repo(home / "repo", home)
+    store = home / "notes"
+    (store / "search" / "hot").mkdir(parents=True)
+    (store / "search" / "hot" / "keep.md").write_text("---\nname: k\n---\nk\n", encoding="utf-8")
+    (store / "search" / "top.md").write_text("---\nname: t\n---\nt\n", encoding="utf-8")
+    before = _file_map(store)
+
+    dir_ = home / ".claude" / "projects" / _harness_key(repo) / "memory"
+    dir_.parent.mkdir(parents=True)
+    named_store = store
+    if cell == "guard-dir-is-a-directory":
+        dir_.mkdir()
+        (dir_ / "a.md").write_text("---\nname: a\n---\na\n", encoding="utf-8")
+    else:
+        os.symlink(store / "search", dir_)
+    if cell == "guard-store-missing":
+        # What a mistyped `$store` looks like: the link is good, the name is not.
+        named_store = home / "wrong-notes"
+    dir_before = _file_map(dir_) if dir_.is_dir() and not dir_.is_symlink() else None
+
+    target = named_store / "search" / "auto-memory"
+    script = "\n".join([
+        f"store={shlex.quote(str(named_store))}",
+        f"dir={shlex.quote(str(dir_))}",
+        f"target={shlex.quote(str(target))}",
+        _repoint_line(section),
+    ])
+    out = _shell_out(shell, script, repo, home)
+
+    if cell == "repoint-link-to-search":
+        assert out.returncode == 0, (out.stdout, out.stderr)
+        assert os.path.islink(dir_) and os.readlink(dir_) == str(target), os.readlink(dir_)
+        assert _file_map(store) == before, _file_map(store)
+        assert not (target / "auto-memory").exists(), "the link was made inside itself"
+        return
+
+    assert out.returncode != 0, (out.stdout, out.stderr)
+    assert _file_map(store) == before, _file_map(store)
+    if cell == "guard-dir-is-a-directory":
+        assert dir_.is_dir() and not dir_.is_symlink(), "the directory became a link"
+        assert _file_map(dir_) == dir_before, _file_map(dir_)
+    else:
+        assert os.path.islink(dir_), "the reader's link was removed"
+        assert os.readlink(dir_) == str(store / "search"), os.readlink(dir_)
+        assert not named_store.exists(), f"{named_store} was created"
+    assert not target.exists(), f"{target} was created"
+
+
+def test_no_page_names_a_setting_the_harness_does_not_have() -> None:
+    """`memoryDir` is a key nothing reads.
+
+    It reached three revisions of the store guidance as the name of the
+    harness's setting, which is `autoMemoryDirectory`; a reader who searched
+    their settings for it found nothing and had no way to tell a wrong name
+    from a feature they did not have. Cheap to reintroduce by copying a
+    paragraph, and invisible to every other check here.
+
+    CHANGELOG.md is excluded by decision, not by oversight: a changelog entry
+    may legitimately name the key it is recording the correction of.
+    """
+    named = []
+    for where in ("docs", "src", "skills"):
+        for path in sorted((REPO / where).rglob("*")):
+            if path.is_file() and "memoryDir" in path.read_bytes().decode("utf-8", "replace"):
+                named.append(str(path.relative_to(REPO)))
+    if "memoryDir" in (REPO / "README.md").read_text(encoding="utf-8"):
+        named.append("README.md")
+    assert named == [], named
 
 def test_the_release_procedure_is_written_down_and_reachable() -> None:
     """The mechanics are two PRs in an order that is not guessable, and the

@@ -4071,6 +4071,28 @@
         "tests/test_packaging.py::test_the_wheel_declares_every_console_script"
       ],
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
+    },
+    {
+      "name": "store-doc-git-section-heading-renamed",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "## Keep your store in git",
+      "new": "## Keeping the store under version control",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-main-checkout-bash]"
+      ],
+      "why": "the cases find both commands through that heading, so a rename silently leaves them executing nothing"
+    },
+    {
+      "name": "store-doc-key-derivation-maps-two-characters",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "printf '%s\\n' \"$root\" | tr -c 'A-Za-z0-9\\n' '-'",
+      "new": "printf '%s\\n' \"$root\" | tr '/.' '-'",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-non-git-bash]"
+      ],
+      "why": "the harness rewrites every character that is not a letter or digit; a path with an underscore or a space keys elsewhere under a block that names only two"
     }
   ]
 }
