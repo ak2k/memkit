@@ -1277,8 +1277,8 @@
       "name": "index-file-cap-is-enforced-in-bytes",
       "module": "prompt_recall_gates",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "    with open(target, \"rb\") as f:\n        raw = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(raw) > INDEX_FILE_MAX_BYTES:\n        return None\n    text = raw.decode(\"utf-8\", errors=\"replace\")\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
-      "new": "    with open(target, encoding=\"utf-8\", errors=\"replace\") as f:\n        text = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(text) > INDEX_FILE_MAX_BYTES:\n        return None\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
+      "old": "    with _open_regular_bytes(target) as f:\n        raw = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(raw) > INDEX_FILE_MAX_BYTES:\n        return None\n    text = raw.decode(\"utf-8\", errors=\"replace\")\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
+      "new": "    with _open_regular(target) as f:\n        text = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(text) > INDEX_FILE_MAX_BYTES:\n        return None\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_file_cap_is_enforced_in_the_unit_it_is_declared_in"
       ],
@@ -1299,8 +1299,8 @@
       "name": "retrieval-passes-the-deadline-into-each-dir",
       "module": "prompt_recall_gates",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "                ranked.append(search(query, d, deadline))",
-      "new": "                ranked.append(search(query, d))",
+      "old": "                ranked.append(search(query, d, deadline, read_only))",
+      "new": "                ranked.append(search(query, d, None, read_only))",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_dir_whose_query_ran_out_of_budget_is_an_error_not_an_absence"
       ],
