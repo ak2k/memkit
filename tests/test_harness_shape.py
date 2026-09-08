@@ -716,6 +716,47 @@ def test_raw_refuses_a_work_tree_that_holds_no_dot_git_at_all(tmp_path) -> None:
     )["anonymised"] is False
 
 
+def test_a_declared_work_tree_is_matched_by_inode_when_git_cannot_answer(
+    tmp_path, monkeypatch,
+) -> None:
+    """The `GIT_WORK_TREE` branch is the one that answers when git will not,
+    and every run that reached it had git answering yes on its own.
+
+    The case above exports `GIT_DIR` beside the work tree, so `git rev-parse`
+    succeeds and the refusal it asserts arrives whether or not the environment
+    is consulted at all — the inode comparison could be deleted with the suite
+    green. Here git's answer is no, and the two properties the comparison
+    exists for are the ones a string test cannot give: a destination one level
+    INSIDE the declared tree, and that tree named through a different path.
+    """
+    module = _tool_module()
+    work = tmp_path / "work"
+    (work / "below").mkdir(parents=True)
+    spelling = tmp_path / "other-name"
+    os.symlink(work, spelling)
+    monkeypatch.setattr(module, "_git_says_worktree", lambda directory: False)
+    monkeypatch.setenv("GIT_WORK_TREE", str(spelling))
+    assert module._inside_worktree(str(work)) is True
+    assert module._inside_worktree(str(work / "below")) is True
+    # And the branch answers no as readily: a directory that is not under the
+    # declared tree is the open ground the flag is for.
+    open_ground = tmp_path / "mine"
+    open_ground.mkdir()
+    assert module._inside_worktree(str(open_ground)) is False
+
+    # End to end, in the state the docstring names: no git on PATH, so the
+    # walk's own answer is the only one there is.
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    env = dict(os.environ, GIT_WORK_TREE=str(spelling), PATH="")
+    env.pop("GIT_DIR", None)
+    out = work / "below" / "leak.json"
+    refused = _run("--config-dir", str(config), "--raw", "--out", str(out), env=env)
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "git worktree" in refused.stderr
+    assert not out.exists(), "real names landed one level inside a declared tree"
+
+
 def test_raw_refuses_a_redirect_from_inside_a_checkout(tmp_path) -> None:
     """The spelling the tool's own docstring names, which had no guard.
 
