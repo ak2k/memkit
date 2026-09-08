@@ -817,15 +817,28 @@ def _memory_dir(
         }
         head = ""
         truncated = False
+        unreadable = False
         # A LINK IS FOLLOWED ONLY BACK INTO THIS DIRECTORY. One that resolves
         # out of it reaches somebody else's file through a name in here, and
         # `sudo -n` was given the directory rather than the target.
         if not linked or _resolves_inside(path, memory_dir):
             head, truncated = _read_head(path)
             if head is None:
-                head, failed = "", True
-        record.update(_frontmatter(head))
-        record["frontmatter_truncated"] = truncated
+                head, failed, unreadable = "", True, True
+        record["unreadable"] = unreadable
+        # A FILE NOBODY COULD READ IS NOT A FILE WITH NO FRONTMATTER, which is
+        # what the four flags and the null length said — the same record a
+        # readable file with a plain first line produces, and the only trace
+        # was the whole-capture `read_errors` total, which no record can be
+        # attributed to. Null is what the index answers about its own
+        # unreadable read; here it is per fact, because the name, the size and
+        # the link flag come from an `lstat` that did succeed.
+        if unreadable:
+            record.update(dict.fromkeys(_frontmatter(""), None))
+            record["frontmatter_truncated"] = None
+        else:
+            record.update(_frontmatter(head))
+            record["frontmatter_truncated"] = truncated
         files.append(record)
         if failed:
             read_errors += 1

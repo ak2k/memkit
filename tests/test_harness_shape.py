@@ -18,7 +18,9 @@ The NFS fixture was taken off a machine that cannot be captured again, so its
 `index.dangling_rows` is the number the tool gave before an index row naming a
 file one directory down was looked at rather than written off: it OVER-COUNTS
 wherever that machine's indexes were tiered. The darwin one was re-captured
-after the fix and its counts are current.
+after the fix and its counts are current. `unreadable` was written into the
+NFS fixture by a script for the same reason, `false` throughout: that capture
+read every file it listed, which is what its `read_errors` total of 0 says.
 """
 
 from __future__ import annotations
@@ -99,6 +101,13 @@ DIR_TYPES = {
 FILE_TYPES = {
     "size": int,
     "is_symlink": bool,
+    "unreadable": bool,
+}
+# The frontmatter facts, which a record only states when the file was read.
+# A record that says it was not read states none of them, so the types are
+# read off the record's own answer rather than fixed: `false` there is a
+# statement about a read that did not happen.
+READ_TYPES = {
     "has_frontmatter": bool,
     "has_description": bool,
     "has_name": bool,
@@ -106,6 +115,7 @@ FILE_TYPES = {
     "frontmatter_truncated": bool,
     "description_len": (int, type(None)),
 }
+UNREAD_TYPES = dict.fromkeys(READ_TYPES, type(None))
 INDEX_TYPES = {"rows": int, "dangling_rows": int, "truncated": bool}
 SCOPE_TYPES = {"unreadable": bool}
 # The harness record's two values are read by name below, and a number in
@@ -292,6 +302,7 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
         "has_name": True,
         "has_type": True,
         "frontmatter_truncated": False,
+        "unreadable": False,
     }
     assert files["m2.md"]["has_frontmatter"] is False
     assert files["m2.md"]["description_len"] is None
@@ -1718,12 +1729,45 @@ def test_a_half_failed_capture_counts_what_it_could_not_read(tmp_path) -> None:
     assert shape["read_errors"] == 1
     files = {item["name"]: item for item in _by_key(shape)["-a"]["files"]}
     # The size is readable here and the CONTENT is not, so the file is listed
-    # with its real size and no frontmatter — the same four flags an empty
-    # file gets, which is why the count above is the thing that tells them
-    # apart. (A file whose `lstat` fails records `size: null`, never 0.)
+    # with its real size and says in its own record that nothing was read off
+    # it. (A file whose `lstat` fails records `size: null`, never 0.)
     assert files["two.md"]["size"] == unreadable_file.stat().st_size
-    assert files["two.md"]["has_frontmatter"] is False
+    assert files["two.md"]["unreadable"] is True
+    assert files["two.md"]["has_frontmatter"] is None
+    assert files["one.md"]["unreadable"] is False
     assert files["one.md"]["has_frontmatter"] is False
+
+
+@pytest.mark.skipif(ROOT, reason="root reads a file nobody else can")
+def test_a_file_nobody_could_read_is_not_a_file_with_no_frontmatter(
+    tmp_path,
+) -> None:
+    """The two records were byte-identical apart from the pseudonym: same
+    size, four false flags, a null length — and `frontmatter_truncated: false`
+    is a statement about a read that did not happen.
+
+    The whole-capture `read_errors` total was the only trace, and it cannot be
+    attributed to a file. The index record has answered this about its own
+    read since the round before; this is the same answer one level down.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    _write(memory / "plain.md", "no frontmatter at all\n")
+    blocked = _write(memory / "blocked.md", "no frontmatter at all\n")
+    blocked.chmod(0o000)
+    try:
+        shape = _shape("--config-dir", str(config), "--raw")
+    finally:
+        blocked.chmod(0o600)
+    files = {item["name"]: item for item in _by_key(shape)["-a"]["files"]}
+    assert files["blocked.md"] != {**files["plain.md"], "name": "blocked.md"}
+    assert files["blocked.md"]["size"] == files["plain.md"]["size"]
+    assert files["blocked.md"]["unreadable"] is True
+    # Nothing asserted about a read that did not happen, in either direction.
+    for fact in READ_TYPES:
+        assert files["blocked.md"][fact] is None, fact
+        assert files["plain.md"][fact] is not None or fact == "description_len"
+    assert shape["read_errors"] == 1
 
 
 @pytest.mark.skipif(ROOT, reason="root reads a file nobody else can")
@@ -2334,6 +2378,9 @@ def _gated(shape: dict, where) -> None:
         for item in entry["files"]:
             assert FILE_RE.match(item["name"]), (where, item["name"])
             _typed(item, FILE_TYPES, where)
+            _typed(
+                item, UNREAD_TYPES if item["unreadable"] else READ_TYPES, where,
+            )
         if entry["index"] is not None:
             _typed(entry["index"], INDEX_TYPES, where)
     for scope_name, scope in shape["settings"].items():

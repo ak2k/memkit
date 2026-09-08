@@ -4639,6 +4639,17 @@
       "why": "An index whose bytes this capture cannot reach — a mode it has no rights to, a name that is not a plain file, root-squash on the NFS home it was piped into — measures as an index with no rows and nothing dangling, which is exactly what an index that genuinely has no rows records, and a corpus rebuilt from the shape reproduces a number nobody took."
     },
     {
+      "name": "harness-shape-a-file-nobody-could-read-reads-as-having-no-frontmatter",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if unreadable:\n            record.update(dict.fromkeys(_frontmatter(\"\"), None))\n            record[\"frontmatter_truncated\"] = None\n        else:\n            record.update(_frontmatter(head))\n            record[\"frontmatter_truncated\"] = truncated\n",
+      "new": "        record.update(_frontmatter(head))\n        record[\"frontmatter_truncated\"] = truncated\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_file_nobody_could_read_is_not_a_file_with_no_frontmatter"
+      ],
+      "why": "A memory file whose bytes this capture cannot reach recorded four false flags, a null length and `frontmatter_truncated: false` — byte-identical to a readable file with a plain first line, and a statement about a read that never happened. The only trace was the whole-capture read_errors total, which cannot be attributed to a file."
+    },
+    {
       "name": "harness-shape-any-separator-in-a-row-target-is-an-escape",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
