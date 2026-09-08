@@ -51,6 +51,7 @@ which is what keeps the copies in step.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -163,6 +164,29 @@ def _managed_dir() -> str:
     return "/etc/claude-code"
 
 
+def _open_regular(path: str, errors: str = "strict"):
+    """`path` open for reading, or an `OSError` — and never a wait.
+
+    Two things `open()` will not do here. A FIFO blocks the open until
+    somebody writes to the other end, and a capture is unattended, on a host
+    the operator may get one run at, where a hang is indistinguishable from a
+    slow NFS walk and produces nothing at all. A device or a directory answers
+    a read with something that is not a file's contents. `O_NONBLOCK` makes
+    the open return, and `fstat` on the fd decides about the thing that was
+    actually opened rather than about the name it was reached by — so what
+    every caller here gets for anything that is not a plain file is the
+    OSError it already books as a state or a counted read error.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", path)
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, encoding="utf-8", errors=errors)
+
+
 def _read_json(path: str):
     """The parsed object at `path`, or None for anything that is not one.
 
@@ -173,7 +197,7 @@ def _read_json(path: str):
     materialiser reproduces by writing a file that does not parse.
     """
     try:
-        with open(path, encoding="utf-8") as handle:
+        with _open_regular(path) as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return None
@@ -462,7 +486,7 @@ def _read_head(path: str):
     an NFS home is exactly where the difference lives.
     """
     try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
+        with _open_regular(path, errors="replace") as handle:
             return handle.read(FRONTMATTER_BYTES)
     except OSError:
         return None
@@ -595,7 +619,7 @@ def _index(memory_dir: str, listed: list) -> dict:
     """
     path = os.path.join(memory_dir, INDEX_NAME)
     try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
+        with _open_regular(path, errors="replace") as handle:
             text = handle.read(FRONTMATTER_BYTES + 1)
     except OSError:
         return {"rows": 0, "dangling_rows": 0, "truncated": False}

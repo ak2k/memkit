@@ -4481,6 +4481,17 @@
         "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
       ],
       "why": "`isinstance(True, int)` is true in Python, so a plain int check admits a flag where a measurement belongs — a key length of `true` is a record no rebuilt tree can reproduce, and it passes every rule that reads the field as a number."
+    },
+    {
+      "name": "harness-shape-a-settings-read-waits-on-whatever-the-name-is",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    fd = os.open(path, os.O_RDONLY | getattr(os, \"O_NONBLOCK\", 0))\n",
+      "new": "    fd = os.open(path, os.O_RDONLY)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_that_is_not_a_file_is_answered_rather_than_waited_on"
+      ],
+      "why": "Opening a FIFO waits for somebody to write to the other end, and this runs unattended over ssh on a host the operator may get one run at: the capture hangs with nothing on stdout, indistinguishable from a slow NFS walk, and every other guard in the file is about a shape that is wrong rather than one that never arrives."
     }
   ]
 }

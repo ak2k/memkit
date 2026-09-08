@@ -1154,6 +1154,50 @@ def test_a_settings_file_that_cannot_be_read_is_a_state_not_an_absence(
     }
 
 
+def test_a_name_that_is_not_a_file_is_answered_rather_than_waited_on(
+    tmp_path,
+) -> None:
+    """`open()` on a FIFO blocks until somebody writes to the other end.
+
+    A capture runs unattended over ssh on a host the operator may get one run
+    at, so a read that waits forever is the whole capture lost with nothing on
+    stdout — worse than any wrong number, and indistinguishable from a slow
+    NFS walk while it is happening. A settings file that is not a file is the
+    same state as a directory at that path, which the tool already covers, and
+    the rest of the tree is still captured around it.
+
+    The FIFOs are made by this case. Nothing here goes near a real one.
+    """
+    config = tmp_path / "config"
+    memory = config / "projects" / "-a" / "memory"
+    memory.mkdir(parents=True)
+    _write(memory / "real.md", "---\nname: a\n---\n")
+    # In the tree these are not files and are never listed, so nothing opens
+    # them; at the two settings paths the name is opened because it is named.
+    os.mkfifo(str(memory / "queue.md"))
+    os.mkfifo(str(config / "MEMORY.md"))
+    os.mkfifo(str(config / "settings.json"))
+    os.mkfifo(str(config / ".claude.json"))
+    # A timeout of its own, well above what this tree costs: the rest of the
+    # file gives a blocked capture five minutes to look like a slow one, and
+    # what this case is about is that it does not block at all.
+    run = None
+    try:
+        run = subprocess.run(
+            [sys.executable, str(TOOL), "--config-dir", str(config)],
+            capture_output=True, text=True, timeout=30,
+            env=_managed_env(tmp_path / "none"),
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("the capture is still waiting on a name that is not a file")
+    assert run is not None and run.returncode == 0, run
+    shape = json.loads(run.stdout)
+    assert shape["settings"]["user"]["unreadable"] is True
+    assert shape["harness"] == {"version_hint": None, "install": None}
+    assert shape["read_errors"] == 0, shape["memory_dirs"]
+    assert [item["name"] for item in _by_key(shape)["-s1"]["files"]] == ["m1.md"]
+
+
 def _tool_module():
     """`tools/harness_shape.py` loaded as a module, which it otherwise is not.
 
