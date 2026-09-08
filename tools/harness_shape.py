@@ -175,7 +175,7 @@ def _managed_dir() -> str:
     return "/etc/claude-code"
 
 
-def _open_regular(path: str, errors: str = "strict"):
+def _open_regular(path: str, errors: str = "strict", binary: bool = False):
     """`path` open for reading, or an `OSError` — and never a wait.
 
     Two things `open()` will not do here. A FIFO blocks the open until
@@ -187,6 +187,10 @@ def _open_regular(path: str, errors: str = "strict"):
     actually opened rather than about the name it was reached by — so what
     every caller here gets for anything that is not a plain file is the
     OSError it already books as a state or a counted read error.
+
+    `binary` is for the one caller that CAPS its read: a cap counted in bytes
+    has to be applied to bytes, and a text stream's `read(n)` counts
+    characters.
     """
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     try:
@@ -195,6 +199,8 @@ def _open_regular(path: str, errors: str = "strict"):
     except BaseException:
         os.close(fd)
         raise
+    if binary:
+        return os.fdopen(fd, "rb")
     return os.fdopen(fd, encoding="utf-8", errors=errors)
 
 
@@ -552,13 +558,21 @@ def _read_head(path: str) -> tuple:
     flags, a null length and no counter moved — which is byte-identical to a
     file that genuinely has none. One byte over the cap is what tells the two
     apart, and it is the same answer `_index` already gives about its own.
+
+    READ AS BYTES AND DECODED AFTER, because the cap is named in bytes and a
+    text stream's `read(n)` counts CHARACTERS: 40,000 CJK characters are
+    40,000 to a text read and 120,000 bytes off the disk, which is the read
+    the cap exists to bound. Cutting on a byte boundary can halve a character,
+    and `replace` is what stands in its place — the same answer this read has
+    always given for bytes that are not UTF-8.
     """
     try:
-        with _open_regular(path, errors="replace") as handle:
-            text = handle.read(FRONTMATTER_BYTES + 1)
+        with _open_regular(path, binary=True) as handle:
+            raw = handle.read(FRONTMATTER_BYTES + 1)
     except OSError:
         return None, False
-    return text[:FRONTMATTER_BYTES], len(text) > FRONTMATTER_BYTES
+    head = raw[:FRONTMATTER_BYTES].decode("utf-8", "replace")
+    return head, len(raw) > FRONTMATTER_BYTES
 
 
 # --- pseudonyms -------------------------------------------------------------

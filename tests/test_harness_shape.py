@@ -891,6 +891,35 @@ def test_frontmatter_cut_at_the_cap_says_so_rather_than_reading_as_none(
     assert files["near.md"]["has_name"] is True
 
 
+def test_the_cap_named_in_bytes_is_counted_in_bytes(tmp_path) -> None:
+    """A text stream's `read(n)` counts characters, so the 64 KB cap was 64 K
+    CHARACTERS: a head of CJK text read 192 KB off a machine this tool is a
+    guest on and reported nothing cut, which is the read the cap exists to
+    bound and the one flag that says it happened.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    cap = _tool_module().FRONTMATTER_BYTES
+    # Three bytes each: half the cap in CHARACTERS is 1.5x it in BYTES.
+    wide = "中" * (cap // 2)
+    _write(memory / "wide.md", f"---\nname: wide\n---\n{wide}\n")
+    head = "---\nname: ascii\n---\n"
+    _write(memory / "ascii.md", head + "a" * (cap - len(head)))
+    assert (memory / "wide.md").stat().st_size > cap
+    assert len((memory / "wide.md").read_text(encoding="utf-8")) < cap
+    files = {
+        item["name"]: item
+        for item in _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
+    }
+    assert files["wide.md"]["frontmatter_truncated"] is True
+    # The frontmatter itself is inside the cap either way, and still read.
+    assert files["wide.md"]["has_name"] is True
+    # An ASCII file exactly at the cap answers what it always did.
+    assert (memory / "ascii.md").stat().st_size == cap
+    assert files["ascii.md"]["frontmatter_truncated"] is False
+    assert files["ascii.md"]["has_name"] is True
+
+
 def test_a_pathological_index_is_read_to_the_cap_and_says_so(tmp_path) -> None:
     """Every other read here stops at `FRONTMATTER_BYTES` so one file cannot
     turn a capture into a read of somebody's whole disk. The index was the one

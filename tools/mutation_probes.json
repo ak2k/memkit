@@ -4639,6 +4639,17 @@
       "why": "An index whose bytes this capture cannot reach — a mode it has no rights to, a name that is not a plain file, root-squash on the NFS home it was piped into — measures as an index with no rows and nothing dangling, which is exactly what an index that genuinely has no rows records, and a corpus rebuilt from the shape reproduces a number nobody took."
     },
     {
+      "name": "harness-shape-the-byte-cap-is-counted-in-characters",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    try:\n        with _open_regular(path, binary=True) as handle:\n            raw = handle.read(FRONTMATTER_BYTES + 1)\n    except OSError:\n        return None, False\n    head = raw[:FRONTMATTER_BYTES].decode(\"utf-8\", \"replace\")\n    return head, len(raw) > FRONTMATTER_BYTES\n",
+      "new": "    try:\n        with _open_regular(path, errors=\"replace\") as handle:\n            text = handle.read(FRONTMATTER_BYTES + 1)\n    except OSError:\n        return None, False\n    return text[:FRONTMATTER_BYTES], len(text) > FRONTMATTER_BYTES\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_cap_named_in_bytes_is_counted_in_bytes"
+      ],
+      "why": "The cap is what keeps one pathological file from turning a capture into a read of somebody's whole disk, and a text stream's read(n) counts characters: a head of CJK text read three times the cap off the machine and reported nothing cut, so both halves of the cap — the bound and the flag saying it was reached — were wrong for the same file."
+    },
+    {
       "name": "harness-shape-the-harness-record-is-gated-by-its-values-only",
       "module": "harness_shape",
       "file": "tests/test_harness_shape.py",
