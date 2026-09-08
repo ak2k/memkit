@@ -2712,6 +2712,23 @@ _LEX_COUNTS: dict[str, int] = {
     "lex_secret": 0,
 }
 
+
+def _lex_fired() -> dict[str, int]:
+    """The side-channel counters this run actually incremented.
+
+    Only the nonzero ones: these are exceptions, and a key present on every
+    line is a key nobody greps for.
+
+    READ TWICE on a run that reaches retrieval, which is why it is a function
+    rather than one statement. recall() folds what it knows before it returns,
+    and every `done()` folds AGAIN, by value — `_eligible` runs after recall()
+    has returned and `_eligible` is where the credential scan increments
+    `lex_secret`, so without the second fold the one counter that says a
+    repository store was refused could never reach the log.
+    """
+    return {k: v for k, v in _LEX_COUNTS.items() if v}
+
+
 # Where each hit came from INSIDE its file: path -> the heading of the
 # best-ranked chunk, for the pointer line's `[section: ...]` tag. Kept beside
 # the hits rather than returned with them because every path in this hook
@@ -5587,9 +5604,7 @@ def recall(
     # "thin" from `lex_hits` offline — which is the point of an offline
     # instrument: the threshold stays re-choosable after the fact.
     rec["query"] = query[:160]
-    # Only when they fire: these are exceptions, and a key present on every
-    # line is a key nobody greps for.
-    rec.update({k: v for k, v in _LEX_COUNTS.items() if v})
+    rec.update(_lex_fired())
     return hits
 
 
@@ -6726,11 +6741,7 @@ def _task_main(payload: dict, t0: float) -> None:
         way is a record its tripwire cannot see."""
         nonlocal logged
         rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
-        # The side-channel counters AGAIN, by value, because recall() folded
-        # them before `_eligible` ran and `_eligible` is where the credential
-        # scan increments `lex_secret`. Without this the one counter that says
-        # a repository store was refused could never reach the log.
-        rec.update({k: v for k, v in _LEX_COUNTS.items() if v})
+        rec.update(_lex_fired())
         with _sigterm_masked():
             _soak_log(rec)
             logged = True
@@ -7079,11 +7090,7 @@ def main() -> None:
             cwd=_cwd_digest(),
             ms=int((time.monotonic() - t0) * 1000),
         )
-        # The side-channel counters AGAIN, by value, because recall() folded
-        # them before `_eligible` ran and `_eligible` is where the credential
-        # scan increments `lex_secret`. Without this the one counter that says
-        # a repository store was refused could never reach the log.
-        record.update({k: v for k, v in _LEX_COUNTS.items() if v})
+        record.update(_lex_fired())
         _soak_log(record)
 
     _on_kill(lambda signum, _frame: (done("killed", signal=signum), os._exit(0)))
@@ -7252,11 +7259,7 @@ def _prompt_main(payload: dict, t0: float) -> None:
         nonlocal logged
         if concludes:
             rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)
-        # The side-channel counters AGAIN, by value, because recall() folded
-        # them before `_eligible` ran and `_eligible` is where the credential
-        # scan increments `lex_secret`. Without this the one counter that says
-        # a repository store was refused could never reach the log.
-            rec.update({k: v for k, v in _LEX_COUNTS.items() if v})
+            rec.update(_lex_fired())
             record = rec
             if _doctor_run:
                 # The SAME statement the branch below makes, on a full record:
