@@ -4673,6 +4673,17 @@
         "tests/test_memory_prompt_recall.py::test_the_diagnostic_spells_every_corpus_the_same_way"
       ],
       "why": "the one surface an operator reads to tell a configured store from a repository's would print the same field two ways, and the difference in form reads as a difference in kind"
+    },
+    {
+      "name": "a-store-a-repository-named-is-not-read-only",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        return bool(self.resolved_dir)\n",
+      "new": "        return False\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_read_only_is_the_resolved_directory_and_nothing_else"
+      ],
+      "why": "read-only is what keeps a directory the repository chose out of every write path and what fires the credential scan over the files under it"
     }
   ]
 }

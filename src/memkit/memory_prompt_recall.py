@@ -379,14 +379,14 @@ class Store:
         "edit_root",
         "sub_indexes",
         "cwd_gate",
-        # Set only by `_project_store`, and the two fields are what let a store
-        # the REPOSITORY named exist beside stores the user configured without
-        # either one learning about the other. `resolved_dir` is an absolute
-        # path `store_dir` returns as-is, so a project store needs no entry in
-        # `roots` and cannot collide with one; `read_only` is the fact
-        # `_live_dirs` hands to retrieval beside the directory itself, and it
-        # is what makes the credential scan fire on the files under it.
-        "read_only",
+        # Set only by `_project_store`, and it is what lets a store the
+        # REPOSITORY named exist beside stores the user configured without
+        # either one learning about the other: an absolute path `store_dir`
+        # returns as-is, so a project store needs no entry in `roots` and
+        # cannot collide with one. `read_only` — the fact `_live_dirs` hands
+        # to retrieval beside the directory itself, and what makes the
+        # credential scan fire on the files under it — is DERIVED from it
+        # rather than stored, so the two cannot be set apart.
         "resolved_dir",
     )
 
@@ -428,9 +428,8 @@ class Store:
         # type, and the config's gate is the only thing keeping a project
         # store's memories out of every unrelated session's prompts. Widening
         # what an every-prompt hook reads is not a default anything may pick.
-        # A store the user configured is writable and resolves through a
-        # named root. Both are overwritten, together, only by `_project_store`.
-        self.read_only = False
+        # A store the user configured resolves through a named root.
+        # Overwritten only by `_project_store`.
         self.resolved_dir = ""
         gate = raw.get("cwd_gate")
         if gate is None:
@@ -442,6 +441,18 @@ class Store:
                 f"{where}.cwd_gate must be an object with a 'root' name, or "
                 f"absent — not {type(gate).__name__}"
             )
+
+    @property
+    def read_only(self) -> bool:
+        """Whether retrieval may only READ under this store.
+
+        Derived rather than stored: the only store whose directory the user's
+        config does not name is the only store nothing may write into, so a
+        second field would be a second way to say one thing — and a store set
+        one way and not the other is a repository-chosen directory written to,
+        or its files reaching retrieval unscanned.
+        """
+        return bool(self.resolved_dir)
 
 
 # --- where a repository is, from the filesystem -------------------------------
@@ -814,7 +825,6 @@ def _project_store(root: str, taken):
     # Nothing ever resolves it, because `store_dir` answers from `resolved_dir`
     # first.
     store = Store({"id": store_id, "dir": rel, "live_root": root}, 0)
-    store.read_only = True
     store.resolved_dir = resolved
     return store, ""
 

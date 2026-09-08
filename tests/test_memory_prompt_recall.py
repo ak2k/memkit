@@ -14069,6 +14069,34 @@ def test_a_project_file_adds_a_store_to_the_search_and_not_to_the_config(
     assert cfg.project_error == ""
 
 
+def test_read_only_is_the_resolved_directory_and_nothing_else(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The two facts were two fields, written together in two places.
+
+    A store carrying one and not the other is either a directory a repository
+    chose being written into, or its files reaching retrieval without the
+    credential scan — and nothing would have said so. Derived, that store
+    cannot be constructed.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    cfg = _config_at(tmp_path, monkeypatch, repo)
+    (configured,) = cfg.stores
+    assert configured.resolved_dir == ""
+    assert configured.read_only is False
+    project = cfg.project_store()
+    assert project is not None, cfg.project_error
+    assert project.resolved_dir
+    assert project.read_only is True
+    # Neither direction can be set apart from the directory: not off on the
+    # store a repository named...
+    with pytest.raises(AttributeError):
+        project.read_only = False
+    # ...and not on for a store whose directory the user's own config names.
+    configured.resolved_dir = project.resolved_dir
+    assert configured.read_only is True
+
+
 def test_a_project_store_is_searched_from_a_subdirectory_and_from_a_worktree(
     tmp_path: Path, monkeypatch
 ) -> None:
