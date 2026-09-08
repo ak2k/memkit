@@ -691,7 +691,12 @@ def _project_store(root: str, taken):
         return None, f"{PROJECT_CONFIG_NAME} is over {PROJECT_CONFIG_MAX_BYTES} bytes"
     try:
         raw = json.loads(text)
-    except ValueError as exc:
+    # A document nested past the parser's budget answers with `RecursionError`,
+    # which is a `RuntimeError` — so on the 3.9 the harness runs, 1024 open
+    # brackets (2 KB, half this cap) escaped the whole-or-nothing guard and took
+    # every prompt in that checkout down with it, the user's own stores
+    # included. The five other `json` sites in this file already spell it.
+    except (ValueError, RecursionError) as exc:
         return None, f"{PROJECT_CONFIG_NAME} is not valid JSON: {_project_value(exc)}"
     if not isinstance(raw, dict):
         return None, f"{PROJECT_CONFIG_NAME} does not hold a JSON object"

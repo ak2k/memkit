@@ -14532,6 +14532,52 @@ def test_a_project_file_that_grew_after_the_fstat_is_refused_on_the_read(
     assert f"is over {hook.PROJECT_CONFIG_MAX_BYTES} bytes" in reason, reason
 
 
+def test_a_project_file_nested_past_the_parsers_budget_refuses_rather_than_raises(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The one `json` exception that is not a `ValueError`.
+
+    A document nested past the parser's budget answers with `RecursionError`,
+    a `RuntimeError` — so on the 3.9 the harness resolves, 1024 open brackets
+    (2 KB, half this cap) came out of `_project_store` as an exception and took
+    the whole prompt with it: no pointers at all in that checkout, the user's
+    own stores included, and `--debug-config` dead the same way. Whole-or-
+    nothing means the FILE is dropped, never the prompt.
+
+    STAGED, because this interpreter is not the one the claim is about: its
+    scanner parses every depth that fits the 4096-byte cap, so there is no
+    document that reaches the arm here and `json.loads` is made to raise what
+    3.9's does instead. `tests/floor39.py` runs the real nested document on the
+    real 3.9, which is where the depth itself is the evidence.
+    """
+    levels = hook.PROJECT_CONFIG_MAX_BYTES // 4
+    doc = "[" * levels + "]" * levels
+    assert len(doc) <= hook.PROJECT_CONFIG_MAX_BYTES, len(doc)
+    repo = _project_checkout(tmp_path, blob=doc)
+    cfg = _config_at(tmp_path, monkeypatch, repo)
+    real_loads = json.loads
+
+    def deep(text, *args, **kwargs):
+        if text == doc:
+            raise RecursionError(
+                "maximum recursion depth exceeded while decoding a JSON array "
+                "from a unicode string"
+            )
+        return real_loads(text, *args, **kwargs)
+
+    # A context rather than `undo`, which would also drop the autouse seal on
+    # the state directory for the rest of this case.
+    with monkeypatch.context() as staged:
+        staged.setattr(json, "loads", deep)
+        assert _within(10, cfg.project_store) is None
+        reason = cfg.project_error
+        # The refusal is the file's, and the user's own store is still searched
+        # — the whole point of dropping the file rather than the prompt.
+        assert [s.id for s in cfg.searched_stores()] == ["s"], reason
+    assert reason.startswith(f"{hook.PROJECT_CONFIG_NAME} is not valid JSON:"), reason
+    assert reason == hook.sanitize(reason), repr(reason)
+
+
 def test_a_device_symlink_a_checkout_carries_is_refused_without_hanging(
     tmp_path: Path, monkeypatch
 ) -> None:

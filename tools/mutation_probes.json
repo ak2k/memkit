@@ -4540,6 +4540,17 @@
         "tests/test_eval.py::test_the_eval_scores_a_corpus_holding_a_symlinked_memory"
       ],
       "why": "the per-hit root is only consulted for a candidate that is a link, so a reader out of step with the writer's value shape scores every ordinary corpus and aborts the project's own gate on the first store that commits one"
+    },
+    {
+      "name": "a-nested-project-file-parses-outside-the-guard",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    except (ValueError, RecursionError) as exc:\n        return None, f\"{PROJECT_CONFIG_NAME} is not valid JSON: {_project_value(exc)}\"\n",
+      "new": "    except ValueError as exc:\n        return None, f\"{PROJECT_CONFIG_NAME} is not valid JSON: {_project_value(exc)}\"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_nested_past_the_parsers_budget_refuses_rather_than_raises"
+      ],
+      "why": "`RecursionError` is a `RuntimeError`, and a document nested past the parser's budget fits in half this file's byte cap — escaping the whole-or-nothing guard it costs the checkout not one refused file but every prompt's whole retrieval"
     }
   ]
 }

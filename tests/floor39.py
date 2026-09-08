@@ -176,6 +176,33 @@ out = subprocess.run(
 check("the hook exits 0", out.returncode, 0)
 check("the hook emitted a pointer", "pooling.md" in out.stdout, True)
 
+# --- a nested project file is one file refused, not one prompt lost ----------
+#
+# The depth is run rather than asserted, because the exception TYPE is what
+# differs between interpreters: this scanner answers a document nested past its
+# budget with `RecursionError`, a `RuntimeError` the suite's own 3.12 never
+# produces within the 4096-byte cap. Half that cap buys 1024 levels, so the
+# shape is committable, and uncaught it does not cost the checkout its own
+# corpus — it costs every prompt there every store, the user's included.
+
+levels = hook.PROJECT_CONFIG_MAX_BYTES // 4
+with open(memkit_json, "w") as f:
+    f.write("[" * levels + "]" * levels)
+nested, why = hook._project_store(checkout, {"notes"})
+check("a nested project file is refused", nested, None)
+check("the refusal names the file and the parse",
+      why.startswith(hook.PROJECT_CONFIG_NAME + " is not valid JSON:"), True)
+out = subprocess.run(
+    [sys.executable, os.path.join(REPO, "src", "memkit", "memory_prompt_recall.py")],
+    input=json.dumps({"session_id": "floor39n", "prompt":
+                      "why does pgbouncer transaction pooling break prepared statements"}),
+    capture_output=True, text=True, timeout=300, cwd=checkout,
+    env=dict(os.environ, MEMKIT_CONFIG=config),
+)
+check("the hook exits 0 in that checkout", out.returncode, 0)
+check("the user's own store is still served there", "pooling.md" in out.stdout, True)
+os.remove(memkit_json)
+
 if failures:
     for line in failures:
         sys.stderr.write("floor39: " + line + "\n")
