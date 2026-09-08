@@ -348,6 +348,22 @@ def test_the_package_config_covers_new_files_without_being_edited() -> None:
     assert (REPO / "src" / "memkit" / "cli.py").is_file()
 
 
+def test_the_38_config_names_the_one_file_and_the_floor_it_checks_it_at() -> None:
+    """A CI step whose whole value lives in a config file needs one assertion
+    pinning that file, or it passes checking something else.
+
+    Nothing here read `pyrightconfig-shape38.json`, so a `pythonVersion`
+    edited to 3.12 or an `include` emptied left a green third pyright step
+    that duplicated the first: the file it exists for is also covered by
+    `pyrightconfig.json` at 3.12, so nothing else would turn red. The two
+    configs above are pinned this way already; this one arrived without it.
+    """
+    config = json.loads((REPO / "pyrightconfig-shape38.json").read_text())
+    assert config["include"] == ["tools/harness_shape.py"]
+    assert config["pythonVersion"] == SHAPE_FLOOR_VERSION
+    assert (REPO / "tools" / "harness_shape.py").is_file()
+
+
 FLOOR_REQUIRED_ENV = "MEMKIT_FLOOR_REQUIRED"
 
 
@@ -365,6 +381,12 @@ def _floor_interpreter(version: str = FLOOR_VERSION) -> str | None:
     `uv python find` first, because `uv python install 3.9` provisions one in
     well under a second and that is what makes this affordable as a gate; a
     `python3.9` on PATH answers too, for a machine that has one already.
+
+    AND THE CHILD IS ASKED WHAT IT IS. A name is not a version: a pyenv, asdf,
+    conda or Nix shim called `python3.8` is ordinary on a developer's machine
+    and answers this gate with whatever it forwards to, so the whole floor
+    case goes green having executed 3.12. An interpreter that will not say, or
+    says something else, is no interpreter of this version.
     """
     for probe in (["uv", "python", "find", version],):
         try:
@@ -372,8 +394,21 @@ def _floor_interpreter(version: str = FLOOR_VERSION) -> str | None:
         except (OSError, subprocess.SubprocessError):
             continue
         if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
-    return shutil.which(f"python{version}")
+            return _of_version(out.stdout.strip(), version)
+    named = shutil.which(f"python{version}")
+    return None if named is None else _of_version(named, version)
+
+
+def _of_version(interpreter: str, version: str) -> str | None:
+    """`interpreter` if it really is `version`, and None otherwise."""
+    try:
+        out = subprocess.run(
+            [interpreter, "-c", 'import sys;print("%d.%d" % sys.version_info[:2])'],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return interpreter if out.stdout.strip() == version else None
 
 
 def _require_floor_interpreter(version: str = FLOOR_VERSION) -> str:

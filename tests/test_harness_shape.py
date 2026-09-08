@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -157,8 +158,10 @@ def _tree(tmp_path: Path) -> Path:
     whose `memory` is empty, one whose `memory` links somewhere else, one
     whose PROJECT directory is a link, one holding a memory FILE that is a
     link, and one whose `memory` links to another directory under the same
-    config root — plus a project directory with no `memory` at all, which is
-    what 3,900 of the 3,923 entries on a real machine are.
+    config root — plus a project directory with no `memory` at all, which 5 of
+    the 3,923 entries on the machine the NFS fixture came from are. The bulk
+    case there is the one above it: 3,918 hold a `memory` directory, and 3,899
+    of those hold nothing.
 
     The last three are named to sort AFTER the others, because pseudonyms are
     assigned by first appearance over sorted keys: a name inserted in the
@@ -947,6 +950,11 @@ def test_out_writes_only_where_its_refusals_were_answered_about(
     assert run.returncode == code, run.stdout + run.stderr
     if says is not None:
         assert says in run.stderr, run.stderr
+        if "a symlink stands in" in says:
+            # This one fires for every macOS user on every `--out $TMPDIR/...`,
+            # because `/var` is itself a link — so the message says which path
+            # to pass rather than reading as an attack somebody staged.
+            assert "on macOS /var is itself a link" in run.stderr
     else:
         assert json.loads(out.read_text(encoding="utf-8"))["anonymised"] is True
     assert _files_under(repo) == before, "it wrote through the destination"
@@ -969,6 +977,76 @@ def test_an_ordinary_destination_is_written_and_rewritten(tmp_path) -> None:
     for _ in range(2):
         assert _run("--config-dir", str(config), "--out", str(plain)).returncode == 0
     assert json.loads(plain.read_text(encoding="utf-8"))["anonymised"] is True
+    # OWNER ONLY. `--raw` carries real usernames, org names and repository
+    # paths, and it is written on a host this tool is a guest on — a default
+    # umask left it readable by everyone else logged in there. Asserted on the
+    # anonymised run, because the two are written by one call and the file
+    # that needs the narrower mode is the one somebody forgot they produced.
+    assert stat.S_IMODE(plain.stat().st_mode) == 0o600
+
+
+def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(
+    tmp_path,
+) -> None:
+    """`os.scandir` raises FileNotFoundError for a name that is not there and
+    for one that is there as a broken link, and only the first is a shape.
+
+    A `projects/` linked onto a volume that has been unmounted or a directory
+    that has been moved is a machine WITH projects that this run cannot see,
+    and it captured as `projects_total: 0` at exit 0 — the healthy empty
+    machine the handler's own comment says every other failure must not
+    become.
+    """
+    config = tmp_path / "config"
+    config.mkdir()
+    os.symlink(tmp_path / "moved-away", config / "projects")
+    refused = _run("--config-dir", str(config))
+    assert refused.returncode == 2, refused.stdout
+    assert refused.stdout == "", "it failed and emitted a shape anyway"
+    assert "harness_shape:" in refused.stderr
+
+    # The control the handler is there for: nothing written yet really is a
+    # machine, and it still captures.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _shape("--config-dir", str(empty))["projects_total"] == 0
+
+
+def test_a_frontmatter_key_is_matched_the_way_the_checker_matches_it(
+    tmp_path,
+) -> None:
+    """`description : text` is a description to YAML and to
+    `memory_integrity._frontmatter`, and a literal-prefix test read it as no
+    frontmatter description at all.
+
+    The flags are only worth carrying if they are the checker's, so the two
+    parsers are compared over the spellings that tell them apart rather than
+    against literals typed here.
+    """
+    lines = {
+        "description : spaced out": ("description", "spaced out"),
+        "name\t: tabbed": ("name", "tabbed"),
+        "description: plain": ("description", "plain"),
+        "# description: commented": (None, None),
+        "not a key at all": (None, None),
+        "two words: value": (None, None),
+    }
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    for number, line in enumerate(lines):
+        _write(memory / f"m{number}.md", f"---\n{line}\n---\n\nbody\n")
+    files = {
+        item["name"]: item
+        for item in _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
+    }
+    for number, (line, (key, value)) in enumerate(lines.items()):
+        seen = memory_integrity._frontmatter(memory / f"m{number}.md")
+        assert seen == ({} if key is None else {key: value}), line
+        item = files[f"m{number}.md"]
+        assert item["has_description"] is (key == "description"), line
+        assert item["has_name"] is (key == "name"), line
+        if key == "description":
+            assert item["description_len"] == len(value), line
 
 
 def test_memkit_is_kept_by_name_whichever_way_the_key_is_spelled(tmp_path) -> None:

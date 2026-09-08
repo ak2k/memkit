@@ -4559,6 +4559,39 @@
         "tests/test_harness_memory.py::test_the_inventory_skips_what_it_cannot_read_rather_than_raising"
       ],
       "why": "`DirEntry.is_file` swallows FileNotFoundError and lets every other OSError out, so a single `ln -s loop.md loop.md` drops the directory it sits in and every real memory beside it — and it drops it from only one of the two walks that are supposed to name the same directories, which is the agreement the capture tool's whole duplication strategy rests on."
+    },
+    {
+      "name": "harness-shape-out-writes-real-names-world-readable",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            0o600,\n",
+      "new": "            0o666,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_an_ordinary_destination_is_written_and_rewritten"
+      ],
+      "why": "`--raw --out` is the one output carrying real usernames, org names and repository paths, and it is written on a host this tool is a guest on: the mode a plain `open(path, \"w\")` would create leaves it readable by everybody else logged into that machine."
+    },
+    {
+      "name": "harness-shape-a-dead-projects-link-reads-as-an-empty-machine",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if os.path.lexists(projects_root):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine"
+      ],
+      "why": "`os.scandir` raises FileNotFoundError for a name that is absent and for one present as a broken link, and only the first is a machine with nothing written yet: the second is a machine WITH projects that this run could not see, reported as zeros at exit 0 on a host the operator may not get a second run at."
+    },
+    {
+      "name": "harness-shape-a-frontmatter-key-is-matched-as-a-literal-prefix",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    key, sep, _ = line.partition(\":\")\n    key = key.strip()\n    if not sep or not key or \" \" in key:\n        return None\n    return key\n",
+      "new": "    for known in (\"name\", \"type\", \"description\", \"metadata\"):\n        if line.startswith(known + \":\"):\n            return known\n    return None\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_frontmatter_key_is_matched_the_way_the_checker_matches_it"
+      ],
+      "why": "YAML accepts `description : text` and so does the checker, which is what decides whether a description exists and how long it is — read as a literal prefix the tool answers four false flags and a null length for a file the checker measures, and the shape is only worth carrying if it is the checker's answer."
     }
   ]
 }

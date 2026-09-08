@@ -410,12 +410,16 @@ def _description_len(line: str) -> int:
     `memory_integrity._scalar` — so this counts what that counts WHEREVER
     THAT RETURNS A VALUE.
 
-    AND A NUMBER WHERE IT DOES NOT. `_scalar` rejects five spellings outright
-    — an empty value, a quote that never closes, a plain scalar opening on a
-    YAML indicator, one holding `": "`, one holding `" #"` — and answers
-    DESC-BAD rather than a length. This returns the length of what was
-    written for all five, because a shape records what a file holds and the
-    verdict on it is the consumer's to re-take from the rebuilt tree.
+    AND A NUMBER WHERE IT DOES NOT. `_scalar` rejects six kinds of value
+    outright — an empty one, a quote that never closes, a double-quoted one
+    holding an unescaped quote, a plain scalar opening on a YAML indicator,
+    one holding `": "`, one holding `" #"` — and answers DESC-BAD rather than
+    a length. This returns the length of what was written for every one of
+    them, and what is lost is the malformedness: a materialiser rebuilding a
+    description of that length writes a WELL-FORMED one, so the rebuilt tree
+    cannot reproduce DESC-BAD and no consumer can re-take that verdict. A
+    shape carries the length and drops the verdict, which is accepted until a
+    rule needs it.
 
     ONE LINE, no folding. Neither real reader folds: the checker's frontmatter
     parser skips every indented continuation as a nested key, and the recall
@@ -430,7 +434,7 @@ def _description_len(line: str) -> int:
 
     A lone `>` or `|` is a block scalar, which the checker refuses outright as
     DESC-BAD and the hook reads as a one-character description. The number
-    here is what is written; adjudicating between them is the consumer's.
+    here is what is written, which is the hook's answer.
     """
     value = line.split(":", 1)[1].strip()
     if value[:1] in ('"', "'") and len(value) >= 2 and value[-1] == value[0]:
@@ -439,6 +443,25 @@ def _description_len(line: str) -> int:
             '\\"', '"'
         )
     return len(value)
+
+
+def _top_level_key(line: str):
+    """The key one frontmatter line declares, or None if it declares none.
+
+    `memory_integrity._frontmatter`'s own test, spelled its way rather than
+    as a literal prefix: `description : text` is a description to YAML and to
+    the checker, and read here as a prefix it was no description at all —
+    four false flags and a null length for a file the checker measures. So
+    the colon is partitioned rather than matched, the key stripped, a key
+    holding a space refused, and an indented or commented line skipped.
+    """
+    if not line or line[0].isspace() or line.startswith("#"):
+        return None
+    key, sep, _ = line.partition(":")
+    key = key.strip()
+    if not sep or not key or " " in key:
+        return None
+    return key
 
 
 def _frontmatter(text: str) -> dict:
@@ -471,13 +494,14 @@ def _frontmatter(text: str) -> dict:
     description_len = None
     in_metadata = False
     for line in fence:
-        if line.strip() and line[:1] not in (" ", "\t"):
-            in_metadata = line.startswith("metadata:")
-        if line.startswith("name:"):
+        key = _top_level_key(line)
+        if line.strip() and not line[:1].isspace():
+            in_metadata = key == "metadata"
+        if key == "name":
             has_name = True
-        if line.startswith("type:") or (in_metadata and _NESTED_TYPE_RE.match(line)):
+        if key == "type" or (in_metadata and _NESTED_TYPE_RE.match(line)):
             has_type = True
-        if not has_description and line.startswith("description:"):
+        if not has_description and key == "description":
             has_description = True
             description_len = _description_len(line)
     return {
@@ -800,6 +824,13 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
         with os.scandir(projects_root) as entries:
             keys = sorted((entry.name, entry.is_symlink()) for entry in entries)
     except FileNotFoundError:
+        if os.path.lexists(projects_root):
+            # THE NAME IS THERE and does not resolve — `projects/` as a link
+            # to somewhere that has been moved or unmounted, which `scandir`
+            # reports the same way it reports no name at all. That machine has
+            # projects and this run cannot see them, so it is the failure
+            # below and not the empty one above it.
+            raise
         # A config directory with no `projects/` is a machine with nothing
         # written yet, and that is a shape. EVERY OTHER failure is not: the
         # directory is there and could not be listed, and the zeros below it
@@ -1067,7 +1098,9 @@ def main(argv=None) -> int:
         # named /tmp on a mac — can pass that path instead.
         sys.stderr.write(
             f"harness_shape: {args.out}: a symlink stands in this path, which "
-            f"chooses what gets overwritten; it resolves to {resolved}\n"
+            f"chooses what gets overwritten; it resolves to {resolved} — on "
+            f"macOS /var is itself a link, so a path under $TMPDIR lands here "
+            f"and the resolved one above is the path to pass\n"
         )
         return 2
     # AFTER the refusals, not before: a rejected --out used to leave the
@@ -1094,10 +1127,15 @@ def main(argv=None) -> int:
             | os.O_CREAT
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_NONBLOCK", 0),
-            # The mode a plain `open(path, "w")` would have created: this
-            # change is about not following a link, not about tightening
-            # permissions, and umask applies to both the same way.
-            0o666,
+            # OWNER ONLY, and not the mode a plain `open(path, "w")` would
+            # have created. `--raw` is the one output that carries real
+            # usernames, org names and repository paths, and it is written on
+            # a host this tool is a guest on: a default umask leaves it
+            # world-readable for everyone else logged into that machine. An
+            # anonymised shape is written the same way rather than by a second
+            # rule, because the file that needs the narrower mode is the one
+            # somebody forgot they were producing.
+            0o600,
         )
     except OSError as exc:
         # O_NOFOLLOW reports ELOOP, which reads as a broken filesystem rather
