@@ -324,13 +324,13 @@ repoint it at the harness's own directory:
 
 `$target` is the harness's directory under the corpus root:
 `$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
-it does not — that second one being the corpus root of a store with no
-`search/`. Creating `search/` afterwards takes that directory back out of
-retrieval, so making `search/` first is the simpler order. `rm` removes the
-link and never what it points at, so memories already lying flat in the corpus
-root stay where they are and stay retrievable. Where `$dir` is not a link the
-first test fails and nothing after it runs. Both variables are yours to set
-before the line runs.
+it does not — a store with no `search/` has `$store` itself for a corpus root.
+Creating `search/` afterwards takes that directory back out of retrieval, so
+making `search/` first is the simpler order. `rm` removes the link and never
+what it points at, so memories already lying flat in the corpus root stay
+where they are and stay retrievable. Where `$dir` is not a link the first test
+fails and nothing after it runs. Both variables are yours to set before the
+line runs.
 
 `memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
 honours and names the directory in use, or the derived default when it is unset.
