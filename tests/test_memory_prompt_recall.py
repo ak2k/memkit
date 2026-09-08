@@ -121,6 +121,12 @@ def _env(tmp_path: Path, *, stores: bool = True) -> dict:
     disk are dropped, so the hook gets past every prompt-shaped gate and then
     finds nothing to search. That is the outcome that proves a prompt was not
     gated for its shape.
+
+    `XDG_CACHE_HOME` is PINNED and not merely inherited: the module honours it
+    over `$HOME/.cache`, so on a machine that sets it the state directory these
+    cases read `log.jsonl` and the session ledger out of was somewhere else
+    entirely — a whole population of tests whose verdict came from the runner's
+    environment, and a mutation sweep whose baseline they took down with them.
     """
     if stores:
         for rel in (PROJECT_DIR, PERSONAL_DIR):
@@ -128,6 +134,7 @@ def _env(tmp_path: Path, *, stores: bool = True) -> dict:
     return dict(
         os.environ,
         HOME=str(tmp_path),
+        XDG_CACHE_HOME=str(tmp_path / ".cache"),
         MEMKIT_CONFIG=str(_write_config(tmp_path)),
     )
 
