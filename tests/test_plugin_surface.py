@@ -3753,8 +3753,16 @@ def _shell_argv(shell: str) -> list:
     return ["bash", "-c"] if shell == "bash" else [_needs_zsh(), "-f", "-c"]
 
 
+# `config_dir=None` means `$HOME/.claude`, which is what the variable holds on
+# a machine that has set it to the default. This is the other state: the
+# variable ABSENT, which is the branch of `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`
+# every reader who has never set it takes, and the one no cell reached while
+# `_sealed_env` set the name unconditionally.
+_NO_CONFIG_DIR = "CLAUDE_CONFIG_DIR is not in the environment at all"
+
+
 def _sealed_env(
-    home: Path, pwd: str | None = None, config_dir: Path | None = None
+    home: Path, pwd: str | None = None, config_dir: Path | str | None = None
 ) -> dict:
     """The environment wholesale, so nothing of the developer's leaks in.
 
@@ -3766,7 +3774,9 @@ def _sealed_env(
     `config_dir` is the harness's config directory, and one cell puts it
     somewhere that is NOT `$HOME/.claude`: the page derives `$dir` under
     `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, and where the two spellings name one
-    path the page can lose the variable without a case noticing.
+    path the page can lose the variable without a case noticing. Passing
+    `_NO_CONFIG_DIR` leaves the name out of the environment entirely, which is
+    the other branch of that expansion and the one most readers are on.
 
     `GIT_CEILING_DIRECTORIES` stops `rev-parse` walking out of the tmpdir: the
     cases that assert what the block prints OUTSIDE a repository would key on
@@ -3778,7 +3788,15 @@ def _sealed_env(
         "GIT_CEILING_DIRECTORIES": str(home.parent),
         "HOME": str(home),
         "PATH": os.environ["PATH"],
-        "CLAUDE_CONFIG_DIR": str(config_dir if config_dir is not None else home / ".claude"),
+        **(
+            {}
+            if config_dir == _NO_CONFIG_DIR
+            else {
+                "CLAUDE_CONFIG_DIR": str(
+                    config_dir if config_dir is not None else home / ".claude"
+                )
+            }
+        ),
         "LC_ALL": "C",
         "TERM": "dumb",
         "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -3818,7 +3836,7 @@ def _harness_key(path: Path, pattern: str, physical: bool = True) -> str:
 
 def _shell_out(
     shell: str, script: str, cwd: Path, home: Path,
-    pwd: str | None = None, config_dir: Path | None = None,
+    pwd: str | None = None, config_dir: Path | str | None = None,
 ):
     return subprocess.run(
         _shell_argv(shell) + [script], cwd=str(cwd),
@@ -4308,6 +4326,38 @@ def test_the_recovery_for_a_recreated_dir_refuses_what_ls_ld_cannot_show(
         # `$target` is not there, so the first test fails and nothing runs.
         assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` became a link")
         assert _file_map(dir_) == dir_before, (script, _file_map(dir_))
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+def test_the_dir_the_page_derives_falls_back_to_home_where_the_variable_is_unset(
+    tmp_path, shell
+) -> None:
+    """The `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` fallback, executed.
+
+    Every other cell here runs with the variable set, so the branch the reader
+    who has never set it takes was the one branch of the page's own expansion
+    nothing ran — and the page could have lost it with all of them green.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+    repo = _fixture_repo(home / "repo", home)
+    want = (
+        home / ".claude" / "projects"
+        / _harness_key(repo, _key_rule(section)) / "memory"
+    )
+    # `ls -ld` is half the line, so the directory has to be there for the line
+    # to run to the end and print what it derived.
+    want.mkdir(parents=True)
+
+    script = "\n".join([
+        _key_derivation_block(section), _dir_line(section), 'printf \'%s\\n\' "$dir"',
+    ])
+    out = _shell_out(shell, script, repo, home, config_dir=_NO_CONFIG_DIR)
+    assert out.returncode == 0, (script, out.stdout, out.stderr)
+    printed = out.stdout.strip().splitlines()
+    assert printed, (script, out.stdout, out.stderr)
+    assert printed[-1] == str(want), (script, out.stdout, str(want))
 
 
 @pytest.mark.parametrize("shell", ("bash", "zsh"))
