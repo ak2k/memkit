@@ -14097,6 +14097,97 @@ def test_read_only_is_the_resolved_directory_and_nothing_else(
     assert configured.read_only is True
 
 
+def test_a_candidate_a_repository_published_costs_one_stat_and_one_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The read-only branch's cost, stated as a number and pinned as one.
+
+    It is the one branch that opens a file a REPOSITORY chose, and it runs
+    once per candidate on every prompt served out of such a store: one size
+    `stat`, then the guarded open — one `os.open`, one `os.fstat` — and
+    nothing else. A second resolution or a second open here shows up in no
+    other assertion this suite makes and is paid on every prompt.
+
+    Counted through the syscalls rather than through the module's own read
+    counters, which count CALLS and not syscalls.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    corpus = repo / PROJECT_STORE_DIR / "search"
+    for n in range(2):
+        (corpus / f"unionfs_perms_{n}.md").write_text(
+            PROJECT_MEMORY, encoding="utf-8"
+        )
+    hook._config.cache_clear()
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(repo)
+    terms = INJECT_PROMPT.split()
+    hits = hook.recall(INJECT_PROMPT, dirs=[str(corpus)])
+    # Non-vacuity: several candidates, and it is the read-only branch they
+    # will be judged through.
+    assert len(hits) >= 3, hits
+    assert all(hook._lex_read_only(h) for h in hits), hits
+
+    watched = set(hits)
+    stats: list = []
+    opened: list = []
+    fstats: list = []
+    live: dict = {}
+    real_stat, real_open, real_fstat = os.stat, os.open, os.fstat
+
+    def counting_stat(path, *a, **kw):
+        if str(path) in watched:
+            stats.append(str(path))
+        return real_stat(path, *a, **kw)
+
+    def counting_open(path, *a, **kw):
+        fd = real_open(path, *a, **kw)
+        # Descriptors are reused the moment one is closed, so a watched fd
+        # stops being watched when something else takes the number.
+        if str(path) in watched:
+            opened.append(str(path))
+            live[fd] = str(path)
+        else:
+            live.pop(fd, None)
+        return fd
+
+    def counting_fstat(fd, *a, **kw):
+        if fd in live:
+            fstats.append(live[fd])
+        return real_fstat(fd, *a, **kw)
+
+    def _install(spy) -> None:
+        spy.setattr(os, "stat", counting_stat)
+        spy.setattr(os, "open", counting_open)
+        spy.setattr(os, "fstat", counting_fstat)
+
+    with monkeypatch.context() as spy:
+        _install(spy)
+        kept, floored = hook._eligible(hits, terms)
+    assert len(kept) + len(floored) == len(hits), (kept, floored)
+    assert sorted(stats) == sorted(hits), stats
+    assert sorted(opened) == sorted(hits), opened
+    assert sorted(fstats) == sorted(hits), fstats
+
+    # And a candidate past the scan's cap is declined on the stat alone: a
+    # scan that saw the first SECRET_SCAN_MAX_BYTES of a longer file has
+    # cleared nothing, so the file is refused unread rather than opened.
+    big = corpus / "unionfs_perms_big.md"
+    big.write_text(
+        PROJECT_MEMORY + "u" * (hook.SECRET_SCAN_MAX_BYTES + 1), encoding="utf-8"
+    )
+    watched.add(str(big))
+    del stats[:], opened[:], fstats[:]
+    live.clear()
+    with monkeypatch.context() as spy:
+        _install(spy)
+        answer = hook._relevance(
+            terms, str(big), os.path.realpath(str(corpus)), True
+        )
+    assert answer == ([], len(terms), "?"), answer
+    assert stats == [str(big)], stats
+    assert opened == [] and fstats == [], (opened, fstats)
+
+
 def test_a_project_store_is_searched_from_a_subdirectory_and_from_a_worktree(
     tmp_path: Path, monkeypatch
 ) -> None:

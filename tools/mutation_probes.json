@@ -4684,6 +4684,17 @@
         "tests/test_memory_prompt_recall.py::test_read_only_is_the_resolved_directory_and_nothing_else"
       ],
       "why": "read-only is what keeps a directory the repository chose out of every write path and what fires the credential scan over the files under it"
+    },
+    {
+      "name": "the-read-only-size-gate-opens-the-file-to-measure-it",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            if os.stat(target).st_size > SECRET_SCAN_MAX_BYTES:\n",
+      "new": "            _fd, _st = _regular_fd(target)\n            os.close(_fd)\n            if _st.st_size > SECRET_SCAN_MAX_BYTES:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_candidate_a_repository_published_costs_one_stat_and_one_open"
+      ],
+      "why": "at most one open and one fstat per candidate is the budget this branch is admitted under, and it is paid on every prompt served from a checked-in store"
     }
   ]
 }
