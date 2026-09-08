@@ -4364,6 +4364,17 @@
         "tests/test_memory_prompt_recall.py::test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log"
       ],
       "why": "The scan is the whole of what makes a checked-in store safe to put in front of a model: without it a committed key is a pointer the agent is told to open, and nothing in the record says so."
+    },
+    {
+      "name": "project-candidate-open-drops-the-regular-file-check",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if not statmod.S_ISREG(os.fstat(fd).st_mode):\n            raise OSError(f\"not a regular file: {path}\")\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_candidate_that_is_not_a_regular_file_is_refused_not_awaited"
+      ],
+      "why": "a pipe named like a memory stops the every-prompt hook for the session"
     }
   ]
 }

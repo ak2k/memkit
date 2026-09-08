@@ -869,7 +869,7 @@ def test_fts_converges_when_a_file_opens_but_never_reads(
     assert len(hook._fts_dir("restic pruning", str(corpus))) == 2
     broken.write_text(broken.read_text() + "\nborgmatic drives the pruning\n")
 
-    real_open = open
+    real_open = hook._open_regular_bytes
 
     class Unreadable:
         """Opens fine, fails on the read — EIO on a bad block, an ESTALE
@@ -892,7 +892,7 @@ def test_fts_converges_when_a_file_opens_but_never_reads(
             return Unreadable()
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(hook, "open", flaky, raising=False)
+    monkeypatch.setattr(hook, "_open_regular_bytes", flaky)
     hits = hook._fts_dir("restic pruning", str(corpus))
     assert sorted(hits) == sorted([keep, str(broken)])
     # Spared, not re-indexed: the edit made while it was unreadable is absent,
@@ -913,7 +913,7 @@ def test_fts_reads_a_changed_files_contents_once_per_sync(
     hook._fts_dir("restic pruning", str(corpus))
     changing.write_text("---\nname: a\n---\n\n# a\n\nrestic pruning schedule\n")
 
-    real_open = open
+    real_open = hook._open_regular_bytes
     opens = {"n": 0}
 
     def counted(path, *args, **kwargs):
@@ -921,7 +921,7 @@ def test_fts_reads_a_changed_files_contents_once_per_sync(
             opens["n"] += 1
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(hook, "open", counted, raising=False)
+    monkeypatch.setattr(hook, "_open_regular_bytes", counted)
     assert hook._fts_dir("restic pruning schedule", str(corpus)) == [str(changing)]
     # Exactly one: the read whose contents get indexed. Reading again under the
     # lock would widen the window in which the file can change out from under
@@ -979,7 +979,7 @@ def test_fts_keeps_rows_when_the_under_lock_read_fails(
     hook._fts_dir("restic pruning", str(corpus))
     changing.write_text("---\nname: b\n---\n\n# b\n\nzrepl replication tuning\n")
 
-    real_open = open
+    real_open = hook._open_regular_bytes
     opens = {"n": 0}
 
     def flaky(path, *args, **kwargs):
@@ -1006,7 +1006,7 @@ def test_fts_keeps_rows_when_the_under_lock_read_fails(
                 other.close()
         return snapshot
 
-    monkeypatch.setattr(hook, "open", flaky, raising=False)
+    monkeypatch.setattr(hook, "_open_regular_bytes", flaky)
     monkeypatch.setattr(hook, "_fts_identity", racing)
     hook._fts_dir("zrepl replication", str(corpus))
     assert calls["n"] == 2, "the in-lock snapshot was never taken"
@@ -2149,7 +2149,7 @@ def test_a_file_the_backstop_could_not_reopen_is_not_counted(
             got[doomed] = (mtime + 1, ctime, size)
         return got
 
-    real_open = open
+    real_open = hook._open_regular_bytes
     opened: list[str] = []
 
     def refuse_the_doomed_file(path, *args, **kwargs):
@@ -2159,7 +2159,7 @@ def test_a_file_the_backstop_could_not_reopen_is_not_counted(
         return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr(hook, "_fts_identity", identity_that_moves_under_the_lock)
-    monkeypatch.setattr("builtins.open", refuse_the_doomed_file)
+    monkeypatch.setattr(hook, "_open_regular_bytes", refuse_the_doomed_file)
     hook._fts_dir("restic pruning", str(corpus))
     monkeypatch.undo()
 
@@ -5644,16 +5644,26 @@ def test_no_deadline_means_no_clock(monkeypatch) -> None:
     assert "skipped_lex" not in rec
 
 
+def _park_in_retrieval(tmp_path: Path) -> None:
+    """Stop the hook inside retrieval and keep it there.
+
+    A signal has to land while the run is still running, and a corpus small
+    enough to be a test is searched in a tenth of a second. The index names the
+    corpus it holds in a sidecar written once per root, before the search; an
+    unwritten pipe in its place answers `open` for writing never, so the run is
+    reliably mid-retrieval for as long as the case needs. (A pipe named like a
+    memory used to do this, until candidates stopped being opened blocking.)
+    """
+    stem = os.path.basename(hook._fts_db(str(tmp_path / PERSONAL_DIR / "search")))
+    state = tmp_path / ".cache" / "memory-recall"
+    state.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(state / (stem.removesuffix(".db") + ".root"))
+
+
 def test_sigterm_writes_the_record_the_harness_would_have_erased(tmp_path) -> None:
-    # A FIFO named like a memory is what makes this deterministic: the corpus
-    # walk opens every .md it finds, and a FIFO with no writer blocks that
-    # open forever, so the hook is reliably inside the lexical stage when the
-    # signal lands. (Before the semantic stage was deleted this parked on a
-    # `ck` that slept.)
     for rel in (PROJECT_DIR, PERSONAL_DIR):
         (tmp_path / rel / "search").mkdir(parents=True, exist_ok=True)
-    personal = tmp_path / PERSONAL_DIR / "search"
-    os.mkfifo(personal / "blocks_the_walk.md")
+    _park_in_retrieval(tmp_path)
     env = _env(tmp_path)
     with subprocess.Popen(
         ["python3", HOOK],
@@ -5668,7 +5678,7 @@ def test_sigterm_writes_the_record_the_harness_would_have_erased(tmp_path) -> No
             json.dumps({"session_id": "kill", "prompt": "unionfs mount permissions"})
         )
         proc.stdin.close()
-        time.sleep(1.0)  # into the walk, blocked on the FIFO
+        time.sleep(1.0)  # into retrieval, blocked on the sidecar
         proc.terminate()
         proc.wait(timeout=10)
     rec = _last_record(tmp_path)
@@ -6885,12 +6895,13 @@ def test_a_kill_after_a_duplicate_is_recorded_still_leaves_killed(tmp_path) -> N
     half. `concludes=False` is what keeps them apart, and this is the case
     that fails if it goes away.
 
-    Same FIFO as the kill case above: an unwritten pipe named like a memory
-    blocks the corpus walk, so the signal reliably lands inside retrieval.
+    Same park as the kill case above, and it has to be one that outlasts the
+    duplicate's own record: the sidecar pipe blocks inside retrieval, which is
+    after the registration comparison and before anything concludes.
     """
     for rel in (PROJECT_DIR, PERSONAL_DIR):
         (tmp_path / rel / "search").mkdir(parents=True, exist_ok=True)
-    os.mkfifo(tmp_path / PERSONAL_DIR / "search" / "blocks_the_walk.md")
+    _park_in_retrieval(tmp_path)
     env = _env(tmp_path)
 
     # A ledger left by a second registration at another path, which is what
@@ -6922,7 +6933,7 @@ def test_a_kill_after_a_duplicate_is_recorded_still_leaves_killed(tmp_path) -> N
             json.dumps({"session_id": "dupkill", "prompt": "unionfs mount permissions"})
         )
         proc.stdin.close()
-        time.sleep(1.0)  # into the walk, blocked on the FIFO
+        time.sleep(1.0)  # into retrieval, blocked on the sidecar
         proc.terminate()
         proc.wait(timeout=10)
 
@@ -14657,9 +14668,10 @@ def test_a_candidate_over_the_scan_cap_is_never_opened_at_all(
         opened.append(str(target))
         return io.StringIO("")
 
-    # The module's own global, so `Path.write_text` above and pytest's own
-    # reads are untouched by it.
-    monkeypatch.setattr(hook, "open", spy, raising=False)
+    # The module's own helper, which is the only way the scan opens a
+    # candidate, so `Path.write_text` above and pytest's own reads are
+    # untouched by it.
+    monkeypatch.setattr(hook, "_open_regular", spy)
     assert hook._relevance(["unionfs", "permissions"], path, real, True) == (
         [], 2, "?",
     )
@@ -14686,13 +14698,84 @@ def test_a_candidate_that_grew_after_the_stat_is_refused_on_the_read(
     grown = "unionfs permissions\n" * (hook.SECRET_SCAN_MAX_BYTES // 20 + 8)
     assert len(grown) > hook.SECRET_SCAN_MAX_BYTES
     assert hook._secret_re().search(grown) is None
-    monkeypatch.setattr(
-        hook, "open", lambda *a, **k: io.StringIO(grown), raising=False
-    )
+    monkeypatch.setattr(hook, "_open_regular", lambda *a, **k: io.StringIO(grown))
     assert hook._relevance(["unionfs", "permissions"], path, real, True) == (
         [], 2, "?",
     )
     assert hook._LEX_COUNTS["lex_secret"] == 1
+
+
+@pytest.mark.parametrize("read_only", [True, False], ids=["project", "user"])
+@pytest.mark.parametrize("shape", ["fifo", "device-link"])
+def test_a_candidate_that_is_not_a_regular_file_is_refused_not_awaited(
+    monkeypatch, tmp_path: Path, shape: str, read_only: bool
+) -> None:
+    """Every read a candidate gets, under a clock.
+
+    A `*.md` in a store need not be a file. A FIFO with no writer answers a
+    blocking `open()` never, and this hook runs on every prompt, so "never" is
+    the rest of the session: no budget, no deadline and no signal downstream of
+    that open can end it. `_within` is what turns a regression there into one
+    red case instead of a suite that stops.
+
+    Refusing it is not enough on its own, which is why the sibling is asserted
+    too: a guard that declined the whole corpus would satisfy the timeout and
+    lose the store.
+
+    The device link is refused one step earlier, by the rule that a candidate
+    may not be a link out of the store. It is here because the two rules are
+    halves of one answer about the same input.
+    """
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path))
+    root = tmp_path / "corpus"
+    root.mkdir()
+    served = str(root / "unionfs_perms.md")
+    Path(served).write_text(PROJECT_MEMORY, encoding="utf-8")
+    blocked = str(root / "blocks.md")
+    if shape == "fifo":
+        os.mkfifo(blocked)
+    else:
+        os.symlink("/dev/zero", blocked)
+    real = os.path.realpath(str(root))
+
+    assert _within(10, lambda: hook._description(blocked, real)) == ""
+    assert _within(
+        10, lambda: hook._relevance(["unionfs"], blocked, real, read_only)
+    ) == ([], 1, "?")
+    with pytest.raises((OSError, hook._OutsideStore)):
+        _within(10, lambda: hook._read_capped(blocked, real))
+
+    assert _within(10, lambda: hook._description(served, real))
+    assert _within(10, lambda: hook._read_capped(served, real))
+    assert _within(20, lambda: hook._fts_dir(INJECT_PROMPT, str(root))) == [served]
+
+
+def test_a_pipe_in_a_repositorys_corpus_does_not_stop_the_prompt(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The same input through the whole prompt path, because the reads it takes
+    are in three different functions and only the walk knows how many of them
+    one file gets.
+
+    A repository cannot commit a FIFO — git has no such object — so what puts
+    one here is a build step or a session writing into the checkout. The store
+    is repository-chosen either way, and the store is what decides which
+    directory the hook opens things in.
+    """
+    (tmp_path / "state").mkdir()
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path / "state"))
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    os.mkfifo(repo / PROJECT_STORE_DIR / "search" / "blocks.md")
+    hook._config.cache_clear()
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(repo)
+    cfg = _load(tmp_path, _config_blob(tmp_path))
+    monkeypatch.setattr(hook, "_config", lambda *a, **k: cfg)
+    try:
+        hits = _within(20, lambda: hook.recall(INJECT_PROMPT, stats={}))
+        assert [os.path.basename(h) for h in hits] == ["unionfs_perms.md"], hits
+    finally:
+        hook._cwd_in_root.cache_clear()
 
 
 def test_a_project_hit_still_knows_it_came_from_a_repository_after_recall(

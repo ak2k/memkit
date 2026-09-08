@@ -3005,6 +3005,40 @@ def _fts_scan(
     return disk, spared, unwalked, oversize
 
 
+def _regular_fd(path: str) -> int:
+    """A read descriptor on `path`, refusing anything that is not a file.
+
+    A store is a directory on somebody else's disk, and what is named `*.md`
+    in it need not be a file: a FIFO with no writer, or a device, answers a
+    plain `open()` never — and this hook runs on every prompt, so "never" is
+    the rest of the session. O_NONBLOCK makes the open itself return and the
+    fstat decides before a byte is read, which is the order the project config
+    file is already read in. The refusal is an `OSError` because that is what
+    every caller of the two wrappers below already classifies as an unreadable
+    candidate.
+
+    One open and one fstat where there was one open.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not statmod.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"not a regular file: {path}")
+    except BaseException:
+        os.close(fd)  # nothing has taken the descriptor over yet
+        raise
+    return fd
+
+
+def _open_regular(path: str):
+    """`path` as text, refused unless it is a regular file."""
+    return os.fdopen(_regular_fd(path), encoding="utf-8", errors="replace")
+
+
+def _open_regular_bytes(path: str):
+    """`path` as bytes, refused unless it is a regular file."""
+    return os.fdopen(_regular_fd(path), "rb")
+
+
 def _read_capped(path: str, root_real: str = "") -> str | None:
     """The file's text, or None if it is past `INDEX_FILE_MAX_BYTES`.
 
@@ -3045,7 +3079,7 @@ def _read_capped(path: str, root_real: str = "") -> str | None:
     target = _store_path(path, root_real)
     if target is None:
         raise _OutsideStore(path)
-    with open(target, "rb") as f:
+    with _open_regular_bytes(target) as f:
         raw = f.read(INDEX_FILE_MAX_BYTES + 1)
     if len(raw) > INDEX_FILE_MAX_BYTES:
         return None
@@ -3885,7 +3919,7 @@ def _description(path: str, root_real: str = "") -> str:
     if target is None:
         return ""
     try:
-        with open(target, encoding="utf-8", errors="replace") as f:
+        with _open_regular(target) as f:
             head = f.read(4096)
     except OSError:
         return ""
@@ -3963,7 +3997,7 @@ def _relevance(
                 refused = True
                 body = ""
             else:
-                with open(target, encoding="utf-8", errors="replace") as f:
+                with _open_regular(target) as f:
                     body = f.read(SECRET_SCAN_MAX_BYTES + 1)
                 # One past the cap catches a file that grew between the stat
                 # and the read; the pattern match is the scan proper.
@@ -3979,7 +4013,7 @@ def _relevance(
         head = body[:4096]
     else:
         try:
-            with open(target, encoding="utf-8", errors="replace") as f:
+            with _open_regular(target) as f:
                 head = f.read(4096)
         except OSError:
             return [], len(terms), "?"
