@@ -94,6 +94,7 @@ FILE_TYPES = {
     "has_description": bool,
     "has_name": bool,
     "has_type": bool,
+    "frontmatter_truncated": bool,
     "description_len": (int, type(None)),
 }
 INDEX_TYPES = {"rows": int, "dangling_rows": int, "truncated": bool}
@@ -272,6 +273,7 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
         "description_len": len(DESCRIPTION),
         "has_name": True,
         "has_type": True,
+        "frontmatter_truncated": False,
     }
     assert files["m2.md"]["has_frontmatter"] is False
     assert files["m2.md"]["description_len"] is None
@@ -716,6 +718,82 @@ def test_an_index_row_is_judged_without_leaving_the_directory(tmp_path) -> None:
     )
     entry = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]
     assert entry["index"] == {"rows": 4, "dangling_rows": 3, "truncated": False}
+
+
+def test_what_is_opened_is_decided_by_where_the_link_lands(tmp_path) -> None:
+    """One rule for every `.md` in a memory directory, the index included.
+
+    The per-file read refused a link outright and then handed `MEMORY.md` —
+    the one file the rule most obviously covers — to the index reader, which
+    opened it: rows counted off a file outside the capture, over `sudo -n`,
+    on a host that was given the directory and not the target. A link back
+    into the directory is a different thing, because those bytes are being
+    read anyway, and it is the case the harness's own tree produces.
+    """
+    config = tmp_path / "config"
+    outside = tmp_path / "elsewhere"
+    _write(outside / "real-index.md", "# i\n\n- [a](m.md) — h\n- [b](gone.md) — h\n")
+    _write(outside / "memo.md", "---\nname: theirs\n---\n\nbody\n")
+
+    out = _memory_dir(config, "-a")
+    _write(out / "m.md", "x\n")
+    os.symlink(outside / "real-index.md", out / "MEMORY.md")
+    os.symlink(outside / "memo.md", out / "linked.md")
+
+    back = _memory_dir(config, "-b")
+    _write(back / "m.md", "x\n")
+    _write(back / "index-real.md", "# i\n\n- [a](m.md) — h\n")
+    _write(back / "memo-real.md", "---\nname: ours\n---\n\nbody\n")
+    os.symlink("index-real.md", back / "MEMORY.md")
+    os.symlink("memo-real.md", back / "linked.md")
+
+    shape = _shape("--config-dir", str(config), "--raw")
+    left = _by_key(shape)["-a"]
+    files = {item["name"]: item for item in left["files"]}
+    # LISTED, with the flag that says why the numbers stop where they do: a
+    # null index beside a linked `MEMORY.md` is an index that was not read,
+    # and a null index beside no `MEMORY.md` is a directory without one.
+    assert sorted(files) == ["MEMORY.md", "linked.md", "m.md"]
+    assert files["MEMORY.md"]["is_symlink"] is True
+    assert left["index"] is None
+    assert files["linked.md"]["has_name"] is False
+
+    stayed = _by_key(shape)["-b"]
+    kept = {item["name"]: item for item in stayed["files"]}
+    assert stayed["index"] == {"rows": 1, "dangling_rows": 0, "truncated": False}
+    assert kept["MEMORY.md"]["is_symlink"] is True
+    assert kept["linked.md"]["has_name"] is True
+    # Nothing outside was measured: the sizes are the links', not the targets'.
+    assert files["linked.md"]["size"] != (outside / "memo.md").stat().st_size
+
+
+def test_frontmatter_cut_at_the_cap_says_so_rather_than_reading_as_none(
+    tmp_path,
+) -> None:
+    """Four false flags, a null length and no counter moved is what a file
+    with no frontmatter records — and it was also what a file whose closing
+    fence sits past the 64 KB cap recorded.
+
+    The index reader already answers this about its own read. The per-file one
+    did not, so the one number a rebuilt corpus cannot reproduce was the one
+    nothing said anything about.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    cap = _tool_module().FRONTMATTER_BYTES
+    filler = "filler\n" * (cap // 7 + 1)
+    _write(memory / "far.md", f"---\nname: far\n{filler}---\n\nbody\n")
+    _write(memory / "near.md", "---\nname: near\n---\n\nbody\n")
+    files = {
+        item["name"]: item
+        for item in _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
+    }
+    assert files["far.md"]["size"] > cap
+    assert files["far.md"]["has_frontmatter"] is False
+    assert files["far.md"]["frontmatter_truncated"] is True
+    assert files["near.md"]["frontmatter_truncated"] is False
+    # The cap still holds: nothing past it was read to reach that answer.
+    assert files["near.md"]["has_name"] is True
 
 
 def test_a_pathological_index_is_read_to_the_cap_and_says_so(tmp_path) -> None:

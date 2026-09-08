@@ -4514,6 +4514,39 @@
         "tests/test_harness_shape.py::test_a_missing_policy_file_and_a_capture_that_did_not_look_are_told_apart"
       ],
       "why": "A row that always says the machine's policy file was looked for is worse than no row: an omitted scope then reads as proof the machine has no policy, which is exactly the inference the artifact could not support before it was recorded."
+    },
+    {
+      "name": "harness-shape-the-index-is-read-through-a-link-out",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if os.path.islink(path) and not _resolves_inside(path, memory_dir):\n        return None\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_what_is_opened_is_decided_by_where_the_link_lands"
+      ],
+      "why": "The index is the one `.md` the per-file rule most obviously covers, and it is read by a second function that could open it anyway: the rows are then counted off somebody else's file, under a `sudo -n` that was given this directory and not the target."
+    },
+    {
+      "name": "harness-shape-a-link-is-judged-by-its-name-not-by-where-it-lands",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    root = os.path.realpath(directory)\n    return os.path.realpath(path).startswith(root + os.sep)\n",
+      "new": "    root = os.path.abspath(directory)\n    return os.path.abspath(path).startswith(root + os.sep)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_what_is_opened_is_decided_by_where_the_link_lands"
+      ],
+      "why": "Every link in a memory directory has a name inside it, so a test that resolves nothing answers yes for all of them — which is the rule inverted: what decides whether the bytes belong to this capture is where the name lands, never where it sits."
+    },
+    {
+      "name": "harness-shape-a-frontmatter-read-cut-at-the-cap-says-nothing",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    return text[:FRONTMATTER_BYTES], len(text) > FRONTMATTER_BYTES\n",
+      "new": "    return text[:FRONTMATTER_BYTES], False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_frontmatter_cut_at_the_cap_says_so_rather_than_reading_as_none"
+      ],
+      "why": "A fence that closes past the cap gives four false flags and a null length, which is exactly what a file with no frontmatter gives — so the flag is the only thing standing between a wrong number and a silent one, and a rebuilt corpus reproduces the wrong one."
     }
   ]
 }

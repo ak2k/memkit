@@ -489,18 +489,41 @@ def _frontmatter(text: str) -> dict:
     }
 
 
-def _read_head(path: str):
-    """The first `FRONTMATTER_BYTES` of `path`, or None if it could not be read.
+def _resolves_inside(path: str, directory: str) -> bool:
+    """Whether the name `path` resolves to something under `directory`.
 
-    None rather than `""`: an unreadable file and an empty one produced the
-    same four `false` flags, and a capture taken over ssh under `sudo -n` into
-    an NFS home is exactly where the difference lives.
+    THE ONE RULE FOR FOLLOWING A LINK, and it is the walk's own boundary
+    rather than a judgement about the link: a name that resolves inside the
+    directory being walked reaches bytes this capture is already reading, and
+    one that resolves outside reaches somebody else's file through a name in
+    here. `realpath` on both sides, because the memory directory is itself a
+    link on a machine where the harness's own tree is wired somewhere else,
+    and a comparison of the two spellings answers no for every file in it.
+    """
+    root = os.path.realpath(directory)
+    return os.path.realpath(path).startswith(root + os.sep)
+
+
+def _read_head(path: str) -> tuple:
+    """`(head, truncated)` for the first `FRONTMATTER_BYTES` of `path`.
+
+    `head` is None if it could not be read, rather than `""`: an unreadable
+    file and an empty one produced the same four `false` flags, and a capture
+    taken over ssh under `sudo -n` into an NFS home is exactly where the
+    difference lives.
+
+    AND THE CAP SAYS SO, which is what `truncated` is: a frontmatter fence
+    that closes past the cap reads here as no frontmatter at all — four false
+    flags, a null length and no counter moved — which is byte-identical to a
+    file that genuinely has none. One byte over the cap is what tells the two
+    apart, and it is the same answer `_index` already gives about its own.
     """
     try:
         with _open_regular(path, errors="replace") as handle:
-            return handle.read(FRONTMATTER_BYTES)
+            text = handle.read(FRONTMATTER_BYTES + 1)
     except OSError:
-        return None
+        return None, False
+    return text[:FRONTMATTER_BYTES], len(text) > FRONTMATTER_BYTES
 
 
 # --- pseudonyms -------------------------------------------------------------
@@ -615,7 +638,7 @@ def _outside(target: str) -> bool:
     return "/" in target or "\\" in target or os.sep in target
 
 
-def _index(memory_dir: str, listed: list) -> dict:
+def _index(memory_dir: str, listed: list):
     """Row counts for `MEMORY.md`, and how many of the rows point at nothing.
 
     `dangling_rows` is a COUNT and never a name. NOTHING JUDGES A
@@ -627,8 +650,18 @@ def _index(memory_dir: str, listed: list) -> dict:
     CAPPED at `FRONTMATTER_BYTES` like every other read here. The cap exists
     so one pathological file cannot turn a capture into a read of somebody's
     whole disk, and an index was the one read that did not honour it.
+
+    None when the index is a link out of the directory being walked, on the
+    same rule every other file here is read by: the rows would be counted off
+    somebody else's file, reached through a name in this directory, under a
+    `sudo -n` that was given the directory and not the target. The file is
+    still listed, with its `is_symlink` flag — a null index beside a linked
+    `MEMORY.md` is a directory whose index was not read, and a null index
+    beside no `MEMORY.md` at all is a directory that has none.
     """
     path = os.path.join(memory_dir, INDEX_NAME)
+    if os.path.islink(path) and not _resolves_inside(path, memory_dir):
+        return None
     try:
         with _open_regular(path, errors="replace") as handle:
             text = handle.read(FRONTMATTER_BYTES + 1)
@@ -684,6 +717,13 @@ def _memory_dir(
     reads it: no rule fires on the distinction, no materialiser rebuilds it,
     and the value cost a `realpath` of somebody else's path on a host this is
     a guest on. It is gone until the work that reads it lands.
+
+    WHAT IS OPENED is decided by `_resolves_inside` and by nothing else, for
+    every `.md` here including the index: a link back into this directory
+    names bytes the capture is reading anyway, and a link out of it names
+    somebody else's file. A memory directory that is itself a link is followed
+    — that is the home-manager machine, wired somewhere else on purpose — and
+    the rule is then about the directory it resolves to.
     """
     files = []
     read_errors = 0
@@ -705,13 +745,16 @@ def _memory_dir(
             "is_symlink": linked,
         }
         head = ""
-        if not linked:
-            # NEVER OPENED WHEN IT IS A LINK. The bytes are somebody else's
-            # file, reached through a name in this directory.
-            head = _read_head(path)
+        truncated = False
+        # A LINK IS FOLLOWED ONLY BACK INTO THIS DIRECTORY. One that resolves
+        # out of it reaches somebody else's file through a name in here, and
+        # `sudo -n` was given the directory rather than the target.
+        if not linked or _resolves_inside(path, memory_dir):
+            head, truncated = _read_head(path)
             if head is None:
                 head, failed = "", True
         record.update(_frontmatter(head))
+        record["frontmatter_truncated"] = truncated
         files.append(record)
         if failed:
             read_errors += 1
