@@ -2309,11 +2309,26 @@ def build_plan(
     # directory, and the two readers have to describe one snapshot: a second
     # scan is how the note and the manifest under it come to disagree.
     known = harness_memory.inventory(_harness_config_dir())
+    # WHOSE STORES THE MEMBERSHIP QUESTION IS ABOUT: the config this run is
+    # writing, which is not always the one the session resolved. `--config`,
+    # an install option and the plugin's second rung all name a config the
+    # environment does not, and asked of the session's the predicate answers
+    # "outside every store" about a directory symlinked INTO the store being
+    # written — so adoption follows the link and lands a second copy of every
+    # memory under a second project key, on a store that then fails its own
+    # check.
+    membership = (
+        machine
+        if machine.resolved_config == config_path
+        else Machine(config_path)
+    )
     adopted: list = []
     rows: list = []
     adoption_notes: list = []
     if adopt_auto_memory:
-        adopted, rows, adoption_notes = _plan_adoption(machine, store_path, known)
+        adopted, rows, adoption_notes = _plan_adoption(
+            membership, store_path, known
+        )
     canary_link = os.path.join("search", CANARY_NAME)
     # THE WHOLE STORE'S ROWS, not just the ones this run writes. A file already
     # under `search/` owes SEARCH.md a row whoever put it there, and the
@@ -2420,7 +2435,7 @@ def build_plan(
     # adopter cannot see from inside memkit, and a flag they have never heard
     # of is not an answer to it.
     notes = (
-        _auto_memory_notes(machine, store_path, known)
+        _auto_memory_notes(membership, store_path, known)
         + adoption_notes
         + ledger_notes
     )

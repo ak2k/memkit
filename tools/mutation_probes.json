@@ -4563,6 +4563,17 @@
       "why": "the key is one half of the path a row points at and the file name is the other, so a spelling rule stated at the key alone leaves the half a memory is actually named by unguarded. On a case-insensitive filesystem — APFS, the default on macOS — a memory renamed `alpha.md` -> `Alpha.md` in the harness opens the `alpha.md` the store already holds, reads as already adopted so nothing is copied, and the generated row names the spelling the disk does not carry: two rows for one file, STALE out of the checker, and a confirm that exits 6 on every re-run."
     },
     {
+      "name": "init-adoption-asks-the-session-config-about-the-store-it-writes",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    membership = (\n        machine\n        if machine.resolved_config == config_path\n        else Machine(config_path)\n    )\n",
+      "new": "    membership = machine\n",
+      "tests": [
+        "tests/test_init.py::test_store_membership_is_asked_of_the_config_being_written"
+      ],
+      "why": "`--config`, an install option and the plugin's second rung each name a config the environment does not, and the predicate that keeps adoption off a memory directory already pointed INTO a store reads whichever config it is asked about. Asked of the session's, it answers `outside every store` about a directory inside the store this run is writing: the link is followed, a second copy of every memory lands under a second project key, and the store fails its own check with LEDGER-DRIFT out of the command that made it. The same input with the environment aligned was always answered correctly, which is what makes this the config being wrong rather than the predicate."
+    },
+    {
       "name": "init-adoption-copies-an-index-of-a-directory-it-left-behind",
       "module": "init",
       "file": "src/memkit/cli_init.py",

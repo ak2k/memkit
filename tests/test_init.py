@@ -3792,6 +3792,60 @@ def test_a_file_the_store_already_holds_another_spelling_of_diverges(
     assert "Nothing to write" in settled.stdout, settled.stdout
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_store_membership_is_asked_of_the_config_being_written(profile) -> None:
+    """ONE CONFIG DECIDES MEMBERSHIP, and it is the one this run is writing.
+    The predicate that keeps adoption off a memory directory already pointed
+    INTO a store was asked of the config the session resolved, while `--config`
+    named another — so it answered "outside every store" about a directory
+    inside the store being written, adoption followed the link, and a second
+    copy of every memory landed under a second project key. The store then
+    failed its own check with LEDGER-DRIFT, out of the command that made it.
+
+    The same input with the environment aligned was always answered correctly,
+    which is the control the two dry-runs below compare: the answer may not
+    depend on a variable that names no config this run touches.
+    """
+    _harness(profile, "-home-real", {"alpha.md": TRAP})
+    store = profile / "notes"
+    config = profile / "named-by-the-flag.json"
+    named = ("--config", str(config), "--store", str(store), "--adopt-auto-memory")
+    seed = _dry(profile, *named)
+    assert seed.returncode == init.EXIT_OK, seed.stdout + seed.stderr
+    out = _confirm(profile, _digest_of(seed), *named)
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+
+    # The harness directory an adopter has already pointed into the store.
+    linked = profile / "claude-config" / "projects" / "-home-linked"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(store / "search" / init.ADOPT_DIRNAME / "-home-real")
+    base = dict(
+        os.environ,
+        HOME=str(profile / "home"),
+        XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+        CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+    )
+    base.pop("MEMKIT_CONFIG", None)
+    manifest = _run("--dry-run", *named, env=base)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-linked: already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    # The control: the same request with the environment naming that config.
+    aligned = _run("--dry-run", *named, env=dict(base, MEMKIT_CONFIG=str(config)))
+    assert aligned.stdout == manifest.stdout, manifest.stdout
+    applied = _run("--confirm", _digest_of(manifest), *named, env=base)
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-linked").exists()
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300, env=base,
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
 def test_a_red_integrity_check_still_redirects_the_harness(
     profile, monkeypatch, capsys
 ) -> None:
