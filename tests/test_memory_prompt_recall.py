@@ -1311,9 +1311,13 @@ def test_recall_isolates_a_failing_lex_dir(monkeypatch) -> None:
     # read as "searched, found nothing" — errs_lex is the only place that
     # difference shows up, and a mistyped key leaves every other test green
     # while the soak log lies.
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/project", "/personal"])
+    monkeypatch.setattr(
+        hook, "_search_dirs", lambda: [("/project", False), ("/personal", False)]
+    )
 
-    def fts(query: str, d: str, deadline: float | None = None) -> list[str]:
+    def fts(
+        query: str, d: str, deadline: float | None = None, read_only: bool = False
+    ) -> list[str]:
         if d == "/project":
             raise sqlite3.DatabaseError("index would not rebuild")
         return [f"{d}/search/lex.md"]
@@ -1343,7 +1347,7 @@ def test_recall_records_files_spared_and_dirs_the_walk_could_not_enter(
     locked.chmod(0o000)
     _memo(corpus, "domain/c.md", "# c\n\nrestic repository pruning policy")
     (corpus / "domain").chmod(0o000)
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     rec: dict = {}
     try:
         assert hook.recall("restic repository pruning policy", stats=rec) == [good]
@@ -1357,7 +1361,7 @@ def test_recall_records_files_spared_and_dirs_the_walk_could_not_enter(
 
 def test_recall_records_a_sync_skipped_by_contention(corpus: Path, monkeypatch) -> None:
     memo = _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     clean: dict = {}
     assert hook.recall("restic repository pruning", stats=clean) == [memo]
     # Absent rather than zero on a healthy run: a key that appears on every
@@ -1397,7 +1401,7 @@ def test_recall_logs_the_built_query_for_the_shadow_harness(
     branch that used to gate it — and no test noticed.
     """
     _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
 
     prompt = "what is the restic repository pruning policy"
     rec: dict = {}
@@ -1429,7 +1433,7 @@ def test_recall_records_an_index_it_had_to_rebuild(corpus: Path, monkeypatch) ->
     """
     memo = _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
     Path(hook._fts_db(str(corpus))).write_bytes(b"this is not a database" * 100)
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
 
     rec: dict = {}
     assert hook.recall("restic repository pruning", stats=rec) == [memo]
@@ -1458,7 +1462,7 @@ def test_lex_hits_name_the_section_that_matched(corpus: Path, monkeypatch) -> No
         "\n\n## Delta compaction\n\nledgerdb gc reclaims the table files"
         "\n\n## Zulu identity\n\nexternal_ref names a ledgerdb row, " + "padding " * 20,
     )
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     assert hook.recall("ledgerdb compaction reclaims", stats={}) == [memo]
 
     # The label comes from the best-RANKED chunk, which rests on sqlite's
@@ -1475,7 +1479,7 @@ def test_no_section_for_a_frontmatter_hit(corpus: Path, monkeypatch) -> None:
     """A pointer can legitimately have no section, which must render as
     silence rather than an empty tag."""
     memo = _memo(corpus, "restic_pruning_policy.md", "# Elsewhere\n\nnothing to see")
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     # The match is in the preamble — frontmatter and the description line —
     # which is the file's own summary, not a place inside the document.
     assert hook.recall("restic pruning policy", stats={}) == [memo]
@@ -1556,7 +1560,7 @@ def test_evidence_counts_identifier_internal_terms_the_way_fts5_does(
     memo = _memo(
         corpus, "helpdesk_ticket_fields.md", "## Fields\n\nthe LATEST_REPLY column"
     )
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     assert hook.recall("latest reply column", stats={}) == [memo]
     assert hook._LEX_MATCHED[memo] == ["latest", "reply", "column"]
 
@@ -1588,7 +1592,7 @@ def test_evidence_counts_the_file_while_the_section_names_the_chunk(
         "borg_repo_layout.md",
         "## Repo layout\n\nborg repo layout\n\n## Unrelated\n\nzermatt chalet",
     )
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     assert hook.recall("borg repo layout zermatt", stats={}) == [memo]
     # BM25 gives the win to the section holding the rare term, so the chunk that
     # ranked is the one-word `Unrelated` — while the other three query terms,
@@ -1933,7 +1937,7 @@ def test_a_sidecar_write_that_fails_is_counted_where_a_reader_can_see_it(
     the fact has to leave by another door — the soak record, via _LEX_COUNTS.
     """
     memo = _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     build = hook._fts_db(str(corpus)).removesuffix(".db") + ".build"
 
     # Only the sidecar's rename fails. Failing every os.replace would take the
@@ -3037,7 +3041,7 @@ def _drive_main(monkeypatch, tmp_path, hits: list[str], session: str) -> dict:
     soak-log record it wrote. Subprocess-driving it would need a real corpus;
     the budget is about state, not retrieval."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
 
     def _recall(prompt, stats=None, dirs=None, deadline=None):
         # The real one clears the side channels on entry and repopulates
@@ -3247,7 +3251,7 @@ def test_an_unpriced_full_budget_is_decided_before_retrieval_runs(
         json.dumps([f"/spent/{i}.md" for i in range(hook.POINTER_BUDGET)])
     )
     called = []
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
     monkeypatch.setattr(
         hook,
         "recall",
@@ -3801,7 +3805,7 @@ def test_the_shared_gate_predicate_answers_what_main_logs(
     # statement about the machine. It failed exactly that way in the Nix
     # sandbox while passing on the author's laptop. Nothing here reaches
     # retrieval, so an empty directory is enough to get past the check.
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(tmp_path)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(tmp_path), False)])
     monkeypatch.setattr(
         "sys.stdin",
         io.StringIO(json.dumps({"session_id": "t", "prompt": prompt})),
@@ -5531,11 +5535,11 @@ def _stub_dirs(monkeypatch, dirs: list[str]) -> list[str]:
     """Stub retrieval over `dirs`; return the list of dirs actually searched."""
     searched: list[str] = []
 
-    def fake_fts(query, d, deadline=None):
+    def fake_fts(query, d, deadline=None, read_only=False):
         searched.append(d)
         return [f"{d}/a.md"]
 
-    monkeypatch.setattr(hook, "_search_dirs", lambda: dirs)
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(d, False) for d in dirs])
     monkeypatch.setattr(hook, "_fts_dir", fake_fts)
     return searched
 
@@ -10489,7 +10493,7 @@ def test_a_brief_already_past_the_bound_never_reaches_retrieval(
         "recall",
         lambda *a, **kw: called.append("recall") or [],
     )
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(tmp_path)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(tmp_path), False)])
     monkeypatch.setattr(hook, "_soak_log", lambda rec: records.append(dict(rec)))
     records: list[dict] = []
     brief = ("shim stack backlash gearbox sprocket alignment torque " * 40 + "\n") * 12
@@ -10736,7 +10740,7 @@ def _drive_task(monkeypatch, tmp_path, hits: list[str], tool_use_id: str) -> dic
     be written at all.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
 
     def _recall(prompt, stats=None, dirs=None, deadline=None, query=None):
         hook._LEX_MATCHED.clear()
@@ -12824,7 +12828,7 @@ def test_a_dir_whose_query_ran_out_of_budget_is_an_error_not_an_absence(
     `task:index-unavailable`. Not zero hits, which is the answer a caller
     believes and the subagent path records as a corpus with nothing to say."""
     _many_memos(corpus, 5)
-    monkeypatch.setattr(hook, "_search_dirs", lambda: [str(corpus)])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
     query = "sprocket backlash shim stack gearbox rebuild"
     assert hook.recall(query), "the index has to answer warm"
 
@@ -12875,7 +12879,7 @@ def test_the_deadline_reaches_every_stage_it_is_supposed_to_bound() -> None:
     assert forwarded("_fts_dir", "_fts_sync") == ["con", "d", "deadline"]
     assert forwarded("_fts_sync", "_fts_scan") == ["root", "deadline"]
     assert forwarded("_fts_dir", "_fts_search") == [
-        "con", "query", "deadline", "root_real",
+        "con", "query", "deadline", "root_real", "read_only",
     ]
     assert forwarded("_fts_search", "_record_matched") == [
         "con", "terms", "ranked", "deadline",
@@ -12909,7 +12913,7 @@ def test_the_prompt_path_tells_an_unanswerable_index_from_an_empty_corpus(
     corpus with nothing to say.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
     monkeypatch.setattr(hook, "_fts_dir", _raising(hook._QueryTimeout("no budget")))
     hook._prompt_main(
         {"session_id": "qt1", "prompt": "sprocket backlash gearbox rebuild"},
@@ -12921,7 +12925,7 @@ def test_the_prompt_path_tells_an_unanswerable_index_from_an_empty_corpus(
     assert record["errs"] == 1, record
 
     # And a corpus that really answers with nothing still says so.
-    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None: [])
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False: [])
     hook._prompt_main(
         {"session_id": "qt2", "prompt": "sprocket backlash gearbox rebuild"},
         time.monotonic(),
@@ -13113,7 +13117,7 @@ def test_an_index_that_could_not_answer_is_not_reported_as_no_match(
     index, one served and nine recording `task:nomatch` with `errs_lex: 1`.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
     monkeypatch.setattr(
         hook, "_fts_dir", _raising(sqlite3.DatabaseError("index would not rebuild"))
     )
@@ -13133,7 +13137,7 @@ def test_an_index_that_could_not_answer_is_not_reported_as_no_match(
     assert record["errs"] == 1, record
 
     # And a corpus that really answers with nothing still says so.
-    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None: [])
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False: [])
     hook._task_main(
         {
             "session_id": "tsk8",
@@ -13177,7 +13181,7 @@ def test_a_machine_with_nothing_to_search_says_so_on_both_paths(
 
     # And with stores present the brief's own vocabulary is the answer again,
     # which is what keeps the second dispatch alive.
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
     hook._task_main(
         {
             "session_id": "tsk7",
@@ -13382,8 +13386,8 @@ def test_task_records_carry_both_population_discriminators(
 
     # A prompt record carries neither, so absent means the per-prompt
     # population and nothing written before these fields existed changes shape.
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
-    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None: [])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False: [])
     monkeypatch.setattr(
         hook.sys, "stdin",
         io.StringIO(json.dumps({"session_id": "tsk5", "prompt": "the unionfs mount is stale"})),
@@ -13451,7 +13455,7 @@ def test_a_brief_that_cannot_be_encoded_is_refused_before_the_write(
     assert any(0xD800 <= ord(c) <= 0xDFFF for c in brief)
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(hook, "_search_dirs", lambda: ["/corpus"])
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
     monkeypatch.setattr(
         hook, "recall",
         lambda p, stats=None, dirs=None, deadline=None, query=None: (
@@ -14406,8 +14410,7 @@ def _project_relevance(monkeypatch, tmp_path: Path, body: str):
     real = os.path.realpath(str(root))
     monkeypatch.setitem(hook._LEX_MATCHED, path, ["unionfs", "permissions"])
     hook._LEX_COUNTS["lex_secret"] = 0
-    monkeypatch.setattr(hook, "_PROJECT_ROOTS", {real})
-    return hook._relevance(["unionfs", "permissions"], path, real)
+    return hook._relevance(["unionfs", "permissions"], path, real, True)
 
 
 def test_a_project_store_candidate_carrying_a_credential_yields_no_evidence(
@@ -14450,8 +14453,9 @@ def test_a_project_store_candidate_over_the_scan_cap_is_refused_unread(
     root = tmp_path / "corpus"
     path = str(root / "unionfs_perms.md")
     hook._LEX_COUNTS["lex_secret"] = 0
-    monkeypatch.setattr(hook, "_PROJECT_ROOTS", set())
-    assert hook._relevance(["unionfs", "permissions"], path, os.path.realpath(str(root)))[0]
+    assert hook._relevance(
+        ["unionfs", "permissions"], path, os.path.realpath(str(root))
+    )[0]
     assert hook._LEX_COUNTS["lex_secret"] == 0
 
 
@@ -14474,7 +14478,6 @@ def test_a_candidate_over_the_scan_cap_is_never_opened_at_all(
     real = os.path.realpath(str(root))
     monkeypatch.setitem(hook._LEX_MATCHED, path, ["unionfs", "permissions"])
     hook._LEX_COUNTS["lex_secret"] = 0
-    monkeypatch.setattr(hook, "_PROJECT_ROOTS", {real})
     opened: list = []
 
     def spy(target, *args, **kwargs):
@@ -14484,7 +14487,9 @@ def test_a_candidate_over_the_scan_cap_is_never_opened_at_all(
     # The module's own global, so `Path.write_text` above and pytest's own
     # reads are untouched by it.
     monkeypatch.setattr(hook, "open", spy, raising=False)
-    assert hook._relevance(["unionfs", "permissions"], path, real) == ([], 2, "?")
+    assert hook._relevance(["unionfs", "permissions"], path, real, True) == (
+        [], 2, "?",
+    )
     assert opened == [], opened
     assert hook._LEX_COUNTS["lex_secret"] == 1
 
@@ -14504,7 +14509,6 @@ def test_a_candidate_that_grew_after_the_stat_is_refused_on_the_read(
     real = os.path.realpath(str(root))
     monkeypatch.setitem(hook._LEX_MATCHED, path, ["unionfs", "permissions"])
     hook._LEX_COUNTS["lex_secret"] = 0
-    monkeypatch.setattr(hook, "_PROJECT_ROOTS", {real})
     # No credential in it: the length is the only thing that can refuse this.
     grown = "unionfs permissions\n" * (hook.SECRET_SCAN_MAX_BYTES // 20 + 8)
     assert len(grown) > hook.SECRET_SCAN_MAX_BYTES
@@ -14512,22 +14516,24 @@ def test_a_candidate_that_grew_after_the_stat_is_refused_on_the_read(
     monkeypatch.setattr(
         hook, "open", lambda *a, **k: io.StringIO(grown), raising=False
     )
-    assert hook._relevance(["unionfs", "permissions"], path, real) == ([], 2, "?")
+    assert hook._relevance(["unionfs", "permissions"], path, real, True) == (
+        [], 2, "?",
+    )
     assert hook._LEX_COUNTS["lex_secret"] == 1
 
 
-def test_the_project_roots_survive_the_side_channel_clear_inside_recall(
+def test_a_project_hit_still_knows_it_came_from_a_repository_after_recall(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """The order that made this a fail-OPEN and not a detail: `_live_dirs` runs
-    at the top of recall(), recall() then zeroes the `_LEX_*` side channels,
-    and `_eligible` — the only caller of `_relevance` on the prompt path — runs
-    after recall() has RETURNED. A set cleared with those maps would be empty
-    at the one moment it is read, and the scan and the size floor would
-    silently never fire.
+    """The order that made this a fail-OPEN and not a detail: the corpus list
+    is built at the top of recall(), recall() then zeroes the `_LEX_*` side
+    channels, and `_eligible` — the only caller of `_relevance` on the prompt
+    path — runs after recall() has RETURNED. So the fact has to be readable at
+    that moment, off the hit itself, and this asserts it there.
 
-    So `_live_dirs` rebuilds it and nothing clears it, and this asserts the
-    property at the moment that matters rather than the mechanism.
+    A set of roots filled by one function satisfied the same claim and was
+    wrong in the other direction: every entry point that never filled it read
+    the emptiness as "no repository chose any of this".
     """
     (tmp_path / "state").mkdir()
     monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path / "state"))
@@ -14537,14 +14543,14 @@ def test_the_project_roots_survive_the_side_channel_clear_inside_recall(
     monkeypatch.chdir(repo)
     cfg = _load(tmp_path, _config_blob(tmp_path))
     monkeypatch.setattr(hook, "_config", lambda *a, **k: cfg)
-    hook._PROJECT_ROOTS.clear()
     try:
         hits = hook.recall(INJECT_PROMPT, stats={})
         expected = os.path.realpath(str(repo / PROJECT_STORE_DIR / "search"))
-        # AFTER recall() returned, which is where `_eligible` reads it.
-        assert {expected} == hook._PROJECT_ROOTS
         assert hits, "the fixture retrieved nothing, so the claim is vacuous"
-        assert all(hook._LEX_ROOT[h] == expected for h in hits), hook._LEX_ROOT
+        # AFTER recall() returned, which is where `_eligible` reads it.
+        assert all(
+            hook._LEX_ROOT[h] == (expected, True) for h in hits
+        ), hook._LEX_ROOT
     finally:
         # `_config` is monkeypatched here and restored with the patch; this one
         # is the module's own cache and answers for whatever directory it was

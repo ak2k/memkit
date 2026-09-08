@@ -383,8 +383,9 @@ class Store:
         # the REPOSITORY named exist beside stores the user configured without
         # either one learning about the other. `resolved_dir` is an absolute
         # path `store_dir` returns as-is, so a project store needs no entry in
-        # `roots` and cannot collide with one; `read_only` is what `_live_dirs`
-        # tests to decide which corpus roots the credential scan covers.
+        # `roots` and cannot collide with one; `read_only` is the fact
+        # `_live_dirs` hands to retrieval beside the directory itself, and it
+        # is what makes the credential scan fire on the files under it.
         "read_only",
         "resolved_dir",
     )
@@ -2152,23 +2153,16 @@ def _store_state(cfg, store, searched: list) -> str:
     return "searched" if _store_live_dir(cfg, store, searched) else "NOT on disk"
 
 
-# The corpus roots that came from a REPOSITORY, in the exact spelling
-# `_LEX_ROOT` stores — `os.path.realpath` of the directory `_store_live_dir`
-# returned — because `_relevance` decides membership by string equality on the
-# root it was handed.
-#
-# ONE WRITER and no clearer: `_live_dirs` REBUILDS the set every time it runs.
-# It was a clear-and-fill from the start for one reason — `recall()` zeroes the
-# `_LEX_*` side channels AFTER `_live_dirs` has run and before `_eligible`
-# reads this, so a set that recall() cleared would be empty at the only moment
-# it is consulted, and the credential scan and the size floor would silently
-# never fire. Rebuilding also makes the second call safe: `_config_state` and
-# `--debug-config` both reach `_live_dirs` again in the same process.
-_PROJECT_ROOTS: set[str] = set()
+def _live_dirs(cfg) -> list[tuple[str, bool]]:
+    """The store directories `cfg` offers this session, in config order, each
+    paired with whether a REPOSITORY chose it.
 
-
-def _live_dirs(cfg) -> list[str]:
-    """The store directories `cfg` offers this session, in config order.
+    That second half is a security fact — it is what makes the credential scan
+    fire on a candidate — and it is a property of the store, so it travels with
+    the directory instead of through a module-level set. A set filled by this
+    function is a fact every entry point that does not come through here is
+    missing: `--search --dir` reaches retrieval without it, and read an empty
+    set as "no store here is the repository's".
 
     Split out from _search_dirs so that a caller holding a config parsed under
     different rules — `--debug-config` resolves per-root env overrides for its
@@ -2183,19 +2177,16 @@ def _live_dirs(cfg) -> list[str]:
     a worktree still reads the copy that is actually live.
     """
     searched = cfg.searched_stores()
-    _PROJECT_ROOTS.clear()
     dirs = []
     for store in searched:
         live = _store_live_dir(cfg, store, searched)
         if live is None:
             continue
-        if store.read_only:
-            _PROJECT_ROOTS.add(os.path.realpath(live))
-        dirs.append(live)
+        dirs.append((live, store.read_only))
     return dirs
 
 
-def _search_dirs() -> list[str]:
+def _search_dirs() -> list[tuple[str, bool]]:
     """The stores the HOOK may search: _live_dirs over the hook's own config.
 
     Empty without a config, which is the inert default: no stores, no
@@ -2743,12 +2734,19 @@ _LEX_SECTIONS: dict[str, str] = {}
 # path missing from here has no evidence and the floor drops it.
 _LEX_MATCHED: dict[str, list[str]] = {}
 
-# Which store root each hit was found under: path -> that root's resolved
-# path. Travels beside the hits for the reason above, and it is what lets the
-# reads that render a pointer decide containment for themselves rather than
-# trusting whatever filter admitted the path. A path missing from here has no
-# store, and `_store_path` refuses a link on those terms.
-_LEX_ROOT: dict[str, str] = {}
+# Which store root each hit was found under, and whether a REPOSITORY chose
+# that root: path -> (resolved root, read-only). Travels beside the hits for
+# the reason above, and it is what lets the reads that render a pointer decide
+# containment for themselves rather than trusting whatever filter admitted the
+# path. A path missing from here has no store, and `_store_path` refuses a link
+# on those terms.
+#
+# The second half rides here rather than in a set of roots because it has to
+# reach `_relevance`, and `_relevance` runs after recall() has returned: a
+# module global holding it is a fact that whichever entry point last filled it
+# decides, and the entry points that never fill it read the absence as "no
+# repository chose this".
+_LEX_ROOT: dict[str, tuple[str, bool]] = {}
 
 # What the ranker actually scored each hit: path -> rank/best_rank, the same
 # top-normalized number FLOOR_LEX is compared against, so 1.0 is that dir's
@@ -3430,8 +3428,14 @@ def _fts_search(
     query: str,
     deadline: float | None = None,
     root_real: str = "",
+    read_only: bool = False,
 ) -> list[str]:
     """Query one index; return file paths best-first.
+
+    `read_only` says a repository chose this corpus, and it is recorded against
+    every returned path for the same reason `root_real` is: the read that
+    renders a pointer is the last place that can decline the file, and it has
+    to be able to ask.
 
     `root_real` is the resolved store root these rows belong to. It is what
     every returned path is recorded against, so the reads that render a
@@ -3509,7 +3513,7 @@ def _fts_search(
             continue
         if not os.path.exists(path):
             continue
-        _LEX_ROOT[path] = root_real
+        _LEX_ROOT[path] = (root_real, read_only)
         _LEX_SCORES[path] = score
         label = _section_label(text)
         if label:
@@ -3633,8 +3637,13 @@ def _fts_busy(exc: BaseException) -> bool:
     return "locked" in msg or "busy" in msg
 
 
-def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
+def _fts_dir(
+    query: str, d: str, deadline: float | None = None, read_only: bool = False
+) -> list[str]:
     """The lexical stage over ONE dir; return file paths best-first.
+
+    `read_only` is the caller's answer to "did a repository choose this
+    directory", carried through to the side channel the pointer reads.
 
     Sync then query, every invocation: a memory written a minute ago is
     exactly the one the next prompt needs, and nothing else in this hook's
@@ -3724,7 +3733,7 @@ def _fts_dir(query: str, d: str, deadline: float | None = None) -> list[str]:
             # got there.
             _fts_note_build(db, outcome, files)
             noted = True
-            return _fts_search(con, query, deadline, root_real)
+            return _fts_search(con, query, deadline, root_real, read_only)
         finally:
             con.close()
 
@@ -3832,7 +3841,7 @@ def _description(path: str, root_real: str = "") -> str:
 
 
 def _relevance(
-    terms: list[str], path: str, root_real: str = ""
+    terms: list[str], path: str, root_real: str = "", read_only: bool = False
 ) -> tuple[list[str], int, str]:
     """Read a memory file once and return (matched query terms in query
     order, total terms, frontmatter `type:`).
@@ -3860,6 +3869,12 @@ def _relevance(
 
     Only the frontmatter is read, since that is all `type:` needs.
 
+    `read_only` says the candidate came out of a store a REPOSITORY chose, and
+    it arrives as an argument rather than being looked up here because this
+    runs after recall() has returned: anything this had to consult would be
+    state whose last writer decides, and every caller that never wrote it would
+    read the default as "the operator wrote this file".
+
     Containment is decided here too — see `_store_path`. The refusal drops the
     matched terms as well as the type, which is what makes it a refusal: the
     terms come from the index and would otherwise carry a path past the floor
@@ -3869,7 +3884,7 @@ def _relevance(
     target = _store_path(path, root_real)
     if target is None:
         return [], len(terms), "?"
-    if root_real in _PROJECT_ROOTS:
+    if read_only:
         # A CHECKED-IN store, so the file is whatever the repository committed
         # and this is the last place that can decline it: past here the path
         # ranks, gets a description read off it, and is handed to the model as
@@ -5556,8 +5571,12 @@ def recall(
     query = build_query(prompt.strip()) if query is None else query
     if not query:
         return []
-    dirs = [d for d in dirs if os.path.isdir(d)] if dirs else _search_dirs()
-    if not dirs:
+    # (directory, did a repository choose it), so the fact that decides the
+    # credential scan travels with the corpus it is a fact about.
+    corpora = (
+        [(d, False) for d in dirs if os.path.isdir(d)] if dirs else _search_dirs()
+    )
+    if not corpora:
         return []
 
     def _stage(name: str, search: Callable[..., list[str]]) -> list[str]:
@@ -5576,13 +5595,13 @@ def recall(
         # converges across runs.
         ranked = []
         skipped = 0
-        for d in dirs:
+        for d, read_only in corpora:
             if deadline is not None and time.monotonic() >= deadline:
                 skipped += 1
                 continue
             with contextlib.suppress(Exception):
-                ranked.append(search(query, d, deadline))
-        rec[f"errs_{name}"] = len(dirs) - len(ranked) - skipped
+                ranked.append(search(query, d, deadline, read_only))
+        rec[f"errs_{name}"] = len(corpora) - len(ranked) - skipped
         if skipped:
             rec[f"skipped_{name}"] = skipped
         return _interleave(ranked)
@@ -5643,7 +5662,8 @@ def _eligible(
     kept: list[tuple[str, list[str], int]] = []
     floored: list[str] = []
     for path in paths:
-        matched, total, mtype = _relevance(terms, path, _LEX_ROOT.get(path, ""))
+        root, read_only = _LEX_ROOT.get(path, ("", False))
+        matched, total, mtype = _relevance(terms, path, root, read_only)
         if _passes_floor(
             matched,
             total,
@@ -5715,7 +5735,7 @@ def _pointer_line(
     was rather than anything about the memory, so the same evidence reads
     weaker the more the parent wrote.
     """
-    desc = _description(path, _LEX_ROOT.get(path, ""))
+    desc = _description(path, _LEX_ROOT.get(path, ("", False))[0])
     shown = ", ".join(matched[:6]) + (", …" if len(matched) > 6 else "")
     evidence = (
         f"matches {len(matched)} terms from this brief"
@@ -8118,7 +8138,8 @@ def search_cli(argv: list[str]) -> int:
         # caller is often an adopter checking whether their install works, and
         # a bare exit 1 cannot be told from a wrong config or a crash. stdout
         # stays empty so a pipeline still sees no matches.
-        looked = [os.path.expanduser(d) for d in (dirs or _search_dirs())]
+        named = dirs or [d for d, _ in _search_dirs()]
+        looked = [os.path.expanduser(d) for d in named]
         corpora = [_search_root(d) for d in looked if os.path.isdir(d)]
         files = sum(_corpus_files(c) for c in corpora)
         where = ", ".join(_display_path(c) for c in corpora) or "no directory"

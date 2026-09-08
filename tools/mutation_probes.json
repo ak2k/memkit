@@ -4218,16 +4218,16 @@
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
     },
     {
-      "name": "project-store-roots-are-never-recorded-for-the-scan",
+      "name": "project-store-candidates-forget-the-repository-chose-them",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        if store.read_only:\n            _PROJECT_ROOTS.add(os.path.realpath(live))\n",
-      "new": "",
+      "old": "        dirs.append((live, store.read_only))\n",
+      "new": "        dirs.append((live, False))\n",
       "tests": [
-        "tests/test_memory_prompt_recall.py::test_the_project_roots_survive_the_side_channel_clear_inside_recall",
+        "tests/test_memory_prompt_recall.py::test_a_project_hit_still_knows_it_came_from_a_repository_after_recall",
         "tests/test_memory_prompt_recall.py::test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log"
       ],
-      "why": "This set is the only thing that tells `_relevance` a candidate came out of a checked-in store. Unfilled, the credential scan and the size floor are dead code that still reads right, and every file a repository commits ranks like one the operator wrote."
+      "why": "This flag is the only thing that tells `_relevance` a candidate came out of a checked-in store. Dropped, the credential scan and the size floor are dead code that still reads right, and every file a repository commits ranks like one the operator wrote."
     },
     {
       "name": "project-scan-reads-a-file-it-has-already-refused",
