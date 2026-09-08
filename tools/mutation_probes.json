@@ -2095,12 +2095,23 @@
       "name": "inventory-counts-a-directory-whose-name-ends-in-md",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "                    if entry.name.endswith(\".md\") and entry.is_file()\n",
-      "new": "                    if entry.name.endswith(\".md\")\n",
+      "old": "                    if not entry.name.endswith(\".md\"):\n                        continue\n                    try:\n                        if not entry.is_file():\n                            continue\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        continue\n",
+      "new": "                    if not entry.name.endswith(\".md\"):\n                        continue\n                    try:\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        continue\n",
       "tests": [
         "tests/test_harness_memory.py::test_a_directory_named_like_a_memory_is_not_one"
       ],
       "why": "A directory called notes.md is not a memory, and counted as one it offers an adopter something to move that no move can carry."
+    },
+    {
+      "name": "inventory-loses-every-project-to-one-entry-that-will-not-answer",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "                try:\n                    projects.append((entry.name, entry.path, entry.is_symlink()))\n                except OSError:\n                    read_ok = False\n                    unreadable = unreadable or entry.path\n",
+      "new": "                projects.append((entry.name, entry.path, entry.is_symlink()))\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_a_project_that_will_not_answer_does_not_empty_the_inventory_walk"
+      ],
+      "why": "A real config directory holds thousands of project entries. Guarded per walk rather than per name, one entry whose link test raises takes the whole enumeration with it, and the row reports an empty inventory for a machine with months of memories on it."
     },
     {
       "name": "project-key-answers-for-a-cwd-that-is-not-a-path",

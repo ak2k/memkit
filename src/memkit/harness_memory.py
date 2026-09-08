@@ -365,11 +365,19 @@ def inventory(config_dir: str) -> tuple:
     can show only a few of them wants, and stable for two directories holding
     the same number.
     """
+    read_ok = True
+    unreadable = ""
+    projects = []
     try:
         with os.scandir(os.path.join(config_dir, "projects")) as entries:
-            projects = [
-                (entry.name, entry.path, entry.is_symlink()) for entry in entries
-            ]
+            for entry in entries:
+                # PER NAME, because the alternative is per walk: one entry
+                # whose link test raises used to cost every other project.
+                try:
+                    projects.append((entry.name, entry.path, entry.is_symlink()))
+                except OSError:
+                    read_ok = False
+                    unreadable = unreadable or entry.path
     except FileNotFoundError:
         return [], True
     except (OSError, ValueError):
@@ -377,15 +385,21 @@ def inventory(config_dir: str) -> tuple:
     found = []
     for key, path, linked_project in projects:
         memory = os.path.join(path, "memory")
+        listed = []
         try:
             with os.scandir(memory) as entries:
-                listed = sorted(
-                    (entry.name, entry.is_symlink())
-                    for entry in entries
-                    if entry.name.endswith(".md") and entry.is_file()
-                )
-        except (OSError, ValueError):
+                for entry in entries:
+                    if not entry.name.endswith(".md"):
+                        continue
+                    try:
+                        if not entry.is_file():
+                            continue
+                        listed.append((entry.name, entry.is_symlink()))
+                    except OSError:
+                        continue
+        except OSError:
             continue
+        listed.sort()
         files = [name for name, _ in listed]
         if not any(name != INDEX_NAME for name in files):
             continue
@@ -400,7 +414,7 @@ def inventory(config_dir: str) -> tuple:
             )
         )
     found.sort(key=lambda project: (-project.memories, project.key))
-    return found, True
+    return found, read_ok
 
 
 def switch(scopes, key: str) -> tuple:

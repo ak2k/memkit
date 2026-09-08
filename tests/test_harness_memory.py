@@ -14,6 +14,7 @@ linked worktree on its main checkout, which is what these cases assert.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -717,3 +718,64 @@ def test_a_projects_directory_that_cannot_be_read_is_not_an_empty_one(
     # whole of what this flag carries, and a machine that has never run the
     # feature is the commonest state there is.
     assert harness_memory.inventory(str(tmp_path / "nowhere")) == ([], True)
+
+
+def test_one_unanswerable_name_in_the_inventory_does_not_drop_its_siblings(
+    config_dir,
+) -> None:
+    """A `.md` whose file test raises costs that name and nothing else.
+
+    Guarded per directory, one symlink loop took the whole project out of the
+    walk, and the count an adopter reads was a count of the directories that
+    happened to answer. The guard is per NAME, so what a loop costs is the row
+    it is on.
+    """
+    _memories(config_dir, "-p-loop", "one.md", "two.md")
+    memory = config_dir / "projects" / "-p-loop" / "memory"
+    (memory / "a.md").symlink_to(memory / "b.md")
+    (memory / "b.md").symlink_to(memory / "a.md")
+
+    found, read_ok = harness_memory.inventory(str(config_dir))
+    assert [(p.key, p.files) for p in found] == [("-p-loop", ["one.md", "two.md"])]
+    # The DIRECTORY listed, which is what this flag is about: the name that
+    # would not answer is off the list rather than counted as read.
+    assert read_ok is True
+
+
+def test_a_project_that_will_not_answer_does_not_empty_the_inventory_walk(
+    config_dir, monkeypatch
+) -> None:
+    """One entry raising on its link test loses that project, not the walk.
+
+    No filesystem here refuses a link test on demand — `scandir` answers it
+    from the directory entry — so the refusal is scripted. What it stands for
+    is real: a config directory holds thousands of these, and an enumeration
+    that dies on one of them reports nothing about the rest.
+    """
+    _memories(config_dir, "-p-one", "one.md")
+    _memories(config_dir, "-p-two", "two.md")
+    projects = str(config_dir / "projects")
+    real = os.scandir
+
+    class _Refusing:
+        def __init__(self, entry) -> None:
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_symlink(self) -> bool:
+            raise OSError(5, "input/output error")
+
+    def scandir(path):
+        if str(path) != projects:
+            return real(path)
+        with real(path) as entries:
+            listed = [
+                _Refusing(entry) if entry.name == "-p-two" else entry
+                for entry in entries
+            ]
+        return contextlib.nullcontext(listed)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    found, read_ok = harness_memory.inventory(str(config_dir))
+    assert [project.key for project in found] == ["-p-one"]
+    assert read_ok is False
