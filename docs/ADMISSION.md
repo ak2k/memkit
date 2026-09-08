@@ -13,10 +13,11 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **101 files, about 3.0 MiB**
-— and `.claude-plugin/marketplace.json` pins that same tree as this is written,
-so there is one tree here and one set of numbers. The recipe at the bottom
-reproduces them against either the repository or your own installed copy.
+The table below counts **the tree this file ships in** — **101 files, about 3.1 MiB**
+— and `.claude-plugin/marketplace.json` pins a tree carrying the same files at
+**about 3.0 MiB**: the counts agree and the bytes have grown inside files the
+pin already has. The recipe at the bottom reproduces both, against the
+repository or against your own installed copy.
 
 It does not stay that way, and it goes in both directions at once. `main` grows
 files the pin does not carry, so from the first such merge a count taken at the
