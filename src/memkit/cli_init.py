@@ -771,6 +771,32 @@ def check_refusals(
             )
         _refuse_unwritable(what, target)
 
+    # BEFORE EITHER SET OF GATES BELOW, because all of them read `scope.data`
+    # and a scope that could not be parsed arrives with an empty one — which
+    # is indistinguishable from a scope declaring nothing. One trailing comma
+    # in `settings.local.json` therefore silences exactly the refusals that
+    # protect an adopter from a redirect they did not ask for, in a file the
+    # harness itself would also fail to read. The reader already records the
+    # error; doctor consults it, and these have to as well.
+    if adopt_auto_memory or auto_memory_off:
+        by_scope = {scope.scope: scope for scope in machine.settings}
+        for name in harness_memory.SCOPE_ORDER:
+            scope = by_scope.get(name)
+            if scope is None or not scope.error:
+                continue
+            raise Refusal(
+                "settings-unreadable",
+                f"{name} settings ({_display_path(scope.path)}) cannot be "
+                f"read: {scope.error}. Every check this flag makes about "
+                f'"{harness_memory.DIRECTORY_KEY}" and '
+                f'"{harness_memory.ENABLED_KEY}" asks that file what it '
+                "declares, and a file that will not parse answers nothing "
+                "rather than answering no — so proceeding would write your "
+                "harness settings on the strength of a question nobody could "
+                "ask. The harness cannot read it either. Fix the syntax and "
+                "run this again.",
+            )
+
     # BOTH OF THESE ARE --adopt-auto-memory's ALONE. `--auto-memory-off` writes
     # one boolean and has to stay idempotent: refusing it because the feature
     # is already off would take away the convergence every other flag here has,

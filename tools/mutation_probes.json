@@ -4284,6 +4284,17 @@
       "why": "a link is somebody's answer only where it lands. Called already redirected wherever it points, a memory directory linked to an ordinary directory is reported as handled by init and as outside every store by doctor, and is chased by neither."
     },
     {
+      "name": "init-a-settings-scope-that-will-not-parse-reads-as-declaring-nothing",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if scope is None or not scope.error:\n",
+      "new": "            if scope is None or scope.error:\n",
+      "tests": [
+        "tests/test_init.py::test_a_settings_scope_that_will_not_parse_is_not_a_scope_saying_nothing"
+      ],
+      "why": "the gates read `scope.data`, which a file that would not parse arrives with empty — the same as a file declaring nothing. One trailing comma in settings.local.json then silences both adoption refusals and init writes the redirect they exist to prevent."
+    },
+    {
       "name": "init-auto-memory-off-never-asks-the-scopes-that-outrank-the-one-it-writes",
       "module": "init",
       "file": "src/memkit/cli_init.py",

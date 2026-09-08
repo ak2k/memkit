@@ -3602,6 +3602,35 @@ def test_auto_memory_off_writes_one_boolean_and_then_has_nothing_to_do(
     assert not [a for a in again.writes if a.op == init.SETTINGS_WRITE]
 
 
+@pytest.mark.parametrize(
+    "flag", ["adopt_auto_memory", "auto_memory_off"]
+)
+def test_a_settings_scope_that_will_not_parse_is_not_a_scope_saying_nothing(
+    profile, flag
+) -> None:
+    """Every gate around auto-memory asks a scope what it declares, and reads
+    the answer out of `scope.data` — which a file that would not parse arrives
+    with empty, exactly as a file declaring nothing does. So one trailing
+    comma in `settings.local.json` turned off the refusals that stand between
+    an adopter and a redirect they did not ask for, and init planned the
+    settings write anyway. The harness cannot read that file either.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True)
+    local = checkout / "settings.local.json"
+    # What the gates would have refused, one comma short of parsing.
+    local.write_text(
+        '{"autoMemoryDirectory": "~/elsewhere", "autoMemoryEnabled": true,}',
+        encoding="utf-8",
+    )
+    refusal = _refuses(profile, "settings-unreadable", **{flag: True})
+    assert "local settings" in refusal.message
+    assert str(local) in refusal.message
+    # A plain init reads no scope for these keys and is not refused by it.
+    assert _plan(profile).actions
+
+
 def test_auto_memory_off_will_not_promise_what_a_higher_scope_overrules(
     profile, monkeypatch
 ) -> None:
