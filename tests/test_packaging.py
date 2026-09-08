@@ -351,38 +351,48 @@ def test_the_package_config_covers_new_files_without_being_edited() -> None:
 FLOOR_REQUIRED_ENV = "MEMKIT_FLOOR_REQUIRED"
 
 
-def _floor_interpreter() -> str | None:
-    """A real 3.9, or None.
+# The two versions below this repository's own floor that something here has
+# to run on. The hook is dispatched by whatever `python3` the harness resolves,
+# which on a stock macOS is 3.9.6; `tools/harness_shape.py` is piped over ssh
+# into somebody else's host, and the first one it went to ran 3.8.18.
+FLOOR_VERSION = "3.9"
+SHAPE_FLOOR_VERSION = "3.8"
+
+
+def _floor_interpreter(version: str = FLOOR_VERSION) -> str | None:
+    """A real interpreter of `version`, or None.
 
     `uv python find` first, because `uv python install 3.9` provisions one in
     well under a second and that is what makes this affordable as a gate; a
     `python3.9` on PATH answers too, for a machine that has one already.
     """
-    for probe in (["uv", "python", "find", "3.9"],):
+    for probe in (["uv", "python", "find", version],):
         try:
             out = subprocess.run(probe, capture_output=True, text=True, timeout=120)
         except (OSError, subprocess.SubprocessError):
             continue
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
-    return shutil.which("python3.9")
+    return shutil.which(f"python{version}")
 
 
-def _require_floor_interpreter() -> str:
-    """A real 3.9, or a verdict — never a quiet pass.
+def _require_floor_interpreter(version: str = FLOOR_VERSION) -> str:
+    """A real interpreter of `version`, or a verdict — never a quiet pass.
 
-    One implementation for both floor cases, because this switch is what
+    One implementation for every floor case, because this switch is what
     `test_the_floor_gate_fails_rather_than_skips_when_it_is_required` watches,
     and a second copy of it is a copy nothing watches.
     """
-    interpreter = _floor_interpreter()
+    interpreter = _floor_interpreter(version)
     if interpreter is None:
         if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
             raise AssertionError(
-                f"{FLOOR_REQUIRED_ENV}=1 and no 3.9 interpreter was found — "
-                "`uv python install 3.9` provisions one"
+                f"{FLOOR_REQUIRED_ENV}=1 and no {version} interpreter was found — "
+                f"`uv python install {version}` provisions one"
             )
-        pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
+        pytest.skip(
+            f"no python{version} available; MEMKIT_FLOOR_REQUIRED=1 makes this fail"
+        )
     assert interpreter is not None
     return interpreter
 
@@ -439,7 +449,7 @@ def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(
     exists to catch, so the skip has to be switchable off and the switch has to
     be tested — otherwise the one thing CI relies on is the one thing nobody
     has watched work."""
-    monkeypatch.setattr(sys.modules[__name__], "_floor_interpreter", lambda: None)
+    monkeypatch.setattr(sys.modules[__name__], "_floor_interpreter", lambda *_: None)
     monkeypatch.setenv(FLOOR_REQUIRED_ENV, "1")
     # BaseException and then a type check, not `pytest.raises(AssertionError)`:
     # a `Skipped` raised inside a `raises(AssertionError)` block propagates and
@@ -456,21 +466,33 @@ def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(
     assert caught.typename == "Skipped", caught.typename
 
 
-def test_harness_shape_runs_on_a_real_39(tmp_path) -> None:
-    """The capture tool at the floor, both ways it is actually invoked.
+@pytest.mark.parametrize(
+    "version", [FLOOR_VERSION, SHAPE_FLOOR_VERSION], ids=["py39", "py38"]
+)
+def test_harness_shape_runs_on_a_real_floor_interpreter(tmp_path, version) -> None:
+    """The capture tool at both floors, both ways it is actually invoked.
 
     `tools/harness_shape.py` is the one file here that runs on machines this
     project has no other claim on: it is piped over ssh into whatever `python3`
     a colleague's host resolves, which on a stock macOS is 3.9.6 and on an
-    older Linux is older still. Nothing else would notice a 3.10 idiom in it —
-    the suite runs it under 3.12, pyright checks it at 3.12, and the failure
-    lands as a syntax error in somebody else's terminal.
+    older Linux is older still — 3.8.18 on the first host it went to, which is
+    why the file's own floor is a version below this repository's. Nothing else
+    would notice a 3.10 idiom in it — the suite runs it under 3.12, and the
+    failure lands as a syntax error in somebody else's terminal.
+
+    3.8 IS EXECUTED HERE AND NOWHERE ELSE. `pyrightconfig-shape38.json` catches
+    the typing half; typeshed no longer carries the 3.8 guards, so a 3.9-only
+    stdlib call is invisible to it and visible to this.
 
     BY PATH AND ON STDIN, because those are two different executions: `python3
     -` gives the module no `__file__` and an `argv[0]` of `-`, so a tool that
     reads either one works from the repository and dies over the pipe.
+
+    AND THE SAME BYTES AS 3.12, because a shape captured over ssh is compared
+    against shapes captured here: an interpreter that runs the tool and answers
+    a different document is a fixture nobody can reproduce.
     """
-    interpreter = _require_floor_interpreter()
+    interpreter = _require_floor_interpreter(version)
     memory = tmp_path / "config" / "projects" / "-h-u-git-app" / "memory"
     memory.mkdir(parents=True)
     (memory / "one.md").write_text(
@@ -490,6 +512,12 @@ def test_harness_shape_runs_on_a_real_39(tmp_path) -> None:
     )
     assert on_stdin.returncode == 0, on_stdin.stdout + on_stdin.stderr
     assert by_path.stdout == on_stdin.stdout, "two invocations, two answers"
+    here = subprocess.run(
+        [sys.executable, str(tool), *args],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert here.returncode == 0, here.stdout + here.stderr
+    assert by_path.stdout == here.stdout, "two interpreters, two answers"
     shape = json.loads(by_path.stdout)
     assert shape["anonymised"] is True
     assert len(shape["memory_dirs"]) == 1, shape

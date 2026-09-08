@@ -193,7 +193,21 @@ jobs:
           uv python install 3.9
           .venv/bin/python -m pytest -q tests/test_packaging.py \
             -k "the_hook_and_both_subcommands_run_on_a_real_39 or \
-                test_harness_shape_runs_on_a_real_39"
+                (harness_shape_runs_on_a_real_floor_interpreter and py39)"
+
+      # And the capture tool's own floor, a version lower again: it is piped
+      # over ssh into whatever `python3` somebody else's host resolves, and the
+      # first one it went to ran 3.8.18. The pyright pass below catches the
+      # typing half only — typeshed dropped 3.8 and no longer carries the
+      # guards, so a 3.9-only stdlib call is invisible to it and lands as a
+      # traceback in a colleague's terminal.
+      - name: The 3.8 floor, executed (the capture tool)
+        env:
+          MEMKIT_FLOOR_REQUIRED: "1"
+        run: |
+          uv python install 3.8
+          .venv/bin/python -m pytest -q tests/test_packaging.py \
+            -k "harness_shape_runs_on_a_real_floor_interpreter and py38"
 
       # The hook's 3.9 floor, as a SECOND pyright pass with its own config —
       # executionEnvironments are rooted at a directory, and here the 3.9 hook
