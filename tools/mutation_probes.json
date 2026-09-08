@@ -4758,6 +4758,17 @@
         "tests/test_harness_shape.py::test_a_project_that_holds_no_memory_directory_is_passed_over"
       ],
       "why": "`os.stat` answers for a FILE named `memory` as readily as for a directory. Without the type check the project is counted as one holding memories and then fails to be listed, so a name anyone who can write in `projects/` may leave behind reports as a read failure."
+    },
+    {
+      "name": "harness-shape-the-cwd-fallback-for-an-unnameable-fd-one-never-fires",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        elif _stdout_is_a_file() and _inside_worktree(os.getcwd()):\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fallback_for_a_kernel_that_will_not_name_fd_one_still_refuses"
+      ],
+      "why": "`_stdout_destination` answers on darwin and on linux whenever stdout is a regular file, so the branch that decides where real names may land when it cannot was executed by nothing on any platform this is piped to — it could have been deleted with the suite green."
     }
   ]
 }

@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import errno
 import importlib.util
+import io
 import json
 import os
 import re
@@ -807,6 +808,49 @@ def test_the_redirect_is_judged_by_where_it_lands_not_where_it_started(
     assert json.loads(
         landing_outside.read_text(encoding="utf-8")
     )["anonymised"] is False
+
+
+def test_the_fallback_for_a_kernel_that_will_not_name_fd_one_still_refuses(
+    tmp_path, monkeypatch,
+) -> None:
+    """The branch above answers on darwin and on linux, which is every machine
+    this suite runs on — so the cwd fallback beneath it was executed by
+    nothing, on any platform, and could have been deleted with the suite
+    green.
+
+    The seam is the answer, not a flag: `_stdout_destination` returning None
+    is exactly the kernel the fallback exists for, and the two directions are
+    the whole of what it decides. It over-refuses on purpose — a redirect
+    started outside a checkout and landing inside one is invisible to it —
+    so the case it does catch is the one worth holding it to.
+    """
+    module = _tool_module()
+    tree = tmp_path / "repo"
+    (tree / ".git").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    argv = ["--config-dir", str(config), "--raw"]
+    monkeypatch.setattr(module, "_stdout_destination", lambda: None)
+
+    for cwd, code in ((tree, 2), (outside, 0)):
+        errors = io.StringIO()
+        landing = tmp_path / f"shape-{cwd.name}.json"
+        monkeypatch.setattr(module.sys, "stderr", errors)
+        # A real file, because the tool asks fd 1 what it is at call time.
+        with landing.open("w", encoding="utf-8") as handle:
+            monkeypatch.setattr(module.sys, "stdout", handle)
+            monkeypatch.chdir(cwd)
+            assert module.main(argv) == code, errors.getvalue()
+        if code == 2:
+            assert "refuses a redirect to a file" in errors.getvalue()
+            assert landing.read_text(encoding="utf-8") == "", "it refused and wrote"
+        else:
+            assert errors.getvalue() == ""
+            assert json.loads(
+                landing.read_text(encoding="utf-8")
+            )["anonymised"] is False
 
 
 def test_an_index_row_is_judged_without_leaving_the_directory(tmp_path) -> None:
