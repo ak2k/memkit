@@ -4243,7 +4243,7 @@
       "name": "a-dir-named-on-the-command-line-is-never-a-project-corpus",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "            (d, _named_dir_is_a_project_corpus(d))\n",
+      "old": "            (d, _named_dir_read_only(d))\n",
       "new": "            (d, False)\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_search_cli_scans_a_project_corpus_it_was_pointed_at_by_hand"
@@ -4573,6 +4573,28 @@
         "tests/test_memory_prompt_recall.py::test_the_credential_scan_costs_no_more_than_the_bytes_it_reads"
       ],
       "why": "the run behind the keyword is reached only where the alternation matches, so a body made of the keyword is what measures it — and unbounded it backtracks the same way, which is why the bound is on both runs and not just the one the timing curve was taken on"
+    },
+    {
+      "name": "a-named-dir-above-the-corpus-is-not-the-corpus",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    return store.read_only and (\n        _same_tree(corpus, real) or _same_tree(real, corpus)\n    )\n",
+      "new": "    return store.read_only and _same_tree(corpus, real)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
+      ],
+      "why": "retrieval walks DOWNWARD from the directory it was handed, so `--dir <repo>` and `--dir <repo>/docs` serve every byte of the corpus underneath — asked inside-only, the classification misses exactly the spellings that serve the most"
+    },
+    {
+      "name": "the-named-dir-is-matched-by-its-spelling",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        target = os.stat(root)\n        here = path\n        while True:\n            if os.path.samestat(os.stat(here), target):\n                return True\n            parent = os.path.dirname(here)\n            if parent == here:\n                return False\n            here = parent\n",
+      "new": "        return _inside(os.path.realpath(root), os.path.realpath(path))\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
+      ],
+      "why": "one directory has more than one spelling — a case variant on a case-insensitive filesystem, a link reached from either side — and string containment gives the same directory two answers at the two doors, which is the whole defect this walk removes"
     }
   ]
 }

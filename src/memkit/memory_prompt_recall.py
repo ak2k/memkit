@@ -2262,7 +2262,34 @@ def _search_dirs() -> list[tuple[str, bool]]:
     return _live_dirs(cfg) if cfg is not None else []
 
 
-def _named_dir_is_a_project_corpus(d: str) -> bool:
+def _same_tree(root: str, path: str) -> bool:
+    """`path` IS `root` or lies under it, decided by inode identity.
+
+    `_inside`'s string arithmetic is the right instrument where both sides came
+    out of one resolution. Here they did not: one path was spelled by a caller
+    on a command line and the other by a repository in its own file, and a
+    directory has more than one spelling — a case variant on a case-insensitive
+    filesystem, or a link reached from either side. Two spellings of one
+    directory getting two answers is the whole of what this walk removes.
+
+    Costs one `stat` per level and only for a directory named on the command
+    line; the every-prompt path never arrives here.
+    """
+    try:
+        target = os.stat(root)
+        here = path
+        while True:
+            if os.path.samestat(os.stat(here), target):
+                return True
+            parent = os.path.dirname(here)
+            if parent == here:
+                return False
+            here = parent
+    except OSError:
+        return False
+
+
+def _named_dir_read_only(d: str) -> bool:
     """Whether a directory a CALLER named is one a repository chose.
 
     `--search --dir` hands retrieval a path with no store behind it, and the
@@ -2270,18 +2297,28 @@ def _named_dir_is_a_project_corpus(d: str) -> bool:
     them on the prompt path: `search_cli` is what the user's own config tells
     an agent to run, so its output is model-facing too.
 
-    The classification is the hook's, not a second rule: the named directory's
-    repository is resolved from the directory itself, its `.memkit.json` goes
-    through the same refusals, and the answer is whether the store that file
-    asks for contains what was named. So the cwd this was typed from cannot
-    change the verdict, and a directory the user simply owns is unaffected.
+    ANSWERED FROM THE STORE, which is what keeps this door and the prompt path
+    from disagreeing. `_live_dirs` reads `store.read_only`; so does this, off
+    the same `_project_store` over the same repository walk. What is left here
+    is not a second classification but the question this door alone has to ask
+    — which store the named directory belongs to — and it is asked in BOTH
+    directions, because retrieval walks downward from what it was handed: a
+    directory ABOVE the corpus serves every byte of it. Over-marking is the
+    safe direction and under-marking is the leak.
+
+    Two states are not "a repository chose nothing here". A `.memkit.json` this
+    hook REFUSED is still a repository asking for a corpus, and refusing it
+    must not be the cheaper way to get a checkout's bytes in front of a model
+    unscanned. And no user config at all is not the switch turned off: the
+    feature's default is on, and an absent config leaves it there. Only the
+    switch itself is off, and off means the file is never opened.
 
     Reached only for dirs a caller named — the prompt path is answered by
     `_live_dirs`, which has the store in hand — so the repository walk and the
     open this costs are off the every-prompt path.
     """
     cfg = _config()
-    if cfg is None or not cfg.project_config:
+    if cfg is not None and not cfg.project_config:
         return False
     try:
         real = os.path.realpath(d)
@@ -2290,8 +2327,14 @@ def _named_dir_is_a_project_corpus(d: str) -> bool:
         return False
     if root is None:
         return False
-    store, _ = _project_store(root, {s.id for s in cfg.stores})
-    return store is not None and _inside(store.resolved_dir, real)
+    taken = {s.id for s in cfg.stores} if cfg is not None else set()
+    store, refusal = _project_store(root, taken)
+    if store is None:
+        return refusal != ""
+    corpus = _search_root(store.resolved_dir)
+    return store.read_only and (
+        _same_tree(corpus, real) or _same_tree(real, corpus)
+    )
 
 
 def _config_state() -> tuple:
@@ -5762,7 +5805,7 @@ def recall(
     # credential scan travels with the corpus it is a fact about.
     corpora = (
         [
-            (d, _named_dir_is_a_project_corpus(d))
+            (d, _named_dir_read_only(d))
             for d in dirs
             if os.path.isdir(d)
         ]

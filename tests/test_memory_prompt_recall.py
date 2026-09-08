@@ -14752,6 +14752,156 @@ def test_the_search_cli_scans_a_project_corpus_it_was_pointed_at_by_hand(
         assert "unionfs_perms.md" in served.stdout, (cwd, served.stdout)
 
 
+PLANTED_MEMORY = (
+    "---\nname: unionfs_planted\n"
+    "description: unionfs mount permissions and the media group\n"
+    "type: reference\n---\n\n"
+    "unionfs mount permissions: FUSE default_permissions ignores the\n"
+    "supplementary groups, so the media group has to be primary.\n"
+    "AKIA0123456789ABCDEF\n"
+)
+
+
+def _two_memories(tmp_path: Path, blob=None) -> Path:
+    """A checkout whose corpus holds one clean memory and one carrying a key.
+
+    Both, in one tree, because either alone measures half of it: the clean one
+    is what says the door reached the corpus at all, and the planted one is
+    what says the scan fired when it did. A row that serves neither has not
+    been told apart from a row that searched nothing.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob() if blob is None else blob)
+    corpus = repo / PROJECT_STORE_DIR / "search"
+    (corpus / "unionfs_planted.md").write_text(PLANTED_MEMORY, encoding="utf-8")
+    return repo
+
+
+def _served(out: subprocess.CompletedProcess) -> tuple[bool, bool]:
+    """(the clean memory was served, the planted one was)."""
+    return "unionfs_perms.md" in out.stdout, "unionfs_planted.md" in out.stdout
+
+
+def _switched_off(tmp_path: Path) -> dict:
+    config = json.loads(_write_config(tmp_path).read_text())
+    config["project_config"] = False
+    path = tmp_path / "off.json"
+    path.write_text(json.dumps(config))
+    return _sealed_env(tmp_path, MEMKIT_CONFIG=str(path))
+
+
+def _case_variant(tmp_path: Path) -> tuple[Path, Path]:
+    repo = _two_memories(tmp_path, blob=_project_blob(dir=PROJECT_STORE_DIR.title()))
+    if not os.path.exists(str(repo / PROJECT_STORE_DIR.title())):
+        pytest.skip("case-sensitive filesystem: the two spellings are two dirs")
+    return repo, repo / PROJECT_STORE_DIR / "search"
+
+
+def _corpus_linked_inside(tmp_path: Path) -> tuple[Path, Path]:
+    repo = _two_memories(tmp_path, blob=_project_blob())
+    corpus = repo / PROJECT_STORE_DIR / "search"
+    elsewhere = repo / "vendor" / "notes"
+    elsewhere.parent.mkdir(parents=True)
+    corpus.rename(elsewhere)
+    os.symlink(str(elsewhere), str(corpus))
+    return repo, elsewhere
+
+
+# The spellings ONE directory arrives in, and what each door does with it.
+#
+# `--search --dir` and the prompt path answer the same question — did a
+# repository choose this corpus — so a row where they disagree is a checkout's
+# own bytes reaching a model through the door that does not scan them.
+#
+# `hook` is what the hook's own store search serves standing in that checkout;
+# `door` is what `--search --dir` serves from OUTSIDE it. Where the hook has
+# the corpus the two are equal by the rule. Where it has none — no config, a
+# refused file — the door still has to answer, and it answers closed: a
+# repository that asked for a corpus asked for it whether or not this hook
+# could read the file, and refusing must not be the cheap way past the scan.
+# The switch is the one state that is genuinely off, and off means the file is
+# never opened.
+NAMED_DIR_SPELLINGS = [
+    # label, build -> (repo, named dir), env, hook serves (clean, planted),
+    # door serves (clean, planted)
+    (
+        "the-corpus-itself",
+        lambda p: (lambda r: (r, r / PROJECT_STORE_DIR / "search"))(_two_memories(p)),
+        None,
+        (True, False),
+        (True, False),
+    ),
+    (
+        "a-directory-above-the-corpus",
+        lambda p: (lambda r: (r, r / "docs"))(_two_memories(p)),
+        None,
+        (True, False),
+        (True, False),
+    ),
+    (
+        "the-repository-root",
+        lambda p: (lambda r: (r, r))(_two_memories(p)),
+        None,
+        (True, False),
+        (True, False),
+    ),
+    (
+        "no-user-config-at-all",
+        lambda p: (lambda r: (r, r / PROJECT_STORE_DIR / "search"))(_two_memories(p)),
+        _unconfigured,
+        (False, False),
+        (True, False),
+    ),
+    (
+        "a-project-file-this-hook-refused",
+        lambda p: (
+            lambda r: (r, r / PROJECT_STORE_DIR / "search")
+        )(_two_memories(p, blob=_project_blob(dir="docs/nowhere"))),
+        None,
+        (False, False),
+        (True, False),
+    ),
+    (
+        "the-kill-switch-off",
+        lambda p: (lambda r: (r, r / PROJECT_STORE_DIR / "search"))(_two_memories(p)),
+        _switched_off,
+        (False, False),
+        (True, True),
+    ),
+    ("the-corpus-under-another-case", _case_variant, None, (True, False), (True, False)),
+    ("a-corpus-linked-inside-the-checkout", _corpus_linked_inside, None,
+     (True, False), (True, False)),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "build", "env_for", "by_hook", "by_dir"),
+    NAMED_DIR_SPELLINGS,
+    ids=[row[0] for row in NAMED_DIR_SPELLINGS],
+)
+def test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does(
+    tmp_path: Path, label: str, build, env_for, by_hook, by_dir
+) -> None:
+    """One directory, spelled eight ways, through both doors.
+
+    The `--dir` door used to answer this with a second predicate — string
+    containment, inside-only, over one spelling, with "there is no config" read
+    as "the operator turned it off" — and it disagreed with the hook on six of
+    these rows. What it disagreed by is a checked-in memory carrying a
+    credential being printed, by the command `search_cli` tells an agent to
+    run, with nothing in the record to say the scan never fired.
+
+    Both doors run on ONE tree per row, and the `--dir` door runs from outside
+    the checkout: where the command was typed cannot decide what the directory
+    is.
+    """
+    repo, named = build(tmp_path)
+    env = env_for(tmp_path) if env_for is not None else _env(tmp_path)
+    assert _served(_cli(tmp_path, "--search", INJECT_PROMPT,
+                        env=env, cwd=str(repo))) == by_hook, label
+    assert _served(_cli(tmp_path, "--search", INJECT_PROMPT, "--dir", str(named),
+                        env=env, cwd=str(tmp_path))) == by_dir, label
+
+
 def test_a_project_file_that_only_annotates_itself_is_admitted(
     tmp_path: Path, monkeypatch
 ) -> None:
