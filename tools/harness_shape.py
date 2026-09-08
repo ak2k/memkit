@@ -833,6 +833,12 @@ def _memory_dir(
             head, truncated = _read_head(path)
             if head is None:
                 head, failed, unreadable = "", True, True
+        else:
+            # AND A FILE NOBODY OPENED IS NOT ONE EITHER. The branch above is
+            # not taken at all here, so the four facts have no reader behind
+            # them and the record says so the same way. `read_errors` does not
+            # move: nothing failed, the rule declined to look.
+            unreadable = True
         record["unreadable"] = unreadable
         # A FILE NOBODY COULD READ IS NOT A FILE WITH NO FRONTMATTER, which is
         # what the four flags and the null length said — the same record a

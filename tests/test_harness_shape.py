@@ -332,9 +332,11 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     by_name = {entry["name"]: entry for entry in file_linked["files"]}
     assert by_name["m6.md"]["is_symlink"] is False
     assert by_name["m5.md"]["is_symlink"] is True
-    # AND NEVER OPENED. The target carries frontmatter and a description; the
-    # link records neither, and the size is the link's rather than the file's.
-    assert by_name["m5.md"]["has_frontmatter"] is False
+    # AND NEVER OPENED, which the record states rather than answering the
+    # frontmatter question as if it had: the size is the link's rather than
+    # the file's, and every fact a read would have produced is null.
+    assert by_name["m5.md"]["unreadable"] is True
+    assert by_name["m5.md"]["has_frontmatter"] is None
     assert by_name["m5.md"]["description_len"] is None
     assert by_name["m5.md"]["size"] == (
         config / "projects" / "-h-u-git-qlink" / "memory" / "link.md"
@@ -1001,7 +1003,9 @@ def test_what_is_opened_is_decided_by_where_the_link_lands(tmp_path) -> None:
     assert sorted(files) == ["MEMORY.md", "linked.md", "m.md"]
     assert files["MEMORY.md"]["is_symlink"] is True
     assert left["index"] is None
-    assert files["linked.md"]["has_name"] is False
+    # Null and not `false`: the link out was never opened, so there is no read
+    # behind the answer to "does it carry a name".
+    assert files["linked.md"]["has_name"] is None
 
     stayed = _by_key(shape)["-b"]
     kept = {item["name"]: item for item in stayed["files"]}
@@ -1942,6 +1946,42 @@ def test_a_file_nobody_could_read_is_not_a_file_with_no_frontmatter(
         assert files["blocked.md"][fact] is None, fact
         assert files["plain.md"][fact] is not None or fact == "description_len"
     assert shape["read_errors"] == 1
+
+
+def test_a_file_the_rule_declined_to_open_states_no_read(tmp_path) -> None:
+    """The last spelling of the same record: a memory file that is a link OUT.
+
+    Nothing opens it — that is the rule, and it is the right rule — and it
+    recorded `unreadable: false` beside four `false` flags and a null length,
+    which is the record of a file that WAS read and carries no frontmatter.
+    The two are told apart the way a failed read already is: every fact a read
+    would have produced is null. `read_errors` does not move, because nothing
+    failed here; the capture declined to look.
+    """
+    config = tmp_path / "config"
+    outside = tmp_path / "elsewhere"
+    theirs = _write(
+        outside / "memo.md",
+        "---\nname: theirs\ntype: note\ndescription: " + DESCRIPTION + "\n---\n\nb\n",
+    )
+    memory = _memory_dir(config, "-a")
+    _write(memory / "own.md", "---\nname: ours\n---\n\nb\n")
+    link = memory / "out.md"
+    os.symlink(theirs, link)
+
+    shape = _shape("--config-dir", str(config), "--raw")
+    files = {item["name"]: item for item in _by_key(shape)["-a"]["files"]}
+    record = files["out.md"]
+    assert record["is_symlink"] is True
+    # The LINK's size, so nothing outside the capture was measured.
+    assert record["size"] == link.lstat().st_size != theirs.stat().st_size
+    assert record["unreadable"] is True
+    for fact in READ_TYPES:
+        assert record[fact] is None, fact
+    # The file beside it was read, and says the opposite in every field.
+    assert files["own.md"]["unreadable"] is False
+    assert files["own.md"]["has_name"] is True
+    assert shape["read_errors"] == 0
 
 
 @pytest.mark.skipif(ROOT, reason="root reads a file nobody else can")
