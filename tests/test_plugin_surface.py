@@ -3826,9 +3826,28 @@ _REPOINT_SUCCEEDS = (
 )
 
 
+# The key block is run under the options an agent's shell already carries as
+# well as under none. `set -e` turns a status the block handles into an abort,
+# and the page's stated reader runs `set -euo pipefail` as a matter of course:
+# under it the block used to stop at its first line with no key, no message and
+# rc 128, which is the documented fallback never running. The repoint line is
+# not on this axis — `set -u` makes an unset variable a message from the shell,
+# and half its cells are about what an unset variable does.
+_SHELL_OPTIONS = ("", "set -euo pipefail")
+_STORE_IN_GIT_CASES = tuple(
+    (cell, opts)
+    for cell in _STORE_IN_GIT_CELLS
+    for opts in (_SHELL_OPTIONS if cell.startswith("key-") else ("",))
+)
+
+
 @pytest.mark.parametrize("shell", ("bash", "zsh"))
-@pytest.mark.parametrize("cell", _STORE_IN_GIT_CELLS)
-def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell) -> None:
+@pytest.mark.parametrize(
+    "cell,opts",
+    _STORE_IN_GIT_CASES,
+    ids=[f"{cell}-{'errexit' if opts else 'no-options'}" for cell, opts in _STORE_IN_GIT_CASES],
+)
+def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, shell) -> None:
     """The page's two commands, run on real filesystems.
 
     The six derivation cells cover what the prose claims about the key: a
@@ -3861,14 +3880,16 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell)
     if cell.startswith("key-"):
         block = _key_derivation_block(section)
         where, want, logical = _derivation_fixture(cell, home, section)
-        out = _shell_out(shell, block, where, home, logical)
-        assert out.returncode == 0, (block, out.stdout, out.stderr)
+        script = f"{opts}\n{block}" if opts else block
+        out = _shell_out(shell, script, where, home, logical)
+        assert out.returncode == 0, (script, out.stdout, out.stderr)
         printed = out.stdout.strip().splitlines()
         # Empty output would otherwise be an IndexError, which says nothing
         # about what the block was expected to print.
-        assert printed, (block, out.stdout, out.stderr)
-        assert printed[-1] == want, (block, out.stdout, want)
+        assert printed, (script, out.stdout, out.stderr)
+        assert printed[-1] == want, (script, out.stdout, want)
         return
+    assert not opts, (cell, opts)
 
     pattern = _key_rule(section)
     with_search, without_search = _target_rule(section)

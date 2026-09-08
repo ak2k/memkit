@@ -242,7 +242,8 @@ hash suffix.
 ```bash
 # needs git 2.31+; a "fatal:" here means the key fell back to the cwd
 # ASCII, newline-free paths only: tr maps bytes, the harness maps characters
-root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+# `|| root=` keeps the fallback reachable where the paste runs under `set -e`
+root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || root=
 case $root in */.git) root=${root%/.git} ;;
   *) root=$(git rev-parse --path-format=absolute --show-toplevel || pwd -P) ;; esac
 key=$(printf '%s\n' "$root" | tr -c 'A-Za-z0-9\n' '-')
