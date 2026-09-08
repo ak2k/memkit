@@ -63,6 +63,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import time
 
@@ -994,13 +995,16 @@ class _Landing:
         self.directory = directory
         self.leaf = leaf
         self.missing = list(reversed(missing))
+        # The name of the level the descriptor was opened at, for the one
+        # question that cannot be asked of a descriptor.
+        self.judged = base
         self.fd = _open_dir(base)
 
     def close(self) -> None:
         os.close(self.fd)
 
     def inside_worktree(self) -> bool:
-        return _worktree_above(self.fd)
+        return _worktree_above(self.fd, self.judged)
 
     def create(self) -> int:
         """The destination created below the judged directory, or a refusal.
@@ -1070,7 +1074,32 @@ def _occupant(fd: int, leaf: str) -> str:
     )
 
 
-def _worktree_above(fd: int) -> bool:
+def _git_says_worktree(directory: str) -> bool:
+    """git's own answer about `directory`, for the trees no `.git` name marks.
+
+    A work tree attached to a BARE repository — the dotfiles pattern, and a
+    `GIT_DIR` exported over ssh — has no `.git` anywhere inside it, and `git
+    status` still lists a shape written there as untracked in a real checkout,
+    one `git add -A` from being committed. A name walk cannot see that, and no
+    walk can: which directory is a work tree is a fact about a repository
+    somewhere else. So the last question is asked of git.
+
+    A host with no git on PATH is left with the walk's answer, which is the
+    behaviour every earlier round had.
+    """
+    try:
+        answer = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return answer.returncode == 0 and bool(answer.stdout.strip())
+
+
+def _worktree_above(fd: int, directory: str) -> bool:
     """Whether a file created in the directory `fd` names lands in a checkout.
 
     The walk is on DESCRIPTORS: `.git` is asked of each level with `dir_fd`,
@@ -1079,10 +1108,25 @@ def _worktree_above(fd: int) -> bool:
     the caller goes on to create in; a walk by name answers about whatever
     each name means at the moment that step is taken.
 
-    `lstat` rather than `exists`: a linked worktree's `.git` is a FILE and a
-    link at that name marks a checkout too, dangling or not. The top is where
-    a directory and its own `..` are the same inode.
+    `stat` without following rather than `exists`: a linked worktree's `.git`
+    is a FILE and a link at that name marks a checkout too, dangling or not.
+    The top is where a directory and its own `..` are the same inode.
+
+    `GIT_WORK_TREE` is compared by inode along the same walk, so a work tree
+    named through a different path — or one the destination merely sits
+    inside — still matches. `directory` is the name of the level the walk
+    STARTED at, and it is carried only for the question git is asked when the
+    walk finds nothing.
     """
+    marks = set()
+    declared = os.environ.get("GIT_WORK_TREE")
+    if declared:
+        try:
+            named = os.stat(declared)
+        except OSError:
+            pass
+        else:
+            marks.add((named.st_dev, named.st_ino))
     current = os.dup(fd)
     try:
         while True:
@@ -1092,6 +1136,8 @@ def _worktree_above(fd: int) -> bool:
             except OSError:
                 pass
             here = os.fstat(current)
+            if (here.st_dev, here.st_ino) in marks:
+                return True
             above = os.open(
                 "..", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), dir_fd=current
             )
@@ -1099,9 +1145,10 @@ def _worktree_above(fd: int) -> bool:
             current = above
             info = os.fstat(current)
             if (info.st_dev, info.st_ino) == (here.st_dev, here.st_ino):
-                return False
+                break
     finally:
         os.close(current)
+    return _git_says_worktree(directory)
 
 
 def _inside_worktree(directory: str) -> bool:
@@ -1118,7 +1165,7 @@ def _inside_worktree(directory: str) -> bool:
         # A directory that will not open is not one anything lands in.
         return False
     try:
-        return _worktree_above(fd)
+        return _worktree_above(fd, os.path.realpath(directory))
     finally:
         os.close(fd)
 

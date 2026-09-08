@@ -607,6 +607,53 @@ def test_raw_refuses_to_write_where_a_fixture_would_be_committed(tmp_path) -> No
     assert _run("--config-dir", str(tmp_path), "--raw").returncode == 0
 
 
+def test_raw_refuses_a_work_tree_that_holds_no_dot_git_at_all(tmp_path) -> None:
+    """Which directory is a work tree is a fact about a repository somewhere
+    else, so the last word is git's.
+
+    A work tree attached to a BARE repository — the dotfiles pattern, and a
+    `GIT_DIR` exported over ssh — has no `.git` at any level, and a name walk
+    looking for one calls it open ground. `git status` there lists the shape
+    as untracked in a real checkout, one `git add -A` from the single mistake
+    this tool exists to prevent. Both spellings: the work tree declared in the
+    environment, and the work tree declared only in the repository's config,
+    which the environment cannot see and only git can answer.
+    """
+    for name, configure in (("declared", None), ("configured", "core.worktree")):
+        work = tmp_path / name
+        work.mkdir()
+        bare = tmp_path / (name + ".git")
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, timeout=300)
+        env = dict(os.environ, GIT_DIR=str(bare))
+        env.pop("GIT_WORK_TREE", None)
+        if configure is None:
+            env["GIT_WORK_TREE"] = str(work)
+        else:
+            for key, value in (("core.bare", "false"), (configure, str(work))):
+                subprocess.run(
+                    ["git", "--git-dir", str(bare), "config", key, value],
+                    check=True, timeout=300,
+                )
+        assert not (work / ".git").exists(), "the case is only about trees without one"
+        out = work / "leak.json"
+        refused = _run("--config-dir", str(tmp_path), "--raw", "--out", str(out), env=env)
+        assert refused.returncode == 2, refused.stdout + refused.stderr
+        assert "git worktree" in refused.stderr
+        assert not out.exists(), "real names landed in a work tree"
+
+    # And a plain directory with no git anywhere near it is still what the
+    # flag is for: the question is asked, and the answer is no.
+    open_ground = tmp_path / "mine"
+    open_ground.mkdir()
+    allowed = _run(
+        "--config-dir", str(tmp_path), "--raw", "--out", str(open_ground / "ok.json")
+    )
+    assert allowed.returncode == 0, allowed.stdout + allowed.stderr
+    assert json.loads(
+        (open_ground / "ok.json").read_text(encoding="utf-8")
+    )["anonymised"] is False
+
+
 def test_raw_refuses_a_redirect_from_inside_a_checkout(tmp_path) -> None:
     """The spelling the tool's own docstring names, which had no guard.
 

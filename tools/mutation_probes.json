@@ -4406,6 +4406,17 @@
       "why": "`abspath` collapses `<link>/..` textually and the kernel takes `..` from the link's TARGET, so every refusal is answered about a directory the write never touches. That one difference put a shape carrying real names inside a git checkout with exit 0 — past the destination refusal and past the --raw refusal at once."
     },
     {
+      "name": "harness-shape-a-checkout-is-whatever-has-a-dot-git-name-in-it",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    return _git_says_worktree(directory)\n",
+      "new": "    return False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_raw_refuses_a_work_tree_that_holds_no_dot_git_at_all"
+      ],
+      "why": "Deciding what is a checkout by looking for a `.git` name is a heuristic: a work tree attached to a bare repository — the dotfiles pattern, and a GIT_DIR exported over ssh — has none at any level, and a --raw shape written there is listed untracked in a real work tree, one `git add -A` from being committed."
+    },
+    {
       "name": "harness-shape-out-crashes-instead-of-answering-with-an-exit-2",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
