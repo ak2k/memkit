@@ -3240,41 +3240,6 @@ def _shown(path: str) -> str:
     return _display_cap(_display_path(path), PATH_SHOWN)
 
 
-def _display_key(key: str) -> str:
-    """One harness project key as a detail prints it.
-
-    A KEY IS A PATH, with every character outside `[A-Za-z0-9]` replaced — so
-    `$HOME` is as legible in it as in the paths this report already re-spells,
-    and doctor's output is what an adopter pastes into an issue. Redacted on a
-    COMPONENT BOUNDARY only: a key that merely starts with the same characters
-    belongs to a different directory, and re-spelling it would name one that
-    is not there.
-    """
-    home = harness_memory.key_spelling(os.path.expanduser("~"))
-    if key == home:
-        return "~"
-    if home and key.startswith(home + "-"):
-        return "~" + key[len(home) :]
-    return key
-
-
-def _shown_derived(default: str) -> str:
-    """The derived memory directory as a detail prints it: the KEY too.
-
-    `_shown` re-spells a `$HOME` PREFIX, and the home in this path is not a
-    prefix — it is inside the project key, in the middle, with its separators
-    replaced. So the one path this row builds that carries two spellings of
-    home needed both re-spellers, and had one.
-    """
-    head, memory = os.path.split(default)
-    projects, key = os.path.split(head)
-    if not key or not memory:
-        return _shown(default)
-    return _display_cap(
-        os.path.join(_display_path(projects), _display_key(key), memory), PATH_SHOWN
-    )
-
-
 def _within(child: str, parent: str) -> bool:
     """Whether `child` is `parent` or sits under it, symlinks resolved.
 
@@ -4177,14 +4142,14 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     elif os.path.isdir(default):
         first = (
             f"the harness writes this project's memories to "
-            f"{_shown_derived(default)} (project key from the git root)"
+            f"{_shown(default)} (project key from the git root)"
         )
         here, says, _target = _placed(machine, default)
         if here:
             first = f"{first}, and that directory {says}"
     else:
         first = (
-            f"the harness would write to {_shown_derived(default)} "
+            f"the harness would write to {_shown(default)} "
             "(derived from the git root)"
         )
 
@@ -4246,7 +4211,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     listed = ""
     if outside:
         listed = ", ".join(
-            f"{_display_key(project.key)} ({project.memories})"
+            f"{project.key} ({project.memories})"
             for project in outside[:INVENTORY_SHOWN]
         )
         if len(outside) > INVENTORY_SHOWN:

@@ -568,15 +568,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("cli_doctor.py", "Machine.config", "except", 2): (
         "anything else out of the loader is kept as text, so doctor survives it"
     ),
-    ("cli_doctor.py", "_display_key", "if->exit", 1): (
-        "a key that IS the home spelling shows as ~"
-    ),
-    ("cli_doctor.py", "_display_key", "if->exit", 2): (
-        "a key that starts with the home spelling shows its tail under ~"
-    ),
-    ("cli_doctor.py", "_shown_derived", "if->exit", 1): (
-        "with no key or no memory directory the default is shown instead"
-    ),
     ("cli_doctor.py", "_within", "except", 1): (
         "a path that will not resolve is inside nothing"
     ),
