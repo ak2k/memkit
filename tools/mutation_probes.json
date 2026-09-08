@@ -4093,6 +4093,50 @@
         "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-non-git-bash]"
       ],
       "why": "the harness rewrites every character that is not a letter or digit; a path with an underscore or a space keys elsewhere under a block that names only two"
+    },
+    {
+      "name": "store-doc-target-is-the-corpus-root-itself",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`$store/search/auto-memory` where `search/` exists",
+      "new": "`$store/search` where `search/` exists",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-link-to-corpus-root-bash]"
+      ],
+      "why": "that paragraph is the reader's only definition of `$target`, and the corpus root is the one value the setting exists to avoid: the harness rewrites the frontmatter of every `.md` under it"
+    },
+    {
+      "name": "store-doc-prose-key-rule-names-two-characters",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "character that is not a letter or digit replaced by `-`",
+      "new": "character that is a `/` or a `.` replaced by `-`",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-non-git-bash]"
+      ],
+      "why": "the sentence states the rule the block below implements; a path with an underscore or a space keys elsewhere than a reader following the prose would look"
+    },
+    {
+      "name": "store-doc-submodule-keys-on-the-superproject",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "a repository's worktrees share that directory too; a submodule keys on",
+      "new": "a repository's worktrees share that directory too; a submodule keys not on",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-submodule-bash]"
+      ],
+      "why": "a submodule keys on itself, and a reader told otherwise looks for its memories under the superproject's directory"
+    },
+    {
+      "name": "store-doc-a-dir-that-is-not-a-link-is-created",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "fails and nothing after it runs.",
+      "new": "creates it and the rest of the line runs.",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-dir-is-a-directory-bash]"
+      ],
+      "why": "the line no-ops on a `$dir` that is an ordinary directory, so a reader promised it would be created waits for a link that never appears"
     }
   ]
 }
