@@ -525,7 +525,12 @@ def _repo_git_dir(root: str):
     if os.path.isdir(entry):
         return entry
     try:
-        with open(entry, encoding="utf-8", errors="replace") as f:
+        # `_repo_root`'s `isfile` said this was a regular file, but it said so
+        # in an earlier syscall, and what is between the two is a directory
+        # every session and every build step in the checkout can write. The
+        # guarded open closes that window at the same price: a FIFO here would
+        # otherwise answer never, on the every-prompt path.
+        with _open_regular(entry) as f:
             first = f.readline()
     except OSError:
         return None
@@ -553,9 +558,11 @@ def _repo_common_dir(root: str):
     if gitdir is None:
         return None
     try:
-        with open(
-            os.path.join(gitdir, "commondir"), encoding="utf-8", errors="replace"
-        ) as f:
+        # Nothing has vouched for this one at all: the path is assembled from a
+        # line the checkout's own `.git` file wrote, so a FIFO at the end of it
+        # is a thing the repository can arrange. Unreadable is already an
+        # answer here — the worktree shares nothing, so the gate stays shut.
+        with _open_regular(os.path.join(gitdir, "commondir")) as f:
             named = f.readline().strip()
     except OSError:
         return gitdir

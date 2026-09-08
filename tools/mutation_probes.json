@@ -4419,6 +4419,28 @@
         "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
       ],
       "why": "`dir: \".\"` makes every *.md in a monorepo a candidate on every prompt"
+    },
+    {
+      "name": "repository-marker-file-is-opened-blocking",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        with _open_regular(entry) as f:\n",
+      "new": "        with open(entry, encoding=\"utf-8\", errors=\"replace\") as f:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_pipe_where_the_marker_file_should_be_leaves_the_prompt_answerable"
+      ],
+      "why": "a FIFO at <root>/.git answers a blocking open never, before every prompt"
+    },
+    {
+      "name": "shared-repository-name-is-opened-blocking",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        with _open_regular(os.path.join(gitdir, \"commondir\")) as f:\n",
+      "new": "        with open(\n            os.path.join(gitdir, \"commondir\"), encoding=\"utf-8\",\n            errors=\"replace\",\n        ) as f:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_pipe_where_the_shared_repository_is_named_leaves_the_gate_shut"
+      ],
+      "why": "commondir is named by the checkout's own .git file and nothing vouches for it"
     }
   ]
 }

@@ -13952,6 +13952,88 @@ def test_a_project_store_is_searched_from_a_subdirectory_and_from_a_worktree(
         hook._config.cache_clear()
 
 
+def test_a_pipe_where_the_marker_file_should_be_leaves_the_prompt_answerable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`<root>/.git` is a FILE in a linked worktree and in a submodule, and the
+    hook opens it to read the `gitdir:` line. It is a path in a directory every
+    session and every build step in the checkout can write, so what answers
+    that open need not be a file — and a FIFO with no writer answers a blocking
+    one never, on the path that runs before every prompt.
+
+    The walk's own `isfile` refuses this shape a syscall earlier, so what is
+    asserted here is the guard behind it: the window between the two is real
+    and the case names it directly rather than through a race it cannot stage.
+    """
+    if hook._repo_root(str(tmp_path)) is not None:  # pragma: no cover - env
+        pytest.skip("the temporary directory is itself inside a checkout")
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    marker = repo / hook._DOT_GIT
+    marker.rmdir()
+    os.mkfifo(marker)
+    assert _within(10, lambda: hook._repo_git_dir(str(repo))) is None
+    marker.unlink()
+    os.symlink("/dev/zero", marker)
+    assert _within(10, lambda: hook._repo_git_dir(str(repo))) is None
+
+    # And the prompt path: no marker it can read is no repository root, which
+    # is the answer the surrounding code already gives — so the file sitting
+    # right there is not read and no store comes of it.
+    marker.unlink()
+    os.mkfifo(marker)
+    cfg = _within(10, lambda: _config_at(tmp_path, monkeypatch, repo))
+    try:
+        assert _within(10, cfg.project_store) is None
+        assert cfg.project_error == ""
+        assert [s.id for s in cfg.searched_stores()] == ["s"]
+    finally:
+        hook._cwd_in_root.cache_clear()
+        hook._config.cache_clear()
+
+
+def test_a_pipe_where_the_shared_repository_is_named_leaves_the_gate_shut(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`commondir` is how a linked worktree says which repository it belongs
+    to, and it is reached by joining a path out of the checkout's own `.git`
+    file — so nothing has vouched for it at all, and a FIFO there is a thing
+    the checkout can arrange.
+
+    Unreadable already had an answer: the worktree is credited with sharing
+    nothing but its own git dir, so a `cwd_gate` on somebody else's root stays
+    shut. The guard changes how long that answer takes, not what it is.
+    """
+    home = Path(os.path.realpath(str(tmp_path)))
+    main = home / "main"
+    (main / hook._DOT_GIT).mkdir(parents=True)
+    linked = home / "linked"
+    linked.mkdir()
+    gitdir = home / "worktrees" / "linked"
+    gitdir.mkdir(parents=True)
+    (linked / hook._DOT_GIT).write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    os.mkfifo(gitdir / "commondir")
+    assert _within(10, lambda: hook._repo_common_dir(str(linked))) == str(gitdir)
+
+    hook._cwd_in_root.cache_clear()
+    monkeypatch.chdir(linked)
+    try:
+        assert _within(10, lambda: hook._cwd_in_root(str(main))) is False
+    finally:
+        hook._cwd_in_root.cache_clear()
+
+    # Non-vacuity: a `commondir` that can be read is still followed, so the
+    # guard refuses the shape and not the mechanism.
+    (gitdir / "commondir").unlink()
+    (gitdir / "commondir").write_text(
+        f"{main / hook._DOT_GIT}\n", encoding="utf-8"
+    )
+    hook._cwd_in_root.cache_clear()
+    try:
+        assert _within(10, lambda: hook._cwd_in_root(str(main))) is True
+    finally:
+        hook._cwd_in_root.cache_clear()
+
+
 def test_a_repository_with_no_project_file_adds_nothing_and_says_nothing(
     tmp_path: Path, monkeypatch
 ) -> None:
