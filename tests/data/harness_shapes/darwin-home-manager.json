@@ -33,6 +33,7 @@
       ]
     }
   },
+  "settings_managed_read": true,
   "projects_total": 247,
   "memory_dirs_total": 35,
   "skipped": 0,

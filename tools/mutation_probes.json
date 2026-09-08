@@ -4492,6 +4492,28 @@
         "tests/test_harness_shape.py::test_a_name_that_is_not_a_file_is_answered_rather_than_waited_on"
       ],
       "why": "Opening a FIFO waits for somebody to write to the other end, and this runs unattended over ssh on a host the operator may get one run at: the capture hangs with nothing on stdout, indistinguishable from a slow NFS walk, and every other guard in the file is about a shape that is wrong rather than one that never arrives."
+    },
+    {
+      "name": "harness-shape-a-declared-null-switch-is-recorded-as-set",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if value is None:\n            memory_keys[key] = None\n        elif key == DIRECTORY_KEY:\n",
+      "new": "        if key == DIRECTORY_KEY:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_switch_the_harness_reads_as_on_is_recorded_as_on"
+      ],
+      "why": "`isinstance(None, bool)` is False, so a key an adopter declared null falls into the branch for a value that was set — and the harness reads a null as absent. The shape then says the feature was on where the captured machine had it off, which is the inversion this row was rewritten to stop, in the other direction."
+    },
+    {
+      "name": "harness-shape-the-managed-row-claims-a-read-that-did-not-happen",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        \"settings_managed_read\": managed,\n",
+      "new": "        \"settings_managed_read\": True,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_missing_policy_file_and_a_capture_that_did_not_look_are_told_apart"
+      ],
+      "why": "A row that always says the machine's policy file was looked for is worse than no row: an omitted scope then reads as proof the machine has no policy, which is exactly the inference the artifact could not support before it was recorded."
     }
   ]
 }

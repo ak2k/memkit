@@ -213,13 +213,22 @@ def _settings_scope(data: dict, names: _Pseudonyms, anonymise: bool) -> dict:
     booleans, and a string found under one is somebody's own value that this
     tool has no business carrying. The same rule runs over the hook keys, and
     the placeholder over the directory.
+
+    A null is neither of those. The harness's own `!= null` test makes an
+    explicit null ABSENT, so a key set to one describes a machine with the
+    feature off — and both branches below would have said it was on. It is
+    carried through as the null it is, which is a value a rebuilt tree can
+    write and is still distinguishable from a key the file never declared:
+    that one is omitted here.
     """
     memory_keys = {}
     for key in MEMORY_KEYS:
         if key not in data:
             continue
         value = data[key]
-        if key == DIRECTORY_KEY:
+        if value is None:
+            memory_keys[key] = None
+        elif key == DIRECTORY_KEY:
             memory_keys[key] = PATH_PLACEHOLDER if anonymise else value
         elif anonymise and not isinstance(value, bool):
             # PRESENT, and not a switch. The placeholder says the key was set
@@ -297,10 +306,12 @@ def _settings(
     caller says so and not otherwise, and `main` says so for the config
     directory this process's own harness would use, or when `--managed` is
     passed for the tree the operator names on a host they are capturing whole.
-    A shape captured either other way omits the scope, which reads the same as
-    a machine with no policy file: what a consumer can rely on is that a
-    `managed` scope in a shape came off the machine the rest of the shape
-    describes, never that its absence proves the machine had none.
+    A shape captured either other way omits the scope, and `capture` records
+    WHETHER IT LOOKED alongside it: an omitted scope under a capture that
+    looked is a machine with no policy file, and an omitted scope under one
+    that did not is a fact about the run. Without that row the two states were
+    byte-identical, and a consumer reading the artifact — which is all a
+    materialiser has — could only take the absence for the machine's.
     """
     scopes = [("user", os.path.join(config_dir, "settings.json"))]
     if managed:
@@ -815,6 +826,14 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
         "anonymised": anonymise,
         "harness": _harness(config_dir, anonymise),
         "settings": _settings(config_dir, names, anonymise, managed),
+        # WHETHER THE MACHINE'S POLICY FILE WAS LOOKED FOR. An absent `managed`
+        # scope meant three things at once — no such file, `--managed` not
+        # passed, or the tree not this machine's — and a consumer reading the
+        # artifact cannot tell which. No `schema` bump goes with it: every
+        # field a reader of the older fixtures already reads is still there and
+        # still means the same thing, and what catches a fixture that predates
+        # the row is the field-set gate rather than the number.
+        "settings_managed_read": managed,
         "projects_total": len(keys),
         "memory_dirs_total": memory_dirs_total,
         # TWO counters, because a half-failed capture that is

@@ -14,6 +14,7 @@
       "plugins": []
     }
   },
+  "settings_managed_read": false,
   "projects_total": 3923,
   "memory_dirs_total": 3918,
   "skipped": 0,

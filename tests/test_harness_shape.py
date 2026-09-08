@@ -79,6 +79,7 @@ SHAPE_TYPES = {
     "skipped": int,
     "read_errors": int,
     "anonymised": bool,
+    "settings_managed_read": bool,
 }
 DIR_TYPES = {
     "key_len": int,
@@ -490,32 +491,47 @@ def test_a_switch_the_harness_reads_as_on_is_recorded_as_on(tmp_path) -> None:
     feature OFF, which is the opposite of the machine that was captured. The
     comparison is against `switch` itself rather than against a literal,
     because that function is what decides the question.
+
+    And the same road runs the other way. A key DECLARED null is one `switch`
+    reads as absent, so recording the placeholder for it says the feature was
+    on where the captured machine had it off — the identical inversion, in the
+    identical field. Every one of the three keys is put through both, because
+    the directory key takes its own branch and inverted the same way.
     """
     config = tmp_path / "config"
     (config / "projects").mkdir(parents=True)
     typed = f"/Users/{SENTINEL}/notes"
-    _write(
-        config / "settings.json",
-        json.dumps({harness_memory.ENABLED_KEY: typed,
-                    harness_memory.DREAM_KEY: False}),
-    )
-    shape = _shape(
-        "--config-dir", str(config), env=_managed_env(tmp_path / "no-managed")
-    )
+    written = {
+        harness_memory.ENABLED_KEY: typed,
+        harness_memory.DREAM_KEY: False,
+        harness_memory.DIRECTORY_KEY: typed,
+    }
+    _write(config / "settings.json", json.dumps(written))
+    env = _managed_env(tmp_path / "no-managed")
+    shape = _shape("--config-dir", str(config), env=env)
     recorded = shape["settings"]["user"]["memory_keys"]
     assert SENTINEL not in json.dumps(recorded)
+
+    nulled = dict.fromkeys(written)
+    _write(config / "settings.json", json.dumps(nulled))
+    recorded_null = _shape("--config-dir", str(config), env=env)["settings"][
+        "user"
+    ]["memory_keys"]
+    # DECLARED and null, which is not the same document as a file that never
+    # mentioned the key: the second omits it here.
+    assert set(recorded_null) == set(nulled)
 
     class _Scope:
         def __init__(self, data):
             self.scope = "user"
             self.data = data
 
-    for key, captured in ((harness_memory.ENABLED_KEY, typed),
-                          (harness_memory.DREAM_KEY, False)):
-        was, _ = harness_memory.switch([_Scope({key: captured})], key)
-        rebuilt, _ = harness_memory.switch([_Scope({key: recorded[key]})], key)
-        assert (was is None) == (rebuilt is None), (key, captured, recorded[key])
-        assert bool(was) == bool(rebuilt), (key, captured, recorded[key])
+    for source, seen in ((written, recorded), (nulled, recorded_null)):
+        for key, captured in source.items():
+            was, _ = harness_memory.switch([_Scope({key: captured})], key)
+            rebuilt, _ = harness_memory.switch([_Scope({key: seen[key]})], key)
+            assert (was is None) == (rebuilt is None), (key, captured, seen[key])
+            assert bool(was) == bool(rebuilt), (key, captured, seen[key])
 
 
 def test_a_version_that_is_not_one_never_travels(tmp_path) -> None:
@@ -1028,6 +1044,49 @@ def test_the_machines_policy_file_travels_only_with_its_own_machines_tree(
     assert _shape("--config-dir", str(link), env=own)["settings"]["managed"][
         "hooks"
     ] == ["h1"]
+
+
+def test_a_missing_policy_file_and_a_capture_that_did_not_look_are_told_apart(
+    tmp_path,
+) -> None:
+    """An omitted `managed` scope carried three states at once and recorded
+    none of them.
+
+    No such file on the machine, `--managed` not passed, and a tree this
+    machine's harness does not run on all produced the same bytes — so a
+    consumer reading a shape, which is all a materialiser has, could only take
+    the absence for the machine's. The prose in `_settings` disclaimed the
+    inference; the artifact still invited it.
+    """
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    empty = _managed_env(tmp_path / "no-policy-file")
+    machine = tmp_path / "managed"
+    _write(machine / "managed-settings.json", json.dumps({"hooks": {}}))
+    present = _managed_env(machine)
+
+    declined = _shape("--config-dir", str(config), env=present)
+    assert declined["settings_managed_read"] is False
+    assert "managed" not in declined["settings"]
+
+    none_there = _shape("--config-dir", str(config), "--managed", env=empty)
+    assert none_there["settings_managed_read"] is True
+    assert "managed" not in none_there["settings"]
+
+    # The two omissions are now different documents, which is the whole point:
+    # before this row they were byte-identical.
+    assert declined != none_there
+
+    read = _shape("--config-dir", str(config), "--managed", env=present)
+    assert read["settings_managed_read"] is True
+    assert read["settings"]["managed"]["unreadable"] is False
+
+    # And the third meaning: the scope is read for this process's own tree
+    # without the flag, so the row follows the DECISION rather than the flag.
+    own = dict(present, CLAUDE_CONFIG_DIR=str(config))
+    assert _shape("--config-dir", str(config), env=own)[
+        "settings_managed_read"
+    ] is True
 
 
 ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
@@ -1619,12 +1678,13 @@ def _gated(shape: dict, where) -> None:
             if key == harness_memory.DIRECTORY_KEY:
                 assert value in (None, "<path>"), (where, value)
             else:
-                # A switch, or the placeholder that says it was set to
-                # something else. Never the something else, and never a
-                # null — which the harness reads as absent.
-                assert value == "<set>" or isinstance(value, bool), (
-                    where, key, value,
-                )
+                # A switch, the placeholder that says it was set to something
+                # else, or the null the settings file actually declared —
+                # which the harness reads as absent, and which a shape may
+                # therefore carry. Never the something else.
+                assert value is None or value == "<set>" or isinstance(
+                    value, bool
+                ), (where, key, value)
         for event in scope["hooks"]:
             assert event in HOOK_OK or HOOK_PSEUDONYM_RE.fullmatch(event), (
                 where, event,
