@@ -648,9 +648,11 @@ def _project_store(root: str, taken):
     """
     path = os.path.join(root, PROJECT_CONFIG_NAME)
     try:
-        # O_NONBLOCK so a FIFO answers instead of blocking the prompt, and
-        # O_RDONLY so opening one is not itself a write.
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        # The one spelling of open-nonblocking-then-fstat-then-decide. What is
+        # this reader's own is the SENTENCE each refusal earns, not the rule.
+        fd, st = _regular_fd(path)
+    except _NotRegular:
+        return None, f"{PROJECT_CONFIG_NAME} is not a regular file"
     except OSError as exc:
         # `lexists`, so only NOTHING AT ALL under that name is the ordinary
         # case. A dangling link is a name the checkout deliberately wrote and
@@ -664,9 +666,6 @@ def _project_store(root: str, taken):
             f"{_project_value(exc.strerror or type(exc).__name__)}"
         )
     try:
-        st = os.fstat(fd)
-        if not statmod.S_ISREG(st.st_mode):
-            return None, f"{PROJECT_CONFIG_NAME} is not a regular file"
         if st.st_size > PROJECT_CONFIG_MAX_BYTES:
             return None, (
                 f"{PROJECT_CONFIG_NAME} is {st.st_size} bytes; the limit is "
@@ -3115,38 +3114,52 @@ def _fts_scan(
     return disk, spared, unwalked, oversize
 
 
-def _regular_fd(path: str) -> int:
-    """A read descriptor on `path`, refusing anything that is not a file.
+class _NotRegular(OSError):
+    """`path` was opened and is not a regular file.
+
+    An OSError, because every caller of the wrappers below already classifies
+    one as an unreadable candidate and says nothing further about it. A named
+    subclass, because one caller — the project config reader — owes its own
+    sentence for this shape and cannot tell it from a failed open otherwise.
+    """
+
+
+def _regular_fd(path: str) -> tuple[int, os.stat_result]:
+    """A read descriptor on `path` and its stat, refusing anything that is not
+    a file.
 
     A store is a directory on somebody else's disk, and what is named `*.md`
     in it need not be a file: a FIFO with no writer, or a device, answers a
     plain `open()` never — and this hook runs on every prompt, so "never" is
     the rest of the session. O_NONBLOCK makes the open itself return and the
     fstat decides before a byte is read, which is the order the project config
-    file is already read in. The refusal is an `OSError` because that is what
-    every caller of the two wrappers below already classifies as an unreadable
-    candidate.
+    file is read in too — through this function, so the rule has one spelling.
+    The refusal is an `OSError` because that is what every caller of the two
+    wrappers below already classifies as an unreadable candidate.
 
-    One open and one fstat where there was one open.
+    One open and one fstat where there was one open. The stat comes back with
+    the descriptor rather than being taken again, so a caller with a size rule
+    of its own reuses this guard instead of writing a second copy of it.
     """
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     try:
-        if not statmod.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError(f"not a regular file: {path}")
+        st = os.fstat(fd)
+        if not statmod.S_ISREG(st.st_mode):
+            raise _NotRegular(f"not a regular file: {path}")
     except BaseException:
         os.close(fd)  # nothing has taken the descriptor over yet
         raise
-    return fd
+    return fd, st
 
 
 def _open_regular(path: str):
     """`path` as text, refused unless it is a regular file."""
-    return os.fdopen(_regular_fd(path), encoding="utf-8", errors="replace")
+    return os.fdopen(_regular_fd(path)[0], encoding="utf-8", errors="replace")
 
 
 def _open_regular_bytes(path: str):
     """`path` as bytes, refused unless it is a regular file."""
-    return os.fdopen(_regular_fd(path), "rb")
+    return os.fdopen(_regular_fd(path)[0], "rb")
 
 
 def _read_capped(path: str, root_real: str = "") -> str | None:

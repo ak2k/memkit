@@ -4311,7 +4311,7 @@
       "name": "project-config-guard-drops-the-regular-file-check",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        if not statmod.S_ISREG(st.st_mode):\n            return None, f\"{PROJECT_CONFIG_NAME} is not a regular file\"\n",
+      "old": "    except _NotRegular:\n        return None, f\"{PROJECT_CONFIG_NAME} is not a regular file\"\n",
       "new": "",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-character-device-behind-a-symlink]",
@@ -4324,8 +4324,8 @@
       "name": "project-config-is-opened-blocking",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)\n",
-      "new": "        fd = os.open(path, os.O_RDONLY)\n",
+      "old": "    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)\n",
+      "new": "    fd = os.open(path, os.O_RDONLY)\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-FIFO-with-no-writer]"
       ],
@@ -4380,7 +4380,7 @@
       "name": "project-candidate-open-drops-the-regular-file-check",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        if not statmod.S_ISREG(os.fstat(fd).st_mode):\n            raise OSError(f\"not a regular file: {path}\")\n",
+      "old": "        if not statmod.S_ISREG(st.st_mode):\n            raise _NotRegular(f\"not a regular file: {path}\")\n",
       "new": "        pass\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_candidate_that_is_not_a_regular_file_is_refused_not_awaited"
@@ -4507,6 +4507,18 @@
         "tests/test_eval.py::test_the_eval_floors_a_repository_chosen_credential_the_way_the_hook_does"
       ],
       "why": "the gate must score a candidate with the arguments the hook passes, or a case passes on a hit production refuses"
+    },
+    {
+      "name": "project-config-opens-around-the-one-guard",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        fd, st = _regular_fd(path)\n",
+      "new": "        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)\n        st = os.fstat(fd)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why",
+        "tests/test_memory_prompt_recall.py::test_a_device_symlink_a_checkout_carries_is_refused_without_hanging"
+      ],
+      "why": "a second hand-rolled copy of the regular-file rule is a copy that can be weakened alone; the guard has one spelling and this reader calls it"
     },
     {
       "name": "credential-scan-flags-are-not-scoped-to-their-branch",
