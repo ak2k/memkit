@@ -690,10 +690,20 @@ def _outside(target: str) -> bool:
     lookup that scored the row was a stat of whatever path somebody wrote, run
     over ssh under `sudo -n` on a machine this tool is a guest on. It is also
     the accuracy bug: `/etc/passwd` exists, so that row scored as SATISFIED.
+
+    EXACTLY the targets that ESCAPE, which is what the rule is for. Any
+    separator at all counted as an escape, so `hot/beads.md` — a real file one
+    directory down, inside the directory being walked — was booked dangling
+    without being looked at, and a tiered index read as entirely broken.
     """
     if not target or os.path.isabs(target) or target in (os.curdir, os.pardir):
         return True
-    return "/" in target or "\\" in target or os.sep in target
+    collapsed = os.path.normpath(target)
+    return (
+        os.path.isabs(collapsed)
+        or collapsed == os.pardir
+        or collapsed.startswith(os.pardir + os.sep)
+    )
 
 
 def _index(memory_dir: str, listed: list):

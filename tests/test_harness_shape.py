@@ -13,6 +13,12 @@ rather than the code, and it reads whatever is in `tests/data/harness_shapes/`
 instead of a fixed list of names: a fixture lands here in its own commit, and a
 test naming the files in advance would be red until then, while a test naming
 them afterwards would skip if one were ever removed.
+
+The NFS fixture was taken off a machine that cannot be captured again, so its
+`index.dangling_rows` is the number the tool gave before an index row naming a
+file one directory down was looked at rather than written off: it OVER-COUNTS
+wherever that machine's indexes were tiered. The darwin one was re-captured
+after the fix and its counts are current.
 """
 
 from __future__ import annotations
@@ -813,6 +819,53 @@ def test_an_index_row_is_judged_without_leaving_the_directory(tmp_path) -> None:
     )
     entry = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]
     assert entry["index"] == {"rows": 4, "dangling_rows": 3, "truncated": False}
+
+
+def test_a_row_one_directory_down_is_looked_at_rather_than_written_off(
+    tmp_path, monkeypatch,
+) -> None:
+    """The rule is about targets that ESCAPE, and it was written as "holds a
+    separator": a tiered index — `hot/beads.md`, one directory down and inside
+    the directory being walked — read as twelve dangling rows out of twelve on
+    the machine the darwin fixture came from, which is a corpus a materialiser
+    would rebuild with twelve dead rows the machine does not have.
+
+    What must not happen is the stat that made this a rule: a row naming
+    `/etc/hosts` is still scored without asking the filesystem about it.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    (memory / "hot").mkdir()
+    _write(memory / "sibling.md", "x\n")
+    _write(memory / "hot" / "beads.md", "x\n")
+    _write(memory.parent / "sibling.md", "x\n")
+    _write(
+        memory / "MEMORY.md",
+        "- [a](sibling.md) — hook\n"
+        "- [b](hot/beads.md) — hook\n"
+        "- [c](/etc/hosts) — hook\n"
+        "- [d](../sibling.md) — hook\n"
+        "- [e](nowhere.md) — hook\n",
+    )
+    entry = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]
+    # `/etc/hosts`, `../sibling.md`, `nowhere.md`. The two contained rows are
+    # the ones the count changed for.
+    assert entry["index"] == {"rows": 5, "dangling_rows": 3, "truncated": False}
+    module = _tool_module()
+    asked = []
+    lexists = os.path.lexists
+
+    def recording(path):
+        asked.append(path)
+        return lexists(path)
+
+    monkeypatch.setattr(module.os.path, "lexists", recording)
+    assert module._index(str(memory), ["MEMORY.md", "sibling.md"]) == {
+        "rows": 5, "dangling_rows": 3, "truncated": False,
+    }
+    assert [os.path.relpath(path, str(memory)) for path in asked] == [
+        "hot/beads.md", "nowhere.md",
+    ]
 
 
 def test_what_is_opened_is_decided_by_where_the_link_lands(tmp_path) -> None:

@@ -4639,6 +4639,17 @@
       "why": "An index whose bytes this capture cannot reach — a mode it has no rights to, a name that is not a plain file, root-squash on the NFS home it was piped into — measures as an index with no rows and nothing dangling, which is exactly what an index that genuinely has no rows records, and a corpus rebuilt from the shape reproduces a number nobody took."
     },
     {
+      "name": "harness-shape-any-separator-in-a-row-target-is-an-escape",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    collapsed = os.path.normpath(target)\n    return (\n        os.path.isabs(collapsed)\n        or collapsed == os.pardir\n        or collapsed.startswith(os.pardir + os.sep)\n    )\n",
+      "new": "    return \"/\" in target or \"\\\\\" in target or os.sep in target\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_one_directory_down_is_looked_at_rather_than_written_off"
+      ],
+      "why": "The no-filesystem rule is for targets that leave the directory being walked, and read as \"holds a separator\" it also covers every tiered index: `hot/beads.md` is booked dangling without being looked at, and the darwin capture recorded twelve of twelve rows pointing at nothing for a directory whose rows all resolve. `dangling_rows` is the number a materialiser rebuilds the corpus from."
+    },
+    {
       "name": "harness-shape-the-fence-is-a-line-equal-to-three-dashes",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
