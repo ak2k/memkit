@@ -8,8 +8,11 @@ enough that the harness starts hashing it — and a fixture nobody measured
 agrees with whatever the code already does. This captures the measurable half
 of a real machine: counts, sizes, frontmatter flags, symlink flags, index row
 counts, and the settings keys the memory feature reads. `tests/data/
-harness_shapes/` holds what it captured, and the regression tests run against
-trees rebuilt from those files.
+harness_shapes/` holds what it captured, and the tests read those files back to
+hold the artifact to what it promises: no real name anywhere in one, the field
+set and the value types a reader may rely on, and no shape in that directory
+the repository does not track. Rebuilding a tree from a shape and running the
+corpus tests against it is what these were captured for, and is not built yet.
 
 WHAT IT REFUSES TO CARRY: no memory body, no description text, no real file
 name, no real repository, host or user name. Keys and file names become
