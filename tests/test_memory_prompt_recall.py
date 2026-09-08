@@ -14920,6 +14920,42 @@ def test_debug_config_names_the_repository_store_and_its_refusal(
         hook._use_config(None)
 
 
+def test_the_project_paths_on_the_diagnostic_are_the_paths_that_exist(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The other half of the line above, and it wants the opposite tool.
+
+    `sanitize` collapses runs of whitespace, and a directory named with two
+    spaces is not the directory named with one. This surface is read to be
+    pasted into `open()`, so the only permitted edit to a path is removing
+    characters that were never visible — which is what `_display_path` does and
+    all it does.
+    """
+    repo = tmp_path / "repo"
+    (repo / hook._DOT_GIT).mkdir(parents=True)
+    rel = "docs/two  spaces"
+    corpus = repo / rel / "search"
+    corpus.mkdir(parents=True)
+    (corpus / "unionfs_perms.md").write_text(PROJECT_MEMORY, encoding="utf-8")
+    (repo / hook.PROJECT_CONFIG_NAME).write_text(
+        json.dumps(_project_blob(dir=rel)), encoding="utf-8"
+    )
+    config = tmp_path / "user.json"
+    config.write_text(json.dumps(_config_blob(tmp_path)), encoding="utf-8")
+    monkeypatch.chdir(repo)
+    try:
+        hook._use_config(str(config))
+        hook._print_config(hook._config_state())
+        shown = capsys.readouterr().out
+    finally:
+        hook._use_config(None)
+    live = [ln for ln in shown.splitlines() if ln.startswith(f"project {PROJECT_STORE_ID}")]
+    body = [ln for ln in shown.splitlines() if ln.startswith("  corpus:")]
+    assert len(live) == 1 and len(body) == 1, shown
+    assert os.path.isdir(live[0].split(": ", 1)[1].split(" [")[0]), live
+    assert os.path.isdir(body[0].split(":", 1)[1].split(" — ")[0].strip()), body
+
+
 def test_the_store_id_is_rendered_like_every_other_repository_chosen_value(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

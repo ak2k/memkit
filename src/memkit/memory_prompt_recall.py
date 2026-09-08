@@ -7970,8 +7970,11 @@ def _print_config(state: tuple) -> int:
     # is not in `display.stores` and must never look as though it were: this is
     # the one store on this surface that no line of the user's config names,
     # and "where did that corpus come from" is the question this output exists
-    # to answer. Its path carries a component the repository chose, so it is
-    # sanitized like any other string that came out of a file.
+    # to answer. Its id is repository-chosen prose and gets the capped
+    # sanitiser; its paths get `_display_path` and nothing else, because
+    # `sanitize`'s whitespace collapse is what turns a directory named with two
+    # spaces into a directory that is not there — on the line whose whole job
+    # is to be pasted into `open()`.
     project = display.project_store()
     if project is not None:
         project_live = display.store_dir(project, "live")
@@ -7979,11 +7982,11 @@ def _print_config(state: tuple) -> int:
         count = _corpus_files(corpus)
         print(
             f"project {_project_value(project.id)}: "
-            f"{sanitize(_display_path(project_live))} "
+            f"{_display_path(project_live)} "
             f"[read-only; from {PROJECT_CONFIG_NAME} in this repository]"
         )
         print(
-            f"  corpus:  {sanitize(_display_path(corpus))} — "
+            f"  corpus:  {_display_path(corpus)} — "
             f"{count} file{'' if count == 1 else 's'}"
         )
     elif display.project_error:
