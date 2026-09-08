@@ -1436,6 +1436,17 @@ def _label(value: str) -> str:
     return "".join(c for c in _clean(value) if c not in _LINK_SYNTAX).strip()
 
 
+def _link_target(value: str) -> str:
+    """`_label`'s counterpart for the LINK half of a row: what `(...)` holds.
+
+    Stricter than `_label` in one place: a label may carry a space and a link
+    destination may not, because the reader ends the link at the first one. A
+    path segment holding a space therefore rows a link to a PREFIX of itself,
+    which is a path that is usually not there at all.
+    """
+    return "".join(c for c in _label(value) if not c.isspace())
+
+
 def _relabel(text: str, stem: str) -> tuple:
     """(`text` carrying a label a row can carry, the rule applied).
 
@@ -1787,6 +1798,20 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     directories = 0
     for project in known:
         if not _adoptable(machine, project):
+            continue
+        # THE KEY IS THE OTHER HALF OF THE PATH THE ROW POINTS AT, and it
+        # gets the test the file name gets one screen below, for the same
+        # reason. It is a directory entry name read off disk and never
+        # re-derived, so it holds whatever the adopter's disk holds, and
+        # `relpath(dest, store)` writes it between the `(` and `)` of a
+        # generated row: a `)` in it ends the link early, a space ends it at
+        # the space, and a newline ends the manifest line above it.
+        if _link_target(project.key) != project.key:
+            skipped.append(
+                f"{_clean(project.key)}: the project key holds a character "
+                "no manifest line and no ledger row could carry — a link "
+                "ends at the first `)`, at a space, or at a newline"
+            )
             continue
         target = os.path.join(base, project.key)
         # ONCE PER PROJECT, AND ON THE RESOLVED PATH. The link that moves a

@@ -3373,6 +3373,52 @@ def test_a_file_name_no_manifest_line_can_carry_is_skipped(profile) -> None:
     ]) + len({a.group for a in plan.pending if a.group})
 
 
+@pytest.mark.parametrize(
+    "key",
+    ["-home-u with spaces", "-home-u\ttab", "key(paren)", "key)close"],
+)
+def test_a_project_key_no_row_could_point_at_is_skipped(profile, key) -> None:
+    """The key is half of the path a row points at, and the harness is not the
+    only writer of it — `inventory` reads directory NAMES off disk and never
+    re-derives them, so the key is whatever any process running as the adopter
+    put under `projects/`. Taken raw it lands between the `(` and `)` of a
+    generated row: `key)close` ends its own link at `search/projects/key`, a
+    space ends it at the space, and a tab is a character no line can carry.
+    Each one left the copies on disk and the store failing its own check.
+
+    A sound key beside it still adopts: this refuses a project, not a run.
+    """
+    _harness(profile, key, {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "no manifest line and no ledger row could carry" in manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert not (adopted / key).exists(), sorted(p.name for p in adopted.iterdir())
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "search/projects/-home-ok/beta.md" in ledger
+    assert key not in ledger
+    # The store init just built still passes the check it will be measured by.
+    from memkit import memory_integrity as checker
+
+    entries = []
+    for path in sorted((store / "search").rglob("*.md")):
+        if path.name in checker.LEDGER_NAMES:
+            continue
+        front = checker._frontmatter(path)
+        value, error = checker._scalar(front.get("description", ""))
+        assert error is None, (path, error)
+        entries.append(
+            (front.get("name") or path.stem, os.path.relpath(path, store), value)
+        )
+    assert checker._generate(store / "SEARCH.md", entries) == ledger
+
+
 def test_a_description_taken_from_a_file_name_cannot_end_its_own_line(
     profile,
 ) -> None:

@@ -4284,6 +4284,17 @@
       "why": "a link is somebody's answer only where it lands. Called already redirected wherever it points, a memory directory linked to an ordinary directory is reported as handled by init and as outside every store by doctor, and is chased by neither."
     },
     {
+      "name": "init-adoption-copies-a-project-key-no-row-could-point-at",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        if _link_target(project.key) != project.key:\n",
+      "new": "        if not project.key:\n",
+      "tests": [
+        "tests/test_init.py::test_a_project_key_no_row_could_point_at_is_skipped"
+      ],
+      "why": "the key is the other half of the path a generated row points at, and inventory reads it off disk without re-deriving it. A `)` in it ends the row's own link, a space ends it at the space: the copies land and the store fails its own check with DEAD-LINK and ORPHAN."
+    },
+    {
       "name": "init-adoption-copies-a-file-name-no-row-could-point-at",
       "module": "init",
       "file": "src/memkit/cli_init.py",
