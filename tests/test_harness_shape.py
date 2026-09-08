@@ -1480,6 +1480,14 @@ def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(
     and it captured as `projects_total: 0` at exit 0 — the healthy empty
     machine the handler's own comment says every other failure must not
     become.
+
+    AND THE PACKAGE ANSWERS THE OTHER WAY ON PURPOSE. `inventory` returns an
+    empty list for the same tree, which is right for it and wrong here: a
+    capture is one shot over ssh at a machine nobody will visit again, so an
+    empty shape that reads as healthy is the failure that survives, while
+    `inventory` is a local diagnostic anybody can re-run and must not die on
+    one unreadable name having said nothing about the other 3917. The
+    equivalence test cannot see this pair, because the tool never returns.
     """
     config = tmp_path / "config"
     config.mkdir()
@@ -1488,6 +1496,7 @@ def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(
     assert refused.returncode == 2, refused.stdout
     assert refused.stdout == "", "it failed and emitted a shape anyway"
     assert "harness_shape:" in refused.stderr
+    assert _inventory(str(config)) == []
 
     # The control the handler is there for: nothing written yet really is a
     # machine, and it still captures.
