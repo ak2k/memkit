@@ -133,6 +133,15 @@ jobs:
       - name: Test suites (hook pytest + integrity unittest)
         run: .venv/bin/python -m pytest -q
 
+      # A green suite says the tests pass; this says they would have failed had
+      # the code been wrong. The corpus grew all milestone with nothing running
+      # it in CI, so a probe whose anchor had drifted cost nothing until
+      # somebody ran the sweep by hand.
+      - name: Mutation sweep (doctor + harness_memory)
+        run: |
+          .venv/bin/python tools/mutation_sweep.py --module doctor
+          .venv/bin/python tools/mutation_sweep.py --module harness_memory
+
       # The retrieval gate, over the invented corpus. KTD4: the real-corpus
       # eval stays with the consumer, because its cases pair prompts with
       # private memory filenames; what memkit can prove is the mechanism.
