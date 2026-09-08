@@ -4332,10 +4332,10 @@
       "name": "harness-shape-out-follows-a-symlinked-destination-directory",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    resolved = os.path.realpath(parent)\n",
+      "old": "    resolved = _landing_dir(args.out)\n",
       "new": "    resolved = parent\n",
       "tests": [
-        "tests/test_harness_shape.py::test_out_refuses_to_write_through_a_symlink_somebody_else_planted"
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
       ],
       "why": "O_NOFOLLOW guards the final component only. Unresolved, the destination directory is followed and the file behind it truncated — the same write primitive the last-component refusal exists to close, one level up, on a host this runs as a guest on."
     },
@@ -4393,6 +4393,39 @@
         "tests/test_harness_shape.py::test_one_entry_that_cannot_be_measured_does_not_take_its_siblings"
       ],
       "why": "Letting the error out puts the directory-level handler back in charge, and one name that cannot be measured then deletes every memory beside it from the capture — a self-referential link anyone who can write in the tree can leave, or a file `sudo -n` cannot stat over an NFS home. It is booked as a directory that could not be listed, which is not what happened."
+    },
+    {
+      "name": "harness-shape-out-is-judged-on-the-lexically-collapsed-path",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    resolved = _landing_dir(args.out)\n",
+      "new": "    resolved = os.path.realpath(os.path.dirname(os.path.abspath(args.out)))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+      ],
+      "why": "`abspath` collapses `<link>/..` textually and the kernel takes `..` from the link's TARGET, so every refusal is answered about a directory the write never touches. That one difference put a shape carrying real names inside a git checkout with exit 0 — past the destination refusal and past the --raw refusal at once."
+    },
+    {
+      "name": "harness-shape-out-follows-a-symlink-at-the-destination-name",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            | getattr(os, \"O_NOFOLLOW\", 0)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+      ],
+      "why": "Without it the open follows a link already sitting at the destination name and truncates what it points at — on a host this runs on as a guest under `sudo -n`, so the name was planted by somebody else and the choice of what gets overwritten is theirs."
+    },
+    {
+      "name": "harness-shape-out-overwrites-a-file-that-has-a-second-name",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if info.st_nlink > 1:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+      ],
+      "why": "A hard link is the one link O_NOFOLLOW cannot see, and it is the same write primitive: a second name for the destination inode, so the capture truncates a file whose real name is somewhere else entirely."
     }
   ]
 }

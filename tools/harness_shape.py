@@ -806,6 +806,20 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
 # --- the command ------------------------------------------------------------
 
 
+def _landing_dir(destination: str) -> str:
+    """The directory a write to `destination` actually lands in.
+
+    `realpath` of the ORIGINAL dirname, never of an absolute path built first:
+    `abspath` collapses `<link>/..` textually while the kernel resolves the
+    link and then takes `..` from its TARGET, so the two answers name
+    different directories and the lexical one is not where the bytes go. Every
+    question below — is this a checkout, is a link standing in the path — is
+    asked about this directory, and the open uses it too, so nothing is
+    checked about one path and written to another.
+    """
+    return os.path.realpath(os.path.dirname(destination) or os.curdir)
+
+
 def _inside_worktree(directory: str) -> bool:
     """Whether a file written in `directory` would land in a git checkout.
 
@@ -913,7 +927,7 @@ def main(argv=None) -> int:
     if args.raw:
         destination = args.out or _stdout_destination()
         if destination is not None:
-            if _inside_worktree(os.path.dirname(os.path.abspath(destination))):
+            if _inside_worktree(_landing_dir(destination)):
                 sys.stderr.write(
                     f"harness_shape: --raw refuses to write inside a git "
                     f"worktree ({destination}); a shape committed with real "
@@ -957,7 +971,7 @@ def main(argv=None) -> int:
         sys.stdout.write(text)
         return 0
     parent = os.path.dirname(os.path.abspath(args.out))
-    resolved = os.path.realpath(parent)
+    resolved = _landing_dir(args.out)
     if resolved != parent:
         # O_NOFOLLOW guards the LAST component only, so a link one level up
         # chose the file that got truncated: `--out real/linkdir/shape.json`
@@ -972,16 +986,28 @@ def main(argv=None) -> int:
         return 2
     # AFTER the refusals, not before: a rejected --out used to leave the
     # directories it had already created behind it.
-    os.makedirs(parent, exist_ok=True)
+    os.makedirs(resolved, exist_ok=True)
+    # The RESOLVED directory joined to the final name, so the path that was
+    # checked is the path that gets opened.
+    target = os.path.join(resolved, os.path.basename(args.out))
     try:
         # O_NOFOLLOW, because `open(path, "w")` follows a link already sitting
         # at that name and truncates what it points at. This runs under
         # `sudo -n` on hosts it is a guest on, so a link somebody else planted
         # in the destination directory is a choice about what gets
         # overwritten — and no capture is worth writing through one.
+        #
+        # O_NONBLOCK for the same reason one level along: a FIFO at this name
+        # would block the open until somebody read from it, and a capture that
+        # hangs on a host reached once over ssh is a capture nobody gets.
+        # No O_TRUNC — what this opens is not yet known to be a file worth
+        # truncating, and the decision is taken below on the fd itself.
         fd = os.open(
-            args.out,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            target,
+            os.O_WRONLY
+            | os.O_CREAT
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
             # The mode a plain `open(path, "w")` would have created: this
             # change is about not following a link, not about tightening
             # permissions, and umask applies to both the same way.
@@ -992,9 +1018,35 @@ def main(argv=None) -> int:
         # than as the refusal it is.
         why = (
             "a symlink sits at this name, and --out refuses to follow one"
-            if os.path.islink(args.out)
+            if os.path.islink(target)
             else (exc.strerror or str(exc))
         )
+        sys.stderr.write(f"harness_shape: {args.out}: {why}\n")
+        return 2
+    # ON THE FD, not on the name: between a check by name and the open, the
+    # name can be made to mean something else. What was opened is what these
+    # two questions are about.
+    try:
+        info = os.fstat(fd)
+        # A hard link is a link O_NOFOLLOW cannot see, and it is the same
+        # write primitive as a symlink: a second name for the destination
+        # inode, planted by whoever can write in this directory, choosing what
+        # gets truncated.
+        if info.st_nlink > 1:
+            why = (
+                "another name points at this file, and --out refuses to "
+                "overwrite through one"
+            )
+        elif not stat.S_ISREG(info.st_mode):
+            why = "--out writes a regular file, and this name is not one"
+        else:
+            why = None
+            # Only now, when what is held is a file with one name.
+            os.ftruncate(fd, 0)
+    except OSError as exc:
+        why = exc.strerror or str(exc)
+    if why is not None:
+        os.close(fd)
         sys.stderr.write(f"harness_shape: {args.out}: {why}\n")
         return 2
     with os.fdopen(fd, "w", encoding="utf-8") as handle:

@@ -694,49 +694,143 @@ def test_a_pathological_index_is_read_to_the_cap_and_says_so(tmp_path) -> None:
     assert counted["rows"] == whole, counted
 
 
-def test_out_refuses_to_write_through_a_symlink_somebody_else_planted(
-    tmp_path,
-) -> None:
-    """`--out` names a destination, and `open(path, "w")` follows a link
-    already sitting at that name and truncates whatever it points at.
+def _destination(name: str, root: Path) -> tuple:
+    """One spelling of a `--out` destination, built under `root`.
 
-    Over `sudo -n` on a shared capture host — which is the documented way this
-    runs — that is a write primitive: anybody who can create a file in the
-    directory the operator writes shapes into chooses what gets overwritten.
-    O_NOFOLLOW on the final component, and an exit rather than a silent skip.
+    Every victim these build lives inside `root / "repo"`, which is a git
+    checkout, and every destination is named from outside it. That is what
+    lets one table ask both questions at once: whether the write went where
+    the checks were answered about, and whether `--raw` can be steered into a
+    repository by the same spelling.
+
+    Returns the destination, the exit status it must produce, and the fragment
+    of the refusal it must say (None where the write is allowed).
     """
-    victim = _write(tmp_path / "IMPORTANT.txt", "keep me\n")
-    out = tmp_path / "shape.json"
-    os.symlink(victim, out)
+    repo = root / "repo"
+    (repo / "sub").mkdir(parents=True)
+    (repo / ".git").mkdir()
+    outside = root / "outside"
+    outside.mkdir()
+    if name == "a symlink at the name":
+        _write(repo / "keep.txt", "keep me\n")
+        out = outside / "shape.json"
+        os.symlink(repo / "keep.txt", out)
+        return out, 2, "refuses to follow one"
+    if name == "a symlink one directory up":
+        _write(repo / "sub" / "target.json", "keep me too\n")
+        os.symlink(repo / "sub", outside / "linkdir")
+        return outside / "linkdir" / "target.json", 2, "a symlink stands in this path"
+    if name == "a dotdot after a symlinked directory":
+        # `abspath` collapses this to `outside/base/plain`, which is a real
+        # directory nothing here writes to; the kernel resolves the link and
+        # then takes `..` from its target, which is inside the checkout.
+        _write(repo / "plain" / "out.json", "keep me three\n")
+        (repo / "dir").mkdir()
+        (outside / "base" / "plain").mkdir(parents=True)
+        os.symlink(repo / "dir", outside / "base" / "link")
+        spelling = outside / "base" / "link" / ".." / "plain" / "out.json"
+        return spelling, 2, "a symlink stands in this path"
+    if name == "a hard link at the name":
+        _write(repo / "hardtarget.json", "keep me four\n")
+        os.link(repo / "hardtarget.json", outside / "hard.json")
+        return outside / "hard.json", 2, "overwrite through one"
+    if name == "a dangling symlink at the name":
+        os.symlink(repo / "never" / "gone.json", outside / "dangling.json")
+        return outside / "dangling.json", 2, "refuses to follow one"
+    if name == "a directory made on the way to a refusal":
+        # `makedirs` used to run before the refusal, through the very link it
+        # was about to refuse.
+        os.symlink(repo / "sub", outside / "madelink")
+        return outside / "madelink" / "made" / "shape.json", 2, "a symlink stands in"
+    if name == "a plain file in a plain directory":
+        return _write(outside / "plain" / "shape.json", "old\n"), 0, None
+    if name == "a fresh path":
+        return outside / "fresh" / "deep" / "shape.json", 0, None
+    raise AssertionError(name)
+
+
+def _files_under(directory: Path) -> dict:
+    """Everything below `directory`: files by inode and bytes, and the names
+    of the directories and links that hold them.
+
+    Inode as well as bytes because the attacks differ there — a symlink puts
+    new bytes in the victim's inode, a hard link truncates the inode the
+    victim is still one name for — and directories because a refused
+    destination that created them on its way out is the same guard failing
+    one step earlier.
+    """
+    found = {}
+    for path in sorted(directory.rglob("*")):
+        key = str(path.relative_to(directory))
+        if path.is_symlink():
+            found[key] = "link"
+        elif path.is_dir():
+            found[key] = "dir"
+        else:
+            found[key] = (path.stat().st_ino, path.read_bytes())
+    return found
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "a symlink at the name",
+        "a symlink one directory up",
+        "a dotdot after a symlinked directory",
+        "a hard link at the name",
+        "a dangling symlink at the name",
+        "a directory made on the way to a refusal",
+        "a plain file in a plain directory",
+        "a fresh path",
+    ],
+)
+def test_out_writes_only_where_its_refusals_were_answered_about(
+    tmp_path, spelling
+) -> None:
+    """Every path this tool opens for writing is resolved once, and the
+    resolved path is the one opened.
+
+    A destination is a write primitive: over `sudo -n` on a shared capture
+    host — the documented way this runs — anybody who can create a name in the
+    directory the operator writes shapes into chooses what gets overwritten.
+    Three rounds closed one spelling each and left the next open, which is why
+    this is a table: a symlink at the name, a symlink above it, a `..` that
+    the kernel takes from a link's target rather than from where it is
+    written, and a hard link, which no `O_NOFOLLOW` can see.
+
+    `--raw` is the same question with the stakes the privacy rule turns on,
+    so every spelling is run that way too: whatever the tool decides, the
+    checkout is byte-for-byte what it was.
+    """
     config = tmp_path / "config"
     (config / "projects").mkdir(parents=True)
-    refused = _run("--config-dir", str(config), "--out", str(out))
-    assert refused.returncode == 2, refused.stdout + refused.stderr
-    assert victim.read_text(encoding="utf-8") == "keep me\n", "it wrote anyway"
-    # And it says which refusal this is: O_NOFOLLOW reports ELOOP, which reads
-    # as a broken filesystem to whoever is standing at the terminal.
-    assert "refuses to follow one" in refused.stderr, refused.stderr
+    plain_root = tmp_path / "plain"
+    out, code, says = _destination(spelling, plain_root)
+    repo = plain_root / "repo"
+    before = _files_under(repo)
 
-    # ONE LEVEL UP IS THE SAME WRITE PRIMITIVE. O_NOFOLLOW guards the last
-    # component, so a link standing anywhere else in the path chose the file
-    # that got truncated and the refusal never fired.
-    (tmp_path / "real").mkdir()
-    os.symlink(tmp_path / "victim", tmp_path / "real" / "linkdir")
-    behind = _write(tmp_path / "victim" / "target.json", "keep me too\n")
-    through = tmp_path / "real" / "linkdir" / "target.json"
-    refused = _run("--config-dir", str(config), "--out", str(through))
-    assert refused.returncode == 2, refused.stdout + refused.stderr
-    assert behind.read_text(encoding="utf-8") == "keep me too\n", "it wrote anyway"
-    assert "a symlink stands in this path" in refused.stderr, refused.stderr
+    run = _run("--config-dir", str(config), "--out", str(out))
+    assert run.returncode == code, run.stdout + run.stderr
+    if says is not None:
+        assert says in run.stderr, run.stderr
+    else:
+        assert json.loads(out.read_text(encoding="utf-8"))["anonymised"] is True
+    assert _files_under(repo) == before, "it wrote through the destination"
 
-    # And a refused destination leaves nothing behind: `makedirs` ran before
-    # the refusal, so a rejected `--out` still created directories — through
-    # the very link it was about to refuse.
-    deeper = tmp_path / "real" / "linkdir" / "made" / "shape.json"
-    assert _run("--config-dir", str(config), "--out", str(deeper)).returncode == 2
-    assert not (tmp_path / "victim" / "made").exists(), "it made the directory"
+    raw_root = tmp_path / "raw"
+    raw_out, raw_code, _ = _destination(spelling, raw_root)
+    raw_repo = raw_root / "repo"
+    raw_before = _files_under(raw_repo)
+    raw = _run("--config-dir", str(config), "--raw", "--out", str(raw_out))
+    assert raw.returncode == raw_code, raw.stdout + raw.stderr
+    assert _files_under(raw_repo) == raw_before, "real names landed in a checkout"
 
-    # And the ordinary destination still writes, including over itself.
+
+def test_an_ordinary_destination_is_written_and_rewritten(tmp_path) -> None:
+    """The refusals above are worth nothing if the tool cannot write, and
+    overwriting its own output is the ordinary second run."""
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
     plain = tmp_path / "plain.json"
     for _ in range(2):
         assert _run("--config-dir", str(config), "--out", str(plain)).returncode == 0
