@@ -2216,10 +2216,10 @@ def test_a_file_the_backstop_could_not_reopen_is_not_counted(
             raise OSError("a racing writer got here first")
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(hook, "_fts_identity", identity_that_moves_under_the_lock)
-    monkeypatch.setattr(hook, "_open_regular_bytes", refuse_the_doomed_file)
-    hook._fts_dir("restic pruning", str(corpus))
-    monkeypatch.undo()
+    with monkeypatch.context() as spy:
+        spy.setattr(hook, "_fts_identity", identity_that_moves_under_the_lock)
+        spy.setattr(hook, "_open_regular_bytes", refuse_the_doomed_file)
+        hook._fts_dir("restic pruning", str(corpus))
 
     # Without this the case would pass vacuously against a version that never
     # reached the backstop at all.
@@ -12760,13 +12760,14 @@ def test_the_per_term_walk_is_bounded_inside_its_statements_too(
         ranked = dict(rows)
         seen: list = []
         real = hook._fts_bounded
-        monkeypatch.setattr(
-            hook,
-            "_fts_bounded",
-            lambda c, q, p, d, w: seen.append(d) or real(c, q, p, None, w),
-        )
         deadline = time.monotonic() + 3600
-        hook._record_matched(con, ["sprocket", "backlash"], ranked, deadline)
+        with monkeypatch.context() as spy:
+            spy.setattr(
+                hook,
+                "_fts_bounded",
+                lambda c, q, p, d, w: seen.append(d) or real(c, q, p, None, w),
+            )
+            hook._record_matched(con, ["sprocket", "backlash"], ranked, deadline)
         assert len(seen) == 2, seen
         assert all(d == deadline for d in seen), seen
         # Non-vacuity: the evidence it exists to build is still built.
@@ -12778,13 +12779,13 @@ def test_the_per_term_walk_is_bounded_inside_its_statements_too(
     # a damaged index — the same conversion the OR'd MATCH already gets.
     con = hook._fts_connect(hook._fts_db(str(corpus)))
     try:
-        monkeypatch.undo()
-        monkeypatch.setattr(hook, "FTS_PROGRESS_OPS", 1)
         rows = con.execute("SELECT path, rowid FROM chunks LIMIT 2").fetchall()
-        with pytest.raises(hook._QueryTimeout):
-            hook._record_matched(
-                con, ["sprocket"], dict(rows), time.monotonic() - 1
-            )
+        with monkeypatch.context() as spy:
+            spy.setattr(hook, "FTS_PROGRESS_OPS", 1)
+            with pytest.raises(hook._QueryTimeout):
+                hook._record_matched(
+                    con, ["sprocket"], dict(rows), time.monotonic() - 1
+                )
     finally:
         con.close()
 
@@ -14229,14 +14230,45 @@ def test_the_walk_that_looks_for_a_project_file_is_bounded_by_the_cwds_depth(
         seen.append(args[0] if args else "")
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(os, "stat", counting)
-    answer = hook._repo_root(start)
+    with monkeypatch.context() as spy:
+        spy.setattr(os, "stat", counting)
+        answer = hook._repo_root(start)
     count = len(seen)
-    monkeypatch.undo()
     assert answer is None
     # Non-vacuity: a bound over a walk that stat'd nothing is not a bound.
     assert count >= levels, (count, levels)
     assert count <= 2 * levels + 1, (count, levels)
+
+
+def test_taking_a_spy_off_mid_case_leaves_the_state_directory_seal_standing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The trap the cases above walk past, pinned so the next one cannot.
+
+    `monkeypatch.undo()` is not "take my last patch off": the autouse fixture
+    that drops the runner's `XDG_*` holds the SAME function-scoped object, so
+    an undo mid-case puts the runner's cache directory back and every later
+    line silently asserts about that one instead of the HOME the case chose.
+    A scoped spy takes off only itself.
+    """
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg))
+    chosen = os.path.join(str(xdg), "memory-recall")
+    assert hook._state_dir_candidate() == chosen
+
+    seen: list = []
+    real = hook._repo_root
+    with monkeypatch.context() as spy:
+        spy.setattr(
+            hook, "_repo_root", lambda start: seen.append(start) or real(start)
+        )
+        hook._repo_root(str(tmp_path))
+    # Non-vacuity: the spy really went on, and really came off again.
+    assert seen == [str(tmp_path)], seen
+    assert hook._repo_root is real
+
+    assert hook._state_dir_candidate() == chosen
 
 
 # --- refused whole, and named ------------------------------------------------
@@ -14563,9 +14595,9 @@ def test_a_project_file_that_grew_after_the_fstat_is_refused_on_the_read(
             return os.stat_result(fields)
         return st
 
-    monkeypatch.setattr(os, "fstat", stale)
-    reason = _refusal(tmp_path, monkeypatch, repo)
-    monkeypatch.undo()
+    with monkeypatch.context() as spy:
+        spy.setattr(os, "fstat", stale)
+        reason = _refusal(tmp_path, monkeypatch, repo)
     assert f"is over {hook.PROJECT_CONFIG_MAX_BYTES} bytes" in reason, reason
 
 
@@ -15001,10 +15033,10 @@ def test_a_refused_dir_is_refused_before_the_store_is_read(
             return real_os_open(path, *args, **kwargs)
 
         cfg = _config_at(tmp_path, monkeypatch, repo)
-        monkeypatch.setattr(builtins, "open", counting_open)
-        monkeypatch.setattr(os, "open", counting_os_open)
-        assert cfg.project_store() is None
-        monkeypatch.undo()
+        with monkeypatch.context() as spy:
+            spy.setattr(builtins, "open", counting_open)
+            spy.setattr(os, "open", counting_os_open)
+            assert cfg.project_store() is None
         assert cfg.project_error, spelling
         # The guard really ran...
         assert any(
@@ -15070,9 +15102,9 @@ def test_the_kill_switch_is_read_from_the_users_own_config(
         touched.append(str(path))
         return real_os_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(os, "open", counting)
-    assert cfg.project_store() is None
-    monkeypatch.undo()
+    with monkeypatch.context() as spy:
+        spy.setattr(os, "open", counting)
+        assert cfg.project_store() is None
     assert not [p for p in touched if p.endswith(hook.PROJECT_CONFIG_NAME)], touched
     assert cfg.project_error == ""
     assert [s.id for s in cfg.searched_stores()] == ["s"]
