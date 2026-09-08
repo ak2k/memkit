@@ -34,6 +34,7 @@ from __future__ import annotations
 import ast
 import builtins
 import hashlib
+import importlib.util
 import inspect
 import io
 import itertools
@@ -5573,34 +5574,90 @@ def _import_cost_ms() -> tuple[float, float]:
     each is the estimate — pairing the best `mine` with whatever `other` that
     same run happened to pay makes the comparison a coin flip whenever the two
     are close, which is a property of the measurement rather than of the
-    module. The discarded run is the cold one: the first interpreter in a test
-    session pays the page cache for every stdlib module it opens, which lands
-    entirely on the yardstick.
+    module. The discarded run is the cold one, and it is discarded for TWO
+    reasons now: the page cache, and the bytecode cache this pins.
+
+    THE CACHE IS THE HARNESS'S, so it is supplied rather than inherited. Both
+    numbers are a compile plus an execute where no `.pyc` exists and an
+    unmarshal plus an execute where one does, and which of those a runner pays
+    is a fact about the runner — `PYTHONDONTWRITEBYTECODE` in the environment
+    moved this file's number from 1.3 ms to 21 ms and the verdict with it, on a
+    module nobody had touched. An empty `PYTHONPYCACHEPREFIX` per call plus a
+    discarded first run puts every measurement in the same regime, the one
+    where what is left is the module body's own work. What a `.pyc`-less
+    install pays instead is a separate property with its own case below.
     """
     mine_ms: list[float] = []
     other_ms: list[float] = []
-    for _ in range(5):
-        out = subprocess.run(
-            [sys.executable, "-X", "importtime", "-c", "import memkit.memory_prompt_recall"],
-            capture_output=True,
-            text=True,
-        ).stderr
-        mine = other = 0
-        for line in out.splitlines():
-            # `import time: self [us] | cumulative | imported package` heads
-            # the table; every row after it carries the two numbers and a name.
-            head, _, rest = line.partition("|")
-            self_us = head.partition(":")[2].strip()
-            if not rest or not self_us.isdigit():
-                continue
-            if rest.rpartition("|")[2].strip() == "memkit.memory_prompt_recall":
-                mine += int(self_us)
-            else:
-                other += int(self_us)
-        assert mine and other, out
-        mine_ms.append(mine / 1000.0)
-        other_ms.append(other / 1000.0)
+    with tempfile.TemporaryDirectory() as pycache:
+        env = dict(os.environ)
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        env["PYTHONPYCACHEPREFIX"] = pycache
+        for _ in range(5):
+            out = subprocess.run(
+                [
+                    sys.executable, "-X", "importtime",
+                    "-c", "import memkit.memory_prompt_recall",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            ).stderr
+            mine = other = 0
+            for line in out.splitlines():
+                # `import time: self [us] | cumulative | imported package` heads
+                # the table; every row after it carries the two numbers and a
+                # name.
+                head, _, rest = line.partition("|")
+                self_us = head.partition(":")[2].strip()
+                if not rest or not self_us.isdigit():
+                    continue
+                if rest.rpartition("|")[2].strip() == "memkit.memory_prompt_recall":
+                    mine += int(self_us)
+                else:
+                    other += int(self_us)
+            assert mine and other, out
+            mine_ms.append(mine / 1000.0)
+            other_ms.append(other / 1000.0)
     return min(mine_ms[1:]), min(other_ms[1:])
+
+
+# The stdlib this module imports at its top, minus the ones that are C or
+# frozen and so have no source to compile. The yardstick for the case below is
+# the same set the case above measures, read the same way.
+_STDLIB_YARDSTICK = (
+    "bisect", "contextlib", "functools", "hashlib", "json", "os", "re",
+    "secrets", "signal", "sqlite3", "tempfile", "unicodedata", "collections.abc",
+)
+
+
+def _sources_of(names) -> list[tuple[str, str]]:
+    """(path, text) for each name that has Python source on this build."""
+    out = []
+    for name in names:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):  # pragma: no cover - build-dependent
+            continue
+        origin = getattr(spec, "origin", None) or ""
+        if not origin.endswith(".py") or not os.path.isfile(origin):
+            continue
+        with open(origin, encoding="utf-8", errors="replace") as f:
+            out.append((origin, f.read()))
+    return out
+
+
+def _compile_cost_ms(sources) -> float:
+    """The best of seven compiles of `sources`, in THIS process."""
+    best = None
+    for _ in range(7):
+        started = time.perf_counter()
+        for path, text in sources:
+            compile(text, path, "exec")
+        spent = (time.perf_counter() - started) * 1000.0
+        best = spent if best is None else min(best, spent)
+    assert best is not None
+    return best
 
 
 def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
@@ -5623,9 +5680,42 @@ def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
     to keep out is three times the whole yardstick on its own, so the bar
     still refuses it by a wide margin, and no arrangement of load turns a
     millisecond into it.
+
+    The measurement is pinned to a private, warmed bytecode cache, so what is
+    bounded here is the module body EXECUTING — which is what a `re.compile` at
+    the top level costs and what the ratio was always meant to be about. It
+    lands near a tenth of the yardstick, so the bound is not a near miss
+    either way.
     """
     mine, stdlib = _import_cost_ms()
     assert mine < 1.5 * stdlib, (mine, stdlib)
+
+
+def test_compiling_the_hook_costs_less_than_three_times_the_stdlib_it_imports(
+) -> None:
+    """What an install with no `.pyc` pays, which the case above cannot see.
+
+    A source directory that is read-only — the nix store, a plugin bundle —
+    never gets a cache written, so every prompt recompiles this file from
+    source, and that cost tracks the file's SIZE rather than anything it does.
+    It is real: 8,400 lines is 17 ms, against 11 ms for every stdlib import the
+    module makes put together, and no measurement of a warm import can show it.
+
+    A ratio again, and measured in ONE process with the sources already read,
+    so neither the page cache nor the bytecode cache is anywhere in it — this
+    is the deterministic half of the pair. Three times the yardstick is roughly
+    another two thousand lines of headroom; the bound is a growth budget, and
+    tripping it is the signal to split the file rather than to raise it.
+    """
+    mine = _sources_of(["memkit.memory_prompt_recall"])
+    assert len(mine) == 1, mine
+    stdlib = _sources_of(_STDLIB_YARDSTICK)
+    # Non-vacuity: a yardstick that shrank to nothing on some build would make
+    # the ratio meaningless rather than red.
+    assert len(stdlib) >= 6, [p for p, _ in stdlib]
+    mine_ms = _compile_cost_ms(mine)
+    stdlib_ms = _compile_cost_ms(stdlib)
+    assert mine_ms < 3.0 * stdlib_ms, (mine_ms, stdlib_ms)
 
 
 def test_a_dir_past_the_deadline_is_skipped_not_started(monkeypatch) -> None:
