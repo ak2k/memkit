@@ -1005,6 +1005,105 @@ def test_memkit_is_kept_by_name_whichever_way_the_key_is_spelled(tmp_path) -> No
     ]
 
 
+def _inventory(config_dir: str) -> list:
+    """`harness_memory.inventory`'s projects, whichever shape it returns."""
+    found = harness_memory.inventory(config_dir)
+    return found[0] if isinstance(found, tuple) else found
+
+
+def _adoptable(shape: dict) -> dict:
+    """The tool's memory directories that hold a file other than the index.
+
+    What `inventory` calls a corpus is this narrower set, and the difference
+    between the two questions is where a comparison of the two walks would
+    otherwise read as a disagreement.
+    """
+    return {
+        entry["key"]: entry
+        for entry in shape["memory_dirs"]
+        if any(item["name"] != harness_memory.INDEX_NAME for item in entry["files"])
+    }
+
+
+def test_the_two_walks_answer_the_same_way_about_a_hostile_tree(tmp_path) -> None:
+    """The duplication strategy rests on this and was watched on a tree where
+    nothing could go wrong.
+
+    The module docstring pins the copies in step by running both walks over
+    one tree and requiring agreement — and the tree had no looping link, no
+    unreadable directory and no dangling name, so the guard the tool grew for
+    exactly those cases put the two walks a whole directory apart without
+    anything going red. Every state either walk answers differently about is
+    here, and both are asked the same two questions: which directories hold a
+    corpus, and what is in them.
+    """
+    config = tmp_path / "config"
+
+    loop = _memory_dir(config, "-loop")
+    _write(loop / "real1.md", "x\n")
+    _write(loop / "real2.md", "x\n")
+    # A name anybody who can write in the tree can leave there, and the one
+    # `DirEntry.is_file` raises ELOOP for rather than answering.
+    os.symlink("loop.md", loop / "loop.md")
+
+    dangling = _memory_dir(config, "-dangling")
+    _write(dangling / "real.md", "x\n")
+    os.symlink(tmp_path / "gone.md", dangling / "dead.md")
+
+    outside = tmp_path / "elsewhere"
+    _write(outside / "real-index.md", "# i\n\n- [a](m.md) — h\n")
+    _write(outside / "theirs.md", "x\n")
+    indexed = _memory_dir(config, "-idxlink")
+    _write(indexed / "m.md", "x\n")
+    os.symlink(outside / "real-index.md", indexed / "MEMORY.md")
+
+    # A memory directory linked OUT of the config root, and one linked to
+    # another directory INSIDE it: both are followed, and a rebuilt tree owes
+    # each a different answer.
+    linked_out = config / "projects" / "-outlink"
+    linked_out.mkdir(parents=True)
+    os.symlink(outside, linked_out / "memory")
+    shared = config / "shared"
+    _write(shared / "shared.md", "x\n")
+    linked_in = config / "projects" / "-inlink"
+    linked_in.mkdir(parents=True)
+    os.symlink(shared, linked_in / "memory")
+
+    blocked = None
+    if not ROOT:
+        blocked = _memory_dir(config, "-blocked")
+        _write(blocked / "real.md", "x\n")
+        blocked.chmod(0o000)
+    try:
+        shape = _shape("--config-dir", str(config), "--raw")
+        found = _inventory(str(config))
+    finally:
+        if blocked is not None:
+            blocked.chmod(0o700)
+
+    walked = _adoptable(shape)
+    assert set(walked) == {project.key for project in found}
+    # Named rather than derived, so a walk that dropped every directory would
+    # not pass this by agreeing about nothing.
+    expected = {"-loop", "-dangling", "-idxlink", "-outlink", "-inlink"}
+    assert set(walked) == expected
+    for project in found:
+        entry = walked[project.key]
+        assert [item["name"] for item in entry["files"]] == project.files, project.key
+        assert entry["is_symlink"] is project.is_symlink, project.key
+        assert entry["project_is_symlink"] is project.linked_project, project.key
+        assert tuple(
+            item["name"] for item in entry["files"] if item["is_symlink"]
+        ) == project.linked_files, project.key
+    # A directory neither walk could list is absent from both, and the tool
+    # says so where the package has nowhere to.
+    assert shape["skipped"] == (0 if ROOT else 1)
+    # The loop is a name and never a file, so neither walk lists it, and the
+    # tool books the entry it could not answer for.
+    assert walked["-loop"]["files"][0]["name"] == "real1.md"
+    assert shape["read_errors"] == 1
+
+
 def test_the_tool_and_the_package_agree_on_what_a_corpus_is(tmp_path) -> None:
     """The shape is measured by one walk and consumed by another, and the two
     have to name the same directories.
@@ -1019,12 +1118,8 @@ def test_the_tool_and_the_package_agree_on_what_a_corpus_is(tmp_path) -> None:
     """
     config = _tree(tmp_path)
     shape = _shape("--config-dir", str(config), "--raw")
-    adoptable = {
-        entry["key"]: entry
-        for entry in shape["memory_dirs"]
-        if any(item["name"] != harness_memory.INDEX_NAME for item in entry["files"])
-    }
-    found = harness_memory.inventory(str(config))
+    adoptable = _adoptable(shape)
+    found = _inventory(str(config))
     assert set(adoptable) == {project.key for project in found}
     for project in found:
         entry = adoptable[project.key]

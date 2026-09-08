@@ -267,7 +267,11 @@ def inventory(config_dir: str) -> list:
     `ls`.
 
     Unreadable entries are skipped rather than raising: a diagnostic that dies
-    on one unreadable directory reports nothing about the other 3917.
+    on one unreadable directory reports nothing about the other 3917. PER
+    NAME as well as per directory — `DirEntry.is_file` swallows
+    FileNotFoundError and lets every other OSError out, so one looping link,
+    which anybody who can write in the tree can leave there, used to drop the
+    directory it sits in and every real memory beside it.
 
     Sorted by memory count descending, then by key — the order a report that
     can show only a few of them wants, and stable for two directories holding
@@ -283,15 +287,21 @@ def inventory(config_dir: str) -> list:
     found = []
     for key, path, linked_project in projects:
         memory = os.path.join(path, "memory")
+        listed = []
         try:
             with os.scandir(memory) as entries:
-                listed = sorted(
-                    (entry.name, entry.is_symlink())
-                    for entry in entries
-                    if entry.name.endswith(".md") and entry.is_file()
-                )
+                for entry in entries:
+                    if not entry.name.endswith(".md"):
+                        continue
+                    try:
+                        if not entry.is_file():
+                            continue
+                        listed.append((entry.name, entry.is_symlink()))
+                    except OSError:
+                        continue
         except OSError:
             continue
+        listed.sort()
         files = [name for name, _ in listed]
         if not any(name != INDEX_NAME for name in files):
             continue

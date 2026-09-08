@@ -4547,6 +4547,18 @@
         "tests/test_harness_shape.py::test_frontmatter_cut_at_the_cap_says_so_rather_than_reading_as_none"
       ],
       "why": "A fence that closes past the cap gives four false flags and a null length, which is exactly what a file with no frontmatter gives — so the flag is the only thing standing between a wrong number and a silent one, and a rebuilt corpus reproduces the wrong one."
+    },
+    {
+      "name": "harness-memory-one-unanswerable-name-drops-its-whole-directory",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "                    try:\n                        if not entry.is_file():\n                            continue\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        continue\n",
+      "new": "                    if not entry.is_file():\n                        continue\n                    listed.append((entry.name, entry.is_symlink()))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_two_walks_answer_the_same_way_about_a_hostile_tree",
+        "tests/test_harness_memory.py::test_the_inventory_skips_what_it_cannot_read_rather_than_raising"
+      ],
+      "why": "`DirEntry.is_file` swallows FileNotFoundError and lets every other OSError out, so a single `ln -s loop.md loop.md` drops the directory it sits in and every real memory beside it — and it drops it from only one of the two walks that are supposed to name the same directories, which is the agreement the capture tool's whole duplication strategy rests on."
     }
   ]
 }
