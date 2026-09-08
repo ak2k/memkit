@@ -485,9 +485,18 @@ def _frontmatter(text: str) -> dict:
     """Which of the four frontmatter facts a memory file carries.
 
     No YAML parser, because there is none in the standard library and this runs
-    where nothing can be installed. The fence is `---` on line 1 through the
-    next `---` line: an unterminated one is not frontmatter, which is also how
-    a file that merely opens with a horizontal rule stays uncounted.
+    where nothing can be installed. The fence is a line 1 STARTING `---`
+    through the next line starting `---`, which is the checker's own test:
+    `----` opens frontmatter there, and a shape is only worth carrying if it
+    is the answer the checker would give about the same file. A BOM, a fence
+    below line 1 and an empty document are not frontmatter to either.
+
+    THE ONE SPELLING THE TWO DISAGREE ON is a fence that never closes, which
+    the checker reads as frontmatter running to the end of the file and this
+    does not. The close is what the cap is measured against: a fence closing
+    past `FRONTMATTER_BYTES` would otherwise read as a frontmatter block that
+    happens to end where the read stopped, which is a set of keys nobody has
+    and cannot be told from a file whose fence closes inside the cap.
     """
     absent = {
         "has_frontmatter": False,
@@ -497,11 +506,11 @@ def _frontmatter(text: str) -> dict:
         "has_type": False,
     }
     lines = text.splitlines()
-    if not lines or lines[0].rstrip() != _FENCE:
+    if not lines or not lines[0].startswith(_FENCE):
         return absent
     end = None
     for index in range(1, len(lines)):
-        if lines[index].rstrip() == _FENCE:
+        if lines[index].startswith(_FENCE):
             end = index
             break
     if end is None:

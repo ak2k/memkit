@@ -4639,6 +4639,28 @@
       "why": "An index whose bytes this capture cannot reach — a mode it has no rights to, a name that is not a plain file, root-squash on the NFS home it was piped into — measures as an index with no rows and nothing dangling, which is exactly what an index that genuinely has no rows records, and a corpus rebuilt from the shape reproduces a number nobody took."
     },
     {
+      "name": "harness-shape-the-fence-is-a-line-equal-to-three-dashes",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if not lines or not lines[0].startswith(_FENCE):\n        return absent\n    end = None\n    for index in range(1, len(lines)):\n        if lines[index].startswith(_FENCE):\n",
+      "new": "    if not lines or lines[0].rstrip() != _FENCE:\n        return absent\n    end = None\n    for index in range(1, len(lines)):\n        if lines[index].rstrip() == _FENCE:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "The four frontmatter facts are only worth carrying if they are the answer memkit's checker would give about the same file, and the checker opens frontmatter on any line 1 starting `---`. A `----` file is frontmatter with a description there and no frontmatter at all here, which is a memory the shape says the wrong thing about."
+    },
+    {
+      "name": "harness-shape-a-fence-that-never-closes-runs-to-the-end-of-the-file",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if end is None:\n        return absent\n    fence = lines[1:end]\n",
+      "new": "    if end is None:\n        end = len(lines)\n    fence = lines[1:end]\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "This read stops at FRONTMATTER_BYTES, so a fence with no close is a block ending wherever the cap fell: the keys that happen to sit above it get reported as a whole frontmatter block, which is the one place the tool deliberately answers something other than the checker does."
+    },
+    {
       "name": "harness-shape-the-byte-cap-is-counted-in-characters",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",

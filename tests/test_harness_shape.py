@@ -1288,6 +1288,53 @@ def test_a_frontmatter_key_is_matched_the_way_the_checker_matches_it(
             assert item["description_len"] == len(value), line
 
 
+def test_the_fence_is_read_the_way_the_checker_reads_it(tmp_path) -> None:
+    """Which spellings of the fence open frontmatter, decided by running both
+    parsers over the same documents.
+
+    The tool is stdlib-only on a 3.8 floor and cannot import memkit, so the
+    two rules are two pieces of code that have to be kept in step by
+    something; a table both are run over is that something. `----` opened
+    frontmatter to the checker and not to the tool.
+
+    A FENCE THAT NEVER CLOSES is the one spelling they disagree on, and the
+    disagreement is deliberate: the checker reads it as frontmatter running to
+    the end of the file, and the tool's read stops at `FRONTMATTER_BYTES`, so
+    doing the same would report the keys that happen to sit above the cap as
+    a whole frontmatter block.
+    """
+    table = {
+        "a bare fence": ("---\nname: x\n---\nbody\n", True),
+        "trailing spaces on the fence": ("---   \nname: x\n---\nbody\n", True),
+        "CRLF": ("---\r\nname: x\r\n---\r\nbody\r\n", True),
+        "a BOM before the fence": ("﻿---\nname: x\n---\nbody\n", False),
+        "four dashes": ("----\nname: x\n---\nbody\n", True),
+        "a fence below line 1": ("\n---\nname: x\n---\nbody\n", False),
+        "an empty document": ("", False),
+    }
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    for number, (text, _) in enumerate(table.values()):
+        with open(memory / f"m{number}.md", "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+    files = {
+        item["name"]: item
+        for item in _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
+    }
+    for number, (label, (_, opens)) in enumerate(table.items()):
+        checker = bool(memory_integrity._frontmatter(memory / f"m{number}.md"))
+        assert checker is opens, label
+        assert files[f"m{number}.md"]["has_frontmatter"] is opens, label
+    # And the one they part company on, named rather than left to be found.
+    with open(memory / "open.md", "w", encoding="utf-8", newline="") as fh:
+        fh.write("---\nname: x\nbody\n")
+    unclosed = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
+    assert memory_integrity._frontmatter(memory / "open.md") == {"name": "x"}
+    assert next(
+        item for item in unclosed if item["name"] == "open.md"
+    )["has_frontmatter"] is False
+
+
 def test_memkit_is_kept_by_name_whichever_way_the_key_is_spelled(tmp_path) -> None:
     """The exception exists so a shape says whether memkit was installed on the
     machine that was captured, and it only fired on the `<plugin>@<market>`
