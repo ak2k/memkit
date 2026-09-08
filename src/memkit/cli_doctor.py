@@ -3561,7 +3561,7 @@ def _consolidation_recency(default: str) -> str:
 
 
 def _inventoried(machine: Machine, config_dir: str) -> tuple:
-    """The harness's project directories as `(retrieved, in a store, outside)`.
+    """`(retrieved, in a store, outside, what the walk could not read)`.
 
     THE RELATION IS ASKED OF EVERY DIRECTORY, not only of the linked ones.
     Being reached through a link is how a project directory comes to be
@@ -3575,15 +3575,44 @@ def _inventoried(machine: Machine, config_dir: str) -> tuple:
     directory at or above a corpus root, or under a pruned name, is in the
     store and unreached from where it is — which is neither of the two answers
     the caller used to have.
+
+    THE FOURTH VALUE IS A SENTENCE, not a flag, because what a caller owes an
+    enumeration failure is the same thing every other branch owes: saying what
+    it could not read. Empty when the walk succeeded, and every count beside
+    it is then a count of what is there rather than of what could be listed.
     """
     retrieved: list = []
     held: list = []
     outside: list = []
-    for project in harness_memory.inventory(config_dir):
+    found, read_ok = harness_memory.inventory(config_dir)
+    for project in found:
         how = _store_relation(machine, project.path)[2]
         bucket = retrieved if how == "inside" else outside if not how else held
         bucket.append(project)
-    return retrieved, held, outside
+    unread = (
+        ""
+        if read_ok
+        else (
+            "what the harness has already written cannot be counted: its "
+            f"projects directory could not be read, at "
+            f"{_shown(os.path.join(config_dir, 'projects'))}"
+        )
+    )
+    return retrieved, held, outside, unread
+
+
+def _unreadable_remedy(config_dir: str) -> str:
+    """The repair for a `projects/` this process could not enumerate.
+
+    NEVER "move them" and never "switch it off": both are advice about
+    memories whose number this run does not know, and the only honest first
+    step is making the directory answer.
+    """
+    return (
+        f"Make {_shown(os.path.join(config_dir, 'projects'))} readable, then "
+        "run this again — until it lists, nothing here can say how much the "
+        "harness has already written or where it went."
+    )
 
 
 def _already_placed(retrieved: list, held: list) -> str:
@@ -3737,7 +3766,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # longer returns without one: a switch that is off stops the harness
         # WRITING, and every memory it wrote before is still on disk. This is
         # the branch whose sentence stops an adopter looking for them.
-        in_store, held, outside = _inventoried(machine, config_dir)
+        in_store, held, outside, unread = _inventoried(machine, config_dir)
         left = _left_behind(outside)
         if left:
             left = f"{left}, and {ADOPT_ADVICE}"
@@ -3745,12 +3774,13 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # THE CLAIM ONLY WHERE THE INVENTORY BEARS IT OUT. "memkit is the only
         # memory system here" beside a count of memories no store holds is a
         # sentence contradicted two clauses later; off is still off, so this
-        # stays a PASS and says the narrower true thing.
+        # stays a PASS and says the narrower true thing. A walk that FAILED
+        # bears nothing out either way, which is the second condition here.
         off = (
             "auto-memory is off in this process's environment"
             if forced is not None
             else f"auto-memory is off in {enabled_scope} settings"
-            + ("" if left else "; memkit is the only memory system here")
+            + ("" if left or unread else "; memkit is the only memory system here")
         )
         if forced is not None:
             # NOT A PASS, and not the settings' answer either: the variable
@@ -3764,6 +3794,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     _detail(
                         off,
                         environed,
+                        unread,
                         left,
                         placed,
                         f'"{harness_memory.ENABLED_KEY}" is also set in '
@@ -3785,6 +3816,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     _detail(
                         f"{off} while this checkout says so — the value is in "
                         f"{switch_source}, and {switch_travels}",
+                        unread,
                         left,
                         placed,
                         recent,
@@ -3811,6 +3843,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                         "wins is read from the harness's directory resolver "
                         "and inferred for this key, which resolves through an "
                         "accessor that reports no scope",
+                        unread,
                         left,
                         placed,
                         recent,
@@ -3819,6 +3852,18 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     f'"{harness_memory.ENABLED_KEY}" out of {disputed} '
                     f"settings, or out of {enabled_scope} settings, so no "
                     "order decides it.",
+                    actor=USER,
+                )
+            ]
+        if unread:
+            # A PASS here is a claim about what is on the machine, and the
+            # walk that would have borne it out is the one that failed.
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(off, unread, left, placed, recent),
+                    _unreadable_remedy(config_dir),
                     actor=USER,
                 )
             ]
@@ -3902,7 +3947,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # A directory a store already holds is not a second memory system, and a
     # link into a corpus root is the wiring docs/STORE.md recommends — counted
     # as one, this row alarms about the state it exists to send adopters to.
-    in_store, held, outside = _inventoried(machine, config_dir)
+    in_store, held, outside, unread = _inventoried(machine, config_dir)
 
     here = False
     if underived:
@@ -3952,6 +3997,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     fixed = (
         environed,
         redirected,
+        unread,
         first,
         switched_on,
         recent,
@@ -3966,6 +4012,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         here
         and not outside
         and not held
+        and not unread
         and not steered
         and not switch_theirs
         and not environed

@@ -103,11 +103,11 @@ def test_a_config_dir_with_nothing_written_yields_an_empty_inventory(config_dir)
     """Two spellings of "nothing", because they arrive by different routes: a
     machine that has never run the feature has no `projects/` at all, and one
     whose projects hold no memories has the directory and no answer in it."""
-    assert harness_memory.inventory(str(config_dir)) == []
+    assert harness_memory.inventory(str(config_dir)) == ([], True)
     (config_dir / "projects").mkdir()
-    assert harness_memory.inventory(str(config_dir)) == []
+    assert harness_memory.inventory(str(config_dir)) == ([], True)
     (config_dir / "projects" / "-home-u" / "memory").mkdir(parents=True)
-    assert harness_memory.inventory(str(config_dir)) == []
+    assert harness_memory.inventory(str(config_dir)) == ([], True)
 
 
 def test_the_inventory_counts_memories_and_not_the_index(config_dir) -> None:
@@ -128,7 +128,7 @@ def test_the_inventory_counts_memories_and_not_the_index(config_dir) -> None:
     linked.mkdir(parents=True)
     (linked / "memory").symlink_to(elsewhere)
 
-    found = harness_memory.inventory(str(config_dir))
+    found, _read_ok = harness_memory.inventory(str(config_dir))
     assert [p.key for p in found] == ["-home-u-git-app", "-home-u-linked"]
 
     app, link = found
@@ -153,7 +153,7 @@ def test_the_inventory_skips_what_it_cannot_read_rather_than_raising(config_dir)
     blocked = _memories(config_dir, "-home-u-blocked", "one.md")
     blocked.chmod(0o000)
     try:
-        assert [p.key for p in harness_memory.inventory(str(config_dir))] == [
+        assert [p.key for p in harness_memory.inventory(str(config_dir))[0]] == [
             "-home-u-git-app"
         ]
     finally:
@@ -166,7 +166,7 @@ def test_a_file_is_not_a_project_directory(config_dir) -> None:
     (config_dir / "projects").mkdir()
     (config_dir / "projects" / "stray.json").write_text("{}", encoding="utf-8")
     _memories(config_dir, "-home-u-git-app", "one.md")
-    assert [p.key for p in harness_memory.inventory(str(config_dir))] == [
+    assert [p.key for p in harness_memory.inventory(str(config_dir))[0]] == [
         "-home-u-git-app"
     ]
 
@@ -200,7 +200,10 @@ def test_every_shape_a_link_can_take_is_recorded_separately(config_dir) -> None:
     outside.write_text("x\n", encoding="utf-8")
     (directory / "d.md").symlink_to(outside)
 
-    found = {project.key: project for project in harness_memory.inventory(config_dir)}
+    found = {
+        project.key: project
+        for project in harness_memory.inventory(config_dir)[0]
+    }
     assert sorted(found) == [
         "-p-linked-file", "-p-linked-memory", "-p-linked-project", "-p-plain",
     ]
@@ -229,9 +232,9 @@ def test_a_directory_named_like_a_memory_is_not_one(config_dir) -> None:
     The file test is what separates them, and it is the only thing that does.
     """
     (config_dir / "projects" / "-p-dir" / "memory" / "notes.md").mkdir(parents=True)
-    assert harness_memory.inventory(str(config_dir)) == []
+    assert harness_memory.inventory(str(config_dir)) == ([], True)
     _memories(config_dir, "-p-dir", "real.md")
-    found = harness_memory.inventory(str(config_dir))
+    found, _read_ok = harness_memory.inventory(str(config_dir))
     assert [(p.key, p.files) for p in found] == [("-p-dir", ["real.md"])]
 
 
@@ -673,6 +676,39 @@ def test_the_inventory_survives_a_config_dir_that_is_not_a_path(tmp_path) -> Non
     and this value comes from the environment. Unreachable through a POSIX
     environment variable, closed for the same reason the walk above it is: an
     exception escaping here demotes a whole doctor row to UNKNOWN."""
-    assert harness_memory.inventory("/c\x00d") == []
+    assert harness_memory.inventory("/c\x00d") == ([], False)
     (tmp_path / "projects" / "-p" / "memory").mkdir(parents=True)
-    assert harness_memory.inventory(str(tmp_path)) == []
+    assert harness_memory.inventory(str(tmp_path)) == ([], True)
+
+
+def test_a_projects_directory_that_cannot_be_read_is_not_an_empty_one(
+    tmp_path,
+) -> None:
+    """The enumeration failure is a state of its own, and has to be.
+
+    Swallowed into `[]` it is byte-identical to "nothing has been written
+    here", and a caller that reads that emptiness as fact then asserts an
+    absence it never observed.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    projects = tmp_path / "projects"
+    (projects / "-home-u" / "memory").mkdir(parents=True)
+    (projects / "-home-u" / "memory" / "one.md").write_text("x\n", encoding="utf-8")
+    found, read_ok = harness_memory.inventory(str(tmp_path))
+    assert [project.key for project in found] == ["-home-u"]
+    assert read_ok is True
+
+    projects.chmod(0o000)
+    try:
+        found, read_ok = harness_memory.inventory(str(tmp_path))
+    finally:
+        projects.chmod(0o755)
+    assert found == []
+    assert read_ok is False
+
+    # A config directory with no `projects/` at all is a walk that FOUND
+    # nothing, not one that failed: the difference between the two is the
+    # whole of what this flag carries, and a machine that has never run the
+    # feature is the commonest state there is.
+    assert harness_memory.inventory(str(tmp_path / "nowhere")) == ([], True)

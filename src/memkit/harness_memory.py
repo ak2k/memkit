@@ -322,8 +322,8 @@ def default_dir(config_dir: str, cwd: str) -> str:
     return os.path.join(config_dir, "projects", project_key(cwd), "memory")
 
 
-def inventory(config_dir: str) -> list:
-    """Every project directory under `config_dir` that holds memories.
+def inventory(config_dir: str) -> tuple:
+    """`(every project directory under `config_dir` holding memories, read_ok)`.
 
     A directory qualifies on holding at least one `*.md` that is not the index.
     Direct children only, because the harness writes flat — a `search/` below
@@ -352,6 +352,15 @@ def inventory(config_dir: str) -> list:
     both — `scandir` raises that, not `OSError`, on an embedded NUL, and this
     path is built from an environment variable.
 
+    BUT THE TOP-LEVEL FAILURE IS RETURNED, not swallowed into the empty list,
+    and that is what the second element carries. An enumeration that failed
+    and an enumeration that found nothing produce the same list, so a caller
+    handed only the list reads a directory it could not open as a directory
+    with nothing in it — and the sentence hanging off that emptiness here is
+    "memkit is the only memory system here". A missing `projects/` is the one
+    failure that IS an answer: a machine that has never run the feature has no
+    such directory, and every other error is a walk that did not happen.
+
     Sorted by memory count descending, then by key — the order a report that
     can show only a few of them wants, and stable for two directories holding
     the same number.
@@ -361,8 +370,10 @@ def inventory(config_dir: str) -> list:
             projects = [
                 (entry.name, entry.path, entry.is_symlink()) for entry in entries
             ]
+    except FileNotFoundError:
+        return [], True
     except (OSError, ValueError):
-        return []
+        return [], False
     found = []
     for key, path, linked_project in projects:
         memory = os.path.join(path, "memory")
@@ -389,7 +400,7 @@ def inventory(config_dir: str) -> list:
             )
         )
     found.sort(key=lambda project: (-project.memories, project.key))
-    return found
+    return found, True
 
 
 def switch(scopes, key: str) -> tuple:

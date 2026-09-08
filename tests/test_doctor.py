@@ -3415,6 +3415,48 @@ def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
     assert "memkit is the only memory system here" in row.detail
 
 
+def test_a_projects_directory_nobody_could_read_never_reads_as_nothing_written(
+    profile, monkeypatch
+) -> None:
+    """The count and the claim of absence come from one walk, so a walk that
+    FAILED must not produce either.
+
+    An unreadable `projects/` enumerates as an empty list, which is the same
+    answer a machine that has never written a memory gives — and the off
+    branch's own sentence, "memkit is the only memory system here", is then an
+    assertion about a directory this process could not open.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    (projects / "-home-u-work-acme" / "memory").mkdir(parents=True)
+    (projects / "-home-u-work-acme" / "memory" / "one.md").write_text(
+        "x\n", encoding="utf-8"
+    )
+    _settings(profile, autoMemoryEnabled=False)
+    projects.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+        # The feature being ON reads the same walk for the same claim, so the
+        # guard belongs to both branches rather than to the one it was found in.
+        _settings(profile, autoMemoryEnabled=True)
+        (armed,) = _only(
+            doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory"
+        )
+    finally:
+        projects.chmod(0o755)
+    for reported in (row, armed):
+        assert reported.status != doctor.PASS
+        assert "could not be read" in reported.detail
+        assert str(projects) in reported.detail or "~" in reported.detail
+        assert "only memory system here" not in reported.detail
+        assert "outside every store" not in reported.detail
+
+
 def test_a_project_directory_inside_a_corpus_root_is_not_outside_every_store(
     profile, monkeypatch
 ) -> None:

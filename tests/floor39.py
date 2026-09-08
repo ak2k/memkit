@@ -95,8 +95,8 @@ check("dispatcher has both", sorted(cli._HANDLERS), ["doctor", "init"])
 # itself failed" on the machine that most needs the answer.
 check("a project key is one directory name",
       "/" in harness_memory.project_key(os.getcwd()), False)
-check("nothing written is an empty inventory",
-      harness_memory.inventory(os.environ["CLAUDE_CONFIG_DIR"]), [])
+check("nothing written is an empty inventory that was read",
+      harness_memory.inventory(os.environ["CLAUDE_CONFIG_DIR"]), ([], True))
 check("doctor checks", len(cli_doctor.CHECK_IDS) > 20, True)
 check("version line", "hook:" in cli_doctor.version_line(), True)
 check("init default config is absolute after expansion",
