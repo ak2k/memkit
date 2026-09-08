@@ -3773,7 +3773,15 @@ def test_no_row_of_the_envelope_spells_the_home_directory_out(
     def _write(**blob) -> None:
         settings.write_text(json.dumps(blob), encoding="utf-8")
 
-    elsewhere = str(home) if shape == "equal" else str(home / "elsewhere")
+    if shape == "equal":
+        elsewhere = str(home)
+    elif shape == "sibling":
+        # BESIDE HOME, because the configured value is the one the row prints
+        # back whole: a rule with no component boundary rewrites this into a
+        # directory that is nowhere on the machine.
+        elsewhere = str(profile / "home_old" / "memories")
+    else:
+        elsewhere = str(home / "elsewhere")
     branches = {
         "on": lambda: _write(),
         "off": lambda: _write(autoMemoryEnabled=False),

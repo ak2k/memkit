@@ -2291,6 +2291,50 @@
       "why": "the one file a repository checks in by design is described as untracked by convention, which understates to every clone's reader exactly what travels with the clone"
     },
     {
+      "name": "home-redaction-path-rule-loses-its-component-boundary",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "_PATH_TAIL = r\"(?![\\w.-])\"\n",
+      "new": "_PATH_TAIL = r\"\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[sibling]"
+      ],
+      "why": "without the boundary a directory whose name merely starts with home's is re-spelled `~`, and the report names a path that is nowhere on the machine"
+    },
+    {
+      "name": "home-redaction-reads-only-the-logical-home",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    for path in (os.path.expanduser(\"~\"), os.path.realpath(os.path.expanduser(\"~\"))):\n",
+      "new": "    for path in (os.path.expanduser(\"~\"),):\n",
+      "tests": [
+        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[symlinked]"
+      ],
+      "why": "a project key is built from the resolved path while the environment spells the logical one, so under a symlinked $HOME neither the key nor the resolved path is redacted at all"
+    },
+    {
+      "name": "home-redaction-covers-paths-and-not-project-keys",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    spellings += [(key, _KEY_TAIL) for key in keys]\n",
+      "new": "    spellings += []\n",
+      "tests": [
+        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[symlinked]"
+      ],
+      "why": "a key is a whole absolute path with its separators replaced, so home is as legible in one as in the paths this report already re-spells"
+    },
+    {
+      "name": "home-redaction-gives-a-key-the-rule-written-for-a-path",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "_KEY_TAIL = r\"(?!\\w)\"\n",
+      "new": "_KEY_TAIL = r\"(?![\\w.-])\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[real]"
+      ],
+      "why": "`-` is a key's own separator, so the path rule blocks every child key and the inventory prints home whole in every one of them"
+    },
+    {
       "name": "auto-memory-reads-the-disable-variable-as-a-one-way-switch",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",

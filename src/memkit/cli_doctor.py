@@ -698,17 +698,21 @@ def _with_unparsed(rows: list, scopes: list) -> list:
     if not note:
         return rows
     fix = _unparsed_remedy(scopes)
-    # EVERY SPELLING A REMEDY USES, which is three and not two: the remedy
-    # this rule most needs to drop is `_CHECKOUT_REMEDY`, and it names the file
-    # the way an adopter standing in that directory would — relatively. Matched
-    # on the two absolute forms alone it walked straight through, and one
-    # remedy then said both "make settings.local.json parse" and "set a key in
-    # settings.local.json".
+    # EVERY SPELLING A REMEDY USES. The one this rule most needs to drop is
+    # `_CHECKOUT_REMEDY`, and it names the file the way an adopter standing in
+    # that directory would — relatively; matched on the absolute form alone it
+    # walked straight through, and one remedy then said both "make
+    # settings.local.json parse" and "set a key in settings.local.json".
+    #
+    # The RAW absolute path is not a third spelling: what is searched is a
+    # remedy off an already-bounded `Check`, where a path under home has been
+    # re-spelled `~` — and for a path that is not under home `_shown` returns
+    # the same characters back.
     spellings = tuple(
         spelling
         for scope in scopes
         if scope.failure
-        for spelling in (scope.path, _shown(scope.path), _relative_to_cwd(scope.path))
+        for spelling in (_shown(scope.path), _relative_to_cwd(scope.path))
         if spelling
     )
     return [

@@ -932,4 +932,4 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 83, checked
+    assert checked == 87, checked
