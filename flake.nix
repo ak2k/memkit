@@ -111,8 +111,9 @@
           # including the plain-python leg where they are the gate. `pkgs.git`
           # above is not the missing half: git is present, the checkout is not.
           # zsh is here for the same reason: the store-guidance cases paste the
-          # documented commands into both shells an adopter uses, and they skip
-          # rather than fail where one of them is absent.
+          # documented commands into both shells an adopter uses, and where one
+          # of them is absent they fail unless the context declares itself
+          # without it (MEMKIT_NO_ZSH, which nothing here sets).
           suite =
             name: file:
             pkgs.runCommand "memkit-${name}" {

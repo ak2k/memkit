@@ -3247,10 +3247,11 @@ def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
 # Two commands on that page are the whole of what an adopter types by hand: the
 # block that derives the harness's project key, and the one line that repoints
 # a memory directory that an earlier revision of the page left as a symlink to
-# the corpus root. Eight review rounds found defects in them by hand, which is
-# an expensive way to learn that prose nobody executes is prose nobody checks.
-# So both are extracted from the committed markdown and run on real
-# filesystems, under every shell an adopter is likely to paste them into.
+# the corpus root. Prose nobody executes is prose nobody checks, so both are
+# extracted from the committed markdown and run on real filesystems, under
+# every shell an adopter is likely to paste them into. The rules the section
+# states in English are read out of it too, rather than restated below: a rule
+# stated twice is a rule the page can contradict with every case still green.
 
 
 def _store_in_git_section(text: str) -> str:
@@ -3287,26 +3288,115 @@ def _repoint_line(section: str) -> str:
     return spans[0]
 
 
-def _shell_argv(shell: str) -> list:
-    if shell == "bash":
-        return ["bash", "-c"]
+# The page states its rules in English. These are the spellings this file
+# knows how to run: a rule read out of the page and looked up here fails
+# loudly the moment the page starts saying something else, which a rule
+# restated in Python cannot do — page and test would just disagree in silence.
+_KEY_RULES = {"every character that is not a letter or digit": r"[^A-Za-z0-9]"}
+_NOT_A_LINK_OUTCOMES = {"the first test fails and nothing after it runs": "stops"}
+
+
+def _prose(section: str) -> str:
+    """The section on one line, so a claim matches whatever wrapping it has."""
+    return " ".join(section.split())
+
+
+def _key_rule(section: str) -> str:
+    """What the page says the harness replaces in a project key, as a pattern."""
+    found = re.search(
+        r"the key, matching the documentation page, is the git repository root "
+        r"with (.+?) replaced by `-`",
+        _prose(section),
+    )
+    assert found, "the page no longer states how the project key is spelled"
+    assert found.group(1) in _KEY_RULES, found.group(1)
+    return _KEY_RULES[found.group(1)]
+
+
+def _key_homes(section: str) -> dict:
+    """Which root the page says a linked worktree and a submodule key on."""
+    found = re.search(
+        r"A (linked worktree|submodule) maps to its main checkout's root, .*?"
+        r"; a (linked worktree|submodule) keys on itself",
+        _prose(section),
+    )
+    assert found, "the page no longer says where a worktree and a submodule key"
+    homes = {found.group(1): "main-checkout", found.group(2): "itself"}
+    assert len(homes) == 2, homes
+    return homes
+
+
+def _target_rule(section: str) -> tuple:
+    """The page's two branches for `$target`, read off the page.
+
+    `$target` is the one variable the page tells the reader to set themselves,
+    so its definition is prose rather than a command — and a definition the
+    cells restated in Python was one the page could contradict with every case
+    green. The two branches are checked against the page's own reason for the
+    setting, twenty lines up: a directory of the harness's OWN under the corpus
+    root, never the corpus root itself.
+    """
+    found = re.search(
+        r"`\$target` is the harness's directory under the corpus root: "
+        r"`(\$store/[^`]+)` where `search/` exists, `(\$store/[^`]+)` where it "
+        r"does not",
+        _prose(section),
+    )
+    assert found, "the page no longer defines `$target`"
+    with_search, without_search = found.groups()
+    assert with_search.startswith("$store/search/"), with_search
+    assert with_search.count("/") == 2, with_search
+    assert without_search.count("/") == 1, without_search
+    assert not without_search.startswith("$store/search"), without_search
+    return with_search, without_search
+
+
+def _not_a_link_outcome(section: str) -> str:
+    """What the page says the line does where `$dir` is not a link."""
+    found = re.search(r"Where `\$dir` is not a link ([^.]+)\.", _prose(section))
+    assert found, "the page no longer says what a `$dir` that is not a link does"
+    assert found.group(1) in _NOT_A_LINK_OUTCOMES, found.group(1)
+    # "the first test" names a position in the command, so the command has to
+    # open with that test for the sentence to be about anything.
+    line = _repoint_line(section)
+    assert line.startswith('[ -L "$dir" ]'), line
+    return _NOT_A_LINK_OUTCOMES[found.group(1)]
+
+
+def _needs_zsh() -> str:
+    """zsh, or a failure — and a skip only where a context declares it.
+
+    Half the cells below are the zsh half. A `shutil.which` skip made a machine
+    without zsh report the same green as a run, under `python` — a required
+    context — which is the failure `_needs_checkout` exists to prevent one
+    definition at a time. `MEMKIT_NO_ZSH` is the same kind of declaration:
+    nothing in CI sets it, so it cannot make a required check green.
+    """
     zsh = shutil.which("zsh")
-    if zsh is None:
-        pytest.skip(
-            "no zsh on PATH. The nix suites are the gate for this half — "
-            "`pkgs.zsh` is in the `suite` function's nativeBuildInputs — so a "
-            "skip here is a local machine, never CI."
-        )
-    return [zsh, "-f", "-c"]
+    if zsh is None and os.environ.get("MEMKIT_NO_ZSH") == "1":
+        pytest.skip("this context declared it has no zsh")
+    assert zsh, (
+        "no zsh on PATH, and this context did not declare itself without one. "
+        "The nix suites carry `pkgs.zsh` and the python job installs it, so a "
+        "skip here would report green under the same check name as a run."
+    )
+    return zsh
 
 
-def _sealed_env(home: Path) -> dict:
+def _shell_argv(shell: str) -> list:
+    return ["bash", "-c"] if shell == "bash" else [_needs_zsh(), "-f", "-c"]
+
+
+def _sealed_env(home: Path, pwd: str | None = None) -> dict:
     """The environment wholesale, so nothing of the developer's leaks in.
 
     An inherited `GIT_CONFIG_GLOBAL`, `init.defaultBranch` or `CLAUDE_CONFIG_DIR`
     would make these cases pass or fail for a reason belonging to the machine.
+    `pwd` is the logical path an interactive shell carries after a `cd` through
+    a symlink, and the only state in which `pwd` and `pwd -P` differ.
     """
     return {
+        **({"PWD": pwd} if pwd is not None else {}),
         "HOME": str(home),
         "PATH": os.environ["PATH"],
         "CLAUDE_CONFIG_DIR": str(home / ".claude"),
@@ -3338,20 +3428,29 @@ def _fixture_repo(path: Path, home: Path) -> Path:
     return path
 
 
-def _harness_key(path: Path) -> str:
-    """What the harness derives, restated here rather than read from the page."""
-    return re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(str(path)))
+def _harness_key(path: Path, pattern: str) -> str:
+    """What the harness derives for a path, under the rule the page states.
+
+    The path is resolved because the page says the key is the physical one;
+    what gets replaced comes from `_key_rule`, not from here.
+    """
+    return re.sub(pattern, "-", os.path.realpath(str(path)))
 
 
-def _shell_out(shell: str, script: str, cwd: Path, home: Path):
+def _shell_out(shell: str, script: str, cwd: Path, home: Path, pwd: str | None = None):
     return subprocess.run(
-        _shell_argv(shell) + [script], cwd=str(cwd), env=_sealed_env(home),
+        _shell_argv(shell) + [script], cwd=str(cwd), env=_sealed_env(home, pwd),
         capture_output=True, text=True, timeout=60,
     )
 
 
 def _file_map(root: Path) -> dict:
-    """Every file under `root` by relative path and sha256, links unfollowed."""
+    """Every entry under `root` by relative path, links unfollowed.
+
+    Directories are entries too, not just their contents: a map of files alone
+    is blind to an empty directory being created or removed, which is most of
+    what the repoint line does to the store.
+    """
     seen: dict = {}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         here = Path(dirpath)
@@ -3359,6 +3458,8 @@ def _file_map(root: Path) -> dict:
             if (here / name).is_symlink():
                 seen[str((here / name).relative_to(root))] = "link:" + os.readlink(here / name)
                 dirnames.remove(name)
+            else:
+                seen[str((here / name).relative_to(root))] = "dir"
         for name in filenames:
             entry = here / name
             seen[str(entry.relative_to(root))] = (
@@ -3368,21 +3469,47 @@ def _file_map(root: Path) -> dict:
     return seen
 
 
-def _derivation_fixture(cell: str, home: Path) -> tuple:
-    """(the directory to run in, the key the harness would derive for it)."""
+def _derivation_fixture(cell: str, home: Path, section: str) -> tuple:
+    """(the directory to run in, the key the harness would derive for it, the
+    logical `$PWD` to run under or None for the physical path).
+
+    Every `key-` cell is named here and an unnamed one raises: a cell added to
+    the list without a fixture would otherwise fall through to another cell's
+    directory, and since `want` comes from the same fixture it would assert
+    nothing and go green — the silent pass this whole section exists to stop.
+    """
+    pattern = _key_rule(section)
+    homes = _key_homes(section)
+    if cell == "key-non-git":
+        # Outside a repository the cwd is used, and this one carries the two
+        # characters the key rewrites and a shell would split on.
+        outside = home / "no_git dir"
+        outside.mkdir()
+        return outside, _harness_key(outside, pattern), None
+    if cell == "key-non-git-through-a-symlink":
+        # The page says the path is the physical one. A shell that reached
+        # this directory through a link carries the logical path in `$PWD`,
+        # which is the only state where `pwd -P` and `pwd` differ at all.
+        physical = home / "physical dir"
+        physical.mkdir()
+        logical = home / "logical-link"
+        os.symlink(physical, logical)
+        return logical, _harness_key(physical, pattern), str(logical)
     main = _fixture_repo(home / "repo", home)
     if cell == "key-main-checkout":
-        return main, _harness_key(main)
+        return main, _harness_key(main, pattern), None
     if cell == "key-main-subdir":
         deep = main / "a" / "b"
         deep.mkdir(parents=True)
         # A subdirectory keys on the repository, not on itself.
-        return deep, _harness_key(main)
+        return deep, _harness_key(main, pattern), None
     if cell == "key-linked-worktree":
         linked = home / "wt"
         _in_fixture(["worktree", "add", "-q", "-b", "wtb", str(linked)], main, home)
-        # The common dir is the main checkout's, which is why the block reads it.
-        return linked, _harness_key(main)
+        # The common dir is the main checkout's, which is why the block reads
+        # it — and which of the two roots is wanted comes from the page.
+        keyed = main if homes["linked worktree"] == "main-checkout" else linked
+        return linked, _harness_key(keyed, pattern), None
     if cell == "key-submodule":
         inner = _fixture_repo(home / "inner", home)
         sup = _fixture_repo(home / "super", home)
@@ -3392,13 +3519,14 @@ def _derivation_fixture(cell: str, home: Path) -> tuple:
         )
         _in_fixture(["commit", "-qm", "add sub"], sup, home)
         # A submodule's common dir sits under the superproject, so the `case`
-        # falls through to `--show-toplevel` and the submodule keys on itself.
-        return sup / "sub", _harness_key(sup / "sub")
-    # Outside a repository the cwd is used, and this one carries the two
-    # characters the key rewrites and a shell would split on.
-    outside = home / "no_git dir"
-    outside.mkdir()
-    return outside, _harness_key(outside)
+        # falls through to `--show-toplevel`. Run from a subdirectory of the
+        # submodule so that fallthrough is distinguishable from the cwd, which
+        # is the other thing the arm could return.
+        deep = sup / "sub" / "deep"
+        deep.mkdir()
+        keyed = sup / "sub" if homes["submodule"] == "itself" else sup
+        return deep, _harness_key(keyed, pattern), None
+    raise ValueError(f"no derivation fixture for {cell!r}")
 
 
 _STORE_IN_GIT_CELLS = (
@@ -3407,9 +3535,24 @@ _STORE_IN_GIT_CELLS = (
     "key-linked-worktree",
     "key-submodule",
     "key-non-git",
-    "repoint-link-to-search",
+    "key-non-git-through-a-symlink",
+    "repoint-link-to-corpus-root",
+    "repoint-flat-store",
+    "repoint-link-outside-the-store",
+    "repoint-target-is-a-link",
     "guard-dir-is-a-directory",
     "guard-store-missing",
+    "guard-store-not-a-directory",
+    "guard-target-is-a-file",
+)
+
+# The cells where the page's line is meant to run to the end. Everything else
+# in the list is a state where it must stop, and stop having changed nothing.
+_REPOINT_SUCCEEDS = (
+    "repoint-link-to-corpus-root",
+    "repoint-flat-store",
+    "repoint-link-outside-the-store",
+    "repoint-target-is-a-link",
 )
 
 
@@ -3418,53 +3561,94 @@ _STORE_IN_GIT_CELLS = (
 def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell) -> None:
     """The page's two commands, run on real filesystems.
 
-    Every state here is one the page routes a reader into. The five derivation
-    cells cover what the prose claims about the key: a subdirectory and a
-    linked worktree resolve to the main checkout, a submodule to itself, and a
-    directory outside any repository to itself — including one whose path has
-    an underscore and a space, since `tr` maps bytes and the paste is unquoted
-    prose.
+    The six derivation cells cover what the prose claims about the key: a
+    subdirectory and a linked worktree resolve to the main checkout, a
+    submodule to itself, and a directory outside any repository to itself —
+    including one whose path has an underscore and a space, since `tr` maps
+    bytes and the paste is unquoted prose, and one reached through a symlink,
+    since the page says the path is the physical one.
 
-    The three repoint cells cover the guard. The state the previous revision of
-    this page left behind — `$dir` a symlink to the corpus root — repoints
-    cleanly with every stored file unchanged; an ordinary directory and a
-    `$store` that is not there change nothing at all. What is asserted is exit
-    status and the filesystem, never a utility's message: `mv` and `mkdir`
-    word their failures differently under bash and zsh and between GNU and BSD
-    coreutils, and a test that reads them is a test of the machine.
+    The eight repoint cells cover the line and its guard. The state the
+    previous revision of this page left behind — `$dir` a symlink to the
+    corpus root — repoints cleanly with every stored file where it was, in a
+    store with `search/` and in a flat one; an ordinary directory, a `$store`
+    that is not there or is not a directory, and a `$target` already taken by
+    a file all change nothing at all. Two cells are states the page does not
+    speak for and does not stop: a `$dir` linking out of the store, and a
+    `$target` that is itself a link out of it.
+
+    What is asserted is exit status and the filesystem, never a utility's
+    message: `mv` and `mkdir` word their failures differently under bash and
+    zsh and between GNU and BSD coreutils, and a test that reads them is a
+    test of the machine.
     """
     section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
     home = Path(os.path.realpath(str(tmp_path))) / "home"
     home.mkdir()
 
     if cell.startswith("key-"):
-        where, want = _derivation_fixture(cell, home)
-        out = _shell_out(shell, _key_derivation_block(section), where, home)
+        where, want, logical = _derivation_fixture(cell, home, section)
+        out = _shell_out(shell, _key_derivation_block(section), where, home, logical)
         assert out.returncode == 0, (out.stdout, out.stderr)
         assert out.stdout.strip().splitlines()[-1] == want, (out.stdout, want)
         return
 
+    pattern = _key_rule(section)
+    with_search, without_search = _target_rule(section)
     repo = _fixture_repo(home / "repo", home)
     store = home / "notes"
-    (store / "search" / "hot").mkdir(parents=True)
-    (store / "search" / "hot" / "keep.md").write_text("---\nname: k\n---\nk\n", encoding="utf-8")
-    (store / "search" / "top.md").write_text("---\nname: t\n---\nt\n", encoding="utf-8")
-    before = _file_map(store)
+    flat = cell == "repoint-flat-store"
+    # A store with no `search/` has the store itself for a corpus root, which
+    # is what the page's second `$target` branch is for.
+    corpus = store if flat else store / "search"
+    corpus.mkdir(parents=True)
+    if not flat:
+        (corpus / "hot").mkdir()
+        (corpus / "hot" / "keep.md").write_text("---\nname: k\n---\nk\n", encoding="utf-8")
+    # A memory lying flat in the corpus root: what the page promises `rm`
+    # leaves where it is and retrievable.
+    (corpus / "top.md").write_text("---\nname: t\n---\nt\n", encoding="utf-8")
 
-    dir_ = home / ".claude" / "projects" / _harness_key(repo) / "memory"
-    dir_.parent.mkdir(parents=True)
     named_store = store
-    if cell == "guard-dir-is-a-directory":
-        dir_.mkdir()
-        (dir_ / "a.md").write_text("---\nname: a\n---\na\n", encoding="utf-8")
-    else:
-        os.symlink(store / "search", dir_)
     if cell == "guard-store-missing":
         # What a mistyped `$store` looks like: the link is good, the name is not.
         named_store = home / "wrong-notes"
-    dir_before = _file_map(dir_) if dir_.is_dir() and not dir_.is_symlink() else None
+    if cell == "guard-store-not-a-directory":
+        named_store = home / "notes.md"
+        named_store.write_text("not a store\n", encoding="utf-8")
+    target = Path(
+        (without_search if flat else with_search).replace("$store", str(named_store))
+    )
 
-    target = named_store / "search" / "auto-memory"
+    outside = home / "elsewhere"
+    if cell == "repoint-link-outside-the-store":
+        # A link the page never instructs, which the line repoints into the
+        # store all the same, leaving what it pointed at unreferenced.
+        outside.mkdir()
+        (outside / "stray.md").write_text("---\nname: s\n---\ns\n", encoding="utf-8")
+    if cell == "repoint-target-is-a-link":
+        outside.mkdir()
+        os.symlink(outside, target)
+    if cell == "guard-target-is-a-file":
+        # `mkdir` fails here, and it runs BEFORE `rm`: that order is why the
+        # reader's link survives a `$target` that is already taken.
+        target.write_text("in the way\n", encoding="utf-8")
+
+    dir_ = home / ".claude" / "projects" / _harness_key(repo, pattern) / "memory"
+    dir_.parent.mkdir(parents=True)
+    if cell == "guard-dir-is-a-directory":
+        dir_.mkdir()
+        (dir_ / "a.md").write_text("---\nname: a\n---\na\n", encoding="utf-8")
+    elif cell == "repoint-link-outside-the-store":
+        os.symlink(outside, dir_)
+    else:
+        os.symlink(corpus, dir_)
+
+    before = _file_map(store)
+    outside_before = _file_map(outside) if outside.is_dir() else None
+    dir_before = _file_map(dir_) if dir_.is_dir() and not dir_.is_symlink() else None
+    target_existed = target.exists() or target.is_symlink()
+
     script = "\n".join([
         f"store={shlex.quote(str(named_store))}",
         f"dir={shlex.quote(str(dir_))}",
@@ -3473,13 +3657,26 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell)
     ])
     out = _shell_out(shell, script, repo, home)
 
-    if cell == "repoint-link-to-search":
+    if cell in _REPOINT_SUCCEEDS:
         assert out.returncode == 0, (out.stdout, out.stderr)
         assert os.path.islink(dir_) and os.readlink(dir_) == str(target), os.readlink(dir_)
-        assert _file_map(store) == before, _file_map(store)
-        assert not (target / "auto-memory").exists(), "the link was made inside itself"
+        # Everything already in the store is where it was, and the only thing
+        # added is the directory `mkdir -p` was asked for.
+        expected = dict(before)
+        if not target_existed:
+            expected[str(target.relative_to(store))] = "dir"
+        assert _file_map(store) == expected, _file_map(store)
+        assert not (target / target.name).exists(), "the link was made inside itself"
+        if cell == "repoint-link-outside-the-store":
+            assert _file_map(outside) == outside_before, _file_map(outside)
+        if cell == "repoint-target-is-a-link":
+            # Nothing on the page stops this one, and the cell records why it
+            # matters: what the harness writes now lands outside the corpus.
+            assert os.path.realpath(dir_) == str(outside), os.path.realpath(dir_)
         return
 
+    if cell == "guard-dir-is-a-directory":
+        assert _not_a_link_outcome(section) == "stops", "the page claims otherwise"
     assert out.returncode != 0, (out.stdout, out.stderr)
     assert _file_map(store) == before, _file_map(store)
     if cell == "guard-dir-is-a-directory":
@@ -3487,9 +3684,54 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, shell)
         assert _file_map(dir_) == dir_before, _file_map(dir_)
     else:
         assert os.path.islink(dir_), "the reader's link was removed"
-        assert os.readlink(dir_) == str(store / "search"), os.readlink(dir_)
+        assert os.readlink(dir_) == str(corpus), os.readlink(dir_)
+    if cell == "guard-store-missing":
         assert not named_store.exists(), f"{named_store} was created"
-    assert not target.exists(), f"{target} was created"
+    if not target_existed:
+        assert not target.exists(), f"{target} was created"
+
+
+def test_a_zsh_case_fails_rather_than_skips_where_no_context_declares_it(
+    monkeypatch,
+) -> None:
+    """The skip is the thing being guarded, not the shell.
+
+    Half of the cells above ran in zsh or reported green having run in
+    nothing, and both looked the same from the check name.
+    """
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.delenv("MEMKIT_NO_ZSH", raising=False)
+    # A skip here would SKIP THIS CASE rather than fail it, which is the
+    # defect wearing the test's own clothes — so it is caught by name.
+    try:
+        _needs_zsh()
+    except pytest.skip.Exception as skipped:
+        raise AssertionError(f"skipped where it must fail: {skipped}") from None
+    except AssertionError as failed:
+        assert "did not declare itself without one" in str(failed), failed
+    else:
+        raise AssertionError("a missing zsh was accepted")
+
+    monkeypatch.setenv("MEMKIT_NO_ZSH", "1")
+    with pytest.raises(pytest.skip.Exception, match="declared it has no zsh"):
+        _needs_zsh()
+
+
+def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
+    """The marker has no producer, and both gating legs install the shell.
+
+    A test that skips on an environment variable is a test anybody can turn
+    off; what makes this one honest is that no CI context sets it, so the two
+    legs where these cases are the gate cannot take the skip.
+    """
+    flake = (REPO / "flake.nix").read_text(encoding="utf-8")
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    # The assignment, not the name: the flake explains the marker in a comment
+    # next to the zsh it carries, which is where that explanation belongs.
+    assert 'MEMKIT_NO_ZSH = "1"' not in flake
+    assert "MEMKIT_NO_ZSH" not in workflow
+    assert "pkgs.zsh" in flake
+    assert "zsh --version" in workflow
 
 
 def test_no_page_names_a_setting_the_harness_does_not_have() -> None:
@@ -3507,11 +3749,17 @@ def test_no_page_names_a_setting_the_harness_does_not_have() -> None:
     named = []
     for where in ("docs", "src", "skills"):
         for path in sorted((REPO / where).rglob("*")):
+            # Bytecode caches are not tracked, and a file that is not tracked
+            # is a file that is not there: leaving them in the walk opens the
+            # window where the source is fixed and the case is still red.
+            if "__pycache__" in path.parts:
+                continue
             if path.is_file() and "memoryDir" in path.read_bytes().decode("utf-8", "replace"):
                 named.append(str(path.relative_to(REPO)))
     if "memoryDir" in (REPO / "README.md").read_text(encoding="utf-8"):
         named.append("README.md")
     assert named == [], named
+
 
 def test_the_release_procedure_is_written_down_and_reachable() -> None:
     """The mechanics are two PRs in an order that is not guessable, and the
