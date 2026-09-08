@@ -4137,6 +4137,28 @@
         "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-dir-is-a-directory-bash]"
       ],
       "why": "the line no-ops on a `$dir` that is an ordinary directory, so a reader promised it would be created waits for a link that never appears"
+    },
+    {
+      "name": "store-doc-target-is-a-directory-the-reader-already-owns",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`$store/search/auto-memory` where `search/` exists",
+      "new": "`$store/search/hot` where `search/` exists",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-link-to-corpus-root-bash]"
+      ],
+      "why": "the directory has to be one of the harness's OWN, not merely under the corpus root: a tier the reader keeps memories in has its frontmatter rewritten exactly as the corpus root would"
+    },
+    {
+      "name": "store-doc-the-line-needs-fewer-variables-than-it-does",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "all three are yours to set before the",
+      "new": "both are yours to set before the",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-store-unset-bash]"
+      ],
+      "why": "a reader who sets the number the page counts and no more leaves `$store` empty, and the line then stops with a status and no message that the page's next sentence explains wrongly"
     }
   ]
 }
