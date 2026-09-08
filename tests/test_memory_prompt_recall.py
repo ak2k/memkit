@@ -15180,7 +15180,9 @@ def test_the_credential_scan_leaves_prose_alone_and_compiles_once() -> None:
     assert hook._secret_re() is hook._secret_re()
 
 
-def _elapsed(call) -> float:
+def _scan_elapsed(call) -> float:
+    # perf_counter, not the monotonic clock the walk cases time by: what is
+    # measured here is sub-millisecond when the pattern is linear.
     start = time.perf_counter()
     call()
     return time.perf_counter() - start
@@ -15238,7 +15240,7 @@ def test_the_credential_scan_costs_no_more_than_the_bytes_it_reads(
 
     def cost(n: int) -> float:
         text = (unit * (n // len(unit) + 1))[:n]
-        return min(_elapsed(lambda: rx.search(text)) for _ in range(5))
+        return min(_scan_elapsed(lambda: rx.search(text)) for _ in range(5))
 
     small = cost(short)
     big = cost(long)
