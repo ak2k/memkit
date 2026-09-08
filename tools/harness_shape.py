@@ -37,7 +37,13 @@ unmodified, and `tests/test_harness_shape.py` pins the syntax level so it keeps
 doing so. The machines are other people's — reached over ssh, with no uv and no
 memkit on them, and nothing of this file on their disk at all:
 
-    ssh host 'sudo -n python3 - --config-dir /h/USER/.claude' < tools/harness_shape.py
+    ssh host 'sudo -n python3 - --config-dir /h/USER/.claude --managed' \
+        < tools/harness_shape.py
+
+`--managed` is on that line rather than left to the default because under
+`sudo -n` this process's home is root's: the directory named is not the one
+this harness would use, so the flag is the only thing that makes a capture
+of somebody else's whole machine include that machine's policy file.
 
 No third-party import, no `memkit` import, no read of `__file__`. It is a dev
 tool like `tools/mutation_sweep.py`, outside the installed payload.
