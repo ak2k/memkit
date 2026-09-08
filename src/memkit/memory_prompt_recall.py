@@ -795,10 +795,19 @@ def _project_store(root: str, taken):
     # every file under it is served as a pointer under an in-repo path — the
     # containment decision above says nothing about a level below the one it
     # was made at.
-    if not _inside(root_real, os.path.realpath(_search_root(resolved))):
+    corpus_real = os.path.realpath(_search_root(resolved))
+    if not _inside(root_real, corpus_real):
         return None, (
             f"{PROJECT_CONFIG_NAME}: the corpus under 'dir' resolves outside "
             "the repository"
+        )
+    # PROPER here too, for the reason it is proper one level up: a `<dir>/search`
+    # pointing back at the checkout costs a prompt the whole repository, which is
+    # the outcome the `dir` check above refuses when it is asked for directly.
+    if corpus_real == root_real:
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: the corpus under 'dir' must be a directory "
+            "inside the repository, not the repository itself"
         )
     # `live_root` is the repository root itself rather than a name in `roots`:
     # Store requires a non-empty one, and a synthetic entry in `roots` would be

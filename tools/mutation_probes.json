@@ -4254,13 +4254,24 @@
       "name": "project-corpus-root-may-climb-out-of-the-repository",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "    if not _inside(root_real, os.path.realpath(_search_root(resolved))):\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: the corpus under 'dir' resolves outside \"\n            \"the repository\"\n        )\n",
+      "old": "    if not _inside(root_real, corpus_real):\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: the corpus under 'dir' resolves outside \"\n            \"the repository\"\n        )\n",
       "new": "",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_corpus_root_that_leaves_the_checkout_serves_nothing",
         "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-corpus-root-linked-out-by-a-relative-path]"
       ],
       "why": "`dir` being inside the checkout says nothing about `<dir>/search`, which is what retrieval walks. Without this a committed link there indexes any tree on the machine and serves its files as pointers under in-repo paths."
+    },
+    {
+      "name": "the-corpus-root-may-be-the-repository-itself",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if corpus_real == root_real:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: the corpus under 'dir' must be a directory \"\n            \"inside the repository, not the repository itself\"\n        )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-corpus-root-symlinked-onto-the-checkout]"
+      ],
+      "why": "Containment admits equality, so the check above passes a `<dir>/search` that points back at the checkout. Without this the whole repository is the corpus — the outcome the `dir` check refuses one level up."
     },
     {
       "name": "project-store-candidates-forget-the-repository-chose-them",

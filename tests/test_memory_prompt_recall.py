@@ -14000,6 +14000,10 @@ def _config_at(tmp_path: Path, monkeypatch, cwd: Path, **override):
 def _refusal(tmp_path: Path, monkeypatch, repo: Path, **override) -> str:
     cfg = _config_at(tmp_path, monkeypatch, repo, **override)
     assert _within(10, cfg.project_store) is None
+    # Dropping the FILE is not dropping the prompt: whatever the repository
+    # asked for, the user's own stores are still what this prompt searches.
+    ids = [s.id for s in cfg.searched_stores()]
+    assert ids and PROJECT_STORE_ID not in ids, (ids, cfg.project_error)
     return cfg.project_error
 
 
@@ -14284,6 +14288,10 @@ def _outside_corpus_relative(repo: Path) -> str:
     return os.path.join("..", "..", "..", "private-notes")
 
 
+def _the_checkout(repo: Path) -> str:
+    return str(repo)
+
+
 def _dir_symlinked_out(repo: Path) -> None:
     outside = repo.parent / "outside"
     outside.mkdir(exist_ok=True)
@@ -14446,6 +14454,17 @@ REFUSALS = [
         "a corpus root linked out by a relative path",
         _corpus_symlinked_out(_outside_corpus_relative),
         "the corpus under 'dir' resolves outside",
+    ),
+    # Nothing leaves the checkout here — the link points AT it, which is the
+    # monorepo the `dir` rows above refuse when it is asked for by name. The
+    # allowed side of this shape is the `_corpus_linked_inside` row of
+    # `test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does`: a
+    # corpus link resolving to a proper subdirectory is still served.
+    (
+        "a corpus root symlinked onto the checkout",
+        _corpus_symlinked_out(_the_checkout),
+        "the corpus under 'dir' must be a directory inside the repository, "
+        "not the repository itself",
     ),
     (
         "a dir that is not there",
