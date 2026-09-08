@@ -3732,8 +3732,11 @@ def _derivation_fixture(cell: str, home: Path, section: str) -> tuple:
     homes = _key_homes(section)
     if cell == "key-non-git":
         # The directory carries the two characters the key rewrites and a
-        # shell would split on; which directory is keyed comes from the page.
-        outside = home / "no_git dir"
+        # shell would split on, and it carries two of them ADJACENT: `tr`'s
+        # squeezing form collapses a run to one `-`, which is a different key
+        # for every dotfile directory and a rewrite no other fixture path can
+        # tell apart. Which directory is keyed comes from the page.
+        outside = home / "no_git .dir"
         outside.mkdir()
         keyed = outside if _outside_home(section) == "cwd" else home
         return outside, _harness_key(keyed, pattern), None
@@ -3996,9 +3999,12 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
 
     if cell in _REPOINT_SUCCEEDS:
         assert out.returncode == 0, (script, out.stdout, out.stderr)
-        assert os.path.islink(dir_) and os.readlink(dir_) == str(target), (
-            script, os.readlink(dir_)
-        )
+        # Two assertions rather than one: `os.readlink` in the message of a
+        # combined assert is evaluated when the condition is FALSE, which is
+        # exactly when `$dir` is not a link and reading it raises — so the one
+        # state this line exists to report came back as a traceback.
+        assert os.path.islink(dir_), (script, _file_map(dir_.parent))
+        assert os.readlink(dir_) == str(target), (script, os.readlink(dir_))
         # Everything already in the store is where it was, and the only thing
         # added is the directory `mkdir -p` was asked for.
         assert _flat_memories_outcome(section) == "kept", "the page claims otherwise"
