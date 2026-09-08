@@ -510,3 +510,405 @@ def test_every_test_file_is_in_the_flake_suite_map() -> None:
     assert not stale, f"suiteNames names {stale}, which is not in tests/"
     # And two files under one name is one derivation running one of them.
     assert len(set(mapped.values())) == len(mapped), sorted(mapped.items())
+
+
+# --- every guard in the auto-memory closure, and the probe that pins it ------
+
+
+_CLOSURE_MODULES = ("src/memkit/cli_doctor.py", "src/memkit/harness_memory.py")
+
+# `_auto_memory_rows` is the row under audit. The other four are entry points
+# it reaches through data rather than through a call this walk could resolve:
+# the settings reader, the scope list, the harness's own enumeration, and the
+# directory resolver.
+_CLOSURE_SEEDS = (
+    "_auto_memory_rows",
+    "Settings.__init__",
+    "settings_scopes",
+    "inventory",
+    "harness_dir",
+)
+
+_EXIT_STATEMENTS = (ast.Return, ast.Continue, ast.Raise)
+
+# Identity, not line: `(file, function, kind, ordinal within function)`. Line
+# numbers are informative only — one edit above a function shifts every guard
+# below it, and a line-keyed table would go red on guards nobody touched.
+_UNPROBED: dict[tuple[str, str, str, int], str] = {
+    ("cli_doctor.py", "_managed_dir", "if->exit", 1): (
+        "on darwin the managed settings directory is the Library one"
+    ),
+    ("cli_doctor.py", "Settings.__init__", "if->exit", 1): (
+        "an empty path is a scope with no file: nothing is read, nothing fails"
+    ),
+    ("cli_doctor.py", "Settings.__init__", "except", 1): (
+        "a settings file that is not there leaves the scope empty, not failed"
+    ),
+    ("cli_doctor.py", "Settings.__init__", "except", 2): (
+        "a settings file that cannot be opened is recorded FORBIDDEN"
+    ),
+    ("cli_doctor.py", "Settings.__init__", "except", 3): (
+        "any other OS error on that file is recorded UNREADABLE"
+    ),
+    ("cli_doctor.py", "Settings.__init__", "except", 4): (
+        "settings that do not parse are recorded UNPARSED"
+    ),
+    ("cli_doctor.py", "Settings.__init__", "if->exit", 2): (
+        "settings whose top level is not an object are UNPARSED, not empty"
+    ),
+    ("cli_doctor.py", "_session_cwd", "except", 1): (
+        "returns '' when the session's own directory will not resolve"
+    ),
+    ("cli_doctor.py", "Machine.config", "if->exit", 1): (
+        "no resolved config path means there is no config to read"
+    ),
+    ("cli_doctor.py", "Machine.config", "except", 1): (
+        "a ConfigError is kept as the config's error rather than raised"
+    ),
+    ("cli_doctor.py", "Machine.config", "except", 2): (
+        "anything else out of the loader is kept as text, so doctor survives it"
+    ),
+    ("cli_doctor.py", "_redacted", "if->exit", 1): (
+        "empty text, no home, or a home of / is returned unredacted"
+    ),
+    ("cli_doctor.py", "_display_key", "if->exit", 1): (
+        "a key that IS the home spelling shows as ~"
+    ),
+    ("cli_doctor.py", "_display_key", "if->exit", 2): (
+        "a key that starts with the home spelling shows its tail under ~"
+    ),
+    ("cli_doctor.py", "_shown_derived", "if->exit", 1): (
+        "with no key or no memory directory the default is shown instead"
+    ),
+    ("cli_doctor.py", "_within", "except", 1): (
+        "a path that will not resolve is inside nothing"
+    ),
+    ("cli_doctor.py", "_store_relation", "if->exit", 1): (
+        "no config means no store, no root and no relation to report"
+    ),
+    ("cli_doctor.py", "_store_relation", "if->exit", 2): (
+        "the first store root holding the directory decides at versus over"
+    ),
+    ("cli_doctor.py", "_how_inside", "if->exit", 1): (
+        "a directory under a pruned name is 'pruned' before anything else"
+    ),
+    ("cli_doctor.py", "_placed", "if->exit", 1): (
+        "outside every store, nothing retrieves what lands there"
+    ),
+    ("cli_doctor.py", "_placed", "if->exit", 2): (
+        "a directory at or over a corpus root is refused, with what it costs"
+    ),
+    ("cli_doctor.py", "_placed", "if->exit", 3): (
+        "a directory under a pruned name is refused as never indexed"
+    ),
+    ("cli_doctor.py", "_placed", "if->exit", 4): (
+        "a store with no search/ yet is refused, naming the root it would get"
+    ),
+    ("cli_doctor.py", "_nearest_store", "if->exit", 1): (
+        "no config means no nearest store and a distance of zero"
+    ),
+    ("cli_doctor.py", "_odd_switch", "if->exit", 1): (
+        "no scope, or a real bool, is not an odd value to remark on"
+    ),
+    ("cli_doctor.py", "_checkout_remedy", "if->exit", 1): (
+        "the checkout scope gets the remedy that names what changing it costs"
+    ),
+    ("cli_doctor.py", "_env_switch_note", "if->exit", 1): (
+        "no forced value means no note about the variable"
+    ),
+    ("cli_doctor.py", "_env_switch_note", "if->exit", 2): (
+        "a forced-on value says no settings scope turns the feature off"
+    ),
+    ("cli_doctor.py", "_env_switch_remedy", "if->exit", 1): (
+        "a forced-on value's remedy is to unset the variable, not edit settings"
+    ),
+    ("cli_doctor.py", "_override_note", "if->exit", 1): (
+        "no override variable is set, so there is no note"
+    ),
+    ("cli_doctor.py", "_adopter_owns", "if->exit", 1): (
+        "the named scope's own flag answers; no other scope stands in for it"
+    ),
+    ("cli_doctor.py", "_declared_below", "if->exit", 1): (
+        "a name outside SCOPE_ORDER has nothing below it"
+    ),
+    ("cli_doctor.py", "_declared_below", "if->exit", 2): (
+        "a scope that is not on this machine is skipped, not counted"
+    ),
+    ("cli_doctor.py", "_default_memory_dir", "if->exit", 1): (
+        "with no session directory the harness's own directory is underivable"
+    ),
+    ("cli_doctor.py", "_default_memory_dir", "except", 1): (
+        "a key that will not compute is reported as unknown, never raised"
+    ),
+    ("cli_doctor.py", "_consolidation_recency", "if->exit", 1): (
+        "no default directory means no recency to report"
+    ),
+    ("cli_doctor.py", "_consolidation_recency", "if->exit", 2): (
+        "an age inside the window says a consolidation ran that recently"
+    ),
+    ("cli_doctor.py", "_left_behind", "if->exit", 1): (
+        "nothing outside the configured directory is nothing left behind"
+    ),
+    ("cli_doctor.py", "_auto_memory_rows", "if->exit", 2): (
+        "the environment variable outranks every scope: INFO, and not a pass"
+    ),
+    ("cli_doctor.py", "_auto_memory_rows", "if->exit", 3): (
+        "an off switch this checkout carries gets the checkout remedy"
+    ),
+    ("cli_doctor.py", "_auto_memory_rows", "if->exit", 4): (
+        "scopes contradicting the off switch are disclosed, not passed over"
+    ),
+    ("cli_doctor.py", "_auto_memory_rows", "if->exit", 5): (
+        "a walk that failed cannot bear a pass, so the row stays INFO"
+    ),
+    ("harness_memory.py", "project_key", "if->exit", 2): (
+        "a key over the cap is refused: the harness's suffix is unmeasured"
+    ),
+    ("harness_memory.py", "_project_path", "except", 1): (
+        "a cwd that will not resolve is used as it was given"
+    ),
+    ("harness_memory.py", "_project_path", "if->exit", 1): (
+        "no repository root leaves the resolved path as the project path"
+    ),
+    ("harness_memory.py", "_project_path", "if->exit", 2): (
+        "no common ancestor leaves the resolved path as the project path"
+    ),
+    ("harness_memory.py", "_project_path", "if->exit", 3): (
+        "a submodule's git directory makes its worktree root the project"
+    ),
+    ("harness_memory.py", "_project_path", "except", 2): (
+        "an unknown root, or a failing resolve, leaves the resolved path"
+    ),
+    ("harness_memory.py", "inventory", "except", 1): (
+        "a projects/ that is not there read cleanly and holds nothing"
+    ),
+    ("harness_memory.py", "inventory", "except", 2): (
+        "a projects/ that will not list is read_ok False, never empty"
+    ),
+    ("harness_memory.py", "inventory", "except", 3): (
+        "a project whose memory/ will not list drops out of the walk"
+    ),
+    ("harness_memory.py", "switch", "if->exit", 1): (
+        "the first scope in the harness's order that declares the key answers"
+    ),
+    ("harness_memory.py", "harness_dir", "if->exit", 1): (
+        "a value that is not a non-empty string names no directory"
+    ),
+    ("harness_memory.py", "env_switch", "if->exit", 1): (
+        "an unset or empty variable is no answer, not an off one"
+    ),
+    ("harness_memory.py", "env_switch", "if->exit", 2): (
+        "a spelling the harness reads as off means the feature does not run"
+    ),
+    ("harness_memory.py", "configured_dir", "if->exit", 1): (
+        "no scope declares the key, so no directory is configured"
+    ),
+    ("harness_memory.py", "configured_dir", "if->exit", 2): (
+        "a declared value the resolver rejects configures no directory either"
+    ),
+}
+
+
+def _qualified_functions(tree: ast.AST, module: str) -> dict:
+    """`{qualified name: (module, node)}` for every function in one module."""
+    found: dict[str, tuple[str, ast.AST]] = {}
+
+    def descend(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualified = prefix + child.name
+                found[qualified] = (module, child)
+                descend(child, qualified + ".")
+            elif isinstance(child, ast.ClassDef):
+                descend(child, prefix + child.name + ".")
+            else:
+                descend(child, prefix)
+
+    descend(tree, "")
+    return found
+
+
+def _auto_memory_closure(functions: dict) -> set:
+    """The seeds plus every function they reach, calls resolved by simple name.
+
+    By NAME, because the alternative is type inference: `machine.config()` and
+    `_placed(...)` are the same kind of edge to this walk, and a walk that
+    followed only the unambiguous ones would leave the guards behind the
+    ambiguous ones unaccounted for. The cost is that a same-named function in
+    the other module joins the closure — an over-approximation, which is the
+    safe direction for a floor.
+    """
+    by_simple: dict[str, list[str]] = {}
+    for qualified in functions:
+        by_simple.setdefault(qualified.rsplit(".", 1)[-1], []).append(qualified)
+
+    reached: set[str] = set()
+    pending = [seed for seed in _CLOSURE_SEEDS if seed in functions]
+    assert len(pending) == len(_CLOSURE_SEEDS), sorted(set(_CLOSURE_SEEDS) - set(functions))
+    while pending:
+        qualified = pending.pop()
+        if qualified in reached:
+            continue
+        reached.add(qualified)
+        for node in ast.walk(functions[qualified][1]):
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            name = getattr(called, "id", None) or getattr(called, "attr", None)
+            pending.extend(
+                candidate
+                for candidate in by_simple.get(name or "", ())
+                if candidate not in reached
+            )
+    return reached
+
+
+def _guards_owned_by(node: ast.AST, blocked: set) -> list:
+    """Every guard under `node` that no nested closure function owns first."""
+    guards = []
+    pending = list(ast.iter_child_nodes(node))
+    while pending:
+        child = pending.pop()
+        if id(child) in blocked:
+            continue
+        if isinstance(child, ast.ExceptHandler):
+            guards.append(("except", child))
+        elif isinstance(child, ast.If) and any(
+            isinstance(statement, _EXIT_STATEMENTS) for statement in child.body
+        ):
+            guards.append(("if->exit", child))
+        pending.extend(ast.iter_child_nodes(child))
+    return guards
+
+
+def _probe_spans(text: str, probes: list, module: str) -> list:
+    """`(probe name, first line, last line)` for each probe anchored once here.
+
+    ONCE is the rule the pairing needs: a probe whose `old` appears twice is
+    mutated in both places, so it says nothing about which guard it covers.
+    """
+    spans = []
+    for probe in probes:
+        if probe["file"] != module or probe.get("occurrences", 1) != 1:
+            continue
+        if text.count(probe["old"]) != 1:
+            continue
+        start = text.index(probe["old"])
+        first = text.count("\n", 0, start) + 1
+        last = first + probe["old"].count("\n")
+        if probe["old"].endswith("\n"):
+            last -= 1
+        spans.append((probe["name"], first, last))
+    return spans
+
+
+def _guard_table() -> list:
+    """`(file, function, kind, ordinal, lineno, end_lineno, probe names)`."""
+    functions: dict[str, tuple[str, ast.AST]] = {}
+    text: dict[str, str] = {}
+    for module in _CLOSURE_MODULES:
+        text[module] = (REPO / module).read_text(encoding="utf-8")
+        functions.update(_qualified_functions(ast.parse(text[module]), module))
+
+    closure = _auto_memory_closure(functions)
+    blocked = {id(functions[name][1]) for name in closure}
+    probes = json.loads(
+        (REPO / "tools" / "mutation_probes.json").read_text(encoding="utf-8")
+    )["probes"]
+    spans = {module: _probe_spans(text[module], probes, module) for module in text}
+
+    rows = []
+    for qualified in closure:
+        module, node = functions[qualified]
+        for kind, guard in _guards_owned_by(node, blocked - {id(node)}):
+            rows.append((module, qualified, kind, guard.lineno, guard.end_lineno))
+    rows.sort()
+
+    ordinals: dict[tuple, int] = {}
+    table = []
+    for module, qualified, kind, lineno, end_lineno in rows:
+        key = (module, qualified, kind)
+        ordinals[key] = ordinals.get(key, 0) + 1
+        covering = tuple(
+            name
+            for name, first, last in spans[module]
+            if first <= end_lineno and last >= lineno
+        )
+        table.append(
+            (
+                Path(module).name,
+                qualified,
+                kind,
+                ordinals[key],
+                lineno,
+                end_lineno,
+                covering,
+            )
+        )
+    table.sort(key=lambda row: (row[0], row[4]))
+    return table
+
+
+def _printed(table: list) -> str:
+    lines = []
+    for name, qualified, kind, ordinal, lineno, end_lineno, covering in table:
+        lines.append(
+            f"{name}\t{qualified}\t{kind}\t{ordinal}\t{lineno}-{end_lineno}\t"
+            + (",".join(covering) if covering else "UNPROBED")
+        )
+    return "\n".join(lines)
+
+
+def _refrozen(table: list) -> str:
+    """`_UNPROBED` as it would have to read for this tree — paste-ready."""
+    lines = ["_UNPROBED = {"]
+    for name, qualified, kind, ordinal, _lineno, _end, covering in table:
+        if covering:
+            continue
+        identity = (name, qualified, kind, ordinal)
+        reason = _UNPROBED.get(identity, "WHAT THIS GUARD REFUSES OR RETURNS")
+        lines.append(f'    {identity!r}: (\n        "{reason}"\n    ),')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def test_every_guard_in_the_auto_memory_closure_has_a_probe() -> None:
+    """The floor under `_auto_memory_rows`: no guard arrives without a probe.
+
+    Every round of this milestone added guards and a green suite, and the
+    sweep still reported every probe caught — because the probes were counted
+    against each other and never against the code. Twenty-three of the guards
+    one fix delta added had nothing anchored on them, so deleting any of them
+    changed no test's answer.
+
+    This is a ratchet in both directions, and the second one is the one that
+    does the work. A guard added with no probe is a new UNPROBED identity, and
+    the list never grows. A guard that GAINS a probe has to leave the list in
+    the same commit, which is what keeps the count falling rather than a
+    line-item that once counted 57 and now means nothing.
+
+    Identity is `(file, function, kind, ordinal within function)`: the same
+    guards keyed by line went red on forty entries the change never touched.
+    """
+    table = _guard_table()
+    print(_printed(table))
+
+    assert len(table) > 60, "the walk found almost no guards — it is broken"
+    probed = [row for row in table if row[6]]
+    assert probed, "no probe anchored on any guard — the corpus was not read"
+
+    computed = {row[:4] for row in table if not row[6]}
+    frozen = set(_UNPROBED)
+    unpinned = sorted(computed - frozen)
+    retired = sorted(frozen - computed)
+    still_guards = {row[:4] for row in table}
+    assert not unpinned and not retired, (
+        f"guards with no probe that _UNPROBED does not list: {unpinned}\n"
+        "each needs a probe in tools/mutation_probes.json, or an entry here "
+        "saying what it refuses or returns.\n"
+        f"listed here but no longer unprobed: "
+        f"{[row for row in retired if row in still_guards]}\n"
+        f"listed here but no longer a guard at all: "
+        f"{[row for row in retired if row not in still_guards]}\n"
+        "re-freeze in the commit that changed them:\n" + _refrozen(table)
+    )
