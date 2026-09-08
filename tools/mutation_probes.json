@@ -4277,12 +4277,23 @@
       "name": "harness-shape-hook-key-travels-unrecognised",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "        if _HOOK_EVENT_RE.fullmatch(event):\n            return event\n",
+      "old": "        if event in HOOK_EVENTS:\n            return event\n",
       "new": "        return event\n",
       "tests": [
         "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
       ],
       "why": "A settings file can carry any key under `hooks`, and the ones that are not harness events are gates somebody named after their employer. The comment beside this code reasoned about the hook VALUES for two rounds while the keys went out verbatim."
+    },
+    {
+      "name": "harness-shape-hook-allowlist-widened-to-any-alphabetic-key",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if event in HOOK_EVENTS:\n",
+      "new": "        if event in HOOK_EVENTS or event.isalpha():\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "The rule this restores is the one the row shipped with, and it is why an allowlist replaced it: an organisation's own gate is letters too, so `AcmeComplianceGate` passed the check and travelled whole. The corpus owned the DELETION of this guard and not its widening, and a widening is what the defect was."
     },
     {
       "name": "harness-shape-install-method-travels-unrecognised",

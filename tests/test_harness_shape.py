@@ -47,7 +47,16 @@ PLUGIN_RE = re.compile(r"^(memkit|p\d+)(@q\d+)?$")
 # thing an artifact gate must not do.
 VERSION_RE = re.compile(r"\d+(\.\d+)*")
 INSTALL_OK = frozenset({"global", "native", "local", "npm", "unknown", "other"})
-HOOK_RE = re.compile(r"[A-Za-z]+|h\d+")
+# Re-typed like the two above, and it did not used to be: this was the tool's
+# own `[A-Za-z]+` character for character, so it could only catch the tool
+# failing to apply its rule and never the rule being wrong — and the rule was
+# wrong, because an organisation's gate is letters too.
+HOOK_PSEUDONYM_RE = re.compile(r"h\d+")
+HOOK_OK = frozenset({
+    "Notification", "PermissionDenied", "PermissionRequest", "PostToolBatch",
+    "PostToolUse", "PreCompact", "PreToolUse", "SessionEnd", "SessionStart",
+    "Stop", "SubagentStop", "UserPromptSubmit",
+})
 
 
 def _run(*args: str, env=None) -> subprocess.CompletedProcess:
@@ -303,6 +312,12 @@ def test_the_lock_is_read_from_either_place_it_has_been_seen(tmp_path) -> None:
 # anonymised shape that can hold a free string.
 SENTINEL = "loxodontaafricanaberthae2026"
 MARKET = SENTINEL + "market"
+# The same length and no digits, because a hook key that is letters and
+# nothing else is what an organisation's own gate looks like — and the rule
+# that used to guard that row admitted every one of them. The digits in
+# SENTINEL are why it could not see this: `Gate--<sentinel>` failed the old
+# pattern twice over, and no case planted a name that passed it.
+ALPHA_SENTINEL = "loxodontaafricanaberthaegate"
 
 
 def _sentinel_tree(tmp_path) -> Path:
@@ -358,6 +373,7 @@ def _sentinel_tree(tmp_path) -> Path:
                 "hooks": {
                     "UserPromptSubmit": [{"hooks": [{"command": SENTINEL}]}],
                     f"Gate--{SENTINEL}": [],
+                    ALPHA_SENTINEL: [],
                 },
                 "enabledPlugins": {f"{SENTINEL}@{MARKET}": True},
             }
@@ -377,6 +393,7 @@ def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
     assert anonymised.returncode == 0, anonymised.stderr
     assert SENTINEL not in anonymised.stdout
     assert SENTINEL not in anonymised.stderr
+    assert ALPHA_SENTINEL not in anonymised.stdout
 
     shape = json.loads(anonymised.stdout)
     listed = _by_key(shape)
@@ -399,9 +416,12 @@ def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
         harness_memory.DIRECTORY_KEY: "<path>",
         harness_memory.DREAM_KEY: True,
     }
-    # A pseudonym and a real event name, sorted as OUTPUT: `Gate--<sentinel>`
+    # Two pseudonyms and a real event name, sorted as OUTPUT: `Gate--<sentinel>`
     # sorts first among the real keys and last here, which is the point.
-    assert user["hooks"] == ["UserPromptSubmit", "h1"]
+    assert user["hooks"] == ["UserPromptSubmit", "h1", "h2"]
+    # And the artifact gate's own vocabulary, which was this rule restated
+    # rather than re-typed and so could not see it being the wrong rule.
+    assert ALPHA_SENTINEL not in HOOK_OK
     assert user["plugins"] == ["p1@q1"]
 
     raw = _run("--config-dir", str(config), "--raw")
@@ -415,6 +435,7 @@ def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
         "install": f"/Users/{SENTINEL}/.local/bin/claude",
     }
     assert f"Gate--{SENTINEL}" in raw_shape["settings"]["user"]["hooks"]
+    assert ALPHA_SENTINEL in raw_shape["settings"]["user"]["hooks"]
 
 
 def test_a_version_that_is_not_one_never_travels(tmp_path) -> None:
@@ -1100,7 +1121,9 @@ def test_the_committed_shapes_carry_no_names() -> None:
                     # else. Never the something else.
                     assert value is None or isinstance(value, bool), (path.name, key)
             for event in scope["hooks"]:
-                assert HOOK_RE.fullmatch(event), (path.name, event)
+                assert event in HOOK_OK or HOOK_PSEUDONYM_RE.fullmatch(event), (
+                    path.name, event,
+                )
             for plugin in scope["plugins"]:
                 assert PLUGIN_RE.match(plugin), (path.name, plugin)
 

@@ -112,10 +112,26 @@ _VERSION_FULL_RE = re.compile(r"\d+(\.\d+)*")
 # costs a fixture nothing; carrying an unrecognised value costs the invariant.
 INSTALL_METHODS = ("global", "native", "local", "npm", "unknown")
 INSTALL_OTHER = "other"
-# A hook EVENT name as the harness spells every event it dispatches: letters
-# and nothing else. A settings file can carry any key under `hooks`, and the
-# ones that are not events are somebody's own gate, named after their org.
-_HOOK_EVENT_RE = re.compile(r"[A-Za-z]+")
+# The hook events the harness dispatches, and an ALLOWLIST for the same
+# reason `INSTALL_METHODS` is one: a settings file can carry any key under
+# `hooks`, and "letters and nothing else" is a rule an organisation's own gate
+# satisfies — `AcmeComplianceGate` is a name, and it passed. Widening this
+# costs a fixture nothing; a pattern that admits an unlisted key costs the
+# invariant.
+HOOK_EVENTS = (
+    "Notification",
+    "PermissionDenied",
+    "PermissionRequest",
+    "PostToolBatch",
+    "PostToolUse",
+    "PreCompact",
+    "PreToolUse",
+    "SessionEnd",
+    "SessionStart",
+    "Stop",
+    "SubagentStop",
+    "UserPromptSubmit",
+)
 
 
 # --- settings ---------------------------------------------------------------
@@ -450,10 +466,10 @@ class _Pseudonyms:
         return self._assign(self._files, name, "m") + ".md"
 
     def hook(self, event: str) -> str:
-        # An event name is letters, and the harness's whole list of them is
-        # public. Anything else under `hooks` is a key somebody chose, which
-        # is where an org name lives.
-        if _HOOK_EVENT_RE.fullmatch(event):
+        # The harness's whole list of events is public and written down above.
+        # Anything else under `hooks` is a key somebody chose, which is where
+        # an org name lives.
+        if event in HOOK_EVENTS:
             return event
         return self._assign(self._hooks, event, "h")
 
