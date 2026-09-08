@@ -4639,6 +4639,22 @@ def _workflow_steps(job: str) -> list:
     return job.split("\n      - ")[1:]
 
 
+# Arguments a pytest invocation can carry without changing WHICH tests run.
+# Named rather than excluded, because the exclusions are open-ended: a bare
+# path was the only shape the first version of this gate anticipated, and
+# `--ignore=`, `--deselect=`, `-k=`, `--co` and `--ignore-glob=` all remove the
+# very file this gate protects while still looking like a whole-suite run.
+_WHOLE_SUITE_ARGS = frozenset(
+    ("-q", "-qq", "-v", "-vv", "-ra", "-r", "--tb=short", "--tb=long",
+     "--color=no", "--color=yes", "--durations=10")
+)
+
+
+def _runs_every_test(args: str) -> bool:
+    """Whether a pytest invocation runs the suite rather than a subset of it."""
+    return all(one in _WHOLE_SUITE_ARGS for one in args.split())
+
+
 def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
     """The marker has no producer, and both gating legs install the shell.
 
@@ -4673,7 +4689,12 @@ def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
     # naming a file is some other step's narrower gate.
     runs = [
         i for i, step in enumerate(steps)
-        if re.search(r"\brun: \S*python -m pytest(?:\s+-\S+)*\s*$", step, re.M)
+        if any(
+            _runs_every_test(found)
+            for found in re.findall(
+                r"\brun: \S*python -m pytest((?:\s+\S+)*)\s*$", step, re.M
+            )
+        )
     ]
     assert len(installs) == 1, f"{len(installs)} steps of the `python` job run `zsh --version`"
     assert len(runs) == 1, f"{len(runs)} steps of the `python` job run the whole suite"

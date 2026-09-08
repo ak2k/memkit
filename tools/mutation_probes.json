@@ -4269,6 +4269,17 @@
         "tests/test_plugin_surface.py::test_no_rm_the_page_prints_reaches_past_the_link_it_removes"
       ],
       "why": "the page promises this `rm` removes the link and never what it points at, and with `-rf` a `$dir` a shell completed with a trailing slash empties the corpus root while the link survives looking healthy"
+    },
+    {
+      "name": "zsh-gate-the-whole-suite-step-ignores-the-file-it-gates",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "run: .venv/bin/python -m pytest -q",
+      "new": "run: .venv/bin/python -m pytest -q --ignore=tests/test_plugin_surface.py",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "a flag that deselects the suite leaves the required context green with none of these cases run, which is the same silent state as deleting the step"
     }
   ]
 }
