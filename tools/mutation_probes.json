@@ -4218,6 +4218,28 @@
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
     },
     {
+      "name": "the-store-id-is-matched-with-a-trailing-newline-allowed",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if not isinstance(store_id, str) or not re.fullmatch(\n        PROJECT_ID_PATTERN, store_id\n    ):\n",
+      "new": "    if not isinstance(store_id, str) or not re.match(\n        PROJECT_ID_PATTERN, store_id\n    ):\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[an-id-ending-in-a-newline]"
+      ],
+      "why": "Python's `$` matches before a final newline, so `re.match` accepts an id carrying one — and the id is rendered on a diagnostic line an agent reads, where a repository choosing a line break chooses a forged line."
+    },
+    {
+      "name": "the-store-id-reaches-the-diagnostic-unsanitised",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            f\"project {_project_value(project.id)}: \"\n",
+      "new": "            f\"project {project.id}: \"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_store_id_is_rendered_like_every_other_repository_chosen_value"
+      ],
+      "why": "The pattern keeps a line break out of the id and the render keeps it out if the pattern is ever widened; they are two claims, and the surface used to sanitise the path beside the id while printing the id raw."
+    },
+    {
       "name": "a-dir-named-on-the-command-line-is-never-a-project-corpus",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",

@@ -14126,6 +14126,13 @@ REFUSALS = [
         _write_json(_project_blob(id="../../etc")),
         "does not match",
     ),
+    # `$` also matches before a final newline, so this one satisfied the
+    # pattern and printed a line break onto a surface an agent reads.
+    (
+        "an id ending in a newline",
+        _write_json(_project_blob(id="app\n")),
+        "does not match",
+    ),
     (
         "an id the user config already uses",
         _write_json(_project_blob(id="s")),
@@ -14800,5 +14807,41 @@ def test_debug_config_names_the_repository_store_and_its_refusal(
         hook._print_config(hook._config_state())
         off = capsys.readouterr().out
         assert "'project_config': false" in off, off
+    finally:
+        hook._use_config(None)
+
+
+def test_the_store_id_is_rendered_like_every_other_repository_chosen_value(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The ACCEPT path, which the refusal table cannot reach.
+
+    The id pattern is what keeps a line break out of this string, and the
+    render is what keeps it out if the pattern is ever widened — the two are
+    not the same claim, and the line used to sanitise the path beside the id
+    while printing the id itself raw. Driven from a store built by hand, so
+    the render is asked the question directly rather than through the gate
+    that is supposed to make it unnecessary.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob())
+    config = tmp_path / "user.json"
+    config.write_text(json.dumps(_config_blob(tmp_path)), encoding="utf-8")
+    monkeypatch.chdir(repo)
+    try:
+        real = hook._project_store
+
+        def hostile(root, taken):
+            store, reason = real(root, taken)
+            if store is not None:
+                store.id = "app\nstore s: /etc"
+            return store, reason
+
+        monkeypatch.setattr(hook, "_project_store", hostile)
+        hook._use_config(str(config))
+        hook._print_config(hook._config_state())
+        shown = capsys.readouterr().out
+        headings = [ln for ln in shown.splitlines() if ln.startswith("project ")]
+        assert len(headings) == 1, shown
+        assert "app store s: /etc" in headings[0], headings
     finally:
         hook._use_config(None)

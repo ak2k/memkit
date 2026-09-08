@@ -707,7 +707,12 @@ def _project_store(root: str, taken):
                 f"'{_project_value(key)}'"
             )
     store_id = spec.get("id")
-    if not isinstance(store_id, str) or not re.match(PROJECT_ID_PATTERN, store_id):
+    # `fullmatch`, not `match`: Python's `$` also matches before a FINAL
+    # newline, so `"app\n"` satisfied this pattern and reached a surface that
+    # renders the id on a line of its own.
+    if not isinstance(store_id, str) or not re.fullmatch(
+        PROJECT_ID_PATTERN, store_id
+    ):
         return None, (
             f"{PROJECT_CONFIG_NAME}: store id '{_project_value(store_id)}' does "
             f"not match {PROJECT_ID_PATTERN}"
@@ -7934,7 +7939,8 @@ def _print_config(state: tuple) -> int:
         corpus = _search_root(project_live)
         count = _corpus_files(corpus)
         print(
-            f"project {project.id}: {sanitize(_display_path(project_live))} "
+            f"project {_project_value(project.id)}: "
+            f"{sanitize(_display_path(project_live))} "
             f"[read-only; from {PROJECT_CONFIG_NAME} in this repository]"
         )
         print(
