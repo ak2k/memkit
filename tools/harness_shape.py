@@ -57,6 +57,7 @@ which is what keeps the copies in step.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import os
@@ -938,12 +939,169 @@ def _landing_dir(destination: str) -> str:
     `realpath` of the ORIGINAL dirname, never of an absolute path built first:
     `abspath` collapses `<link>/..` textually while the kernel resolves the
     link and then takes `..` from its TARGET, so the two answers name
-    different directories and the lexical one is not where the bytes go. Every
-    question below — is this a checkout, is a link standing in the path — is
-    asked about this directory, and the open uses it too, so nothing is
-    checked about one path and written to another.
+    different directories and the lexical one is not where the bytes go. This
+    is where the descriptor below is opened, and every question after that is
+    asked of the descriptor rather than of a name.
     """
     return os.path.realpath(os.path.dirname(destination) or os.curdir)
+
+
+def _open_dir(path: str, dir_fd=None) -> int:
+    """A descriptor for the DIRECTORY at `path`, or an `OSError`.
+
+    `O_DIRECTORY` so a file standing at the name is refused rather than
+    opened, and `O_NOFOLLOW` so a link planted at it is not followed.
+    """
+    return os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=dir_fd,
+    )
+
+
+class _Refused(Exception):
+    """A destination this will not write to, carrying the operator's line."""
+
+
+class _Landing:
+    """The directory `--out` lands in, held OPEN for as long as it is needed.
+
+    Three rounds of this file closed one spelling each of the same defect — a
+    link at the name, a link above it, a `..` taken from a link's target, a
+    second hard name — and the fourth was a parent directory renamed between
+    the check and the open, which no spelling of a name can close: what a name
+    means is the attacker's to change, and they get to choose when. So the
+    parent is opened ONCE, every question is asked of that descriptor, and the
+    file is created relative to it. The directory that was judged is the
+    directory written into by construction rather than by string equality.
+
+    The parent may not exist yet, so what is opened is the deepest ancestor
+    that does and the rest are made below it at write time — after the
+    refusals, because a rejected `--out` that left half a path behind it is
+    the same guard failing one step earlier. Judging the ancestor answers the
+    same question: what is made below it is made empty, and no `.git` can
+    appear in a directory this run just created.
+    """
+
+    def __init__(self, directory: str, leaf: str) -> None:
+        base = directory
+        missing = []
+        while not os.path.isdir(base):
+            base, tail = os.path.split(base)
+            if not tail:
+                break
+            missing.append(tail)
+        self.directory = directory
+        self.leaf = leaf
+        self.missing = list(reversed(missing))
+        self.fd = _open_dir(base)
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+    def inside_worktree(self) -> bool:
+        return _worktree_above(self.fd)
+
+    def create(self) -> int:
+        """The destination created below the judged directory, or a refusal.
+
+        `O_EXCL`: `--out` CREATES its destination and never writes over one.
+        Whatever is already at the name — a file, a link, a second name for
+        somebody else's file — is a choice about what this capture destroys,
+        made by whoever could write in that directory, and this runs under
+        `sudo -n` on hosts it is a guest on. The mode is owner-only for the
+        same reason and applies because the inode is this run's: `--raw`
+        carries real usernames, org names and repository paths, and a default
+        umask leaves them readable by everybody else logged into that machine.
+
+        No `O_NOFOLLOW` at this name and no fd-side questions after it: with
+        `O_EXCL` a link is EEXIST whether it dangles or not, and what comes
+        back is an inode this call made, so there is nothing left to ask about
+        what was opened.
+        """
+        current = os.dup(self.fd)
+        try:
+            for name in self.missing:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(name, dir_fd=current)
+                below = _open_dir(name, dir_fd=current)
+                os.close(current)
+                current = below
+            try:
+                return os.open(
+                    self.leaf,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=current,
+                )
+            except FileExistsError:
+                raise _Refused(_occupant(current, self.leaf)) from None
+        finally:
+            os.close(current)
+
+
+def _occupant(fd: int, leaf: str) -> str:
+    """Why `leaf` could not be created below `fd`, in an operator's terms.
+
+    The refusal is one rule — the name is taken — but which way it is taken is
+    what tells a staged link apart from a second run of the same command.
+    """
+    try:
+        # `os.stat` and not `os.lstat`: only the first is in
+        # `os.supports_dir_fd` on the 3.8 floor this has to run on.
+        info = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+    except OSError:
+        return "something stands at this name, and --out creates its destination"
+    if stat.S_ISLNK(info.st_mode):
+        return "a symlink sits at this name, and --out refuses to follow one"
+    if stat.S_ISDIR(info.st_mode):
+        # Before the link count, which every directory fails.
+        return "a directory stands at this name, and --out creates its destination"
+    if not stat.S_ISREG(info.st_mode):
+        return "this name is not a file, and --out creates its destination"
+    if info.st_nlink > 1:
+        return (
+            "another name points at this file, and --out refuses to overwrite "
+            "through one"
+        )
+    return (
+        "a file is already at this name, and --out creates its destination "
+        "rather than writing over one"
+    )
+
+
+def _worktree_above(fd: int) -> bool:
+    """Whether a file created in the directory `fd` names lands in a checkout.
+
+    The walk is on DESCRIPTORS: `.git` is asked of each level with `dir_fd`,
+    and the next level is that level's own `..`. A directory renamed or
+    replaced while this runs is still the one being judged, and it is the one
+    the caller goes on to create in; a walk by name answers about whatever
+    each name means at the moment that step is taken.
+
+    `lstat` rather than `exists`: a linked worktree's `.git` is a FILE and a
+    link at that name marks a checkout too, dangling or not. The top is where
+    a directory and its own `..` are the same inode.
+    """
+    current = os.dup(fd)
+    try:
+        while True:
+            try:
+                os.stat(".git", dir_fd=current, follow_symlinks=False)
+                return True
+            except OSError:
+                pass
+            here = os.fstat(current)
+            above = os.open(
+                "..", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), dir_fd=current
+            )
+            os.close(current)
+            current = above
+            info = os.fstat(current)
+            if (info.st_dev, info.st_ino) == (here.st_dev, here.st_ino):
+                return False
+    finally:
+        os.close(current)
 
 
 def _inside_worktree(directory: str) -> bool:
@@ -952,18 +1110,17 @@ def _inside_worktree(directory: str) -> bool:
     A DIRECTORY and not a file, because the two callers name one differently:
     `--out` is a file that does not exist yet, so its parent is what there is
     to walk, and a stdout redirect names no path at all — only the directory
-    the process stands in. `os.path.exists` rather than `isdir`: a linked
-    worktree's `.git` is a FILE, and those are exactly the trees a
-    worktree-per-unit workflow writes in.
+    the process stands in.
     """
-    current = os.path.realpath(directory)
-    while True:
-        if os.path.exists(os.path.join(current, ".git")):
-            return True
-        parent = os.path.dirname(current)
-        if parent == current:
-            return False
-        current = parent
+    try:
+        fd = _open_dir(os.path.realpath(directory))
+    except OSError:
+        # A directory that will not open is not one anything lands in.
+        return False
+    try:
+        return _worktree_above(fd)
+    finally:
+        os.close(fd)
 
 
 def _stdout_is_a_file() -> bool:
@@ -1050,10 +1207,47 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
+    landing = None
+    if args.out:
+        parent = os.path.dirname(os.path.abspath(args.out))
+        resolved = _landing_dir(args.out)
+        if resolved != parent:
+            # O_NOFOLLOW guards the LAST component only, so a link one level up
+            # chose the file that got truncated: `--out real/linkdir/shape.json`
+            # wrote through `linkdir` and overwrote whatever `target.json` behind
+            # it was. Refused rather than followed, and the resolved path is named
+            # so an operator whose home really is reached through a link — or who
+            # named /tmp on a mac — can pass that path instead.
+            sys.stderr.write(
+                f"harness_shape: {args.out}: a symlink stands in this path, which "
+                f"chooses what gets overwritten; it resolves to {resolved} — on "
+                f"macOS /var is itself a link, so a path under $TMPDIR lands here "
+                f"and the resolved one above is the path to pass\n"
+            )
+            return 2
+        try:
+            landing = _Landing(resolved, os.path.basename(args.out))
+        except OSError as exc:
+            sys.stderr.write(f"harness_shape: {args.out}: {exc.strerror or exc}\n")
+            return 2
+    try:
+        return _capture_and_write(args, landing)
+    finally:
+        if landing is not None:
+            landing.close()
+
+
+def _capture_and_write(args, landing) -> int:
+    """The run itself, with the destination already open where there is one."""
     if args.raw:
         destination = args.out or _stdout_destination()
         if destination is not None:
-            if _inside_worktree(_landing_dir(destination)):
+            inside = (
+                landing.inside_worktree()
+                if landing is not None
+                else _inside_worktree(_landing_dir(destination))
+            )
+            if inside:
                 sys.stderr.write(
                     f"harness_shape: --raw refuses to write inside a git "
                     f"worktree ({destination}); a shape committed with real "
@@ -1096,94 +1290,25 @@ def main(argv=None) -> int:
     if not args.out:
         sys.stdout.write(text)
         return 0
-    parent = os.path.dirname(os.path.abspath(args.out))
-    resolved = _landing_dir(args.out)
-    if resolved != parent:
-        # O_NOFOLLOW guards the LAST component only, so a link one level up
-        # chose the file that got truncated: `--out real/linkdir/shape.json`
-        # wrote through `linkdir` and overwrote whatever `target.json` behind
-        # it was. Refused rather than followed, and the resolved path is named
-        # so an operator whose home really is reached through a link — or who
-        # named /tmp on a mac — can pass that path instead.
-        sys.stderr.write(
-            f"harness_shape: {args.out}: a symlink stands in this path, which "
-            f"chooses what gets overwritten; it resolves to {resolved} — on "
-            f"macOS /var is itself a link, so a path under $TMPDIR lands here "
-            f"and the resolved one above is the path to pass\n"
-        )
-        return 2
-    # AFTER the refusals, not before: a rejected --out used to leave the
-    # directories it had already created behind it.
-    os.makedirs(resolved, exist_ok=True)
-    # The RESOLVED directory joined to the final name, so the path that was
-    # checked is the path that gets opened.
-    target = os.path.join(resolved, os.path.basename(args.out))
     try:
-        # O_NOFOLLOW, because `open(path, "w")` follows a link already sitting
-        # at that name and truncates what it points at. This runs under
-        # `sudo -n` on hosts it is a guest on, so a link somebody else planted
-        # in the destination directory is a choice about what gets
-        # overwritten — and no capture is worth writing through one.
-        #
-        # O_NONBLOCK for the same reason one level along: a FIFO at this name
-        # would block the open until somebody read from it, and a capture that
-        # hangs on a host reached once over ssh is a capture nobody gets.
-        # No O_TRUNC — what this opens is not yet known to be a file worth
-        # truncating, and the decision is taken below on the fd itself.
-        fd = os.open(
-            target,
-            os.O_WRONLY
-            | os.O_CREAT
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0),
-            # OWNER ONLY, and not the mode a plain `open(path, "w")` would
-            # have created. `--raw` is the one output that carries real
-            # usernames, org names and repository paths, and it is written on
-            # a host this tool is a guest on: a default umask leaves it
-            # world-readable for everyone else logged into that machine. An
-            # anonymised shape is written the same way rather than by a second
-            # rule, because the file that needs the narrower mode is the one
-            # somebody forgot they were producing.
-            0o600,
-        )
-    except OSError as exc:
-        # O_NOFOLLOW reports ELOOP, which reads as a broken filesystem rather
-        # than as the refusal it is.
+        fd = landing.create()
+    except (OSError, _Refused) as exc:
+        # NOTHING on this route escapes as a traceback: a capture reached once
+        # over ssh has a wrapper reading the number, and every other
+        # destination failure here is one line and a 2.
         why = (
-            "a symlink sits at this name, and --out refuses to follow one"
-            if os.path.islink(target)
-            else (exc.strerror or str(exc))
+            exc.args[0]
+            if isinstance(exc, _Refused)
+            else (getattr(exc, "strerror", None) or str(exc))
         )
         sys.stderr.write(f"harness_shape: {args.out}: {why}\n")
         return 2
-    # ON THE FD, not on the name: between a check by name and the open, the
-    # name can be made to mean something else. What was opened is what these
-    # two questions are about.
     try:
-        info = os.fstat(fd)
-        # A hard link is a link O_NOFOLLOW cannot see, and it is the same
-        # write primitive as a symlink: a second name for the destination
-        # inode, planted by whoever can write in this directory, choosing what
-        # gets truncated.
-        if info.st_nlink > 1:
-            why = (
-                "another name points at this file, and --out refuses to "
-                "overwrite through one"
-            )
-        elif not stat.S_ISREG(info.st_mode):
-            why = "--out writes a regular file, and this name is not one"
-        else:
-            why = None
-            # Only now, when what is held is a file with one name.
-            os.ftruncate(fd, 0)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
     except OSError as exc:
-        why = exc.strerror or str(exc)
-    if why is not None:
-        os.close(fd)
-        sys.stderr.write(f"harness_shape: {args.out}: {why}\n")
+        sys.stderr.write(f"harness_shape: {args.out}: {exc.strerror or exc}\n")
         return 2
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
     return 0
 
 

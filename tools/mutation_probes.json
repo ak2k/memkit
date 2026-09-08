@@ -4332,8 +4332,8 @@
       "name": "harness-shape-out-follows-a-symlinked-destination-directory",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    resolved = _landing_dir(args.out)\n",
-      "new": "    resolved = parent\n",
+      "old": "        resolved = _landing_dir(args.out)\n",
+      "new": "        resolved = parent\n",
       "tests": [
         "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
       ],
@@ -4398,34 +4398,46 @@
       "name": "harness-shape-out-is-judged-on-the-lexically-collapsed-path",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    resolved = _landing_dir(args.out)\n",
-      "new": "    resolved = os.path.realpath(os.path.dirname(os.path.abspath(args.out)))\n",
+      "old": "        resolved = _landing_dir(args.out)\n",
+      "new": "        resolved = os.path.realpath(os.path.dirname(os.path.abspath(args.out)))\n",
       "tests": [
         "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
       ],
       "why": "`abspath` collapses `<link>/..` textually and the kernel takes `..` from the link's TARGET, so every refusal is answered about a directory the write never touches. That one difference put a shape carrying real names inside a git checkout with exit 0 — past the destination refusal and past the --raw refusal at once."
     },
     {
-      "name": "harness-shape-out-follows-a-symlink-at-the-destination-name",
+      "name": "harness-shape-out-crashes-instead-of-answering-with-an-exit-2",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "            | getattr(os, \"O_NOFOLLOW\", 0)\n",
-      "new": "",
+      "old": "    except (OSError, _Refused) as exc:\n",
+      "new": "    except _Refused as exc:\n",
       "tests": [
-        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+        "tests/test_harness_shape.py::test_out_refuses_a_destination_it_cannot_make_rather_than_crashing"
       ],
-      "why": "Without it the open follows a link already sitting at the destination name and truncates what it points at — on a host this runs on as a guest under `sudo -n`, so the name was planted by somebody else and the choice of what gets overwritten is theirs."
+      "why": "main() has one error contract — a line naming the path and an exit 2 — and a destination that cannot be made escaped it as a Python traceback and an exit 1. A linked worktree's `.git` is a FILE, so that spelling is an ordinary typo on a host reached once over ssh, where the wrapper reading the number is told the wrong thing about a run that wrote nothing."
     },
     {
-      "name": "harness-shape-out-overwrites-a-file-that-has-a-second-name",
+      "name": "harness-shape-out-writes-over-whatever-is-already-at-the-name",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "        if info.st_nlink > 1:\n",
-      "new": "        if False:\n",
+      "old": "                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n",
+      "new": "                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,\n",
       "tests": [
-        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about",
+        "tests/test_harness_shape.py::test_an_ordinary_destination_is_created_and_never_written_over"
       ],
-      "why": "A hard link is the one link O_NOFOLLOW cannot see, and it is the same write primitive: a second name for the destination inode, so the capture truncates a file whose real name is somewhere else entirely."
+      "why": "O_EXCL is the whole rule: a name already taken is somebody else's choice about what this capture destroys, and the four spellings that reached it before — a link at the name, a dangling link, a second hard name, a device — are one refusal rather than four. This runs under `sudo -n` on hosts it is a guest on, where whoever can create a name in the destination directory picks the victim."
+    },
+    {
+      "name": "harness-shape-out-opens-by-name-the-directory-it-judged-by-descriptor",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                    self.leaf,\n                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n                    0o600,\n                    dir_fd=current,\n",
+      "new": "                    os.path.join(self.directory, self.leaf),\n                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n                    0o600,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_into_the_directory_it_judged_however_the_name_moves"
+      ],
+      "why": "Judging a descriptor and then opening a name is the defect four rounds of spellings kept re-opening: the destination's parent can be replaced between the two, and with --raw the shape carrying real names landed in a git checkout at exit 0. Relative to the descriptor there is nothing to come between them."
     },
     {
       "name": "harness-shape-artifact-gate-enumerates-the-top-level-only",
@@ -4564,10 +4576,10 @@
       "name": "harness-shape-out-writes-real-names-world-readable",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "            0o600,\n",
-      "new": "            0o666,\n",
+      "old": "                    0o600,\n",
+      "new": "                    0o666,\n",
       "tests": [
-        "tests/test_harness_shape.py::test_an_ordinary_destination_is_written_and_rewritten"
+        "tests/test_harness_shape.py::test_an_ordinary_destination_is_created_and_never_written_over"
       ],
       "why": "`--raw --out` is the one output carrying real usernames, org names and repository paths, and it is written on a host this tool is a guest on: the mode a plain `open(path, \"w\")` would create leaves it readable by everybody else logged into that machine."
     },

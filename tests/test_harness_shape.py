@@ -22,9 +22,11 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -880,7 +882,18 @@ def _destination(name: str, root: Path) -> tuple:
         os.symlink(repo / "sub", outside / "madelink")
         return outside / "madelink" / "made" / "shape.json", 2, "a symlink stands in"
     if name == "a plain file in a plain directory":
-        return _write(outside / "plain" / "shape.json", "old\n"), 0, None
+        return _write(outside / "plain" / "shape.json", "old\n"), 2, "already at this name"
+    if name == "a fifo at the name":
+        (outside / "queue").mkdir()
+        os.mkfifo(str(outside / "queue" / "shape.json"))
+        return outside / "queue" / "shape.json", 2, "this name is not a file"
+    if name == "a directory at the name":
+        (outside / "adir" / "shape.json").mkdir(parents=True)
+        return outside / "adir" / "shape.json", 2, "a directory stands at this name"
+    if name == "the null device itself":
+        # Not a symlink to it: a link is refused one step earlier, so this is
+        # the only spelling that reaches the destination open at all.
+        return Path(os.devnull), 2, "this name is not a file"
     if name == "a fresh path":
         return outside / "fresh" / "deep" / "shape.json", 0, None
     raise AssertionError(name)
@@ -918,22 +931,26 @@ def _files_under(directory: Path) -> dict:
         "a dangling symlink at the name",
         "a directory made on the way to a refusal",
         "a plain file in a plain directory",
+        "a fifo at the name",
+        "a directory at the name",
+        "the null device itself",
         "a fresh path",
     ],
 )
 def test_out_writes_only_where_its_refusals_were_answered_about(
     tmp_path, spelling
 ) -> None:
-    """Every path this tool opens for writing is resolved once, and the
-    resolved path is the one opened.
+    """`--out` CREATES its destination. Every name that is already taken is a
+    refusal, whatever it is taken by.
 
     A destination is a write primitive: over `sudo -n` on a shared capture
     host — the documented way this runs — anybody who can create a name in the
     directory the operator writes shapes into chooses what gets overwritten.
-    Three rounds closed one spelling each and left the next open, which is why
-    this is a table: a symlink at the name, a symlink above it, a `..` that
-    the kernel takes from a link's target rather than from where it is
-    written, and a hard link, which no `O_NOFOLLOW` can see.
+    Four rounds closed one spelling each and left the next open — a symlink at
+    the name, a symlink above it, a `..` the kernel takes from a link's target,
+    a hard link no `O_NOFOLLOW` can see, and a parent swapped after the check —
+    which is what a table of spellings buys and what it does not: the rule that
+    ends the sequence is that nothing that exists is opened at all.
 
     `--raw` is the same question with the stakes the privacy rule turns on,
     so every spelling is run that way too: whatever the tool decides, the
@@ -968,14 +985,21 @@ def test_out_writes_only_where_its_refusals_were_answered_about(
     assert _files_under(raw_repo) == raw_before, "real names landed in a checkout"
 
 
-def test_an_ordinary_destination_is_written_and_rewritten(tmp_path) -> None:
-    """The refusals above are worth nothing if the tool cannot write, and
-    overwriting its own output is the ordinary second run."""
+def test_an_ordinary_destination_is_created_and_never_written_over(tmp_path) -> None:
+    """The refusals above are worth nothing if the tool cannot write, and the
+    second run of the same command is where a rewrite would happen.
+
+    It does not happen. A capture that would only ever be overwriting its own
+    output cannot tell that from overwriting somebody else's, and it decided
+    on a host it is a guest on: the second run refuses and names the file, and
+    an operator who wants a fresh one removes it. That also makes the mode
+    unconditional — `0o600` applies because the inode is this run's, where a
+    create-time mode over an existing file applies to nothing at all.
+    """
     config = tmp_path / "config"
     (config / "projects").mkdir(parents=True)
     plain = tmp_path / "plain.json"
-    for _ in range(2):
-        assert _run("--config-dir", str(config), "--out", str(plain)).returncode == 0
+    assert _run("--config-dir", str(config), "--out", str(plain)).returncode == 0
     assert json.loads(plain.read_text(encoding="utf-8"))["anonymised"] is True
     # OWNER ONLY. `--raw` carries real usernames, org names and repository
     # paths, and it is written on a host this tool is a guest on — a default
@@ -983,6 +1007,98 @@ def test_an_ordinary_destination_is_written_and_rewritten(tmp_path) -> None:
     # anonymised run, because the two are written by one call and the file
     # that needs the narrower mode is the one somebody forgot they produced.
     assert stat.S_IMODE(plain.stat().st_mode) == 0o600
+
+    was = (plain.stat().st_ino, plain.read_bytes())
+    again = _run("--config-dir", str(config), "--out", str(plain))
+    assert again.returncode == 2, again.stdout + again.stderr
+    assert "already at this name" in again.stderr, again.stderr
+    assert (plain.stat().st_ino, plain.read_bytes()) == was, "it wrote over it"
+    # A world-readable file left by somebody else is not narrowed by a second
+    # run either, because there is no second run: it is refused.
+    theirs = tmp_path / "theirs.json"
+    theirs.write_text("not mine\n", encoding="utf-8")
+    os.chmod(str(theirs), 0o666)
+    refused = _run("--config-dir", str(config), "--raw", "--out", str(theirs))
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert theirs.read_text(encoding="utf-8") == "not mine\n"
+
+
+def test_out_refuses_a_destination_it_cannot_make_rather_than_crashing(
+    tmp_path,
+) -> None:
+    """`main()`'s contract is a message and an exit 2, and the `--out` route
+    had two calls outside it.
+
+    A linked worktree's `.git` is a FILE, so `--out <worktree>/.git/shape.json`
+    named a directory that cannot be made — and a plain file anywhere in the
+    path does the same. Both left a Python traceback and an exit 1 on a host
+    reached once over ssh, where a wrapper reads that number and 1 and 2 mean
+    different things to it. Nothing was written; nothing is written now.
+    """
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n", encoding="utf-8")
+    midway = tmp_path / "notadir"
+    midway.write_text("i am a file\n", encoding="utf-8")
+    for out in (worktree / ".git" / "shape.json", midway / "deep" / "shape.json"):
+        refused = _run("--config-dir", str(config), "--out", str(out))
+        assert refused.returncode == 2, refused.stdout + refused.stderr
+        assert "Traceback" not in refused.stderr, refused.stderr
+        assert refused.stderr.startswith("harness_shape: "), refused.stderr
+        assert len(refused.stderr.strip().splitlines()) == 1, refused.stderr
+        assert not out.exists(), "it refused and wrote anyway"
+    assert midway.read_text(encoding="utf-8") == "i am a file\n"
+    assert (worktree / ".git").read_text(encoding="utf-8").startswith("gitdir: ")
+
+
+def test_out_writes_into_the_directory_it_judged_however_the_name_moves(
+    tmp_path,
+) -> None:
+    """The fifth spelling of one defect, and the one no name can close.
+
+    The first four were a link at the destination name, a link above it, a
+    `..` the kernel takes from a link's target, and a second hard name. This
+    is the parent directory REPLACED between the check and the open: every
+    refusal answered about the directory the operator named, and the bytes
+    went to the one that had taken its place — with `--raw`, into a git
+    checkout, exit 0. The destination's parent is opened once and the file is
+    created relative to that descriptor, so a rename cannot come between them.
+    """
+    config = tmp_path / "config"
+    memory = config / "projects" / "-Users-realname-src-realrepo" / "memory"
+    memory.mkdir(parents=True)
+    _write(memory / "real-secret-name.md", "---\nname: a-real-memory-name\n---\nb\n")
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    stop = threading.Event()
+
+    def flip() -> None:
+        while not stop.is_set():
+            try:
+                if dest.is_symlink():
+                    os.remove(str(dest))
+                    os.mkdir(str(dest))
+                else:
+                    shutil.rmtree(str(dest), ignore_errors=True)
+                    os.symlink(str(checkout), str(dest))
+            except OSError:
+                pass
+
+    flipper = threading.Thread(target=flip)
+    flipper.start()
+    try:
+        for _ in range(50):
+            _run("--config-dir", str(config), "--raw", "--out", str(dest / "leak.json"))
+            assert not (checkout / "leak.json").exists(), (
+                "real names landed in a checkout the run never named"
+            )
+    finally:
+        stop.set()
+        flipper.join()
 
 
 def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(
