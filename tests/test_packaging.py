@@ -558,6 +558,72 @@ def test_harness_shape_runs_on_a_real_floor_interpreter(tmp_path, version) -> No
     assert len(shape["memory_dirs"]) == 1, shape
 
 
+def _floor_step_selectors() -> list:
+    """Every `-k` expression CI runs with the floor gate switched on."""
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(
+        encoding="utf-8"
+    )
+    steps = re.split(r"^      - (?=name:)", workflow, flags=re.MULTILINE)
+    required = [step for step in steps if f'{FLOOR_REQUIRED_ENV}: "1"' in step]
+    assert required, FLOOR_REQUIRED_ENV
+    selectors = []
+    for step in required:
+        found = re.findall(r'-k "((?:[^"\\]|\\\s)*)"', step)
+        assert found, step
+        selectors.extend(" ".join(item.split()) for item in found)
+    return selectors
+
+
+def _names_this_file_defines() -> set:
+    """The test names and parametrize ids a `-k` token could be naming."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            names.add(node.name)
+        if isinstance(node, ast.keyword) and node.arg == "ids":
+            names.update(
+                item.value
+                for item in getattr(node.value, "elts", [])
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            )
+    return names
+
+
+def test_the_floor_steps_select_the_tests_they_name() -> None:
+    """A `-k` is a name written down twice, and only one copy is checked by
+    anything.
+
+    The 3.9 step used to select `a or (b and py39)`: pytest exits 5 for a
+    selection that matches nothing but 0 whenever any half of an `or` still
+    does, so renaming the capture-tool case would have taken it out of CI and
+    left the step green on the hook case alone — the floor that is executed
+    nowhere else, silently not executed. One clause per invocation is what
+    turns a name that stopped matching red, and this is what says the names
+    still match.
+    """
+    known = _names_this_file_defines()
+    assert "test_harness_shape_runs_on_a_real_floor_interpreter" in known
+    for selector in _floor_step_selectors():
+        depth = 0
+        for token in re.findall(r"[()]|[^\s()]+", selector):
+            if token == "(":
+                depth += 1
+                continue
+            if token == ")":
+                depth -= 1
+                continue
+            if token == "or":
+                assert depth > 0, (
+                    f"{selector!r}: a top-level `or` keeps the step green on "
+                    f"one clause alone; give each clause its own invocation"
+                )
+                continue
+            if token in ("and", "not"):
+                continue
+            assert any(token in name for name in known), (selector, token)
+
+
 def test_the_wrapper_guards_exactly_the_files_it_will_import() -> None:
     """The third copy of the 3.9 closure, and the only one nothing pinned.
 

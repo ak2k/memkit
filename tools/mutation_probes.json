@@ -4769,6 +4769,28 @@
         "tests/test_harness_shape.py::test_the_fallback_for_a_kernel_that_will_not_name_fd_one_still_refuses"
       ],
       "why": "`_stdout_destination` answers on darwin and on linux whenever stdout is a regular file, so the branch that decides where real names may land when it cannot was executed by nothing on any platform this is piped to — it could have been deleted with the suite green."
+    },
+    {
+      "name": "packaging-the-39-floor-step-selects-two-clauses-with-one-or",
+      "module": "harness_shape",
+      "file": ".github/workflows/check.yml",
+      "old": "          .venv/bin/python -m pytest -q tests/test_packaging.py \\\n            -k \"the_hook_and_both_subcommands_run_on_a_real_39\"\n          .venv/bin/python -m pytest -q tests/test_packaging.py \\\n            -k \"harness_shape_runs_on_a_real_floor_interpreter and py39\"\n",
+      "new": "          .venv/bin/python -m pytest -q tests/test_packaging.py \\\n            -k \"the_hook_and_both_subcommands_run_on_a_real_39 or \\\n                (harness_shape_runs_on_a_real_floor_interpreter and py39)\"\n",
+      "tests": [
+        "tests/test_packaging.py::test_the_floor_steps_select_the_tests_they_name"
+      ],
+      "why": "pytest exits 5 for a selection that matches nothing and 0 whenever any half of an `or` still does, so the clause naming the capture tool could stop matching and leave the step green on the hook clause alone — the 3.9 floor executed nowhere else, silently not executed."
+    },
+    {
+      "name": "packaging-a-floor-step-names-a-test-that-is-not-there",
+      "module": "harness_shape",
+      "file": ".github/workflows/check.yml",
+      "old": "            -k \"harness_shape_runs_on_a_real_floor_interpreter and py39\"\n",
+      "new": "            -k \"harness_shape_runs_on_the_floor_interpreter and py39\"\n",
+      "tests": [
+        "tests/test_packaging.py::test_the_floor_steps_select_the_tests_they_name"
+      ],
+      "why": "A `-k` is a test name written down a second time, in a file no rename touches. A token that matches nothing selects nothing, and nothing compared the two copies."
     }
   ]
 }

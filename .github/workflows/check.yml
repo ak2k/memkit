@@ -186,14 +186,21 @@ jobs:
       # one in about a tenth of a second. MEMKIT_FLOOR_REQUIRED=1 makes a
       # missing interpreter fail the step rather than skip it, for the same
       # reason the rig's tier does.
+      #
+      # TWO INVOCATIONS AND NOT ONE `-k ... or ...`: pytest exits 5 when a
+      # selection matches nothing and 0 when any half of an `or` still does,
+      # so a renamed test took its clause out of the step and left it green on
+      # the other clause alone. One clause each is what makes a name that
+      # stopped matching turn this red.
       - name: The 3.9 floor, executed
         env:
           MEMKIT_FLOOR_REQUIRED: "1"
         run: |
           uv python install 3.9
           .venv/bin/python -m pytest -q tests/test_packaging.py \
-            -k "the_hook_and_both_subcommands_run_on_a_real_39 or \
-                (harness_shape_runs_on_a_real_floor_interpreter and py39)"
+            -k "the_hook_and_both_subcommands_run_on_a_real_39"
+          .venv/bin/python -m pytest -q tests/test_packaging.py \
+            -k "harness_shape_runs_on_a_real_floor_interpreter and py39"
 
       # And the capture tool's own floor, a version lower again: it is piped
       # over ssh into whatever `python3` somebody else's host resolves, and the
