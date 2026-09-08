@@ -359,8 +359,10 @@ fails and nothing after it runs. `$store` is your store's root, and all three
 are yours to set before the line runs: an unset `$store` or `$dir` fails a
 test rather than a command, so the line stops with a status and nothing on
 stderr, while an unset `$target` fails `mkdir`, which does say so on stderr.
-Under `set -u` all three are the shell's own message instead, and the line
-stops before it runs.
+Under `set -u` all three are the shell's own message instead where the line
+reaches that name, and it stops there rather than on a test. An earlier test
+that fails first never expands the later name, so that line stops exactly as it
+does without the option: a status, and nothing to read.
 
 `memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
 honours and names the directory in use, or the derived default when it is unset.

@@ -3369,7 +3369,8 @@ _UNSET_TARGET_STREAMS = {
     "says nothing on stderr": "silent",
 }
 _NOUNSET_STREAMS = {
-    "the shell's own message instead, and the line stops before it runs": "shell",
+    "the shell's own message instead where the line reaches that name, and it "
+    "stops there rather than on a test": "shell",
     "no different, and the line stops on the same test": "unchanged",
 }
 _OWN_FILE_OUTCOMES = {
@@ -3685,9 +3686,11 @@ def _nounset_streams(section: str) -> str:
 
     The two sentences above it are true only under the options a shell starts
     with, and the reader this page is written for pastes `set -euo pipefail`
-    before anything: under it the shell reports the unset name itself and no
-    test of the line ever runs, which is a different account of both streams
-    and of where the line stops.
+    before anything: under it the shell reports the unset name itself, which is
+    a different account of both streams and of where the line stops. It reports
+    it at EXPANSION, though, and the line is an AND-list — so the claim holds
+    only where the line reaches the name, and the qualifier saying so is part
+    of what is looked up here.
     """
     return _stated(
         section,
@@ -4305,6 +4308,44 @@ def test_the_recovery_for_a_recreated_dir_refuses_what_ls_ld_cannot_show(
         # `$target` is not there, so the first test fails and nothing runs.
         assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` became a link")
         assert _file_map(dir_) == dir_before, (script, _file_map(dir_))
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+def test_an_unset_name_the_line_never_reaches_is_not_the_shells_message(
+    tmp_path, shell
+) -> None:
+    """`set -u` reports at expansion, and the line is an AND-list.
+
+    Every `guard-*-unset` cell builds `$dir` as a valid symlink, so the chain
+    always reaches the unset name and the shell always speaks. This is the
+    other half: `$dir` an ordinary directory fails the first test, `$store` is
+    never expanded, and the reader gets the same status and the same silence
+    the option was supposed to replace with a message.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    assert _nounset_streams(section) == "shell", "the page claims otherwise"
+    assert _not_a_link_outcome(section) == "stops", "the page claims otherwise"
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+    with_search, _without = _target_rule(section)
+    target = Path(with_search.replace("$store", str(home / "notes")))
+    target.mkdir(parents=True)
+    dir_ = home / "memory"
+    dir_.mkdir()
+    before = _file_map(dir_)
+
+    # `$store` unset, and nothing else: the name the line would expand second.
+    script = "\n".join([
+        "set -u",
+        f"dir={shlex.quote(str(dir_))}",
+        f"target={shlex.quote(str(target))}",
+        _repoint_line(section),
+    ])
+    out = _shell_out(shell, script, home, home)
+    assert out.returncode != 0, (script, out.stdout, out.stderr)
+    assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
+    assert dir_.is_dir() and not dir_.is_symlink(), (script, "the directory became a link")
+    assert _file_map(dir_) == before, (script, _file_map(dir_))
 
 
 def test_no_rm_the_page_prints_reaches_past_the_link_it_removes() -> None:
