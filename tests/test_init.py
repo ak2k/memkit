@@ -3323,6 +3323,29 @@ def test_a_link_planted_after_the_plan_never_lands_outside_the_store(
     assert list(outside.iterdir()) == [], "the write followed the planted link"
 
 
+def test_a_link_planted_after_the_plan_never_lands_off_its_own_row(
+    profile,
+) -> None:
+    """AND STAYING INSIDE THE STORE IS NOT LANDING WHERE THE ROW SAYS. The plan
+    proves the destination resolves to the name it is spelled as; a link
+    planted after it that resolves back into the store passes containment and
+    still moves every copy off the row written for it. The write has to ask the
+    plan's question rather than a weaker one, or the guard is only as strong as
+    where the planted link happens to point.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    base = store / "search" / "projects"
+    landing = store / "search" / "landing"
+    landing.mkdir(parents=True)
+    base.symlink_to(landing)
+    machine = doctor.Machine()
+    code = init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert code == init.EXIT_INCOMPLETE
+    assert list(landing.iterdir()) == [], "the write followed the planted link"
+
+
 def test_the_manifest_names_every_file_the_copy_would_write(profile) -> None:
     """A COUNT IS NOT A LIST. Doctor's remedy for this command promises it
     "names every file first", and consent for a command whose named harm is a

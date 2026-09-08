@@ -4516,6 +4516,18 @@
         "tests/test_init.py::test_a_store_that_is_itself_a_symlink_is_still_adopted_into"
       ],
       "why": "containment is not convergence: a link below the store that resolves back inside it passes both halves of this weaker test and still moves every copy off the row adoption writes for it, so init exits 6 on its own ledger drift every run and the repair the exit code advertises and the next init undo each other forever. Comparing the landing place against the store's own realpath is also what keeps a store that IS a symlink adoptable."
+    },
+    {
+      "name": "init-the-write-time-guard-asks-only-containment",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    if not confine:\n        return\n    named = os.path.join(\n        os.path.realpath(confine), os.path.relpath(path, confine)\n    )\n    if os.path.realpath(path) == named:\n        return\n",
+      "new": "    if not confine or _inside(path, confine):\n        return\n",
+      "tests": [
+        "tests/test_init.py::test_a_link_planted_after_the_plan_never_lands_off_its_own_row",
+        "tests/test_init.py::test_a_store_that_is_itself_a_symlink_is_still_adopted_into"
+      ],
+      "why": "the plan and the write have to ask the same question, and this is the write's half. Containment lets a link planted below the store between the two moments send every copy to a path no manifest line and no ledger row names — the plan's own guard exists because that is not the same as landing outside, and a write-time guard that asks the weaker one re-opens exactly what the plan closed."
     }
   ]
 }

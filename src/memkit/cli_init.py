@@ -2797,23 +2797,37 @@ class _Lock:
 
 
 def _refuse_escape(path: str, confine: str) -> None:
-    """Refuse a write whose real landing place is outside the root it named.
+    """Refuse a write that would not land at the path it is named as.
 
     FAIL-CLOSED, and it is checked here rather than only at plan time because
     the two are different moments: a link planted between the dry-run and the
-    confirm turns a path the manifest proved was inside the store into one that
-    is not, and every write below follows links by design.
+    confirm turns a path the manifest proved landed where it said into one that
+    does not, and every write below follows links by design.
+
+    THE SAME QUESTION THE PLAN ASKED, word for word — landing place against
+    spelled name, built on the root's own realpath so a store that is itself
+    on a symlinked path still resolves every destination onto its own row.
+    Containment is the weaker claim, and asking it here while the plan asked
+    the stronger one left the gap: a link planted BELOW the store that
+    resolves back into it stays inside and still sends the bytes to a path no
+    manifest line and no ledger row names.
     """
-    if not confine or _inside(path, confine):
+    if not confine:
+        return
+    named = os.path.join(
+        os.path.realpath(confine), os.path.relpath(path, confine)
+    )
+    if os.path.realpath(path) == named:
         return
     raise Refusal(
         "escapes-store",
         f"{_display_path(path)} resolves to "
-        f"{_display_path(_terminal_realpath(path))}, which is outside "
-        f"{_display_path(confine)}. The manifest you approved describes a copy "
-        "into the store, and following a link out of it would write somebody's "
-        "memory to a path nobody read. Nothing further was written. Re-run "
-        "`init --dry-run` for a manifest of what is left.",
+        f"{_display_path(_terminal_realpath(path))} rather than to the path it "
+        f"is named as under {_display_path(confine)}. The manifest you approved "
+        "describes a copy that lands where its own line says, and following a "
+        "link off that would write somebody's memory to a path nobody read. "
+        "Nothing further was written. Re-run `init --dry-run` for a manifest "
+        "of what is left.",
     )
 
 
@@ -2845,8 +2859,13 @@ def _write_atomically(
     # each path resolves. Replacing the link would leave an untracked regular
     # file, the repo copy orphaned and unchanged, and the next `home-manager
     # switch` reaching nothing.
-    path = os.path.realpath(path)
+    # ASKED OF THE PATH AS NAMED, before it is resolved. The guard's question
+    # is where the named path lands against what its name says, and a path
+    # already replaced by its own realpath cannot be asked it — under a store
+    # that is itself a link, the resolved form is not even spelled inside the
+    # root it answers to.
     _refuse_escape(path, confine)
+    path = os.path.realpath(path)
     if expect is not None and state_token(path) != expect:
         raise Refusal(
             "changed-underfoot",
