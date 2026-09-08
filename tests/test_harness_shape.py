@@ -57,6 +57,46 @@ HOOK_OK = frozenset({
     "PostToolUse", "PreCompact", "PreToolUse", "SessionEnd", "SessionStart",
     "Stop", "SubagentStop", "UserPromptSubmit",
 })
+# The two vocabularies a shape ADDRESSES its values by. Every rule above is
+# about a value, and a dict key is a string a fixture carries just as surely:
+# a scope named after an employer's policy set, holding the exact field set
+# the tool emits, passed both gates. Re-typed like the vocabularies above, and
+# held to `harness_memory`'s own names by
+# `test_the_constants_copied_from_memkit_are_the_ones_memkit_holds`.
+SCOPE_OK = frozenset({"managed", "local", "project", "user"})
+MEMORY_KEY_OK = frozenset({
+    "autoMemoryEnabled", "autoMemoryDirectory", "autoDreamEnabled",
+})
+# And what every field that is not a string is allowed to BE. Without this a
+# path in `files[].size` and a hostname in `lock_age_s` are numbers as far as
+# the gate can tell — the leak rules only ever look at the strings they expect
+# to find. `bool` and `int` are kept apart in both directions because
+# `isinstance(True, int)` is true in Python, and a count is not a flag.
+SHAPE_TYPES = {
+    "schema": int,
+    "projects_total": int,
+    "memory_dirs_total": int,
+    "skipped": int,
+    "read_errors": int,
+    "anonymised": bool,
+}
+DIR_TYPES = {
+    "key_len": int,
+    "is_symlink": bool,
+    "project_is_symlink": bool,
+    "lock_age_s": (int, type(None)),
+}
+FILE_TYPES = {
+    "size": int,
+    "is_symlink": bool,
+    "has_frontmatter": bool,
+    "has_description": bool,
+    "has_name": bool,
+    "has_type": bool,
+    "description_len": (int, type(None)),
+}
+INDEX_TYPES = {"rows": int, "dangling_rows": int, "truncated": bool}
+SCOPE_TYPES = {"unreadable": bool}
 
 
 def _run(*args: str, env=None) -> subprocess.CompletedProcess:
@@ -1153,6 +1193,16 @@ def test_the_constants_copied_from_memkit_are_the_ones_memkit_holds(
     )
     assert module.CONSOLIDATE_LOCK == cli_doctor.CONSOLIDATE_LOCK
     assert module._managed_dir() == cli_doctor._managed_dir()
+    # And the two the ARTIFACT GATE holds a fixture to. Re-typed above like
+    # every other vocabulary in this file, so the gate cannot be widened by
+    # widening the thing it is checking; memkit owns the names, and a scope or
+    # a switch it stops reading is one this gate should stop admitting.
+    assert set(harness_memory.SCOPE_ORDER) == SCOPE_OK
+    assert {
+        harness_memory.ENABLED_KEY,
+        harness_memory.DIRECTORY_KEY,
+        harness_memory.DREAM_KEY,
+    } == MEMORY_KEY_OK
 
 
 def test_the_lock_the_doctor_would_read_is_the_one_recorded(tmp_path) -> None:
@@ -1470,6 +1520,75 @@ def test_the_artifact_gate_finds_a_fixture_wherever_it_was_put(tmp_path) -> None
         _fixture_shape(_write(tmp_path / "list.json", "[]\n"))
 
 
+def _typed(record: dict, types: dict, where) -> None:
+    """Every field in `types` is the kind of thing the schema says it is."""
+    for field, allowed in types.items():
+        kinds = allowed if isinstance(allowed, tuple) else (allowed,)
+        value = record[field]
+        assert isinstance(value, kinds), (where, field, value)
+        if int in kinds:
+            # `isinstance(True, int)`, so a plain int check admits a flag.
+            assert not isinstance(value, bool), (where, field, value)
+
+
+def _gated(shape: dict, where) -> None:
+    """Everything one committed shape has to satisfy.
+
+    A function rather than a loop body so the rules can be run over a planted
+    shape too: what an artifact gate is worth is what it REJECTS, and there is
+    no other way to watch that without committing the thing it must reject.
+    """
+    assert shape["schema"] == 1, where
+    assert shape["tool"] == "harness_shape", where
+    assert shape["anonymised"] is True, where
+    assert shape["memory_dirs"], (where, "a shape of nothing tests nothing")
+    # A committed fixture is a COMPLETE capture. A half-failed one is a
+    # tree nobody can rebuild, and it looks exactly like a small machine.
+    assert shape["skipped"] == 0, where
+    # Subscripted, never `.get`: a fixture without this counter predates
+    # the field set the tool emits, and a default that stands in for it
+    # reads as a complete capture. The KeyError is the right failure.
+    assert shape["read_errors"] == 0, where
+    _typed(shape, SHAPE_TYPES, where)
+    # The two harness rows, which are adopter-controlled strings and were
+    # the only free text in either committed fixture.
+    version = shape["harness"]["version_hint"]
+    assert version is None or VERSION_RE.fullmatch(version), (where, version)
+    install = shape["harness"]["install"]
+    assert install is None or install in INSTALL_OK, (where, install)
+    for entry in shape["memory_dirs"]:
+        assert KEY_RE.match(entry["key"]), (where, entry["key"])
+        _typed(entry, DIR_TYPES, where)
+        for item in entry["files"]:
+            assert FILE_RE.match(item["name"]), (where, item["name"])
+            _typed(item, FILE_TYPES, where)
+        if entry["index"] is not None:
+            _typed(entry["index"], INDEX_TYPES, where)
+    for scope_name, scope in shape["settings"].items():
+        # The KEY, not just what hangs off it: a scope named after an
+        # employer's policy set carries the name in the one place every rule
+        # below was looking past.
+        assert scope_name in SCOPE_OK, (where, scope_name)
+        _typed(scope, SCOPE_TYPES, where)
+        for key, value in scope["memory_keys"].items():
+            assert key in MEMORY_KEY_OK, (where, key)
+            if key == harness_memory.DIRECTORY_KEY:
+                assert value in (None, "<path>"), (where, value)
+            else:
+                # A switch, or the placeholder that says it was set to
+                # something else. Never the something else, and never a
+                # null — which the harness reads as absent.
+                assert value == "<set>" or isinstance(value, bool), (
+                    where, key, value,
+                )
+        for event in scope["hooks"]:
+            assert event in HOOK_OK or HOOK_PSEUDONYM_RE.fullmatch(event), (
+                where, event,
+            )
+        for plugin in scope["plugins"]:
+            assert PLUGIN_RE.match(plugin), (where, plugin)
+
+
 def test_the_committed_shapes_carry_no_names() -> None:
     """The artifact gate: every shape checked into this repository, whatever it
     is called and wherever under the fixtures directory it sits.
@@ -1489,45 +1608,62 @@ def test_the_committed_shapes_carry_no_names() -> None:
     if tracked is not None:
         assert fixtures == tracked, "a file under the fixtures directory nobody committed"
     for path in fixtures:
-        shape = _fixture_shape(path)
-        assert shape["schema"] == 1, path.name
-        assert shape["tool"] == "harness_shape", path.name
-        assert shape["anonymised"] is True, path.name
-        assert shape["memory_dirs"], (path.name, "a shape of nothing tests nothing")
-        # A committed fixture is a COMPLETE capture. A half-failed one is a
-        # tree nobody can rebuild, and it looks exactly like a small machine.
-        assert shape["skipped"] == 0, path.name
-        # Subscripted, never `.get`: a fixture without this counter predates
-        # the field set the tool emits, and a default that stands in for it
-        # reads as a complete capture. The KeyError is the right failure.
-        assert shape["read_errors"] == 0, path.name
-        # The two harness rows, which are adopter-controlled strings and were
-        # the only free text in either committed fixture.
-        version = shape["harness"]["version_hint"]
-        assert version is None or VERSION_RE.fullmatch(version), (path.name, version)
-        install = shape["harness"]["install"]
-        assert install is None or install in INSTALL_OK, (path.name, install)
-        for entry in shape["memory_dirs"]:
-            assert KEY_RE.match(entry["key"]), (path.name, entry["key"])
-            for item in entry["files"]:
-                assert FILE_RE.match(item["name"]), (path.name, item["name"])
-        for scope in shape["settings"].values():
-            for key, value in scope["memory_keys"].items():
-                if key == harness_memory.DIRECTORY_KEY:
-                    assert value in (None, "<path>"), (path.name, value)
-                else:
-                    # A switch, or the placeholder that says it was set to
-                    # something else. Never the something else, and never a
-                    # null — which the harness reads as absent.
-                    assert value == "<set>" or isinstance(value, bool), (
-                        path.name, key, value,
-                    )
-            for event in scope["hooks"]:
-                assert event in HOOK_OK or HOOK_PSEUDONYM_RE.fullmatch(event), (
-                    path.name, event,
-                )
-            for plugin in scope["plugins"]:
-                assert PLUGIN_RE.match(plugin), (path.name, plugin)
+        _gated(_fixture_shape(path), path.name)
+
+
+def _with_files(shape: dict) -> dict:
+    """The first memory directory in `shape` that has a file to injure."""
+    return next(entry for entry in shape["memory_dirs"] if entry["files"])
+
+
+def _injected(shape: dict, which: str) -> dict:
+    """A copy of `shape` carrying one real name where the gate was not looking."""
+    planted = json.loads(json.dumps(shape))
+    if which == "a scope named after an organisation":
+        planted["settings"]["AcmeCorp-Internal-Policy"] = planted["settings"]["user"]
+    elif which == "a switch key named after an organisation":
+        planted["settings"]["user"]["memory_keys"]["AcmeCorpPolicyGate"] = True
+    elif which == "a path where a file size belongs":
+        _with_files(planted)["files"][0]["size"] = "/Users/alice/src/acme/secret.md"
+    elif which == "a path where a description length belongs":
+        _with_files(planted)["files"][0]["description_len"] = "/opt/acme/bin"
+    elif which == "a hostname where a lock age belongs":
+        _with_files(planted)["lock_age_s"] = "acme-corp-host-01"
+    elif which == "a flag where a count belongs":
+        _with_files(planted)["key_len"] = True
+    else:
+        raise AssertionError(which)
+    return planted
+
+
+@pytest.mark.parametrize(
+    "injection",
+    [
+        "a scope named after an organisation",
+        "a switch key named after an organisation",
+        "a path where a file size belongs",
+        "a path where a description length belongs",
+        "a hostname where a lock age belongs",
+        "a flag where a count belongs",
+    ],
+)
+def test_the_artifact_gate_rejects_a_name_it_was_not_looking_at(injection) -> None:
+    """The gate read every VALUE it knew the shape of and nothing else.
+
+    So a settings scope keyed `AcmeCorp-Internal-Policy`, carrying the exact
+    field set the tool emits, passed both gates — and so did a `/Users` path
+    sitting in `files[].size`, because nothing said a size is a number. Both
+    are unreachable from the tool as it stands; the gate's job is the fixture
+    that is stale or hand-edited, which is how the field-set gate beside it
+    came to be written.
+    """
+    fixtures = _fixture_files(SHAPES) if SHAPES.is_dir() else []
+    if not fixtures:
+        pytest.skip("no shapes captured yet")
+    shape = _fixture_shape(fixtures[0])
+    _gated(shape, fixtures[0].name)
+    with pytest.raises(AssertionError):
+        _gated(_injected(shape, injection), "planted")
 
 
 def _field_sets(shape: dict) -> dict:

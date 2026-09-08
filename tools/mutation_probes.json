@@ -4437,6 +4437,50 @@
         "tests/test_harness_shape.py::test_the_artifact_gate_finds_a_fixture_wherever_it_was_put"
       ],
       "why": "One subdirectory per host is how a second machine's captures get organised, and a flat glob gates none of them: an un-anonymised shape at harness_shapes/hosts/prod-laptop.json passed all 28 cases, and so did one at the top level under any other suffix. The gate that decides whether a real name reaches the repository is the enumeration, not the assertions under it."
+    },
+    {
+      "name": "harness-shape-artifact-gate-reads-scope-values-and-not-scope-names",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        assert scope_name in SCOPE_OK, (where, scope_name)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "A dict key is a string a fixture carries as surely as any value: a scope keyed `AcmeCorp-Internal-Policy`, holding the exact field set the tool emits, passed both gates while the same string as a hook value was caught. Every other rule in the gate reads what hangs off the names."
+    },
+    {
+      "name": "harness-shape-artifact-gate-reads-switch-values-and-not-switch-names",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "            assert key in MEMORY_KEY_OK, (where, key)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "`memory_keys` is the one map in a shape whose keys come from an adopter's settings file, and the gate checked only that each value was a boolean or the placeholder — so a key named after an employer's policy gate travelled under a value the gate approved of."
+    },
+    {
+      "name": "harness-shape-artifact-gate-takes-any-value-for-a-number",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        assert isinstance(value, kinds), (where, field, value)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "The leak rules only ever look at the strings they expect to find, so a `/Users` path in `files[].size` and a hostname in `lock_age_s` are numbers as far as the gate can tell. A field whose type is never asserted is a field anything can be written into."
+    },
+    {
+      "name": "harness-shape-artifact-gate-counts-a-flag-as-a-number",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        if int in kinds:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "`isinstance(True, int)` is true in Python, so a plain int check admits a flag where a measurement belongs — a key length of `true` is a record no rebuilt tree can reproduce, and it passes every rule that reads the field as a number."
     }
   ]
 }
