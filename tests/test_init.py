@@ -3796,6 +3796,52 @@ def test_the_manifest_says_where_a_linked_source_directory_resolves(
     assert (elsewhere / "alpha.md").read_text() == TRAP
 
 
+def test_the_stores_own_writes_answer_to_the_stores_containment_root(
+    profile,
+) -> None:
+    """Adoption's copies carried a containment root and init's own writes did
+    not, so the guard covered the actions a reviewer looks at and not the ones
+    that build the store. A directory swapped for a link to another directory
+    is `dir` before and after, so the digest binds nothing about it and the
+    write is the first thing that can see it — which is what a containment
+    root is for.
+    """
+    outside = profile / "outside"
+    (outside / "search").mkdir(parents=True)
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    manifest = _dry(profile, "--store", str(store))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    (store / "search").rmdir()
+    (store / "search").symlink_to(outside / "search")
+    out = _confirm(profile, _digest_of(manifest), "--store", str(store))
+    # 6, not 5: the link is only visible to the write, so earlier actions have
+    # already landed — "started and did not finish" is what happened.
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    assert "refused mid-apply (escapes-store)" in out.stderr, out.stderr
+    assert sorted(p.name for p in (outside / "search").iterdir()) == []
+
+
+def test_a_store_built_over_no_link_at_all_is_written_and_checks_green(
+    profile,
+) -> None:
+    """The control for the containment root: the root itself carries none, and
+    cannot — `_refuse_escape` names a path against `relpath(path, confine)`,
+    which for the root is `.` and never equals its own resolution. Confining
+    it to itself refuses every run there is.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert (store / "search").is_dir() and not (store / "search").is_symlink()
+    assert (store / "hot").is_dir()
+    assert (store / "MEMORY.md").exists() and (store / "SEARCH.md").exists()
+    # Exit 0 IS the checker's answer: VERIFY is the last action in the plan and
+    # a red one is exit 6.
+    assert any(a.op == init.VERIFY for a in _plan(profile, store=str(store)).actions)
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )

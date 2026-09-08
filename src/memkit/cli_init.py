@@ -2519,27 +2519,43 @@ def build_plan(
                 "entries": _config_entries(store=store_path, store_id=store_id),
             },
         ),
+        # THE ROOT IS THE CONTAINMENT ROOT, so it is the one action under the
+        # store that carries no `confine`: `_refuse_escape` judges the landing
+        # place against `join(realpath(confine), relpath(path, confine))`, and
+        # for a path that IS the root that name ends in `/.` and never equals
+        # its own realpath — every run would refuse. It is not confined to the
+        # parent either, because where the adopter puts their store is their
+        # answer and not a path this command gets to bound.
         Action(CREATE_DIR, store_path),
         # search/ FIRST, and the order in this list is the order they are made.
         # The trap init exists to prevent is a flat store that grows a `search/`
         # later: the moment that directory appears, every memory above it stops
         # being retrieved, silently, with every diagnostic still green.
+        #
+        # EVERY WRITE UNDER THE STORE ANSWERS TO THE SAME ROOT, whoever
+        # authored the action. Adoption's copies carried `confine` and the
+        # store's own writes did not, so a `search/` swapped for a link
+        # between the two turns sent init's own files somewhere no manifest
+        # line names — under a guard that was already there.
         Action(
             CREATE_DIR,
             os.path.join(store_path, "search"),
             note="memories live here. A store without it retrieves from its "
             "root, and gaining one later un-retrieves everything above it.",
+            confine=store_path,
         ),
         Action(
             CREATE_DIR,
             os.path.join(store_path, "hot"),
             note="memories that load into every session, and which the hook "
             "never points at because they are already in context.",
+            confine=store_path,
         ),
         Action(
             CREATE_FILE,
             os.path.join(store_path, "MEMORY.md"),
             _memory_ledger(store_path),
+            confine=store_path,
         ),
         Action(
             CREATE_FILE,
@@ -2547,6 +2563,7 @@ def build_plan(
             _canary_body(nonce),
             note="one memory, so the store answers something on the first "
             "prompt and doctor has a fixed query that can only match this file.",
+            confine=store_path,
         ),
         # BEFORE the verification, and that is the whole reason they are in
         # this list rather than appended past it the way the settings writes
@@ -2560,6 +2577,7 @@ def build_plan(
             _search_ledger_text(store_path, list(ledger_rows.values())),
             note="generated from the frontmatter of every memory under "
             "search/, in the form the integrity checker generates.",
+            confine=store_path,
         ),
         Action(
             VERIFY,

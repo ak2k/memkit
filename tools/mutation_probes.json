@@ -4751,6 +4751,17 @@
         "tests/test_init.py::test_the_manifest_says_where_a_linked_source_directory_resolves"
       ],
       "why": "a copy has two ends and the manifest disclosed resolution at one of them. `memory/` symlinked elsewhere is supported, so the run reads through the link — and the group line, the only line naming the source, printed the unresolved path: consent given for reading one directory, spent on another."
+    },
+    {
+      "name": "init-the-stores-own-canary-answers-to-no-containment-root",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            note=\"one memory, so the store answers something on the first \"\n            \"prompt and doctor has a fixed query that can only match this file.\",\n            confine=store_path,\n",
+      "new": "            note=\"one memory, so the store answers something on the first \"\n            \"prompt and doctor has a fixed query that can only match this file.\",\n",
+      "tests": [
+        "tests/test_init.py::test_the_stores_own_writes_answer_to_the_stores_containment_root"
+      ],
+      "why": "adoption's copies were bounded by the store and the store's own writes were not, so `search/` swapped for a link between the two turns sent init's first memory to a path no manifest line named. The swap is invisible to the digest — a directory and a link to a directory are both `dir` — so the write is the only place it can be caught."
     }
   ]
 }
