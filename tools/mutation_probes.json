@@ -4229,6 +4229,39 @@
       "why": "managed settings are the administrator's and the scope the harness reads first. A hole there is init redirecting where an agent writes against site policy, on the one scope the adopter at the terminal cannot answer for."
     },
     {
+      "name": "init-adoption-never-asks-the-managed-scope-whether-the-feature-is-off",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER:\n",
+      "new": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER[1:]:\n",
+      "tests": [
+        "tests/test_init.py::test_adoption_refuses_while_the_harness_feature_is_switched_off"
+      ],
+      "why": "managed settings are the administrator's and the scope the harness reads first. Skipped here, an adopter whose site policy has auto-memory switched off gets their memories copied and a redirect written under a feature that will never write to it."
+    },
+    {
+      "name": "init-adoption-never-asks-the-local-scope-whether-the-feature-is-off",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER:\n",
+      "new": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER[:1] + harness_memory.SCOPE_ORDER[2:]:\n",
+      "tests": [
+        "tests/test_init.py::test_adoption_refuses_while_the_harness_feature_is_switched_off"
+      ],
+      "why": "`.claude/settings.local.json` outranks the user settings init writes and is the everyday instance of this — an uncommitted file in somebody's own checkout. Skipped, the switch that decides whether the harness writes anything at all is the one scope nobody asked."
+    },
+    {
+      "name": "init-adoption-never-asks-the-local-scope-about-the-redirect",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        planned = _redirect_dir(store_path)\n        for name in harness_memory.SCOPE_ORDER:\n",
+      "new": "        planned = _redirect_dir(store_path)\n        for name in harness_memory.SCOPE_ORDER[:1] + harness_memory.SCOPE_ORDER[2:]:\n",
+      "tests": [
+        "tests/test_init.py::test_a_harness_already_pointed_somewhere_else_refuses_by_name"
+      ],
+      "why": "where an agent writes its memories is a decision somebody has already made, and `settings.local.json` is where they most often made it. Skipped, init writes a redirect into the user scope that the harness never reads, over a choice it never named."
+    },
+    {
       "name": "init-adoption-reads-one-link-flag-of-the-three",
       "module": "init",
       "file": "src/memkit/cli_init.py",
@@ -4344,8 +4377,8 @@
       "name": "init-adoption-plans-a-copy-it-cannot-place-inside-the-store",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "        if os.path.islink(target) or not _inside(target, store):\n",
-      "new": "        if os.path.islink(target):\n",
+      "old": "        named = os.path.join(\n            os.path.realpath(store), os.path.relpath(target, store)\n        )\n        if os.path.realpath(target) != named:\n",
+      "new": "        if not _inside(target, store):\n",
       "tests": [
         "tests/test_init.py::test_a_linked_destination_directory_takes_the_whole_project_with_it"
       ],
@@ -4385,15 +4418,49 @@
       "why": "doctor's remedy for this command promises it names every file first, and consent for a command whose named harm is a wrong copy has to be given against the destinations rather than against their number."
     },
     {
+      "name": "init-a-grouped-copy-does-not-say-where-it-actually-lands",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "                    lines.extend(_path_detail(member))\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_the_grouped_copies_each_say_where_they_actually_land"
+      ],
+      "why": "the grouped branch is the one every adopted memory goes through, and a store on an external volume or in a dotfiles tree is the shape it is written for: there the summary line names a destination not one byte lands at. Without this the manifest asks for consent to `~/notes/search/projects/<key>/` and writes somewhere the adopter was never shown."
+    },
+    {
       "name": "init-adoption-writes-into-a-linked-project-directory",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "        if os.path.islink(target) or not _inside(target, store):\n",
-      "new": "        if not _inside(target, store):\n",
+      "old": "        named = os.path.join(\n            os.path.realpath(store), os.path.relpath(target, store)\n        )\n        if os.path.realpath(target) != named:\n",
+      "new": "        if os.path.islink(target):\n",
       "tests": [
         "tests/test_init.py::test_a_linked_destination_directory_takes_the_whole_project_with_it"
       ],
       "why": "a destination directory that is a link lands inside the store and still not at the path the manifest names: consent was given for search/projects/<key>/, and the copies go wherever the link points."
+    },
+    {
+      "name": "init-adoption-refuses-a-store-that-is-itself-a-symlink",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        named = os.path.join(\n            os.path.realpath(store), os.path.relpath(target, store)\n        )\n        if os.path.realpath(target) != named:\n",
+      "new": "        if os.path.realpath(target) != os.path.abspath(target):\n",
+      "tests": [
+        "tests/test_init.py::test_a_store_that_is_itself_a_symlink_is_still_adopted_into"
+      ],
+      "why": "the other half of the same comparison: asking only whether the destination resolved anywhere refuses every store reached through a link — an external volume, a dotfiles tree, a synced directory — where every destination resolves elsewhere and every one still lands on its own row. A guard that cannot tell those from a link that moves the write is a guard that stops adoption working at all."
+    },
+    {
+      "name": "init-adoption-writes-through-a-link-that-lands-back-inside-the-store",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        named = os.path.join(\n            os.path.realpath(store), os.path.relpath(target, store)\n        )\n        if os.path.realpath(target) != named:\n",
+      "new": "        if os.path.islink(target) or not _inside(target, store):\n",
+      "tests": [
+        "tests/test_init.py::test_a_link_that_lands_back_inside_the_store_still_never_converges",
+        "tests/test_init.py::test_a_store_that_is_itself_a_symlink_is_still_adopted_into"
+      ],
+      "why": "containment is not convergence: a link below the store that resolves back inside it passes both halves of this weaker test and still moves every copy off the row adoption writes for it, so init exits 6 on its own ledger drift every run and the repair the exit code advertises and the next init undo each other forever. Comparing the landing place against the store's own realpath is also what keeps a store that IS a symlink adoptable."
     }
   ]
 }

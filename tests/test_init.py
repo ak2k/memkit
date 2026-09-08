@@ -177,6 +177,42 @@ def test_the_manifest_shows_where_a_symlink_actually_lands(profile) -> None:
     assert hook._display_path(str(real)) in rendered
 
 
+def test_the_grouped_copies_each_say_where_they_actually_land(profile) -> None:
+    """AND THE GROUPED BRANCH TOO, which is the branch every adopted memory
+    goes through.
+
+    A store on an external volume, in a dotfiles tree or under a synced
+    directory is the common shape this is for, and there the summary line
+    ("2 files from ... -> ~/notes/search/projects/-k/") names a path that is
+    not where a single byte lands. The count folds the copies together; the
+    resolution is per file, so it is asserted per file.
+    """
+    _harness(profile, "-home-u", {"one.md": TRAP, "two.md": TRAP})
+    real = profile / "external-volume" / "notes"
+    real.mkdir(parents=True)
+    store = profile / "home" / "notes"
+    store.symlink_to(real)
+    lines = _plan(
+        profile, store=str(store), adopt_auto_memory=True
+    ).render().splitlines()
+    grouped = [
+        i for i, line in enumerate(lines)
+        if line.strip().startswith("create-file") and "files from" in line
+    ]
+    assert len(grouped) == 1, lines
+    for name in ("one.md", "two.md"):
+        member = next(
+            i for i in range(grouped[0], len(lines))
+            if lines[i].strip() == str(store / "search" / "projects" / "-home-u" / name)
+            or lines[i].strip() == hook._display_path(
+                str(store / "search" / "projects" / "-home-u" / name)
+            )
+        )
+        assert lines[member + 1].strip() == "-> resolves to " + hook._display_path(
+            str(real / "search" / "projects" / "-home-u" / name)
+        ), lines[member : member + 2]
+
+
 # --- the digest --------------------------------------------------------------
 
 
@@ -2376,11 +2412,30 @@ def test_a_harness_already_pointed_somewhere_else_refuses_by_name(profile) -> No
     assert "in project settings" in refusal.message
     assert "/from-the-clone" in refusal.message
 
+    # AND `settings.local.json` OUTRANKS BOTH — measured on 2.1.258, and the
+    # everyday instance of this: an uncommitted file in somebody's own checkout
+    # that the harness reads before the settings they think they are editing.
+    (checkout / "settings.local.json").write_text(
+        json.dumps({"autoMemoryDirectory": "/my-own-untracked-choice"}),
+        encoding="utf-8",
+    )
+    refusal = _refuses(profile, "auto-memory-redirected", adopt_auto_memory=True)
+    assert "in local settings" in refusal.message
+    assert "/my-own-untracked-choice" in refusal.message
 
-def test_adoption_refuses_while_the_harness_feature_is_switched_off(profile) -> None:
+
+def test_adoption_refuses_while_the_harness_feature_is_switched_off(
+    profile, monkeypatch
+) -> None:
     """Copying what is there and then pointing a switched-off feature at the
     store would leave an adopter with a redirect nothing acts on and a
     directory to clean up.
+
+    EVERY SCOPE, and not just the one init writes. `managed` and `local` both
+    outrank `user`, so a switch read from either of them is the one deciding
+    whether the harness writes anything at all — and each is asserted here by
+    name, because a loop that skipped one would leave that adopter's memories
+    copied and a redirect written under a feature nobody turned on.
 
     The flag that turns it off is not refused by the same rule: it writes one
     boolean and has to stay idempotent.
@@ -2395,6 +2450,31 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(profile) -> 
     # evaluated for a plain init.
     assert _plan(profile, auto_memory_off=True).actions
     assert _plan(profile).actions
+
+    # `settings.local.json` in the checkout, which the harness reads ahead of
+    # user settings.
+    (profile / "claude-config" / "settings.json").write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True)
+    (checkout / "settings.local.json").write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
+    assert "local settings" in refusal.message
+    (checkout / "settings.local.json").unlink()
+
+    # And managed settings, the administrator's — the one scope the adopter in
+    # front of the terminal cannot answer for.
+    managed = profile / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
+    assert "managed settings" in refusal.message
 
 
 def test_the_adoption_manifest_names_every_directory_and_every_file(profile) -> None:
@@ -3075,6 +3155,101 @@ def test_a_linked_destination_directory_takes_the_whole_project_with_it(
         plan.notes
     )
     assert list(inward.iterdir()) == []
+
+
+@pytest.mark.parametrize("shape", ("linked-projects-dir", "linked-key-dir"))
+def test_a_link_that_lands_back_inside_the_store_still_never_converges(
+    profile, shape
+) -> None:
+    """CONTAINED IS NOT THE SAME AS CONVERGENT, and containment was the only
+    question the guard used to ask.
+
+    A link BELOW the store that resolves back INSIDE it passes every
+    containment test there is: no leaf is a link, and the resolved path is in
+    the store. The row init writes is `relpath(dest, store)`, spelled
+    lexically — `search/projects/<key>/note.md` — while the bytes land where
+    the link points, which is the name the checker enumerates. Init then exits
+    6 on its own LEDGER-DRIFT every run; `memory-integrity --write` repairs the
+    row and the next init puts it back. Two tools each undoing the other is
+    worse than a refusal, so the project is named and left alone instead.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "home" / f"notes-{shape}"
+    projects = store / "search" / "projects"
+    elsewhere = store / "search" / "elsewhere"
+    elsewhere.mkdir(parents=True)
+    landing = elsewhere
+    if shape == "linked-projects-dir":
+        # No leaf is a link and nothing is outside the store: the whole
+        # `projects/` directory is one, pointing at a sibling.
+        projects.symlink_to(elsewhere)
+    else:
+        projects.mkdir()
+        (projects / "-home-u").symlink_to(elsewhere)
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "diverged" in manifest.stdout, manifest.stdout
+    assert hook._display_path(str(landing)) in manifest.stdout, manifest.stdout
+    assert "0 files" in manifest.stdout, manifest.stdout
+
+    # The confirm runs the integrity check on the store it just built, so an
+    # exit 0 here is the checker's answer as well as init's.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert list(landing.iterdir()) == [], "a copy went through the link"
+
+    # AND IT CONVERGES. The oscillation this guards is only visible on the
+    # second turn: the first one wrote a row for a path nothing is at, and the
+    # second one is where init and the checker start undoing each other.
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
+def test_a_store_that_is_itself_a_symlink_is_still_adopted_into(profile) -> None:
+    """The other side of the same test, and the reason it compares the landing
+    place against the store's OWN realpath rather than against `abspath`.
+
+    A store on an external volume, in a dotfiles tree or under a synced
+    directory is a store reached through a link, so EVERY destination in it
+    resolves somewhere other than the path it is spelled as — and every one of
+    them still lands exactly where its row says. A guard that only asked
+    "did anything resolve?" would refuse to adopt into any of them.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    real = profile / "external-volume" / "notes"
+    real.mkdir(parents=True)
+    store = profile / "home" / "notes"
+    store.symlink_to(real)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert any("1 files" in note and "0 diverged" in note for note in plan.notes), (
+        plan.notes
+    )
+    assert [
+        a.path for a in plan.actions
+        if a.op == init.CREATE_FILE and a.path.endswith("-home-u/note.md")
+    ] == [str(store / "search" / "projects" / "-home-u" / "note.md")]
+
+    # END TO END, because the claim is about the ledger and not the plan: the
+    # confirm runs the integrity checker over the store it just built, so an
+    # exit 0 is the checker agreeing that the row and the bytes are the same
+    # file — reached one way through the link and the other way around it.
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert (real / "search" / "projects" / "-home-u" / "note.md").is_file()
+    rows = _rows_of((store / "SEARCH.md").read_text(encoding="utf-8"))
+    assert "search/projects/-home-u/note.md" in rows, rows
 
 
 def test_a_link_planted_after_the_plan_never_lands_outside_the_store(

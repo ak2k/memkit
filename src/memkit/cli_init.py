@@ -1768,13 +1768,13 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     is, and no reason to refuse the rest. The originals are not touched on any
     path, so the worst outcome of a wrong guess here is a file to delete.
 
-    AND NEVER OUTSIDE THE STORE. A destination is a path until something
-    writes to it, and then it is that path with every link in it followed: a
-    dangling symlink at one reads as absent through `state_token`, so the copy
-    was planned, and the write created the link's target directory and put a
-    memory in it. What this plans, it can prove lands inside `store` — the
-    check is on the RESOLVED path rather than on `islink`, because the link
-    that moves the write is as often a directory halfway up as the leaf.
+    AND NEVER ANYWHERE BUT THE PATH IT NAMES. A destination is a path until
+    something writes to it, and then it is that path with every link in it
+    followed: a dangling symlink at one reads as absent through `state_token`,
+    so the copy was planned, and the write created the link's target directory
+    and put a memory in it. What this plans, it can prove lands where the
+    manifest and the ledger row both say it does — which is a stronger claim
+    than landing inside the store, and the one the checker measures.
     """
     base = os.path.join(store, "search", ADOPT_DIRNAME)
     actions: list = []
@@ -1794,7 +1794,23 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
         # `os.makedirs` follows one as happily as `open` does — so a linked
         # `projects/` directory sends every copy under it somewhere the
         # manifest does not name, without a single leaf being a link.
-        if os.path.islink(target) or not _inside(target, store):
+        #
+        # WHERE IT LANDS AGAINST WHERE IT IS NAMED, and not containment. The
+        # ledger row is `relpath(dest, store)`, spelled lexically, while the
+        # bytes go to the resolved path the checker enumerates — so a link
+        # that stays INSIDE the store still moves the write off its own row,
+        # and init and `memory-integrity --write` then rewrite each other's
+        # answer every run. Containment falls out of the comparison: a key is
+        # one directory entry name, so the relative path can never climb out.
+        #
+        # The name is built on the STORE'S OWN realpath rather than on
+        # `abspath(target)`, because a store reached through a link — an
+        # external volume, a dotfiles tree — resolves every destination in it
+        # somewhere else and still lands each one exactly where its row says.
+        named = os.path.join(
+            os.path.realpath(store), os.path.relpath(target, store)
+        )
+        if os.path.realpath(target) != named:
             diverged.append(
                 f"{_display_path(target)} resolves to "
                 f"{_display_path(_terminal_realpath(target))} — every copy "
