@@ -4218,6 +4218,17 @@
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
     },
     {
+      "name": "a-dir-named-on-the-command-line-is-never-a-project-corpus",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            (d, _named_dir_is_a_project_corpus(d))\n",
+      "new": "            (d, False)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_search_cli_scans_a_project_corpus_it_was_pointed_at_by_hand"
+      ],
+      "why": "`--search --dir` is the other door into retrieval and `search_cli` is what the config tells an agent to run. Unclassified, a checked-in corpus named by hand is served with the scan never firing, and from outside the repository nothing else notices."
+    },
+    {
       "name": "project-corpus-root-may-climb-out-of-the-repository",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",

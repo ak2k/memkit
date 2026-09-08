@@ -2220,6 +2220,38 @@ def _search_dirs() -> list[tuple[str, bool]]:
     return _live_dirs(cfg) if cfg is not None else []
 
 
+def _named_dir_is_a_project_corpus(d: str) -> bool:
+    """Whether a directory a CALLER named is one a repository chose.
+
+    `--search --dir` hands retrieval a path with no store behind it, and the
+    credential scan has to reach those bytes for the same reason it reaches
+    them on the prompt path: `search_cli` is what the user's own config tells
+    an agent to run, so its output is model-facing too.
+
+    The classification is the hook's, not a second rule: the named directory's
+    repository is resolved from the directory itself, its `.memkit.json` goes
+    through the same refusals, and the answer is whether the store that file
+    asks for contains what was named. So the cwd this was typed from cannot
+    change the verdict, and a directory the user simply owns is unaffected.
+
+    Reached only for dirs a caller named — the prompt path is answered by
+    `_live_dirs`, which has the store in hand — so the repository walk and the
+    open this costs are off the every-prompt path.
+    """
+    cfg = _config()
+    if cfg is None or not cfg.project_config:
+        return False
+    try:
+        real = os.path.realpath(d)
+        root = _repo_root(real)
+    except (_RootUnknown, OSError, ValueError):
+        return False
+    if root is None:
+        return False
+    store, _ = _project_store(root, {s.id for s in cfg.stores})
+    return store is not None and _inside(store.resolved_dir, real)
+
+
 def _config_state() -> tuple:
     """Whether this installation has anything to search — decided once.
 
@@ -5598,7 +5630,13 @@ def recall(
     # (directory, did a repository choose it), so the fact that decides the
     # credential scan travels with the corpus it is a fact about.
     corpora = (
-        [(d, False) for d in dirs if os.path.isdir(d)] if dirs else _search_dirs()
+        [
+            (d, _named_dir_is_a_project_corpus(d))
+            for d in dirs
+            if os.path.isdir(d)
+        ]
+        if dirs
+        else _search_dirs()
     )
     if not corpora:
         return []

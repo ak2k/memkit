@@ -14306,6 +14306,44 @@ def test_the_same_escaping_checkout_without_a_project_file_serves_nothing(
     assert not [ln for ln in debug.splitlines() if ln.startswith("project")], debug
 
 
+def test_the_search_cli_scans_a_project_corpus_it_was_pointed_at_by_hand(
+    tmp_path: Path,
+) -> None:
+    """`--dir` is a second door into retrieval, and the scan has to be behind
+    it too. `search_cli` is the command the user's own config tells an agent to
+    run, so what it prints is model-facing — and the answer cannot depend on
+    where it was typed from, because the directory is the same directory.
+
+    A directory the USER simply owns is not affected: the classification is
+    "some repository's `.memkit.json` asks for this", not "there is a
+    repository somewhere above this".
+    """
+    repo = _project_checkout(
+        tmp_path,
+        body=PROJECT_MEMORY + "\nAKIA0123456789ABCDEF\n",
+        blob=_project_blob(),
+    )
+    corpus = repo / PROJECT_STORE_DIR / "search"
+    inside = _cli(tmp_path, "--search", INJECT_PROMPT, "--dir", str(corpus),
+                  cwd=str(repo))
+    outside = _cli(tmp_path, "--search", INJECT_PROMPT, "--dir", str(corpus),
+                   cwd=str(tmp_path))
+    assert inside.stdout == outside.stdout == ""
+    assert inside.returncode == outside.returncode == hook.EXIT_NO_MATCH
+
+    # The user's own store, same file, same command: served as ever. Without
+    # this the case above passes on a build that scans everything.
+    mine = tmp_path / PERSONAL_DIR / "search"
+    mine.mkdir(parents=True, exist_ok=True)
+    (mine / "unionfs_perms.md").write_text(
+        PROJECT_MEMORY + "\nAKIA0123456789ABCDEF\n", encoding="utf-8"
+    )
+    for cwd in (str(repo), str(tmp_path)):
+        served = _cli(tmp_path, "--search", INJECT_PROMPT, "--dir", str(mine),
+                      cwd=cwd)
+        assert "unionfs_perms.md" in served.stdout, (cwd, served.stdout)
+
+
 def test_a_project_file_that_only_annotates_itself_is_admitted(
     tmp_path: Path, monkeypatch
 ) -> None:
