@@ -14428,19 +14428,26 @@ REFUSALS = [
     # and a monorepo's every `*.md` is not one more directory. All three of
     # these are the same request, so the refusal is made on what they resolved
     # to rather than on how they were spelled.
+    #
+    # The WHOLE sentence, not the tail it shares with the corpus-root row
+    # below: a checkout with no `<root>/search` reaches that row's rule too, so
+    # a fragment would let either level's refusal stand in for this one.
     (
         "a dir that is the checkout",
         _write_json(_project_blob(dir=".")),
+        "'dir' must name a directory inside the repository, "
         "not the repository itself",
     ),
     (
         "a dir that is the checkout with a slash",
         _write_json(_project_blob(dir="./")),
+        "'dir' must name a directory inside the repository, "
         "not the repository itself",
     ),
     (
         "a dir that climbs back to the checkout",
         _write_json(_project_blob(dir="docs/..")),
+        "'dir' must name a directory inside the repository, "
         "not the repository itself",
     ),
     # `dir` itself is inside the checkout in both of these. What leaves it is
