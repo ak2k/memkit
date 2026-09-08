@@ -2138,10 +2138,16 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
         held_entries: list = []
         with contextlib.suppress(OSError):
             held_entries = os.listdir(target)
-        group = (
-            f"from {_display_path(project.path)} "
-            f"-> {_display_path(target)}{os.sep}"
-        )
+        # RESOLUTION DISCLOSED AT BOTH ENDS OF A COPY. `_path_detail` says
+        # where a destination really lands; the source is the same question
+        # asked of the bytes being read, and a `memory` directory symlinked
+        # elsewhere is supported rather than refused — so the group line,
+        # which is the only line naming the source, has to say so.
+        source = _display_path(project.path)
+        resolved_source = _terminal_realpath(project.path)
+        if resolved_source != os.path.abspath(project.path):
+            source += f" (resolves to {_display_path(resolved_source)})"
+        group = f"from {source} -> {_display_path(target)}{os.sep}"
         mine: list = []
         # THE NAMES THIS STORE ALREADY HOLDS A DIFFERENT FILE UNDER. Nothing
         # is written for them and they are not in `mine`, but the file a row

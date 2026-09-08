@@ -4740,6 +4740,17 @@
         "tests/test_init.py::test_a_key_over_the_harness_limit_adopts_and_says_it_is_hashed"
       ],
       "why": "`KEY_MAX` refuses only inside `project_key`, which adoption never calls, so a directory the harness truncated and hashed adopts like any other — correctly, since the memories in it are real. What is then invisible is that the directory landing in the store spells no project path, and the hash naming it is one this package has not measured: an adopter reading the manifest would take the name for the project."
+    },
+    {
+      "name": "init-the-manifest-does-not-say-a-source-directory-is-a-link",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        source = _display_path(project.path)\n        resolved_source = _terminal_realpath(project.path)\n        if resolved_source != os.path.abspath(project.path):\n            source += f\" (resolves to {_display_path(resolved_source)})\"\n        group = f\"from {source} -> {_display_path(target)}{os.sep}\"\n",
+      "new": "        group = (\n            f\"from {_display_path(project.path)} \"\n            f\"-> {_display_path(target)}{os.sep}\"\n        )\n",
+      "tests": [
+        "tests/test_init.py::test_the_manifest_says_where_a_linked_source_directory_resolves"
+      ],
+      "why": "a copy has two ends and the manifest disclosed resolution at one of them. `memory/` symlinked elsewhere is supported, so the run reads through the link — and the group line, the only line naming the source, printed the unresolved path: consent given for reading one directory, spent on another."
     }
   ]
 }

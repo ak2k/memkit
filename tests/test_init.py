@@ -3755,6 +3755,47 @@ def test_a_key_over_the_harness_limit_adopts_and_says_it_is_hashed(
     assert "Adoption: 2 files" in out.stdout, out.stdout
 
 
+def test_the_manifest_says_where_a_linked_source_directory_resolves(
+    profile,
+) -> None:
+    """A symlinked `memory/` is SUPPORTED, so this is a disclosure and not a
+    refusal — and a copy has two ends. The manifest already says where a
+    destination really lands; reading through a link is the same question
+    asked of the bytes going in, and the group line is the only one that
+    names the source at all.
+    """
+    elsewhere = profile / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "alpha.md").write_text(TRAP, encoding="utf-8")
+    linked = profile / "claude-config" / "projects" / "-home-linked"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(elsewhere)
+    _harness(profile, "-home-plain", {"beta.md": TRAP})
+
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    (group,) = [
+        line for line in manifest.stdout.splitlines()
+        if "-home-linked" in line and " -> " in line
+    ]
+    assert f"(resolves to {elsewhere})" in group, group
+    # The control: nothing resolves anywhere else, so nothing is said.
+    (plain,) = [
+        line for line in manifest.stdout.splitlines()
+        if "-home-plain" in line and " -> " in line
+    ]
+    assert "resolves to" not in plain, plain
+    # Supported, not refused: the copy still happens.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert (adopted / "-home-linked" / "alpha.md").read_text() == TRAP
+    assert (elsewhere / "alpha.md").read_text() == TRAP
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )
