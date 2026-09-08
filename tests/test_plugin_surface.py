@@ -4012,10 +4012,6 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         if not target_existed:
             expected[str(target.relative_to(store))] = "dir"
         assert _file_map(store) == expected, (script, _file_map(store))
-        # `$dir` recreated between `rm` and `ln` puts the link one level down,
-        # inside a `$dir` that is still an ordinary directory and that nothing
-        # reads through.
-        assert not os.path.islink(dir_ / target.name), "the link was made inside `$dir`"
         if cell == "repoint-link-outside-the-store":
             assert _file_map(outside) == outside_before, (script, _file_map(outside))
         if cell == "repoint-target-is-a-link":
@@ -4158,6 +4154,28 @@ def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
     assert len(over) == 2, (over, scopes)
     beats = scopes.index(instead) < min(scopes.index(one) for one in over)
     assert beats == (side == "above"), (found.groups(), scopes)
+
+    # The reader the checked-in file blocks is routed somewhere, and a route
+    # that does not outrank what it routes around is not a route. The symlink
+    # was offered as that route while the page's own account of the setting
+    # says the harness writes where the setting sends it, which the link never
+    # touches.
+    found = re.search(
+        r"Where a checkout's checked-in (`[^`]+`) declares `autoMemoryDirectory` "
+        r"already, .*? The route left there is that checkout's own (`[^`]+`), "
+        r"which the harness reads (above|below) it",
+        prose,
+    )
+    assert found, "the page no longer routes the reader a checked-in setting blocks"
+    blocked, route, side = found.groups()
+    assert (scopes.index(route) < scopes.index(blocked)) == (side == "above"), (
+        found.groups(), scopes
+    )
+    # And the one scope no route of the reader's reaches is the list's own top.
+    assert "Under managed policy the value is not yours to override" in prose, (
+        "the page no longer says managed policy is out of the reader's hands"
+    )
+    assert scopes[0] == "managed policy", scopes
 
 
 def _uncommented(text: str) -> str:

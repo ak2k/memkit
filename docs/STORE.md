@@ -295,10 +295,13 @@ key the block above prints — becomes a symlink into the store. Retrieval then
 reads what the harness writes, and the harness goes on writing to the path it
 already knows. Point the link at a directory of the harness's own, for the
 reason the setting has one: a corpus directory that also holds your own memory
-files gets them rewritten. Where a scope you do not write declares
-`autoMemoryDirectory` already — a clone's checked-in `.claude/settings.json`,
-or managed policy — the flag below refuses (`auto-memory-redirected`) and this
-link is the route left.
+files gets them rewritten. Where a checkout's checked-in
+`.claude/settings.json` declares `autoMemoryDirectory` already, the flag below
+refuses (`auto-memory-redirected`) and this link reaches nothing: the harness
+writes where that file sends it, not to the directory the key names. The route
+left there is that checkout's own `.claude/settings.local.json`, which the
+harness reads above it. Under managed policy the value is not yours to
+override.
 
 **What the shape costs.** The link is per project, so the next repository needs
 its own. It is tied to the physical path the key derives from, so a checkout
