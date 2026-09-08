@@ -4696,6 +4696,17 @@
         "tests/test_init.py::test_a_named_pipe_in_the_store_does_not_hold_the_dry_run_open"
       ],
       "why": "a plain open of a FIFO does not return until somebody writes the other end, and the planner opens every *.md the store holds. The dry-run is the turn that exists to be read before anything is written, so one that never returns leaves no manifest, no digest and no way forward but a signal. Asking the descriptor what it is, rather than the name, is also the only order in which the answer is about the object that was opened."
+    },
+    {
+      "name": "init-the-write-resolves-its-name-a-second-time",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    path = _refuse_escape(path, confine)\n",
+      "new": "    _refuse_escape(path, confine)\n    path = os.path.realpath(path)\n",
+      "tests": [
+        "tests/test_init.py::test_a_write_judges_and_writes_one_resolution_of_the_name_it_was_given"
+      ],
+      "why": "the containment guard judges a resolution of the name, and a write that resolves the same name again is asking a second question of whatever the name points at by then. A link swapped between the two sends the bytes to a path nothing judged, under a guard that has already said yes."
     }
   ]
 }

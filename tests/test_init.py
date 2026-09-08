@@ -2087,6 +2087,48 @@ def test_a_write_keeps_the_mode_and_the_link_of_a_file_that_is_already_there(
     assert stat.S_IMODE(os.stat(fresh).st_mode) == 0o644
 
 
+def test_a_write_judges_and_writes_one_resolution_of_the_name_it_was_given(
+    profile, monkeypatch
+) -> None:
+    """ONE NAME, ONE ANSWER.
+
+    The containment guard resolved the name to decide whether the write lands
+    where its manifest line says, and the write then resolved the same name
+    again to decide where to put the bytes. Two questions, two answers, and
+    only the first one was looked at: a link swapped between them — the window
+    is real, the confirm turn re-plans and then writes — sends the bytes to a
+    path nothing judged, under a guard that has already said yes.
+
+    `os.path.realpath` is made to answer differently the second time it is
+    asked about this name, which is what a swap looks like from inside the
+    process. The assertion is the call count as much as the landing place: a
+    fix that resolved twice and happened to agree would pass the second and
+    not the first.
+    """
+    store = profile / "store"
+    (store / "search").mkdir(parents=True)
+    target = store / "search" / "note.md"
+    elsewhere = profile / "elsewhere.md"
+
+    real = os.path.realpath
+    answers = []
+
+    def counting(path):
+        resolved = real(path)
+        if os.fspath(path) == str(target):
+            answers.append(resolved)
+            if len(answers) > 1:
+                return str(elsewhere)
+        return resolved
+
+    monkeypatch.setattr(os.path, "realpath", counting)
+    init._write_atomically(str(target), "hello\n", confine=str(store))
+
+    assert len(answers) == 1, f"the name was resolved {len(answers)} times"
+    assert target.read_text() == "hello\n"
+    assert not elsewhere.exists(), "the bytes went to the unjudged answer"
+
+
 def test_both_consented_writes_leave_a_file_a_person_can_still_read(
     profile, monkeypatch
 ) -> None:

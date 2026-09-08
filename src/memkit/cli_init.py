@@ -3138,8 +3138,14 @@ class _Lock:
         self._fd = None
 
 
-def _refuse_escape(path: str, confine: str) -> None:
+def _refuse_escape(path: str, confine: str) -> str:
     """Refuse a write that would not land at the path it is named as.
+
+    Returns the ONE resolution of `path` it judged, for the caller to write.
+    A second `realpath` of the same name is a second question, asked of
+    whatever the name points at by then: the answer this one refused on and
+    the answer the write follows would be different values, and only the
+    first was ever looked at.
 
     FAIL-CLOSED, and it is checked here rather than only at plan time because
     the two are different moments: a link planted between the dry-run and the
@@ -3154,13 +3160,14 @@ def _refuse_escape(path: str, confine: str) -> None:
     resolves back into it stays inside and still sends the bytes to a path no
     manifest line and no ledger row names.
     """
+    resolved = os.path.realpath(path)
     if not confine:
-        return
+        return resolved
     named = os.path.join(
         os.path.realpath(confine), os.path.relpath(path, confine)
     )
-    if os.path.realpath(path) == named:
-        return
+    if resolved == named:
+        return resolved
     raise Refusal(
         "escapes-store",
         f"{_display_path(path)} resolves to "
@@ -3201,13 +3208,14 @@ def _write_atomically(
     # each path resolves. Replacing the link would leave an untracked regular
     # file, the repo copy orphaned and unchanged, and the next `home-manager
     # switch` reaching nothing.
-    # ASKED OF THE PATH AS NAMED, before it is resolved. The guard's question
-    # is where the named path lands against what its name says, and a path
-    # already replaced by its own realpath cannot be asked it — under a store
-    # that is itself a link, the resolved form is not even spelled inside the
-    # root it answers to.
-    _refuse_escape(path, confine)
-    path = os.path.realpath(path)
+    # ASKED OF THE PATH AS NAMED, and written at the value that answer was
+    # about. The guard's question is where the named path lands against what
+    # its name says — a path already replaced by its own realpath cannot be
+    # asked it, since under a store that is itself a link the resolved form is
+    # not even spelled inside the root it answers to — so the guard resolves
+    # it, and hands back the one value it judged rather than leaving the name
+    # to be resolved a second time here.
+    path = _refuse_escape(path, confine)
     if expect is not None and state_token(path) != expect:
         raise Refusal(
             "changed-underfoot",
