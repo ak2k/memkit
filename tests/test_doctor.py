@@ -3633,6 +3633,75 @@ def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
     assert "~/.claude/settings.json" in row.detail
 
 
+def test_no_row_of_the_envelope_spells_the_home_directory_out(
+    profile, monkeypatch
+) -> None:
+    """The rule, once, over the whole report rather than per branch.
+
+    Home has reached a detail by four routes now — a path built here, a path
+    inside a string this report was handed, a project key carrying it in the
+    middle with its separators replaced, and the session's own cwd in a
+    refusal — and each was closed where it was found. What that leaves is a
+    rule nothing states: doctor's output is what an adopter pastes into an
+    issue, so no row of it spells the home directory — as a path or as the key
+    spelling of one — whichever branch of whichever check produced the row.
+
+    THE CAPS ARE LIFTED, because on a fixture home a hundred characters deep
+    they answer this for the wrong reason: a raw copy cut off before the path
+    is reached is not a redaction, and a real `/Users/someone` is not cut off.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 8000)
+    monkeypatch.setattr(doctor, "PATH_SHOWN", 2000)
+    monkeypatch.setattr(doctor, "PARSER_SHOWN", 2000)
+    home = profile / "home"
+    config = home / ".claude"
+    config.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
+    work = home / "work" / "acme"
+    work.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    path = _store_config(home, stores=["personal"])
+    _memory(home / "stores" / "personal" / "search", "kept.md", "clutch free play")
+    projects = config / "projects"
+    (projects / "-home-u-git-app" / "memory").mkdir(parents=True)
+    (projects / "-home-u-git-app" / "memory" / "one.md").write_text(
+        "x\n", encoding="utf-8"
+    )
+    settings = config / doctor.SETTINGS_NAME
+
+    def _write(**blob) -> None:
+        settings.write_text(json.dumps(blob), encoding="utf-8")
+
+    branches = {
+        "on": lambda: _write(),
+        "off": lambda: _write(autoMemoryEnabled=False),
+        "redirected": lambda: _write(autoMemoryDirectory=str(home / "elsewhere")),
+        "unparsed": lambda: settings.write_text(
+            '{"autoMemoryEnabled": false,,}', encoding="utf-8"
+        ),
+        "forbidden": lambda: (_write(autoMemoryEnabled=False), settings.chmod(0o000)),
+        "unreadable": lambda: (_write(), projects.chmod(0o000)),
+    }
+    for name, arrange in branches.items():
+        try:
+            arrange()
+            checks = doctor.collect(_machine(home, monkeypatch, path))
+        finally:
+            settings.chmod(0o600)
+            projects.chmod(0o700)
+        spoken = " ".join(f"{c.detail} {c.remedy}" for c in checks)
+        # THE CONTROL FIRST: an absence over a report that never named a path
+        # under home is a green about the fixture. `~` in it says the paths
+        # were there and were re-spelled.
+        assert "~/" in spoken, name
+        for check in checks:
+            for spelling in (str(home), harness_memory.key_spelling(str(home))):
+                assert spelling not in check.detail, (name, check.id)
+                assert spelling not in check.remedy, (name, check.id)
+
+
 def test_the_note_about_an_unread_scope_cannot_eat_the_rows_own_verdict(
     profile, monkeypatch
 ) -> None:
