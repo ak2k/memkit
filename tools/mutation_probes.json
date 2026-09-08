@@ -4465,7 +4465,7 @@
       "name": "init-a-row-that-cannot-be-read-is-dropped-in-silence",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            notes.append(\n                f\"  no row: {_display_path(path)} could not be read \"\n                f\"({type(exc).__name__}), so SEARCH.md carries no row for it \"\n                \"and the check below will call it an orphan\"\n            )\n            continue\n",
+      "old": "            notes.append(\n                f\"  no row: {_display_path(path)} {why}, so SEARCH.md carries \"\n                \"no row for it and the check below will call it an orphan\"\n            )\n            continue\n",
       "new": "            continue\n",
       "tests": [
         "tests/test_init.py::test_a_memory_whose_row_cannot_be_read_is_named_and_not_dropped"
@@ -4685,6 +4685,17 @@
         "tests/test_init.py::test_a_file_the_store_already_holds_is_not_called_one_left_behind"
       ],
       "why": "a destination that diverged produces no action, because adoption declines to overwrite it — but the file is in the store, so the rule that asks what was left OUTSIDE it must not count the name. The line named a state the file was not in, and withheld an index every one of whose rows resolves."
+    },
+    {
+      "name": "init-the-planner-opens-a-name-before-it-knows-what-it-is",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    try:\n        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)\n    except FileNotFoundError:\n        raise\n    except OSError as exc:\n        return None, f\"cannot be read ({type(exc).__name__})\"\n    try:\n        if not stat.S_ISREG(os.fstat(fd).st_mode):\n            return None, \"is not a regular file\"\n        with open(fd, encoding=\"utf-8\", errors=errors, closefd=False) as f:\n            return f.read(), \"\"\n    except UnicodeDecodeError:\n        return None, \"is not UTF-8\"\n    except (OSError, ValueError) as exc:\n        return None, f\"cannot be read ({type(exc).__name__})\"\n    finally:\n        os.close(fd)\n",
+      "new": "    try:\n        with open(path, encoding=\"utf-8\", errors=errors) as f:\n            return f.read(), \"\"\n    except UnicodeDecodeError:\n        return None, \"is not UTF-8\"\n    except FileNotFoundError:\n        raise\n    except (OSError, ValueError) as exc:\n        return None, f\"cannot be read ({type(exc).__name__})\"\n",
+      "tests": [
+        "tests/test_init.py::test_a_named_pipe_in_the_store_does_not_hold_the_dry_run_open"
+      ],
+      "why": "a plain open of a FIFO does not return until somebody writes the other end, and the planner opens every *.md the store holds. The dry-run is the turn that exists to be read before anything is written, so one that never returns leaves no manifest, no digest and no way forward but a signal. Asking the descriptor what it is, rather than the name, is also the only order in which the answer is about the object that was opened."
     }
   ]
 }

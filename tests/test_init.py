@@ -3669,6 +3669,50 @@ def test_adoption_never_lands_an_index_for_a_directory_it_left_behind(
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
+def test_a_named_pipe_in_the_store_does_not_hold_the_dry_run_open(
+    profile,
+) -> None:
+    """A PLANNER READS REGULAR FILES AND NOTHING ELSE.
+
+    `search/` is walked for `*.md` and each one is opened to read its
+    frontmatter, and `open` on a FIFO blocks until somebody writes to the other
+    end. The dry-run is the turn that exists to be read before anything is
+    written, and one that never returns has no turn after it: no manifest, no
+    digest, no output at all, and only a signal ends it.
+
+    The 15-second cap is the assertion. A regression here does not fail a
+    comparison, it stops returning — so the case has to be able to fail rather
+    than hang the suite behind it.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    first = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert first.returncode == init.EXIT_OK, first.stdout + first.stderr
+    out = _confirm(
+        profile, _digest_of(first), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+
+    pipe = store / "search" / "pipe.md"
+    os.mkfifo(pipe, 0o600)
+    assert stat.S_ISFIFO(os.lstat(pipe).st_mode)
+    again = subprocess.run(
+        [sys.executable, "-m", "memkit.cli", "init", "--dry-run",
+         "--store", str(store), "--adopt-auto-memory"],
+        capture_output=True, text=True, timeout=15,
+        env=dict(
+            os.environ,
+            HOME=str(profile / "home"),
+            XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+            CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+        ),
+    )
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert f"no row: {pipe} is not a regular file" in again.stdout, again.stdout
+    # And it is still a pipe: nothing opened it for writing either.
+    assert stat.S_ISFIFO(os.lstat(pipe).st_mode)
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )

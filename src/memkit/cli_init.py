@@ -1598,6 +1598,40 @@ def _relabel(text: str, stem: str) -> tuple:
     )
 
 
+def _regular_text(path: str, errors: str = "strict") -> tuple:
+    """(the file's text, why it is not one). Exactly one is set.
+
+    OPENED FIRST AND ASKED WHAT IT IS SECOND, on the descriptor rather than on
+    the name: a `stat` before the open answers about whatever the name held
+    then, and the thing a planner must never meet is an object whose open does
+    not return. `O_NONBLOCK` is what makes the open of a FIFO return at all —
+    `--dry-run` is the turn that exists to be read before anything is written,
+    and one that hangs with no output has no turn after it to recover from.
+
+    `O_NOFOLLOW` is deliberately NOT set. A store may hold a memory that is a
+    symlink — `_memories_under` yields one under its own name, exactly as the
+    checker does — so the question here is what the name finally resolves to,
+    which is what `fstat` on the open descriptor answers.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        return None, f"cannot be read ({type(exc).__name__})"
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, "is not a regular file"
+        with open(fd, encoding="utf-8", errors=errors, closefd=False) as f:
+            return f.read(), ""
+    except UnicodeDecodeError:
+        return None, "is not UTF-8"
+    except (OSError, ValueError) as exc:
+        return None, f"cannot be read ({type(exc).__name__})"
+    finally:
+        os.close(fd)
+
+
 def _read_source(path: str) -> tuple:
     """(the file's text, why it cannot be adopted). Exactly one is set.
 
@@ -1613,28 +1647,24 @@ def _read_source(path: str) -> tuple:
     if size > ADOPT_MAX_BYTES:
         return None, f"is {size} bytes, over the {ADOPT_MAX_BYTES}-byte cap"
     try:
-        with open(path, encoding="utf-8") as f:
-            return f.read(), ""
-    except UnicodeDecodeError:
-        return None, "is not UTF-8"
-    except (OSError, ValueError) as exc:
-        return None, f"cannot be read ({type(exc).__name__})"
+        return _regular_text(path)
+    except FileNotFoundError:
+        return None, "cannot be read (FileNotFoundError)"
 
 
 def _held_text(path: str) -> tuple:
     """(what is at `path`, whether it could be read at all).
 
     `(None, True)` for a path with nothing at it; `(None, False)` for one this
-    process cannot read or decode, which adoption treats as DIVERGED rather
-    than as a traceback out of `--dry-run`.
+    process cannot read or decode — or one that is not a regular file at all —
+    which adoption treats as DIVERGED rather than as a traceback, or a hang,
+    out of `--dry-run`.
     """
     try:
-        with open(path, encoding="utf-8") as f:
-            return f.read(), True
+        text, why = _regular_text(path)
     except FileNotFoundError:
         return None, True
-    except (OSError, ValueError):
-        return None, False
+    return (None, False) if why else (text, True)
 
 
 def _sub_indexes(store: str, config_path: str) -> list:
@@ -1676,8 +1706,9 @@ def _sub_index_members(store: str, config_path: str) -> set:
     root = os.path.realpath(store)
     for sub in _sub_indexes(store, config_path):
         with contextlib.suppress(OSError, ValueError):
-            with open(sub, encoding="utf-8", errors="replace") as f:
-                text = f.read()
+            text, why = _regular_text(sub, errors="replace")
+            if why:
+                continue
             for link in _LINK_RE.findall(text):
                 if "://" in link:
                     continue
@@ -1736,18 +1767,18 @@ def _rows_on_disk(store: str, config_path: str) -> tuple:
             continue
         path = os.path.join(store, link)
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                text = f.read()
-        except (OSError, ValueError) as exc:
+            text, why = _regular_text(path, errors="replace")
+        except FileNotFoundError:
+            why = "cannot be read (FileNotFoundError)"
+        if why:
             # NAMED, not suppressed. A row silently dropped here is a memory
             # this ledger stops carrying, and the checker that reads the tree
             # rather than the ledger calls that an ORPHAN — on a store init
             # has just declared correct. `_read_source` names a reason for
             # every adoption-side read failure and this is the same promise.
             notes.append(
-                f"  no row: {_display_path(path)} could not be read "
-                f"({type(exc).__name__}), so SEARCH.md carries no row for it "
-                "and the check below will call it an orphan"
+                f"  no row: {_display_path(path)} {why}, so SEARCH.md carries "
+                "no row for it and the check below will call it an orphan"
             )
             continue
         front = _frontmatter_of(text)
