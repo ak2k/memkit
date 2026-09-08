@@ -57,6 +57,7 @@ from memkit.cli_doctor import (
     EXCLUDE_STRAY,
     NO_CHECKER_REMEDY,
     OPTION_KEY,
+    USER,
     Machine,
     _checker_route,
     _store_relation,
@@ -844,6 +845,29 @@ def check_refusals(
                 "what is written next.",
             )
 
+    if auto_memory_off:
+        by_scope = {scope.scope: scope for scope in machine.settings}
+        for name in _scopes_outranking_user():
+            scope = by_scope.get(name)
+            value = scope.data.get(harness_memory.ENABLED_KEY) if scope else None
+            # `false` up there is not a conflict — the feature is already off
+            # and the note below says which scope did it. Anything else
+            # declared is a value that WINS over the one being written, so the
+            # write cannot produce the effect the manifest promises for it.
+            if value is None or value is False:
+                continue
+            raise Refusal(
+                "auto-memory-outranked",
+                f'"{harness_memory.ENABLED_KEY}" is set to {value!r} in {name} '
+                f"settings ({_display_path(scope.path)}), which the harness "
+                f"reads ahead of the user scope. --auto-memory-off writes "
+                f'"{harness_memory.ENABLED_KEY}": false into '
+                f"{_display_path(_settings_path(machine))}, where that "
+                "declaration would outrank it — the flag would report success "
+                "and the harness would go on writing auto-memory. Change it "
+                "where it is set, or drop the flag.",
+            )
+
     if _inside(config_path, machine.state_dir):
         raise Refusal(
             "config-in-state-dir",
@@ -1133,6 +1157,18 @@ def _harness_config_dir() -> str:
 
 def _settings_path(machine: Machine) -> str:
     return os.path.join(_harness_config_dir(), "settings.json")
+
+
+def _scopes_outranking_user() -> tuple:
+    """The scope names the harness resolves BEFORE the one init writes.
+
+    Every settings write this command makes goes to the user scope, and the
+    first scope in `SCOPE_ORDER` to declare a key is the one that decides it.
+    So a declaration in any of these is one the write cannot change the effect
+    of, whatever the manifest line under it promises.
+    """
+    order = harness_memory.SCOPE_ORDER
+    return order[: order.index(USER)]
 
 
 # The operations whose target is a FILE. `VERIFY` names the store directory
@@ -2291,6 +2327,26 @@ def build_plan(
             "where it is — --adopt-auto-memory is what copies it into the "
             "store."
         )
+        # WHO ACTUALLY DECIDED IT. A scope ahead of the user one saying false
+        # already turns the feature off, so the action line above is true
+        # about the world and false about its own cause: the write converges
+        # the user scope and changes nothing. Anything OTHER than false up
+        # there is a refusal, not a note.
+        by_scope = {scope.scope: scope for scope in machine.settings}
+        for name in _scopes_outranking_user():
+            scope = by_scope.get(name)
+            if scope is None:
+                continue
+            if scope.data.get(harness_memory.ENABLED_KEY) is not False:
+                continue
+            notes.append(
+                f'Auto-memory is already off: "{harness_memory.ENABLED_KEY}": '
+                f"false is set in {name} settings "
+                f"({_display_path(scope.path)}), which the harness reads "
+                "ahead of the user scope. That scope is what decides it; this "
+                "write only makes the user scope agree."
+            )
+            break
     # AFTER the plan is complete and before anything acts on it. Run where the
     # list was still being built, it checked eight of the ten actions — the two
     # the flags add were appended below it — so the one preflight whose job is

@@ -3602,6 +3602,52 @@ def test_auto_memory_off_writes_one_boolean_and_then_has_nothing_to_do(
     assert not [a for a in again.writes if a.op == init.SETTINGS_WRITE]
 
 
+def test_auto_memory_off_will_not_promise_what_a_higher_scope_overrules(
+    profile, monkeypatch
+) -> None:
+    """The flag writes the ONE scope every other scope outranks, and the
+    manifest line under it says the harness will then neither read nor write
+    auto-memory. With `true` declared in a scope the harness reads first, that
+    promise is one the write cannot keep: the adopter would get exit 0 and a
+    harness still writing. Refused by name instead, naming the scope and its
+    file, which is the rule `--adopt-auto-memory` has been asked in this file
+    since it was written.
+
+    `false` up there is a different case: the feature really is off, so the
+    write converges the user scope and a note says which scope decided it.
+    """
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True)
+    local = checkout / "settings.local.json"
+    local.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+    refusal = _refuses(profile, "auto-memory-outranked", auto_memory_off=True)
+    assert "local settings" in refusal.message
+    assert str(local) in refusal.message
+
+    # The administrator's scope, the one the adopter cannot answer for.
+    local.unlink()
+    managed = profile / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    assert "managed settings" in _refuses(
+        profile, "auto-memory-outranked", auto_memory_off=True
+    ).message
+
+    # Already off above: not a refusal, and the note says who decided it.
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    plan = _plan(profile, auto_memory_off=True)
+    assert [a for a in plan.writes if a.op == init.SETTINGS_WRITE]
+    assert any(
+        "managed settings" in note and "already off" in note
+        for note in plan.notes
+    ), plan.notes
+
+
 def test_adopting_and_switching_off_are_not_one_request(profile) -> None:
     """Opposite answers to one question, so argparse refuses the pair as the
     usage error it is — exit 2, which is the code the dispatcher and the

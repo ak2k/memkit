@@ -4284,6 +4284,17 @@
       "why": "a link is somebody's answer only where it lands. Called already redirected wherever it points, a memory directory linked to an ordinary directory is reported as handled by init and as outside every store by doctor, and is chased by neither."
     },
     {
+      "name": "init-auto-memory-off-never-asks-the-scopes-that-outrank-the-one-it-writes",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        for name in _scopes_outranking_user():\n            scope = by_scope.get(name)\n            value = scope.data.get(harness_memory.ENABLED_KEY) if scope else None\n",
+      "new": "        for name in ():\n            scope = by_scope.get(name)\n            value = scope.data.get(harness_memory.ENABLED_KEY) if scope else None\n",
+      "tests": [
+        "tests/test_init.py::test_auto_memory_off_will_not_promise_what_a_higher_scope_overrules"
+      ],
+      "why": "the flag writes the one scope every other scope outranks, under a manifest line promising the harness will then neither read nor write auto-memory. With `true` declared in a scope the harness reads first, the adopter gets exit 0 and a harness that goes on writing."
+    },
+    {
       "name": "init-a-red-integrity-check-strands-the-actions-after-it",
       "module": "init",
       "file": "src/memkit/cli_init.py",
