@@ -4507,6 +4507,28 @@
         "tests/test_memory_prompt_recall.py::test_a_project_file_adds_a_store_to_the_search_and_not_to_the_config"
       ],
       "why": "a project store has no name in roots, so nothing else can answer for it"
+    },
+    {
+      "name": "project-store-scan-knows-the-key-keywords",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "(?:password|passwd|secret|token|api_?key|private_key)",
+      "new": "(?:password|passwd|secret|token)",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_each_added_credential_shape_costs_the_candidate_its_pointer"
+      ],
+      "why": "an api key and a private key are assignments like any other, and the branch that reads them is the only thing standing between one and a served pointer"
+    },
+    {
+      "name": "project-store-scan-knows-the-vendor-prefixes",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"[rs]k_live_[A-Za-z0-9]{10,}\",\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_each_added_credential_shape_costs_the_candidate_its_pointer"
+      ],
+      "why": "a live vendor key carries no keyword to anchor an assignment on, so its prefix is the whole recogniser"
     }
   ]
 }

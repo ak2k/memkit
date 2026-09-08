@@ -4094,6 +4094,26 @@ def _secret_re() -> re.Pattern[str]:
     `password_reset_seconds: 3600` is prose here too. What it costs when it is
     wrong is one pointer, visible as `lex_secret` in the soak record rather
     than silent.
+
+    `api_?key` and `private_key` join that same assignment branch rather than
+    getting branches of their own, so the shape keeps deciding: a sentence
+    that merely NAMES `api_key` has no separator and no eight-character value
+    after it and is served like any other prose. `key` alone is not a keyword
+    here and cannot become one — `monkey: something-long` is a sentence.
+
+    The two vendor branches are TOKENS rather than assignments because their
+    prefixes are already unambiguous: `xox[baprs]-` and `[rs]k_live_` identify
+    a live Slack and Stripe credential wherever they appear, including inside
+    a JSON blob or a curl line, where no assignment shape exists to match.
+
+    DOCUMENTED LIMITS, and they are limits rather than oversights: this is an
+    assignment-and-known-prefix backstop, not a credential scanner. It does
+    not recognise JWTs, credentials inline in a URL
+    (`https://user:pass@host`), Google service-account JSON as a document, or
+    bare base64 blobs — each of those is either a shape with no keyword to
+    anchor on or one whose recogniser costs more than a backstop may spend on
+    a module imported once per prompt. A store is still a repository's own
+    file, and the pointer is all that is ever served from one.
     """
     global _SECRET
     if _SECRET is None:
@@ -4104,8 +4124,11 @@ def _secret_re() -> re.Pattern[str]:
                     r"AKIA[0-9A-Z]{16}",
                     r"sk-[A-Za-z0-9_-]{20,}",
                     r"gh[pousr]_[A-Za-z0-9]{36}",
+                    r"xox[baprs]-[A-Za-z0-9-]{10,}",
+                    r"[rs]k_live_[A-Za-z0-9]{10,}",
                     r"(?i:authorization:\s*bearer\s+[A-Za-z0-9._~+/-]{20,})",
-                    r"(?i:[A-Za-z0-9_]*(?:password|passwd|secret|token)"
+                    r"(?i:[A-Za-z0-9_]*"
+                    r"(?:password|passwd|secret|token|api_?key|private_key)"
                     r"[A-Za-z0-9_]*)\s*[:=]\s*\S{8,}",
                 )
             )

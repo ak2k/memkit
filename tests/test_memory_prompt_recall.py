@@ -14842,6 +14842,43 @@ SECRET_SHAPES = [
     # fire between `_` and `secret`, so the anchored form of this branch misses
     # the commonest credential a checkout carries.
     ("an identifier-shaped assignment", "aws_secret_access_key = " + "x" * 26),
+    ("an api-key assignment", "api_key = 0f8c1d2e3b4a59687d0c"),
+    # `api_?key`: the unseparated spelling is the same shape.
+    ("an apikey assignment", "apikey: 0f8c1d2e3b4a59687d0c"),
+    ("a private-key assignment", 'private_key: "0f8c1d2e3b4a59687d0c"'),
+    # The `X`s keep this literal from carrying eight hex digits, a hyphen and
+    # three more — the shape a session id has, which no fixture in this file
+    # may wear.
+    ("a slack token", "xoxb-21098X6543210-1234X67890123-Ab9CdEfGhIjKlMnOpQrS"),
+    ("a stripe live secret key", "sk_live_51Hf8c1d2e3b4a59687d0c"),
+    ("a stripe live restricted key", "rk_live_51Hf8c1d2e3b4a59687d0c"),
+]
+
+
+# (label, the shape planted in a memory, prose that only NAMES it). One row per
+# shape added to the backstop, and the prose column is what says the shape is
+# still what decides — a memory that documents a credential is not one.
+ADDED_SECRET_SHAPES = [
+    (
+        "api-key",
+        "api_key = 0f8c1d2e3b4a59687d0c",
+        "the api_key for staging is issued by the platform team on request",
+    ),
+    (
+        "private-key",
+        'private_key: "0f8c1d2e3b4a59687d0c"',
+        "the private_key never leaves the vault, so nothing here holds one",
+    ),
+    (
+        "slack-token",
+        "xoxb-21098X6543210-1234X67890123-Ab9CdEfGhIjKlMnOpQrS",
+        "slack bot tokens begin with xoxb- and are rotated every quarter",
+    ),
+    (
+        "stripe-live-key",
+        "rk_live_51Hf8c1d2e3b4a59687d0c",
+        "only rk_live_ and sk_live_ keys are ever loaded in production",
+    ),
 ]
 
 
@@ -14907,6 +14944,37 @@ def test_a_project_store_candidate_carrying_a_credential_yields_no_evidence(
     assert planted == ([], 2, "?")
     assert hook._LEX_COUNTS["lex_secret"] == 1
     assert hook._passes_floor(*planted) is False
+
+
+@pytest.mark.parametrize(
+    ("label", "planted", "prose"),
+    ADDED_SECRET_SHAPES,
+    ids=[s[0] for s in ADDED_SECRET_SHAPES],
+)
+def test_each_added_credential_shape_costs_the_candidate_its_pointer(
+    monkeypatch, tmp_path: Path, label: str, planted: str, prose: str
+) -> None:
+    """One shape per case, asserted where it matters: not that the pattern
+    matches, but that the candidate carrying it yields no evidence, fails the
+    floor, and leaves `lex_secret` behind for the record to fold.
+
+    The prose half is the control that keeps the addition honest. A memory
+    that NAMES the credential — no separator, no value — is still served, so
+    what the backstop reads is the assignment shape rather than the word, and
+    documentation about a key is not silently unreachable.
+    """
+    refused = _project_relevance(
+        monkeypatch, tmp_path, PROJECT_MEMORY + "\n" + planted + "\n"
+    )
+    assert refused == ([], 2, "?"), label
+    assert hook._passes_floor(*refused) is False, label
+    assert hook._LEX_COUNTS["lex_secret"] == 1, label
+
+    served = _project_relevance(
+        monkeypatch, tmp_path, PROJECT_MEMORY + "\n" + prose + "\n"
+    )
+    assert served == (["unionfs", "permissions"], 2, "reference"), label
+    assert hook._LEX_COUNTS["lex_secret"] == 0, label
 
 
 def test_a_project_store_candidate_over_the_scan_cap_is_refused_unread(
