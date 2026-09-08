@@ -957,7 +957,11 @@ def test_doctor_names_a_second_registration_rather_than_only_detecting_one(
     report = json.loads(_memkit(profile, payload, "doctor", "--json").stdout)
     row = [c for c in report["checks"] if c["id"] == "registrations-count"]
     assert row and row[0]["status"] == "FAIL", row
-    assert str(other) in row[0]["detail"], row[0]["detail"]
+    # AS THE REPORT SPELLS IT: this is the value read back out of a settings
+    # file, and no row of doctor's output spells the home directory.
+    assert "~/" + str(other.relative_to(profile.home)) in row[0]["detail"], (
+        row[0]["detail"]
+    )
     assert row[0]["actor"] == "user"
 
 
