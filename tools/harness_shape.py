@@ -345,7 +345,15 @@ def _description_len(line: str) -> int:
     rule that fires on one is `>155 characters`, so the number is what a
     rebuilt corpus has to reproduce and the text is what it must not carry.
     Which makes it the CHECKER's number or nothing, and the checker is
-    `memory_integrity._scalar` — so this counts what that counts.
+    `memory_integrity._scalar` — so this counts what that counts WHEREVER
+    THAT RETURNS A VALUE.
+
+    AND A NUMBER WHERE IT DOES NOT. `_scalar` rejects five spellings outright
+    — an empty value, a quote that never closes, a plain scalar opening on a
+    YAML indicator, one holding `": "`, one holding `" #"` — and answers
+    DESC-BAD rather than a length. This returns the length of what was
+    written for all five, because a shape records what a file holds and the
+    verdict on it is the consumer's to re-take from the rebuilt tree.
 
     ONE LINE, no folding. Neither real reader folds: the checker's frontmatter
     parser skips every indented continuation as a nested key, and the recall
@@ -548,11 +556,11 @@ def _outside(target: str) -> bool:
 def _index(memory_dir: str, listed: list) -> dict:
     """Row counts for `MEMORY.md`, and how many of the rows point at nothing.
 
-    `dangling_rows` is a COUNT and never a name. It is the number an adopter's
-    own index is judged on, and the one a rebuilt corpus has to reproduce for
-    the ORPHAN rule to fire the same number of times. No such rule reads a
-    harness-written index today; this is the number one would need, and
-    `truncated` is how it says it is not the whole file.
+    `dangling_rows` is a COUNT and never a name. NOTHING JUDGES A
+    HARNESS-WRITTEN INDEX TODAY — no rule in this repository reads one — so
+    this is the number an ORPHAN-style rule would be judged on if it existed,
+    and it is here because a rebuilt corpus has to be able to reproduce it.
+    `truncated` is how the count says it was taken off less than the file.
 
     CAPPED at `FRONTMATTER_BYTES` like every other read here. The cap exists
     so one pathological file cannot turn a capture into a read of somebody's
@@ -597,7 +605,6 @@ def _memory_dir(
     project_is_symlink: bool,
     memory_dir: str,
     listed: list,
-    config_root: str,
     names: _Pseudonyms,
     anonymise: bool,
     now: float,
@@ -609,6 +616,12 @@ def _memory_dir(
     memory directory's own, the project directory it sits in, and each file
     inside. The tool captured one of the three, so a rebuilt tree could not
     reproduce the other two and the equivalence test could not see them.
+
+    THREE, and not the fourth. Where a linked memory directory POINTED was
+    recorded too — `in-shape` or `external` — and nothing in this repository
+    reads it: no rule fires on the distinction, no materialiser rebuilds it,
+    and the value cost a `realpath` of somebody else's path on a host this is
+    a guest on. It is gone until the work that reads it lands.
     """
     files = []
     read_errors = 0
@@ -640,28 +653,13 @@ def _memory_dir(
         files.append(record)
         if failed:
             read_errors += 1
-    is_symlink = os.path.islink(memory_dir)
-    target_kind = None
-    if is_symlink:
-        try:
-            resolved = os.path.realpath(memory_dir)
-        except OSError:
-            # A link this process cannot resolve is a third state, and calling
-            # it external would be a guess about where it points.
-            target_kind = "unresolved"
-        else:
-            inside = resolved == config_root or resolved.startswith(
-                config_root + os.sep
-            )
-            target_kind = "in-shape" if inside else "external"
     names_listed = [name for name, _ in listed]
     return (
         {
             "key": names.key(key) if anonymise else key,
             "key_len": len(key),
-            "is_symlink": is_symlink,
+            "is_symlink": os.path.islink(memory_dir),
             "project_is_symlink": project_is_symlink,
-            "symlink_target_kind": target_kind,
             "files": files,
             "index": (
                 _index(memory_dir, names_listed)
@@ -685,7 +683,6 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
     than the index.
     """
     config_dir = os.path.abspath(os.path.expanduser(config_dir))
-    config_root = os.path.realpath(config_dir)
     names = _Pseudonyms()
     now = time.time()
     projects_root = os.path.join(config_dir, "projects")
@@ -735,7 +732,7 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
             continue
         record, failed = _memory_dir(
             key, project_dir, project_is_symlink, memory_dir, listed,
-            config_root, names, anonymise, now,
+            names, anonymise, now,
         )
         read_errors += failed
         memory_dirs.append(record)

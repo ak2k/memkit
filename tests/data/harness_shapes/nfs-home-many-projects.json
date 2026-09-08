@@ -24,7 +24,6 @@
       "key_len": 1,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -89,7 +88,6 @@
       "key_len": 12,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -154,7 +152,6 @@
       "key_len": 51,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "m9.md",
@@ -185,7 +182,6 @@
       "key_len": 43,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -250,7 +246,6 @@
       "key_len": 42,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -455,7 +450,6 @@
       "key_len": 35,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -560,7 +554,6 @@
       "key_len": 42,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -795,7 +788,6 @@
       "key_len": 47,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -880,7 +872,6 @@
       "key_len": 53,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -965,7 +956,6 @@
       "key_len": 55,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1000,7 +990,6 @@
       "key_len": 46,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1035,7 +1024,6 @@
       "key_len": 44,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1140,7 +1128,6 @@
       "key_len": 42,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1175,7 +1162,6 @@
       "key_len": 49,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1270,7 +1256,6 @@
       "key_len": 55,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1325,7 +1310,6 @@
       "key_len": 38,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1560,7 +1544,6 @@
       "key_len": 52,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1595,7 +1578,6 @@
       "key_len": 23,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",
@@ -1630,7 +1612,6 @@
       "key_len": 15,
       "is_symlink": false,
       "project_is_symlink": false,
-      "symlink_target_kind": null,
       "files": [
         {
           "name": "MEMORY.md",

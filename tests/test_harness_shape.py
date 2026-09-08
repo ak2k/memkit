@@ -157,8 +157,9 @@ def _tree(tmp_path: Path) -> Path:
     file_linked = _memory_dir(config, "-h-u-git-qlink")
     _write(file_linked / "real.md", "x\n")
     os.symlink(outside / "linked.md", file_linked / "link.md")
-    # And a memory directory linked to somewhere INSIDE the config root, which
-    # is the only value of `symlink_target_kind` no fixture or test produced.
+    # And a memory directory linked to somewhere INSIDE the config root: two
+    # projects then share one set of memories, which is a shape a rebuilt tree
+    # has to be able to hold.
     shared = config / "shared"
     _write(shared / "shared.md", "x\n")
     in_shape = config / "projects" / "-h-u-git-rlink"
@@ -216,7 +217,6 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     assert normal["key_len"] == len("-h-u-git-app")
     assert normal["is_symlink"] is False
     assert normal["project_is_symlink"] is False
-    assert normal["symlink_target_kind"] is None
     assert normal["lock_age_s"] is None
     assert normal["index"] == {"rows": 2, "dangling_rows": 1, "truncated": False}
     source = config / "projects" / "-h-u-git-app" / "memory"
@@ -242,7 +242,6 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
 
     linked = listed["-s1-s2-s3-s6"]
     assert linked["is_symlink"] is True
-    assert linked["symlink_target_kind"] == "external"
     assert linked["index"] is None
     assert len(linked["files"]) == 1
     # WITHOUT the quotes, which is how the checker counts before deciding the
@@ -266,8 +265,11 @@ def test_a_shape_round_trips_and_says_what_the_tree_actually_holds(tmp_path) -> 
     assert by_name["m5.md"]["size"] == (
         config / "projects" / "-h-u-git-qlink" / "memory" / "link.md"
     ).lstat().st_size
-    # The one value of `symlink_target_kind` nothing produced until now.
-    assert listed["-s1-s2-s3-s9"]["symlink_target_kind"] == "in-shape"
+    # The memory directory shared through a link inside the config root: its
+    # own flag is set and its files are the shared ones.
+    shared = listed["-s1-s2-s3-s9"]
+    assert shared["is_symlink"] is True
+    assert [item["name"] for item in shared["files"]] == ["m7.md"]
 
 
 def test_the_same_tree_captures_to_the_same_bytes_twice(tmp_path) -> None:
@@ -1053,6 +1055,23 @@ def test_a_description_is_measured_the_way_the_checker_measures_it(tmp_path) -> 
         assert files[f"m{number}.md"]["description_len"] == len(value), raw
     assert files["continued.md"]["description_len"] == len("first line")
     assert files["block.md"]["description_len"] == 1
+
+    # AND THE FIVE SPELLINGS THE CHECKER REFUSES OUTRIGHT. `_scalar` answers
+    # an error rather than a value for each, and the shape answers the length
+    # of what was written — which is the narrower claim the docstring makes,
+    # and it is here so that claim is watched rather than asserted in prose.
+    refused = ("", '"never closed', ">", "a plain one: with a colon", "hash #here")
+    rejects = _memory_dir(config, "-b")
+    for number, raw in enumerate(refused):
+        value, error = memory_integrity._scalar(raw)
+        assert value is None and error, (raw, value, error)
+        _write(rejects / f"r{number}.md", f"---\ndescription: {raw}\n---\n\nbody\n")
+    written = {
+        item["name"]: item
+        for item in _by_key(_shape("--config-dir", str(config), "--raw"))["-b"]["files"]
+    }
+    for number, raw in enumerate(refused):
+        assert written[f"r{number}.md"]["description_len"] == len(raw), raw
 
 
 # The 3.9 spellings a 3.8 grammar accepts and a 3.8 interpreter does not.
