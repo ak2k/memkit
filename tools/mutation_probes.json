@@ -4574,6 +4574,17 @@
       "why": "`--config`, an install option and the plugin's second rung each name a config the environment does not, and the predicate that keeps adoption off a memory directory already pointed INTO a store reads whichever config it is asked about. Asked of the session's, it answers `outside every store` about a directory inside the store this run is writing: the link is followed, a second copy of every memory lands under a second project key, and the store fails its own check with LEDGER-DRIFT out of the command that made it. The same input with the environment aligned was always answered correctly, which is what makes this the config being wrong rather than the predicate."
     },
     {
+      "name": "init-adoption-plans-a-name-the-write-cannot-create",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            if not _name_fits(name):\n                skipped.append(\n                    f\"{shown}: the file name is {len(_utf8(name))} bytes, and \"\n                    f\"the {_TMP_SUFFIX_BYTES} the write adds for the temporary \"\n                    \"it renames from put it past the \"\n                    f\"{_NAME_MAX_BYTES}-byte limit on one directory entry — a \"\n                    \"copy planned for it could not land\"\n                )\n                continue\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_a_name_the_write_could_not_land_is_skipped_at_the_dry_run"
+      ],
+      "why": "the write creates `<name>.<pid>.tmp` beside the file and renames over it, so the name the plan approves is shorter than the name the write actually makes. Without the plan measuring the longer one, a memory name a little under the limit passes the dry-run and then fails `os.open` at apply time: exit 6, the checker red, nothing copied, and every re-run the same. The write's own copy of the rule refuses rather than crashes, but a refusal mid-apply is not a manifest an adopter could have read first."
+    },
+    {
       "name": "init-adoption-copies-an-index-of-a-directory-it-left-behind",
       "module": "init",
       "file": "src/memkit/cli_init.py",

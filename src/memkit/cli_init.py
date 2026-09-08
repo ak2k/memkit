@@ -1305,6 +1305,19 @@ ADOPT_DIRNAME = "projects"
 # memory in any store here, so a file over it is something else that happens to
 # end in `.md` — and the whole file is read into the manifest's digest.
 ADOPT_MAX_BYTES = 1 << 20
+# What one directory entry may be, in bytes. The POSIX `NAME_MAX` every
+# filesystem this runs on holds to, as a constant rather than an `os.pathconf`
+# of the destination: the answer would have to be asked of the nearest ancestor
+# that exists yet, which at plan time is not the directory the copy lands in,
+# and a value read off the wrong filesystem is worse than the floor.
+_NAME_MAX_BYTES = 255
+# And what the write adds to it. `_write_atomically` writes beside the file and
+# renames over, and the name it writes beside is `<name>.<pid>.tmp` — so the
+# name the plan approves is not the longest name the write actually creates.
+# The pid is measured at the widest a 32-bit `pid_t` can be spelled rather than
+# at this process's own: the plan and the write are two processes, and a plan
+# approved by a four-digit pid must still land under a six-digit one.
+_TMP_SUFFIX_BYTES = len(".") + 10 + len(".tmp")
 
 
 def _frontmatter_of(text: str) -> dict:
@@ -1883,6 +1896,22 @@ def _as_spelled(base: str, entries: list, target: str) -> str | None:
     return None
 
 
+def _name_fits(name: str) -> bool:
+    """Whether `name` still fits one directory entry once the write extends it.
+
+    ONE RULE, ASKED TWICE. The plan approves a name and the write creates a
+    longer one, so a rule stated only at the plan approves names that cannot
+    land: a 250-byte memory name passed the dry-run, failed `os.open` on the
+    temporary at apply time, and left a store the checker called broken with
+    nothing copied into it and every re-run doing the same.
+
+    BYTES, not characters. A name is bytes to the kernel, and a 130-character
+    name of two-byte characters is a 260-byte entry that a character count says
+    is comfortably short.
+    """
+    return len(_utf8(name)) + _TMP_SUFFIX_BYTES <= _NAME_MAX_BYTES
+
+
 def _rows_pointing_nowhere(text: str, dest: str, store: str, landing: set) -> list:
     """The destinations in `text` that resolve to no file, read from `dest`.
 
@@ -2072,6 +2101,15 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     f"{shown}: the file name holds a character no manifest "
                     "line and no ledger row could carry — a link ends at the "
                     "first `)`, at a space, or at a newline"
+                )
+                continue
+            if not _name_fits(name):
+                skipped.append(
+                    f"{shown}: the file name is {len(_utf8(name))} bytes, and "
+                    f"the {_TMP_SUFFIX_BYTES} the write adds for the temporary "
+                    "it renames from put it past the "
+                    f"{_NAME_MAX_BYTES}-byte limit on one directory entry — a "
+                    "copy planned for it could not land"
                 )
                 continue
             if name in project.linked_files:
@@ -3097,6 +3135,18 @@ def _write_atomically(
     # whose stated scope is one key.
     with contextlib.suppress(OSError):
         mode = stat.S_IMODE(os.stat(path).st_mode)
+    # THE PLAN'S OWN RULE, ASKED AGAIN WHERE THE LONGER NAME IS ACTUALLY MADE.
+    # Unreachable from a plan this module built, and that is the point: the
+    # rule lives in one function, and a caller that grew a path the planner
+    # never measured gets a decision rather than an ENAMETOOLONG traceback.
+    if not _name_fits(os.path.basename(path)):
+        raise Refusal(
+            "name-too-long",
+            f"{_display_path(path)} is written by creating "
+            f"`<name>.<pid>.tmp` beside it and renaming over, and that name "
+            f"is past the {_NAME_MAX_BYTES}-byte limit on one directory "
+            "entry, so nothing was written for it.",
+        )
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         # The mode goes on before the first byte, so the content never exists

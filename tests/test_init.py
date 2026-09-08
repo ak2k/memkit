@@ -1034,6 +1034,12 @@ def test_every_refusal_in_the_inventory_is_reachable() -> None:
         "escapes-store": (
             "test_a_link_planted_after_the_plan_never_lands_outside_the_store"
         ),
+        # The write's half of the length rule. Adoption's planner skips such a
+        # name before it can be planned, so this is reached by calling the
+        # write rather than by building a plan — which is the point of it.
+        "name-too-long": (
+            "test_the_write_refuses_a_name_it_could_not_create_a_temporary_for"
+        ),
     }
     for name, case in apply_time.items():
         assert f"def {case}(" in mine, (name, case)
@@ -3842,6 +3848,69 @@ def test_store_membership_is_asked_of_the_config_being_written(profile) -> None:
     checked = subprocess.run(
         [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
         capture_output=True, text=True, timeout=300, env=base,
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+def test_the_write_refuses_a_name_it_could_not_create_a_temporary_for(
+    tmp_path,
+) -> None:
+    """ONE RULE, ASKED WHERE THE LONGER NAME IS ACTUALLY MADE. Adoption's
+    planner skips a name this long before it can be planned, so nothing memkit
+    builds reaches this — and that is what it is for: a caller that grew a path
+    the planner never measured gets a decision rather than an ENAMETOOLONG
+    traceback out of the middle of an apply.
+    """
+    room = init._NAME_MAX_BYTES - init._TMP_SUFFIX_BYTES
+    over = tmp_path / ("o" * (room - len(".md") + 1) + ".md")
+    with pytest.raises(init.Refusal) as raised:
+        init._write_atomically(str(over), "body\n")
+    assert raised.value.name == "name-too-long", raised.value
+    assert not list(tmp_path.iterdir()), "something was written anyway"
+    fits = tmp_path / ("f" * (room - len(".md")) + ".md")
+    init._write_atomically(str(fits), "body\n")
+    assert fits.read_text(encoding="utf-8") == "body\n"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_name_the_write_could_not_land_is_skipped_at_the_dry_run(profile) -> None:
+    """NO NAME THE DRY-RUN APPROVES FAILS TO LAND FOR ITS LENGTH. The write
+    creates `<name>.<pid>.tmp` beside the file and renames over it, so the
+    name the plan measured is not the longest name the write makes. A memory
+    name a little under the limit therefore passed the dry-run, failed at
+    apply time, and left a store the checker called broken with nothing copied
+    into it — and every re-run did the same.
+
+    The lengths here are derived from the rule's own constants, because a
+    literal would pass whatever the rule became.
+    """
+    room = init._NAME_MAX_BYTES - init._TMP_SUFFIX_BYTES
+    longest = "n" * (room - len(".md")) + ".md"
+    over = "o" * (room - len(".md") + 1) + ".md"
+    # Chars comfortably under the bound, bytes over it: the rule counts bytes.
+    wide = "é" * (room // 2) + ".md"
+    assert len(wide) < room < len(wide.encode()), (len(wide), len(wide.encode()))
+    _harness(profile, "-home-u", {longest: TRAP, over: TRAP, wide: TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert f"{over}: the file name is" in manifest.stdout, manifest.stdout
+    assert f"{wide}: the file name is" in manifest.stdout, manifest.stdout
+    assert f"{longest}: the file name is" not in manifest.stdout, manifest.stdout
+    assert "2 skipped" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert [p.name for p in adopted.iterdir()] == [longest]
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
     )
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
