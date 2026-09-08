@@ -251,7 +251,7 @@ terms = ["pgbouncer", "transaction", "pooling"]
 corpus_real = os.path.realpath(corpus)
 # The evidence the index would have produced, so the two branches below differ
 # only in whether a repository chose the corpus.
-hook._LEX_MATCHED[planted] = set(terms)
+hook._LEX_MATCHED[planted] = list(terms)
 check("a repository's file carrying a key earns no evidence",
       hook._relevance(terms, planted, corpus_real, True), ([], len(terms), "?"))
 check("and the same file in a store the user configured earns its own",

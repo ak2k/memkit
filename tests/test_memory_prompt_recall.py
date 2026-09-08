@@ -14090,8 +14090,10 @@ def test_read_only_is_the_resolved_directory_and_nothing_else(
     assert project.read_only is True
     # Neither direction can be set apart from the directory: not off on the
     # store a repository named...
+    # The type checker refuses this too, which is the same rule a layer up;
+    # what this row is about is that the interpreter refuses it.
     with pytest.raises(AttributeError):
-        project.read_only = False
+        project.read_only = False  # pyright: ignore[reportAttributeAccessIssue]
     # ...and not on for a store whose directory the user's own config names.
     configured.resolved_dir = project.resolved_dir
     assert configured.read_only is True
@@ -14120,7 +14122,7 @@ def test_a_candidate_a_repository_published_costs_one_stat_and_one_open(
     hook._config.cache_clear()
     hook._cwd_in_root.cache_clear()
     monkeypatch.chdir(repo)
-    terms = INJECT_PROMPT.split()
+    terms = [str(t) for t in INJECT_PROMPT.split()]
     hits = hook.recall(INJECT_PROMPT, dirs=[str(corpus)])
     # Non-vacuity: several candidates, and it is the read-only branch they
     # will be judged through.
