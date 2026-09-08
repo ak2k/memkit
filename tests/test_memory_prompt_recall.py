@@ -14920,6 +14920,35 @@ def test_debug_config_names_the_repository_store_and_its_refusal(
         hook._use_config(None)
 
 
+def test_the_widest_legal_store_id_reaches_the_diagnostic_whole(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The pattern and the cap are one number, and they were two.
+
+    The pattern admits 64 characters and the render capped at 60, so the
+    widest id a repository may legally choose arrived on this surface as 57 of
+    its characters and an ellipsis — a store named in the file and not
+    greppable in the output. The cap still bites on everything else a reason
+    carries, which is what it was put there for.
+    """
+    widest = "a" + "b" * 63
+    assert re.fullmatch(hook.PROJECT_ID_PATTERN, widest), widest
+    repo = _project_checkout(tmp_path, blob=_project_blob(id=widest))
+    config = tmp_path / "user.json"
+    config.write_text(json.dumps(_config_blob(tmp_path)), encoding="utf-8")
+    monkeypatch.chdir(repo)
+    try:
+        hook._use_config(str(config))
+        hook._print_config(hook._config_state())
+        shown = capsys.readouterr().out
+    finally:
+        hook._use_config(None)
+    assert f"project {widest}:" in shown, shown
+
+    over = hook._project_value("z" * 400)
+    assert len(over) == hook.PROJECT_VALUE_MAX_CHARS and over.endswith("..."), over
+
+
 def test_the_project_paths_on_the_diagnostic_are_the_paths_that_exist(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

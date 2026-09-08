@@ -597,10 +597,12 @@ def _repo_common_dir(root: str):
 # ordinary shape where a checkout is itself reached through one.
 
 
-# How much of a repository-chosen value a refusal reason may carry. Long enough
-# to recognise the key you typed, short enough that a 4 KiB file cannot spend
-# an agent's context on a diagnostic.
-PROJECT_VALUE_MAX_CHARS = 60
+# How much of a repository-chosen value a reason or a heading may carry. Long
+# enough to recognise the key you typed, short enough that a 4 KiB file cannot
+# spend an agent's context on a diagnostic — and exactly the widest id the
+# pattern below admits, because a legal id truncated on the surface that names
+# it is a store nobody can grep for.
+PROJECT_VALUE_MAX_CHARS = 64
 # What a store id may be, and it is deliberately narrower than a path: this
 # string is rendered into `--debug-config` and into doctor's detail, both of
 # which an agent reads.
