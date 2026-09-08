@@ -15011,6 +15011,72 @@ def test_the_credential_scan_leaves_prose_alone_and_compiles_once() -> None:
     assert hook._secret_re() is hook._secret_re()
 
 
+def _elapsed(call) -> float:
+    start = time.perf_counter()
+    call()
+    return time.perf_counter() - start
+
+
+# The two bodies a run of word characters can be made of, and what each one
+# reaches. A run with no keyword in it is decided by the run BEFORE the
+# alternation — the engine retries every split of it at every start offset —
+# and never reaches the one after, so the second body is made OF the keyword:
+# every offset is then a start the alternation matches at, which is what puts
+# the trailing run's backtracking under measurement too.
+#
+# The lengths are per body because the failure is superlinear and the case has
+# to STOP, not merely fail: unbounded, the keyword body costs 7.7x per doubling
+# and reaches 21 s at 4096, so the second row measures a shorter pair rather
+# than making every future run of this file wait out a regression. Each pair
+# doubles a different number of times, so each carries its own ratio bar.
+SCAN_COST_BODIES = [
+    ("a-run-of-one-character", "a", 1024, 8192, 32.0, 0.2),
+    ("a-run-of-the-keyword", "password", 512, 2048, 20.0, 0.2),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "unit", "short", "long", "max_ratio", "ceiling"),
+    SCAN_COST_BODIES,
+    ids=[b[0] for b in SCAN_COST_BODIES],
+)
+def test_the_credential_scan_costs_no_more_than_the_bytes_it_reads(
+    label: str, unit: str, short: int, long: int, max_ratio: float, ceiling: float
+) -> None:
+    """What the scan is allowed to COST, which nothing here bounded.
+
+    Every other case over this pattern asks which strings it matches. What it
+    is pointed at is a file a repository committed, read to
+    SECRET_SCAN_MAX_BYTES and scanned in `_eligible` — AFTER recall() has
+    returned, so no deadline is left to cut it short. Wrapped in unbounded
+    runs, this alternation cost quadratic time on an unbroken run of word
+    characters: 8 KiB took 1.1 s and the 64 KiB cap had not answered in a
+    minute, which is every prompt in that checkout past the harness kill.
+
+    A RATIO as well as a wall time, because a wall time alone is a machine
+    speed: growth is the property, and a faster machine would satisfy a wall
+    time with the quadratic still in there. Linear measures ~2.1x per doubling
+    on both bodies and an unbounded run measures 7.3x to 7.8x, which over these
+    spans is 8x against 63x and 4x against 57x.
+
+    The bars are FOUR times the honest ratio rather than twice, because this is
+    a measurement on a shared machine and the interference is one-directional:
+    the same case measured 8x alone and 17x with four other test runs on the
+    box. Best-of-five each way, in one process on one compiled pattern, so what
+    is compared is two lengths and not two regimes.
+    """
+    rx = hook._secret_re()
+
+    def cost(n: int) -> float:
+        text = (unit * (n // len(unit) + 1))[:n]
+        return min(_elapsed(lambda: rx.search(text)) for _ in range(5))
+
+    small = cost(short)
+    big = cost(long)
+    assert big < ceiling, (label, small, big)
+    assert big <= small * max_ratio, (label, small, big)
+
+
 def _project_relevance(monkeypatch, tmp_path: Path, body: str):
     """`_relevance` over one file in a project-store root, with the index's own
     side channel standing in for the ranker."""

@@ -4551,6 +4551,28 @@
         "tests/test_memory_prompt_recall.py::test_a_project_file_nested_past_the_parsers_budget_refuses_rather_than_raises"
       ],
       "why": "`RecursionError` is a `RuntimeError`, and a document nested past the parser's budget fits in half this file's byte cap — escaping the whole-or-nothing guard it costs the checkout not one refused file but every prompt's whole retrieval"
+    },
+    {
+      "name": "the-scan-run-in-front-of-the-keyword-is-unbounded",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"(?i:[A-Za-z0-9_]{0,64}\"\n",
+      "new": "                    r\"(?i:[A-Za-z0-9_]*\"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_credential_scan_costs_no_more_than_the_bytes_it_reads"
+      ],
+      "why": "an unbounded run in front of an alternation is retried at every split at every offset, and the input is a committed file scanned after recall()'s deadline — 8 KiB of word characters cost 1.1 s and the 64 KiB the scan reads to never answered"
+    },
+    {
+      "name": "the-scan-run-behind-the-keyword-is-unbounded",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"[A-Za-z0-9_]{0,64})\\s*[:=]\\s*\\S{8,}\",\n",
+      "new": "                    r\"[A-Za-z0-9_]*)\\s*[:=]\\s*\\S{8,}\",\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_credential_scan_costs_no_more_than_the_bytes_it_reads"
+      ],
+      "why": "the run behind the keyword is reached only where the alternation matches, so a body made of the keyword is what measures it — and unbounded it backtracks the same way, which is why the bound is on both runs and not just the one the timing curve was taken on"
     }
   ]
 }
