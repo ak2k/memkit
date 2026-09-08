@@ -14106,6 +14106,29 @@ REFUSALS = [
         ),
         f"needs {hook.PROJECT_SCHEMA_KEY}",
     ),
+    # `True == 1` and `1.0 == 1`, and `bool` is a subclass of `int`, so the
+    # equality test admitted both and the schema key stopped separating a
+    # project file from a user config.
+    (
+        "a schema that is a boolean",
+        _write_json(
+            {
+                hook.PROJECT_SCHEMA_KEY: True,
+                "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+            }
+        ),
+        f"needs {hook.PROJECT_SCHEMA_KEY}",
+    ),
+    (
+        "a schema that is a float",
+        _write_json(
+            {
+                hook.PROJECT_SCHEMA_KEY: 1.0,
+                "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+            }
+        ),
+        f"needs {hook.PROJECT_SCHEMA_KEY}",
+    ),
     (
         "an unknown top-level key",
         _write_json(

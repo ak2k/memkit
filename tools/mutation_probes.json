@@ -4397,6 +4397,17 @@
         "tests/test_memory_prompt_recall.py::test_the_search_clis_record_says_a_credential_was_floored_too"
       ],
       "why": "a credential floored under --search is invisible in the soak log"
+    },
+    {
+      "name": "project-schema-admits-a-value-that-merely-compares-equal",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if type(raw.get(PROJECT_SCHEMA_KEY)) is not int or (\n        raw.get(PROJECT_SCHEMA_KEY) != PROJECT_SCHEMA\n    ):\n",
+      "new": "    if raw.get(PROJECT_SCHEMA_KEY) != PROJECT_SCHEMA:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "`True == 1` and `1.0 == 1`, so the schema gate stops separating two files"
     }
   ]
 }

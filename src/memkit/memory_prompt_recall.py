@@ -686,7 +686,14 @@ def _project_store(root: str, taken):
         return None, f"{PROJECT_CONFIG_NAME} is not valid JSON: {_project_value(exc)}"
     if not isinstance(raw, dict):
         return None, f"{PROJECT_CONFIG_NAME} does not hold a JSON object"
-    if raw.get(PROJECT_SCHEMA_KEY) != PROJECT_SCHEMA:
+    # THE TYPE AS WELL AS THE VALUE. `True == 1` and `1.0 == 1` in Python, and
+    # `bool` is a subclass of `int`, so neither an equality test nor an
+    # `isinstance` keeps them out. This key is the whole of what stops a
+    # project file and a user config being read as each other, and a version
+    # number that is a boolean is a file whose author meant something else.
+    if type(raw.get(PROJECT_SCHEMA_KEY)) is not int or (
+        raw.get(PROJECT_SCHEMA_KEY) != PROJECT_SCHEMA
+    ):
         return None, (
             f"{PROJECT_CONFIG_NAME} needs {PROJECT_SCHEMA_KEY}: {PROJECT_SCHEMA}, "
             f"and this one says {_project_value(raw.get(PROJECT_SCHEMA_KEY))}"
