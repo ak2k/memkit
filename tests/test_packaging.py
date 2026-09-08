@@ -912,3 +912,36 @@ def test_every_guard_in_the_auto_memory_closure_has_a_probe() -> None:
         f"{[row for row in retired if row not in still_guards]}\n"
         "re-freeze in the commit that changed them:\n" + _refrozen(table)
     )
+
+
+def test_every_probe_on_these_two_files_still_anchors() -> None:
+    """A moved anchor is red here, not only in the sweep.
+
+    `mutation_sweep.py` calls this ANCHOR and refuses to run the probe, but
+    nothing in CI ran the sweep, so a probe whose `old` had drifted off the
+    code it was written for cost nothing until someone ran it by hand. The
+    pairing test above reads the same anchors: an anchor that no longer
+    matches silently un-probes a guard, which is the failure this file exists
+    to make loud.
+    """
+    probes = json.loads(
+        (REPO / "tools" / "mutation_probes.json").read_text(encoding="utf-8")
+    )["probes"]
+    checked = 0
+    for module in _CLOSURE_MODULES:
+        text = (REPO / module).read_text(encoding="utf-8")
+        for probe in probes:
+            if probe["file"] != module:
+                continue
+            checked += 1
+            wanted = probe.get("occurrences", 1)
+            assert text.count(probe["old"]) == wanted, (
+                f"{probe['name']}: its anchor appears "
+                f"{text.count(probe['old'])} times in {module}, wanted "
+                f"{wanted} — the sweep calls this ANCHOR and runs nothing"
+            )
+            assert probe["new"] != probe["old"], (
+                f"{probe['name']}: old and new are the same text, so the "
+                "probe mutates nothing"
+            )
+    assert checked == 83, checked
