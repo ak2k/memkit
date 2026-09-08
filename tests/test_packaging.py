@@ -640,9 +640,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("cli_doctor.py", "_auto_memory_rows", "if->exit", 4): (
         "scopes contradicting the off switch are disclosed, not passed over"
     ),
-    ("cli_doctor.py", "_auto_memory_rows", "if->exit", 5): (
-        "a walk that failed cannot bear a pass, so the row stays INFO"
-    ),
     ("harness_memory.py", "project_key", "if->exit", 2): (
         "a key over the cap is refused: the harness's suffix is unmeasured"
     ),
@@ -917,4 +914,4 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 93, checked
+    assert checked == 94, checked

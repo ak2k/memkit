@@ -3950,6 +3950,18 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         if config_value and not os.path.isabs(config_value)
         else ""
     )
+    # THE CLAUSE BEFORE THE PATH, because `_bound` cuts from the end and the
+    # path is the part an adopter's own machine decides the length of. Read
+    # here rather than two hundred lines down: it says the count below belongs
+    # to a directory the tree chose, which is as true of the branch that
+    # reports the switch off as of the one that reports where it writes.
+    redirected = (
+        "$CLAUDE_CONFIG_DIR points inside the directory this session stands "
+        "in, so both that path and what is counted in it are this tree's "
+        f"choice: {_shown(config_dir)}"
+        if steered
+        else ""
+    )
     default, underived = _default_memory_dir(machine, config_dir)
     configured, where = harness_memory.configured_dir(machine.settings)
     # THE LOCK BESIDE THE DIRECTORY IN USE. Read from the derived one whatever
@@ -3981,18 +3993,44 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     switch_source, switch_travels = (
         _checkout_source(enabled_scope) if switch_theirs else ("", "")
     )
+    # THE INVENTORY BEFORE THE VERDICT, on EVERY branch: a switch that is off
+    # stops the harness WRITING, and every memory it wrote before is still on
+    # disk, so the branch that returned without a walk is the branch whose
+    # sentence stops an adopter looking for them. A directory a store already
+    # holds is not a second memory system, and a link into a corpus root is the
+    # wiring docs/STORE.md recommends — counted as one, this row alarms about
+    # the state it exists to send adopters to.
+    in_store, held, outside, unread, unreadable = _inventoried(machine, config_dir)
+    # EVERY DISCLOSURE IN ONE TUPLE, and the same tuple gates, details and
+    # chooses the remedy. These were three lists that drifted: the gate held
+    # two of them, the detail four, and the row went on making its most
+    # reassuring claim while an environment variable decided where the harness
+    # writes and a checked-in path decided what was counted.
+    disclosures = (environed, redirected, unrooted, unread, store_unknown)
+    unsure = _detail(*disclosures)
+    # ONE REMEDY PER DISCLOSURE, because the gate is wider than the two it was
+    # written for. A disclosure with no repair of its own gets none rather than
+    # the repair for whichever one happened to be last in the ternary — and
+    # `environed` is one of those: nothing here can unset a variable in the
+    # environment the adopter's sessions actually run in.
+    unsure_remedy = (
+        _unreadable_remedy(unreadable)
+        if unread
+        else _UNROOTED_REMEDY
+        if unrooted
+        else ""
+    )
+    # THE ONLY CASE THE SCOPE ORDER DECIDES ANYTHING. With one declaring scope
+    # every candidate precedence picks it; with two that disagree, this row's
+    # most consequential sentence rests on an order inferred rather than
+    # measured, so it is reported instead of passed. Asked before the branches
+    # rather than inside one: ordered behind the checkout branch it never fired
+    # for the state it matters most in, a clone deciding the switch over a
+    # scope that declares it otherwise.
+    disputed = _declared_below(
+        machine.settings, harness_memory.ENABLED_KEY, enabled_scope, enabled
+    )
     if enabled is False:
-        # THE INVENTORY BEFORE THE VERDICT, and the reason this branch no
-        # longer returns without one: a switch that is off stops the harness
-        # WRITING, and every memory it wrote before is still on disk. This is
-        # the branch whose sentence stops an adopter looking for them.
-        in_store, held, outside, unread, unreadable = _inventoried(
-            machine, config_dir
-        )
-        # WHAT THE COUNT DOES NOT COVER, in one value: a walk that failed and a
-        # config directory whose spelling resolves only from here are both
-        # reasons this branch's own sentence is not something it observed.
-        unsure = _detail(unrooted, unread, store_unknown)
         left = _left_behind(outside)
         if left:
             left = f"{left}, and {ADOPT_ADVICE}"
@@ -4002,11 +4040,18 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # sentence contradicted two clauses later; off is still off, so this
         # stays a PASS and says the narrower true thing. A walk that FAILED
         # bears nothing out either way, which is the second condition here.
+        # The third: the checkout branch appends "while this checkout says so"
+        # to this string, and a clone that can switch the feature back on is
+        # not a machine where one memory system is settled.
         off = (
             "auto-memory is off in this process's environment"
             if forced is not None
             else f"auto-memory is off in {enabled_scope} settings"
-            + ("" if left or unsure else "; memkit is the only memory system here")
+            + (
+                ""
+                if left or unsure or switch_theirs
+                else "; memkit is the only memory system here"
+            )
         )
         if forced is not None:
             # NOT A PASS, and not the settings' answer either: the variable
@@ -4019,7 +4064,6 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     INFO,
                     _detail(
                         off,
-                        environed,
                         unsure,
                         left,
                         placed,
@@ -4042,6 +4086,14 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     _detail(
                         f"{off} while this checkout says so — the value is in "
                         f"{switch_source}, and {switch_travels}",
+                        # BOTH DISCLOSURES, not whichever branch ran first.
+                        # Who decided and which file wins are separate
+                        # questions, and the clone is the case where the
+                        # second one has teeth.
+                        f"{disputed} settings declare it otherwise, and which "
+                        "file wins is inferred for this key rather than read"
+                        if disputed
+                        else "",
                         unsure,
                         left,
                         placed,
@@ -4051,13 +4103,6 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     actor=USER,
                 )
             ]
-        # THE ONLY CASE THE SCOPE ORDER DECIDES ANYTHING. With one declaring
-        # scope every candidate precedence picks it; with two that disagree,
-        # this row's most consequential sentence rests on an order inferred
-        # rather than measured, so it is reported instead of passed.
-        disputed = _declared_below(
-            machine.settings, harness_memory.ENABLED_KEY, enabled_scope, enabled
-        )
         if disputed:
             return [
                 Check(
@@ -4089,15 +4134,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     "auto-memory",
                     INFO,
                     _detail(off, unsure, left, placed, recent),
-                    # ONE REMEDY PER DISCLOSURE, because the gate is now wider
-                    # than the two it was written for: a disclosure with no
-                    # repair of its own gets none, rather than the repair for
-                    # whichever one happened to be last in the ternary.
-                    _unreadable_remedy(unreadable)
-                    if unread
-                    else _UNROOTED_REMEDY
-                    if unrooted
-                    else "",
+                    unsure_remedy,
                     actor=USER,
                 )
             ]
@@ -4126,7 +4163,21 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             f"{harness_memory.DIRECTORY_KEY} in {source} names a directory "
             f"that {says}: {_shown(configured)}"
         )
-        if retrieved and not checkout and not switch_theirs and not environed:
+        # THE WALK GATES THIS PASS TOO. The configured directory being inside a
+        # store says nothing about the projects the harness wrote before the
+        # key was set, and this branch returned before the inventory was ever
+        # asked — so the one state that voids every other branch's pass, a
+        # listing that would not answer, was invisible in the only branch that
+        # passes silently. The parallel derived-directory guard below already
+        # gated on it.
+        if (
+            retrieved
+            and not checkout
+            and not switch_theirs
+            and not held
+            and not outside
+            and not unsure
+        ):
             return [
                 Check(
                     "auto-memory",
@@ -4142,6 +4193,12 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             remedy = _checkout_remedy("where your agent writes", where)
         elif switch_theirs:
             remedy = _checkout_remedy("whether it runs at all", enabled_scope)
+        elif unsure_remedy:
+            # AHEAD OF THE STORE ADVICE, because moving a directory is advice
+            # about a corpus this run could not enumerate: the first step is
+            # making it answer. On the disclosures that have no repair of their
+            # own this is empty and the store advice stands.
+            remedy = unsure_remedy
         else:
             aside = ""
             if not target:
@@ -4166,7 +4223,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                 INFO,
                 _detail(
                     travels,
-                    environed,
+                    *disclosures,
                     switched_on,
                     recent,
                     odd_enabled,
@@ -4176,11 +4233,6 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                 actor=USER,
             )
         ]
-
-    # A directory a store already holds is not a second memory system, and a
-    # link into a corpus root is the wiring docs/STORE.md recommends — counted
-    # as one, this row alarms about the state it exists to send adopters to.
-    in_store, held, outside, unread, _unreadable = _inventoried(machine, config_dir)
 
     here = False
     if underived:
@@ -4199,15 +4251,6 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             "(derived from the git root)"
         )
 
-    # THE CLAUSE BEFORE THE PATH, because `_bound` cuts from the end and the
-    # path is the part an adopter's own machine decides the length of.
-    redirected = (
-        "$CLAUDE_CONFIG_DIR points inside the directory this session stands "
-        "in, so both that path and what is counted in it are this tree's "
-        f"choice: {_shown(config_dir)}"
-        if steered
-        else ""
-    )
     # A remedy NEVER SENDS THE ADOPTER INTO THE CHECKOUT — and "set it in your
     # user settings" is worse than nothing while a scope above them sets the
     # key, which is the whole of what `_checkout_remedy` exists to say.
@@ -4228,10 +4271,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # was the one `_bound` cut — on an ordinary machine, with no long value in
     # sight.
     fixed = (
-        environed,
-        redirected,
-        unrooted,
-        unread,
+        *disclosures,
         first,
         switched_on,
         recent,
@@ -4246,11 +4286,8 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         here
         and not outside
         and not held
-        and not unread
-        and not unrooted
-        and not steered
+        and not unsure
         and not switch_theirs
-        and not environed
     ):
         return [Check("auto-memory", INFO, _detail(*fixed))]
     counted = _left_behind(outside)

@@ -2186,8 +2186,8 @@
       "name": "auto-memory-passes-a-directory-a-checked-in-file-chose",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        if retrieved and not checkout and not switch_theirs and not environed:\n",
-      "new": "        if retrieved:\n",
+      "old": "            and not checkout\n            and not switch_theirs\n",
+      "new": "",
       "tests": [
         "tests/test_doctor.py::test_a_checked_in_settings_file_decides_and_is_reported_not_passed"
       ],
@@ -2219,8 +2219,8 @@
       "name": "auto-memory-passes-an-off-switch-a-lower-scope-contradicts",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        disputed = _declared_below(\n            machine.settings, harness_memory.ENABLED_KEY, enabled_scope, enabled\n        )\n",
-      "new": "        disputed = \"\"\n",
+      "old": "    disputed = _declared_below(\n        machine.settings, harness_memory.ENABLED_KEY, enabled_scope, enabled\n    )\n",
+      "new": "    disputed = \"\"\n",
       "tests": [
         "tests/test_doctor.py::test_off_is_information_when_a_lower_scope_declares_it_otherwise"
       ],
@@ -2307,18 +2307,18 @@
       "name": "auto-memory-passes-a-directory-an-environment-override-replaces",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        if retrieved and not checkout and not switch_theirs and not environed:\n",
-      "new": "        if retrieved and not checkout and not switch_theirs:\n",
+      "old": "            and not outside\n            and not unsure\n        ):\n",
+      "new": "            and not outside\n        ):\n",
       "tests": [
         "tests/test_doctor.py::test_an_environment_override_stops_the_row_naming_a_directory"
       ],
-      "why": "Three environment variables decide where the harness writes above every settings scope, and memkit resolves none of them. Passing the configured directory while one is in effect names a directory that is not the one being written to, with this row's most confident status on it."
+      "why": "the pass this branch gives is a claim about the machine, and every disclosure the row carries — an environment override, a redirected config directory, a listing that would not answer, a config this run could not read — is a reason it was not measured here"
     },
     {
       "name": "auto-memory-passes-the-derived-directory-under-an-environment-override",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        and not switch_theirs\n        and not environed\n    ):\n        return [Check(\"auto-memory\", INFO, _detail(*fixed))]\n",
+      "old": "        and not unsure\n        and not switch_theirs\n    ):\n        return [Check(\"auto-memory\", INFO, _detail(*fixed))]\n",
       "new": "        and not switch_theirs\n    ):\n        return [Check(\"auto-memory\", INFO, _detail(*fixed))]\n",
       "tests": [
         "tests/test_doctor.py::test_an_override_leaves_the_derived_row_a_remedy_and_somebody_to_act_on_it"
@@ -4629,6 +4629,18 @@
         "tests/test_packaging.py::test_every_test_file_is_in_the_flake_suite_map"
       ],
       "why": "an unnamed suite file throws at EVALUATION, so `nix flake check` runs no check at all and the whole nix leg reports one error about a file nobody was thinking about"
+    },
+    {
+      "name": "auto-memory-passes-an-off-switch-it-could-not-bear-out",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        if unsure:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_inventory_row_names_no_variable_this_process_does_not_carry",
+        "tests/test_doctor.py::test_a_retrieved_directory_does_not_pass_over_an_inventory_it_could_not_read"
+      ],
+      "why": "off in a settings file is not the whole answer while something this run could not read decided part of the row: dropped, the branch returns the plain sentence with no disclosure, no remedy and nobody to act on it"
     }
   ]
 }

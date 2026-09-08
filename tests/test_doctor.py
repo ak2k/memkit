@@ -2326,6 +2326,98 @@ def test_a_directory_inside_a_store_is_retrieved_and_passes(profile, monkeypatch
     assert "user settings" in row.detail
 
 
+@pytest.mark.parametrize("switched_off", (True, False))
+@pytest.mark.parametrize(
+    "variable", (harness_memory.DISABLE_ENV, *harness_memory.OVERRIDE_ENV)
+)
+def test_the_inventory_row_names_no_variable_this_process_does_not_carry(
+    profile, monkeypatch, variable, switched_off
+) -> None:
+    """One variable at a time, over both branches, and two properties.
+
+    A remedy naming a variable the reader does not have is worse than no
+    remedy: following it changes nothing, and the row goes on saying what it
+    said. The gate that stops this row passing was narrower than the set of
+    things it discloses, so an override variable deciding where the harness
+    writes left `memkit is the only memory system here` standing.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, **({"autoMemoryEnabled": False} if switched_off else {}))
+    monkeypatch.setenv(
+        variable, "1" if variable == harness_memory.DISABLE_ENV else "/u/elsewhere"
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    named = set(re.findall(r"\$([A-Z_]+)", row.remedy))
+    assert all(os.environ.get(one) for one in named), (named, row.remedy)
+    # And what voided the claim is in the detail, not only in the gate: a row
+    # that stops saying the reassuring thing without saying why says nothing.
+    assert variable in row.detail
+    assert "memkit is the only memory system here" not in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_a_retrieved_directory_does_not_pass_over_an_inventory_it_could_not_read(
+    profile, monkeypatch
+) -> None:
+    """The pass this branch gives is a claim about the machine, and this run
+    could not enumerate what the harness already wrote on it.
+
+    The branch returned before the walk was ever called, so the one state that
+    voids every other branch's pass — an inventory that would not list — was
+    invisible here. The parallel guard on the derived directory already gated
+    on it.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "widget calibration after a flash")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    projects = profile / "claude-config" / "projects"
+    projects.mkdir(parents=True, exist_ok=True)
+    projects.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        projects.chmod(0o755)
+    assert (row.status, row.remedy) != SETTLED
+    assert str(projects) in row.detail and str(projects) in row.remedy
+    assert row.actor == doctor.USER
+
+
+def test_a_checkout_that_decided_the_switch_still_discloses_the_scopes_that_disagree(
+    profile, monkeypatch
+) -> None:
+    """Two disclosures, one row, and the second one was unreachable.
+
+    Which file wins is inferred rather than measured for this key, so a second
+    scope declaring it otherwise is reported. Ordered behind the checkout
+    branch, that report never fired for the state where it matters most: a
+    clone deciding the switch over a user settings file that says otherwise.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=True)
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "this checkout says so" in row.detail
+    assert "user settings declare it otherwise" in row.detail
+    # The remedy stays the one that does not send an adopter into the clone.
+    assert row.remedy == doctor._checkout_remedy("it yourself", "project")
+
+
 def test_a_gated_store_still_holds_what_the_harness_writes_into_it(
     profile, monkeypatch
 ) -> None:
