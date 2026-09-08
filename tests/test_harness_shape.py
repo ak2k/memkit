@@ -2278,10 +2278,11 @@ def _tool_module():
 def test_the_constants_copied_from_memkit_are_the_ones_memkit_holds(
     monkeypatch,
 ) -> None:
-    """The module docstring says running this tool against
-    `harness_memory.inventory` is what keeps the copies in step.
+    """Every constant copied into the capture tool, against the one memkit holds.
 
-    True only for the constants `harness_memory` owns. `CONSOLIDATE_LOCK` and
+    The walk comparison does not stand in for this: it agrees whenever both
+    sides read one tree the same way, whatever they call things. And it reaches
+    only what `harness_memory` owns — `CONSOLIDATE_LOCK` and
     `_managed_dir()` are copied from `cli_doctor`, which the equivalence test
     never imports — so a rename there desynchronises this tool with nothing
     going red. All four agree today; this is what says so tomorrow.

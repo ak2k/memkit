@@ -55,9 +55,12 @@ No third-party import, no `memkit` import, no read of `__file__`. It is a dev
 tool like `tools/mutation_sweep.py`, outside the installed payload.
 
 The handful of constants below are DUPLICATED from `memkit` rather than
-imported, for the reason above. `tests/test_harness_shape.py` runs this tool
-and `memkit.harness_memory.inventory` over one tree and requires them to agree,
-which is what keeps the copies in step.
+imported, for the reason above. `tests/test_harness_shape.py` holds the copies
+in step with two comparisons, because neither covers the other: it runs this
+tool and `memkit.harness_memory.inventory` over one tree and requires the two
+WALKS to agree, and it asserts each copied CONSTANT against the value `memkit`
+holds — a walk agrees whenever both sides read one tree the same way, which is
+still the case when both are wrong about a name.
 """
 
 from __future__ import annotations
