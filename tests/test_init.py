@@ -4032,6 +4032,114 @@ def test_a_red_integrity_check_still_redirects_the_harness(
     assert settings["autoMemoryDirectory"].startswith(str(profile / "notes"))
 
 
+def test_the_two_shapes_of_exit_six_say_in_their_output_which_one_they_are(
+    profile, monkeypatch, capsys
+) -> None:
+    """EVERY EXIT CODE'S SENTENCE HAS TO BE TRUE OF EVERY RUN THAT RETURNS IT.
+
+    Deferring the red checker's code to the end of the loop made 6 the answer
+    for a run that performed every action in its manifest as well as for one
+    that genuinely stopped partway, and the published table said only the
+    second. The code cannot tell them apart — one number, two states — so the
+    output has to, and it does: the finished run says so and names the files
+    the check is red on, the stopped run names the refusal that stopped it and
+    says nothing about a finished manifest.
+    """
+    _harness(profile, "-home-u", {"ok.md": TRAP})
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    store = profile / "notes"
+
+    # Shape one: everything performed, and then the check is red — on a file
+    # this run wrote and on one it did not.
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    mine = next(a.path for a in plan.pending if a.path.endswith("memkit-canary.md"))
+    theirs = store / "search" / "not-from-here.md"
+
+    def red(_machine, _config):
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "search").mkdir(parents=True, exist_ok=True)
+        theirs.write_text("# theirs\n", encoding="utf-8")
+        return 1, (
+            "[FAIL] ./ (0 hot, 2 search, hot ledger 248b)\n"
+            "  DESC-BAD: ./search/memkit-canary.md — description empty\n"
+            "  ORPHAN: ./search/not-from-here.md — no row in SEARCH.md"
+        )
+
+    monkeypatch.setattr(init, "_run_checker", red)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    finished = capsys.readouterr().err
+    assert "every action in the manifest was performed" in finished, finished
+    assert f"{mine} — this run wrote it" in finished, finished
+    assert f"{theirs} — this run did not write it" in finished, finished
+    assert "no re-run will change" in finished, finished
+    assert "refused mid-apply" not in finished, finished
+    # And it really did finish: the last action is the settings write.
+    assert json.loads(
+        (profile / "claude-config" / "settings.json").read_text(encoding="utf-8")
+    )[harness_memory.DIRECTORY_KEY]
+
+    # Shape two: a run that stopped partway. Same exit code, and its output
+    # claims nothing about a manifest it did not finish. `_run_checker` is put
+    # back by name rather than with `monkeypatch.undo()`, which would also undo
+    # the profile fixture's own patches — the two share one instance, and a
+    # case that lost `$CLAUDE_CONFIG_DIR` halfway through would plan against
+    # the machine running the suite.
+    monkeypatch.setattr(init, "_run_checker", lambda _m, _c: (0, ""))
+    settings = profile / "claude-config" / "settings.json"
+    stopped = _plan(profile, auto_dream_off=True, store=str(profile / "other"))
+    settings.write_text('{"theme": "moved under it"}', encoding="utf-8")
+    assert init.apply_plan(machine, stopped, config) == init.EXIT_INCOMPLETE
+    partway = capsys.readouterr().err
+    assert "refused mid-apply (changed-underfoot)" in partway, partway
+    assert "every action in the manifest was performed" not in partway, partway
+    assert settings.read_text(encoding="utf-8") == '{"theme": "moved under it"}'
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_destination_the_adopter_edited_is_named_as_one_this_run_left_alone(
+    profile,
+) -> None:
+    """The contract case, end to end: adoption copies and never overwrites, so
+    a destination the adopter has edited is `diverged` and nothing is written
+    for it — and a memory with no frontmatter is exactly what the integrity
+    checker calls an orphan. The run therefore does everything it said it
+    would and exits 6 anyway.
+
+    Re-running the two turns cannot clear that, because the next manifest has
+    nothing to say about a file adoption declined. The output has to say so, or
+    the recovery the exit code advertises sends the adopter round a loop.
+    """
+    _harness(profile, "-home-u", {"note.md": BARE})
+    store = profile / "notes"
+    first = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert first.returncode == init.EXIT_OK, first.stdout + first.stderr
+    landed = _confirm(
+        profile, _digest_of(first), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert landed.returncode == init.EXIT_OK, landed.stdout + landed.stderr
+    dest = store / "search" / init.ADOPT_DIRNAME / "-home-u" / "note.md"
+    dest.write_text("# Home note\n\nedited, and still no frontmatter\n", "utf-8")
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout
+    assert f"diverged: {dest}" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    assert "the integrity checker is not happy" in out.stderr, out.stderr
+    assert "every action in the manifest was performed" in out.stderr, out.stderr
+    assert f"{dest} — this run did not write it" in out.stderr, out.stderr
+    assert "no re-run will change" in out.stderr, out.stderr
+    # The file the run declined to write is byte-unchanged, and the source too.
+    assert dest.read_text(encoding="utf-8").endswith("still no frontmatter\n")
+    source = profile / "claude-config" / "projects" / "-home-u" / "memory" / "note.md"
+    assert source.read_text(encoding="utf-8") == BARE
+
+
 def test_a_description_taken_from_a_file_name_cannot_end_its_own_line(
     profile,
 ) -> None:

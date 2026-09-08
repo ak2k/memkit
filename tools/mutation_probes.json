@@ -4651,6 +4651,29 @@
         "tests/test_init.py::test_switching_auto_memory_off_first_still_leaves_adoption_a_path"
       ],
       "why": "the user scope is the one `--auto-memory-off` itself writes, so refusing on a `false` found there makes one memkit flag unusable because of state another memkit flag wrote — and the two are mutually exclusive, so nothing memkit offers undoes it. Hand-editing the harness settings file was the only way back."
+    },
+    {
+      "name": "cli-the-incomplete-code-advertises-only-half-of-what-returns-it",
+      "module": "cli",
+      "file": "src/memkit/cli.py",
+      "old": "        f\"and wrote nothing / {EXIT_INCOMPLETE} a subcommand started and did \"\n        \"not finish, OR finished every action and then failed its own \"\n        \"integrity check; the output says which, and names the files the \"\n        \"check is red on and whether that run wrote them. A run that stopped \"\n        \"partway recovers with a fresh --dry-run and confirm of THAT digest, \"\n        \"since what landed has moved the old one; a file the run did not \"\n        \"write is one no re-run changes.\"",
+      "new": "        f\"and wrote nothing / {EXIT_INCOMPLETE} a subcommand started and did \"\n        \"not finish; recover with a fresh --dry-run and confirm THAT digest, \"\n        \"since what landed has moved the old one.\"",
+      "tests": [
+        "tests/test_cli.py::test_every_exit_code_the_help_advertises_is_one_the_process_returns"
+      ],
+      "why": "a run that performs every action in its manifest and then fails its own integrity check returns this code too. Advertised as \"started and did not finish\", it sends that adopter to the two-turn recovery, which cannot clear what the checker is red on — the published sentence has to be true of every run that returns the code."
+    },
+    {
+      "name": "init-a-red-check-does-not-say-which-files-the-run-left-alone",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    lines.extend(\n        f\"  {_display_path(path)} — this run did not write it\" for path in theirs\n    )\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_the_two_shapes_of_exit_six_say_in_their_output_which_one_they_are",
+        "tests/test_init.py::test_a_destination_the_adopter_edited_is_named_as_one_this_run_left_alone"
+      ],
+      "why": "adoption copies and never overwrites, so a destination the adopter edited is declined — and a red check on that file is one no re-run clears, because the next manifest has nothing to say about it. Without the clause the adopter reads the exit code's own recovery and runs the two turns forever."
     }
   ]
 }

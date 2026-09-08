@@ -2986,6 +2986,10 @@ class Journal:
         # journal is where that is already recorded; this is the same record
         # kept in memory, because the question is only ever about this run.
         self.landed: dict = {}
+        # THE FILES A RED INTEGRITY CHECK NAMED, kept until the loop is done.
+        # VERIFY is not the last action, so the sentence that says whether this
+        # run wrote them cannot be true when the check itself reports.
+        self.checker_named: list = []
 
     def record(
         self,
@@ -3285,6 +3289,67 @@ def _package_path() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# A checker finding, as the checker prints one: two leading spaces, a code in
+# capitals, the path it is about, and an em dash before the reason.
+_CHECKER_FINDING = re.compile(r"^ +([A-Z][A-Z0-9-]*): (\S+) — ")
+
+
+def _files_the_checker_names(output: str, store: str) -> list:
+    """Every file a red check named, absolute, in the order it named them.
+
+    The paths are spelled relative to the store root, and the checker verifies
+    every store the config names rather than only the one this action is
+    about — so a finding is kept only when it resolves to something that is
+    actually there under this store. A path joined onto the wrong root is a
+    file name the adopter cannot act on, which is the failure the sentence
+    below it exists to end.
+    """
+    named: list = []
+    for line in output.splitlines():
+        found = _CHECKER_FINDING.match(line)
+        if found is None:
+            continue
+        full = os.path.normpath(os.path.join(store, found.group(2)))
+        if full not in named and os.path.lexists(full):
+            named.append(full)
+    return named
+
+
+def _report_red_verify(journal: Journal) -> None:
+    """What a red check found, and whether THIS run put it there.
+
+    Exit 6 is returned both by a run that stopped partway and by one that did
+    everything it said it would and then failed its own integrity check, and
+    the recoveries are opposite. A run that stopped converges on a fresh
+    dry-run and confirm; a file this run declined to write is one no re-run
+    will touch, because the next manifest has nothing to say about it. This
+    sentence is what tells an adopter which of the two they are holding.
+    """
+    mine = [path for path in journal.checker_named if path in journal.landed]
+    theirs = [path for path in journal.checker_named if path not in journal.landed]
+    lines = [
+        "memkit init: every action in the manifest was performed. This exit "
+        "code is the integrity checker's verdict on the finished store, not a "
+        "run that stopped partway."
+    ]
+    lines.extend(f"  {_display_path(path)} — this run wrote it" for path in mine)
+    lines.extend(
+        f"  {_display_path(path)} — this run did not write it" for path in theirs
+    )
+    if theirs:
+        lines.append(
+            "A file this run did not write is one no re-run will change: the "
+            "next `init --dry-run` has nothing to say about it. Fix it where "
+            "it is — or move it out of the store — and run the checker again."
+        )
+    if mine:
+        lines.append(
+            "Re-run `init --dry-run` for a manifest of what is left and "
+            "confirm THAT digest; what landed has moved the old one."
+        )
+    print("\n".join(lines), file=sys.stderr)
+
+
 def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
     """Perform the plan, journalling each mutation as it happens."""
     journal = Journal(machine.state_dir, plan.digest)
@@ -3337,6 +3402,11 @@ def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
             # guard: every action after this one is performed under all of its
             # own, and a refusal from one still stops the run.
             incomplete = code
+    # HERE AND NOT AT THE CHECK, because "every action was performed" is only
+    # true once the loop has ended: the settings write that makes the store the
+    # place the harness writes to comes after VERIFY.
+    if incomplete != EXIT_OK:
+        _report_red_verify(journal)
     return incomplete
 
 
@@ -3420,6 +3490,7 @@ def _perform(
     elif action.op == VERIFY:
         code, output = _run_checker(machine, config_path)
         if code != 0:
+            journal.checker_named = _files_the_checker_names(output, action.path)
             print(
                 "memkit init: the store was created and the integrity "
                 f"checker is not happy with it:\n{output}",

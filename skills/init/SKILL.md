@@ -66,7 +66,7 @@ re-run the dry-run, relay the new manifest, and ask again.
 | 1 | memkit could not start at all — no interpreter, or an incomplete payload | stderr names what is missing; nothing about the arguments will change it |
 | 2 | usage error | fix the arguments |
 | 5 | **refused, and nothing was written** | stderr names which refusal and why. Relay it. Do not retry the same command |
-| 6 | started and did not finish | the journal says how far it got. **Recover with both turns again, not by repeating the confirm**: what landed has changed the digest, so the old `--confirm` now refuses as stale. Run `--dry-run`, relay the new manifest — it lists only what is left — and confirm that |
+| 6 | started and did not finish, or finished every action and then failed its own integrity check | stderr says which, names the files the check is red on and whether that run wrote them. For a run that stopped: the journal says how far it got, and **you recover with both turns again, not by repeating the confirm** — what landed has changed the digest, so the old `--confirm` now refuses as stale. Run `--dry-run`, relay the new manifest — it lists only what is left — and confirm that. For a file the run did not write, no re-run changes it: relay the finding and let the person fix that file |
 
 A refusal is a decision, not a failure to try harder. `foreign-config` means
 somebody else wrote the config and init will not overwrite it;

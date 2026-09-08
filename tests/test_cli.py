@@ -443,3 +443,15 @@ def test_every_exit_code_the_help_advertises_is_one_the_process_returns():
     for code in (0, cli.EXIT_NO_RUNTIME, cli.EXIT_USAGE, cli.EXIT_NOT_IN_BUILD,
                  cli.EXIT_REFUSED, cli.EXIT_INCOMPLETE):
         assert f"/ {code} " in rendered or f": {code} " in rendered, code
+
+    # AND WHAT THE SENTENCE SAYS, not only the number it is attached to. A run
+    # that performs every action in its manifest and then fails its own
+    # integrity check returns this code too, so a table that promised only
+    # "started and did not finish" sent that adopter to a recovery — the two
+    # turns again — that cannot clear what the checker is red on. The
+    # published sentence has to be true of every run that returns the code.
+    incomplete = rendered.split(f"/ {cli.EXIT_INCOMPLETE} ", 1)[1]
+    assert "started and did not finish" in incomplete, incomplete
+    assert "failed its own integrity check" in incomplete, incomplete
+    assert "the output says which" in incomplete, incomplete
+    assert "no re-run changes" in incomplete, incomplete
