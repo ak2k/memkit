@@ -888,9 +888,24 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
     names = _Pseudonyms()
     now = time.time()
     projects_root = os.path.join(config_dir, "projects")
+    memory_dirs = []
+    memory_dirs_total = skipped = read_errors = 0
+    keys = []
+    projects_total = 0
     try:
         with os.scandir(projects_root) as entries:
-            keys = sorted((entry.name, entry.is_symlink()) for entry in entries)
+            for entry in entries:
+                projects_total += 1
+                try:
+                    keys.append((entry.name, entry.is_symlink()))
+                except OSError:
+                    # A per-entry failure is a fact about that ENTRY. `scandir`
+                    # answers `is_symlink` from the readdir record where the
+                    # filesystem supplies one and stats the name where it does
+                    # not, so on the filesystems that do not the one project a
+                    # capture cannot reach used to end the run for all of them.
+                    # It is counted here and still counted in `projects_total`.
+                    skipped += 1
     except FileNotFoundError:
         if os.path.lexists(projects_root):
             # THE NAME IS THERE and does not resolve — `projects/` as a link
@@ -907,8 +922,8 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
         # operator may not get a second run at. It leaves here as an
         # exception, and `main` turns it into a message and an exit 2.
         keys = []
-    memory_dirs = []
-    memory_dirs_total = skipped = read_errors = 0
+        projects_total = skipped = 0
+    keys.sort()
     for key, project_is_symlink in keys:
         project_dir = os.path.join(projects_root, key)
         memory_dir = os.path.join(project_dir, "memory")
@@ -976,11 +991,12 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
         # still means the same thing, and what catches a fixture that predates
         # the row is the field-set gate rather than the number.
         "settings_managed_read": managed,
-        "projects_total": len(keys),
+        "projects_total": projects_total,
         "memory_dirs_total": memory_dirs_total,
         # TWO counters, because a half-failed capture that is
         # byte-indistinguishable from a complete one is a capture nobody can
-        # act on: `skipped` is a memory directory that could not be listed,
+        # act on: `skipped` is a project this run could not look into — the
+        # entry itself unreadable, or its memory directory unlistable —
         # `read_errors` a file inside one that could not be measured.
         "skipped": skipped,
         "read_errors": read_errors,

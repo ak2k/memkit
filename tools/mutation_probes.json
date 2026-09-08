@@ -4725,6 +4725,39 @@
         "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
       ],
       "why": "`abspath` drops a trailing separator and `realpath` keeps it, so `--out dir/`, `--out dir/.` and `--out dir/..` made the two spellings of the parent disagree and were refused as “a symlink stands in this path” with no link anywhere — an operator sent hunting for a staged attack by a typo. A refusal names the reason it found."
+    },
+    {
+      "name": "harness-shape-one-unclassifiable-project-entry-ends-the-capture",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            for entry in entries:\n                projects_total += 1\n                try:\n                    keys.append((entry.name, entry.is_symlink()))\n                except OSError:\n                    # A per-entry failure is a fact about that ENTRY. `scandir`\n                    # answers `is_symlink` from the readdir record where the\n                    # filesystem supplies one and stats the name where it does\n                    # not, so on the filesystems that do not the one project a\n                    # capture cannot reach used to end the run for all of them.\n                    # It is counted here and still counted in `projects_total`.\n                    skipped += 1\n",
+      "new": "            for entry in entries:\n                projects_total += 1\n                keys.append((entry.name, entry.is_symlink()))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_one_unclassifiable_project_entry_does_not_end_the_capture"
+      ],
+      "why": "`projects/` was listed by one comprehension, so an entry whose type could not be established — a stat on a filesystem carrying no `d_type`, which is where `sudo -n` into an NFS home lands — took the whole capture out with it. Only a failure to list the directory at all ends the run; a per-entry failure is a fact about that entry."
+    },
+    {
+      "name": "harness-shape-a-project-that-is-a-file-is-booked-as-a-failure",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        except (FileNotFoundError, NotADirectoryError):\n",
+      "new": "        except FileNotFoundError:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_project_that_holds_no_memory_directory_is_passed_over"
+      ],
+      "why": "A plain file where a project directory should be makes the `memory` lookup a `NotADirectoryError`, not a missing name. Without that arm it falls to the unreadable handler and is counted as a project this run could not read, which is a claim about the machine that is not true."
+    },
+    {
+      "name": "harness-shape-a-file-named-memory-is-read-as-a-memory-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if not is_dir:\n            continue\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_project_that_holds_no_memory_directory_is_passed_over"
+      ],
+      "why": "`os.stat` answers for a FILE named `memory` as readily as for a directory. Without the type check the project is counted as one holding memories and then fails to be listed, so a name anyone who can write in `projects/` may leave behind reports as a read failure."
     }
   ]
 }

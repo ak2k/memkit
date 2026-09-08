@@ -26,6 +26,7 @@ read every file it listed, which is what its `read_errors` total of 0 says.
 from __future__ import annotations
 
 import ast
+import errno
 import importlib.util
 import json
 import os
@@ -1747,6 +1748,83 @@ def test_a_half_failed_capture_counts_what_it_could_not_read(tmp_path) -> None:
     assert files["two.md"]["has_frontmatter"] is None
     assert files["one.md"]["unreadable"] is False
     assert files["one.md"]["has_frontmatter"] is False
+
+
+def test_one_unclassifiable_project_entry_does_not_end_the_capture(
+    tmp_path, monkeypatch,
+) -> None:
+    """The listing of `projects/` used to be one comprehension, so the
+    `is_symlink()` of any single entry decided whether the machine got a shape
+    at all.
+
+    It cannot be provoked by planting: APFS and ext4 carry the type in the
+    readdir record, so `DirEntry.is_symlink` answers without a syscall and
+    never raises. The filesystems that supply no `d_type` — NFS among them,
+    which is where `sudo -n` into somebody's home lands — stat the name
+    instead, and there an entry the capture cannot reach raises. So the
+    failing entry is injected: what is under test is the blast radius, and the
+    kernel that produces it is not one this suite can stand on.
+    """
+    config = tmp_path / "config"
+    for key in ("-good", "-bad"):
+        _write(_memory_dir(config, key) / "one.md", "x\n")
+    module = _tool_module()
+    real_scandir = module.os.scandir
+
+    class Unreachable:
+        """One `projects/` entry whose type cannot be established."""
+
+        def __init__(self, entry) -> None:
+            self._entry = entry
+
+        def __getattr__(self, name):
+            return getattr(self._entry, name)
+
+        def is_symlink(self):
+            if self._entry.name == "-bad":
+                raise OSError(errno.EACCES, "Permission denied", self._entry.path)
+            return self._entry.is_symlink()
+
+    class Wrapped:
+        def __init__(self, entries) -> None:
+            self._entries = entries
+
+        def __enter__(self):
+            self._entries.__enter__()
+            return (Unreachable(entry) for entry in self._entries)
+
+        def __exit__(self, *exc):
+            return self._entries.__exit__(*exc)
+
+    monkeypatch.setattr(
+        module.os, "scandir", lambda path=".": Wrapped(real_scandir(path))
+    )
+    shape = module.capture(str(config), anonymise=False)
+    assert [entry["key"] for entry in shape["memory_dirs"]] == ["-good"]
+    # Still one of the machine's projects, and now one nothing was read from.
+    assert shape["projects_total"] == 2
+    assert shape["skipped"] == 1
+
+
+def test_a_project_that_holds_no_memory_directory_is_passed_over(tmp_path) -> None:
+    """Two spellings of a project with nothing to read, both reachable by
+    anyone who can write in `projects/`: a FILE at the name `memory`, and a
+    file where the project directory should be — which makes the `memory`
+    lookup a `NotADirectoryError` rather than a missing name.
+
+    Neither is a failure to report, so neither is counted; what matters is
+    that the capture finishes and the project beside them is in it.
+    """
+    config = tmp_path / "config"
+    _write(_memory_dir(config, "-real") / "one.md", "x\n")
+    _write(config / "projects" / "-file-at-memory" / "memory", "not a directory\n")
+    _write(config / "projects" / "-not-a-project", "nor is this\n")
+    shape = _shape("--config-dir", str(config), "--raw")
+    assert [entry["key"] for entry in shape["memory_dirs"]] == ["-real"]
+    assert shape["projects_total"] == 3
+    assert shape["memory_dirs_total"] == 1
+    assert shape["skipped"] == 0
+    assert shape["read_errors"] == 0
 
 
 @pytest.mark.skipif(ROOT, reason="root reads a file nobody else can")
