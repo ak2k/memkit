@@ -4338,6 +4338,39 @@
         "tests/test_harness_shape.py::test_out_refuses_to_write_through_a_symlink_somebody_else_planted"
       ],
       "why": "O_NOFOLLOW guards the final component only. Unresolved, the destination directory is followed and the file behind it truncated — the same write primitive the last-component refusal exists to close, one level up, on a host this runs as a guest on."
+    },
+    {
+      "name": "harness-shape-a-switch-that-was-set-is-recorded-as-a-null",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            memory_keys[key] = SET_PLACEHOLDER\n",
+      "new": "            memory_keys[key] = None\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_switch_the_harness_reads_as_on_is_recorded_as_on"
+      ],
+      "why": "`harness_memory.switch` reads an explicit null as absence, because the harness's own `!= null` test makes it one. So the null recorded for a switch somebody had set describes a machine with the feature off, which is the opposite of the machine that was captured — the privacy half right and the fact inverted."
+    },
+    {
+      "name": "harness-shape-index-cap-drops-a-whole-row-at-a-line-boundary",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if truncated and lines and not head.endswith((\"\\n\", \"\\r\")):\n",
+      "new": "    if truncated and lines:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_pathological_index_is_read_to_the_cap_and_says_so"
+      ],
+      "why": "The last line read is dropped because the cap cut it in half. When the cap lands on a newline that line is whole, and dropping it reports one row fewer than the file has — a count a rebuilt corpus cannot reproduce, off by exactly the amount that looks like nothing."
+    },
+    {
+      "name": "harness-shape-one-patched-versions-directory-nulls-the-hint",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            usable = [name for name in installed if _VERSION_FULL_RE.fullmatch(name)]\n            hint = max(usable, key=_version_sort_key) if usable else None\n",
+      "new": "            hint = None\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_version_that_is_not_one_never_travels"
+      ],
+      "why": "The highest entry under versions/ is the hand-built one, so rejecting it whole throws away the releases installed beside it. A beta or a patched build next to 2.1.258 is an ordinary machine, and the shape then says the machine had no version at all."
     }
   ]
 }

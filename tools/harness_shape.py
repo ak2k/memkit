@@ -81,6 +81,14 @@ DIRECTORY_KEY = "autoMemoryDirectory"
 # needs from it is that the key was SET, not where it pointed.
 PATH_PLACEHOLDER = "<path>"
 
+# And what a switch set to something that is not a boolean becomes. A literal
+# for the same reason, and NOT `null`: the harness reads any non-null as on,
+# so a shape that recorded null for a switch somebody had set inverted the one
+# fact it was keeping — a tree rebuilt from it reports the feature off where
+# the captured machine had it on. No settings file carries this string with a
+# meaning of its own.
+SET_PLACEHOLDER = "<set>"
+
 # The one plugin name kept literally, because a shape is also how memkit finds
 # out whether it was installed on the machine that was captured.
 KEPT_PLUGIN = "memkit"
@@ -190,10 +198,10 @@ def _settings_scope(data: dict, names: _Pseudonyms, anonymise: bool) -> dict:
         if key == DIRECTORY_KEY:
             memory_keys[key] = PATH_PLACEHOLDER if anonymise else value
         elif anonymise and not isinstance(value, bool):
-            # PRESENT, and not a switch. `null` says the key was set to
-            # something the harness reads as on, which is the fact a rebuilt
-            # tree needs; the value itself is the adopter's.
-            memory_keys[key] = None
+            # PRESENT, and not a switch. The placeholder says the key was set
+            # to something the harness reads as on, which is the fact a
+            # rebuilt tree needs; the value itself is the adopter's.
+            memory_keys[key] = SET_PLACEHOLDER
         else:
             memory_keys[key] = value
     hooks = data.get("hooks")
@@ -316,7 +324,12 @@ def _harness(config_dir: str, anonymise: bool) -> dict:
     install = install if isinstance(install, str) else None
     if anonymise:
         if hint is not None and not _VERSION_FULL_RE.fullmatch(hint):
-            hint = None
+            # The highest entry is the one somebody hand-built, and rejecting
+            # it whole loses the releases installed beside it: a beta or a
+            # patched build sitting next to 2.1.258 is an ordinary machine,
+            # and the hint it deserves is the highest entry that IS a version.
+            usable = [name for name in installed if _VERSION_FULL_RE.fullmatch(name)]
+            hint = max(usable, key=_version_sort_key) if usable else None
         if install is not None and install not in INSTALL_METHODS:
             install = INSTALL_OTHER
     return {"version_hint": hint, "install": install}
@@ -552,9 +565,12 @@ def _index(memory_dir: str, listed: list) -> dict:
     except OSError:
         return {"rows": 0, "dangling_rows": 0, "truncated": False}
     truncated = len(text) > FRONTMATTER_BYTES
-    lines = text[:FRONTMATTER_BYTES].splitlines()
-    if truncated and lines:
-        # What the cap cut is a fragment of a line, not a row.
+    head = text[:FRONTMATTER_BYTES]
+    lines = head.splitlines()
+    if truncated and lines and not head.endswith(("\n", "\r")):
+        # What the cap cut is a fragment of a line — UNLESS it fell on a line
+        # boundary, where the last line is whole and dropping it loses a row
+        # the file has.
         lines.pop()
     present = set(listed)
     rows = dangling = 0

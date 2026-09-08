@@ -412,7 +412,7 @@ def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
     assert shape["harness"] == {"version_hint": None, "install": "other"}
     user = shape["settings"]["user"]
     assert user["memory_keys"] == {
-        harness_memory.ENABLED_KEY: None,
+        harness_memory.ENABLED_KEY: "<set>",
         harness_memory.DIRECTORY_KEY: "<path>",
         harness_memory.DREAM_KEY: True,
     }
@@ -436,6 +436,44 @@ def test_a_name_in_the_tree_never_reaches_an_anonymised_shape(tmp_path) -> None:
     }
     assert f"Gate--{SENTINEL}" in raw_shape["settings"]["user"]["hooks"]
     assert ALPHA_SENTINEL in raw_shape["settings"]["user"]["hooks"]
+
+
+def test_a_switch_the_harness_reads_as_on_is_recorded_as_on(tmp_path) -> None:
+    """The privacy half of this row was right and the value chosen for it
+    inverted the fact it was keeping.
+
+    `harness_memory.switch` treats an explicit null as ABSENCE — the harness's
+    own `!= null` test is what makes it one — so a shape that recorded null
+    for a switch an adopter had set to a path described a machine with the
+    feature OFF, which is the opposite of the machine that was captured. The
+    comparison is against `switch` itself rather than against a literal,
+    because that function is what decides the question.
+    """
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    typed = f"/Users/{SENTINEL}/notes"
+    _write(
+        config / "settings.json",
+        json.dumps({harness_memory.ENABLED_KEY: typed,
+                    harness_memory.DREAM_KEY: False}),
+    )
+    shape = _shape(
+        "--config-dir", str(config), env=_managed_env(tmp_path / "no-managed")
+    )
+    recorded = shape["settings"]["user"]["memory_keys"]
+    assert SENTINEL not in json.dumps(recorded)
+
+    class _Scope:
+        def __init__(self, data):
+            self.scope = "user"
+            self.data = data
+
+    for key, captured in ((harness_memory.ENABLED_KEY, typed),
+                          (harness_memory.DREAM_KEY, False)):
+        was, _ = harness_memory.switch([_Scope({key: captured})], key)
+        rebuilt, _ = harness_memory.switch([_Scope({key: recorded[key]})], key)
+        assert (was is None) == (rebuilt is None), (key, captured, recorded[key])
+        assert bool(was) == bool(rebuilt), (key, captured, recorded[key])
 
 
 def test_a_version_that_is_not_one_never_travels(tmp_path) -> None:
@@ -465,6 +503,20 @@ def test_a_version_that_is_not_one_never_travels(tmp_path) -> None:
             assert shape["harness"] == {"version_hint": kept, "install": "native"}, (
                 source, value,
             )
+    # AND ONE PATCHED DIRECTORY DOES NOT NULL THE WHOLE ROW. The highest entry
+    # under `versions/` is the hand-built one, and rejecting it outright threw
+    # away the releases installed beside it — a beta next to a release is an
+    # ordinary machine, and the fact it had a version is one a rebuilt tree
+    # can use.
+    root = tmp_path / "beside"
+    config = root / "config"
+    config.mkdir(parents=True)
+    for name in ("2.1.100", "2.1.258", f"2.1.999-{SENTINEL}"):
+        (root / ".local" / "share" / "claude" / "versions" / name).mkdir(parents=True)
+    out = _run("--config-dir", str(config))
+    assert out.returncode == 0, out.stderr
+    assert SENTINEL not in out.stdout
+    assert json.loads(out.stdout)["harness"]["version_hint"] == "2.1.258"
 
 
 def test_raw_refuses_to_write_where_a_fixture_would_be_committed(tmp_path) -> None:
@@ -621,6 +673,23 @@ def test_a_pathological_index_is_read_to_the_cap_and_says_so(tmp_path) -> None:
     assert entry["index"]["truncated"] is True
     assert 0 < entry["index"]["rows"] < 6000
     assert entry["index"]["dangling_rows"] == 0
+
+    # AND WHERE THE CAP FALLS. The last line read is dropped as a fragment,
+    # which is right for a cut in the middle of a row and wrong for one that
+    # lands on a newline — there the row is whole, and dropping it under-counts
+    # a file by one. Rows of exactly 32 characters divide the cap evenly, so
+    # the character at the boundary is the newline.
+    cap = _tool_module().FRONTMATTER_BYTES
+    stem = "- [%s](real.md)\n"
+    row = stem % ("a" * (32 - len(stem % "")))
+    assert len(row) == 32
+    whole = cap // len(row)
+    boundary = _memory_dir(config, "-b")
+    _write(boundary / "real.md", "x\n")
+    _write(boundary / "MEMORY.md", row * (whole + 1))
+    counted = _by_key(_shape("--config-dir", str(config), "--raw"))["-b"]["index"]
+    assert counted["truncated"] is True
+    assert counted["rows"] == whole, counted
 
 
 def test_out_refuses_to_write_through_a_symlink_somebody_else_planted(
@@ -1183,9 +1252,12 @@ def test_the_committed_shapes_carry_no_names() -> None:
                 if key == harness_memory.DIRECTORY_KEY:
                     assert value in (None, "<path>"), (path.name, value)
                 else:
-                    # A switch, or the null that says it was set to something
-                    # else. Never the something else.
-                    assert value is None or isinstance(value, bool), (path.name, key)
+                    # A switch, or the placeholder that says it was set to
+                    # something else. Never the something else, and never a
+                    # null — which the harness reads as absent.
+                    assert value == "<set>" or isinstance(value, bool), (
+                        path.name, key, value,
+                    )
             for event in scope["hooks"]:
                 assert event in HOOK_OK or HOOK_PSEUDONYM_RE.fullmatch(event), (
                     path.name, event,
