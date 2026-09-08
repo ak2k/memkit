@@ -3611,6 +3611,64 @@ def test_adoption_never_lands_an_index_for_a_directory_it_left_behind(
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_adoption_never_lands_an_index_rowing_a_memory_that_is_not_there(
+    profile,
+) -> None:
+    """AN INDEX IS ITS ROWS, not the directory listing beside it. A row for a
+    memory the adopter deleted by hand names a file the inventory walk never
+    enumerated, so a rule computed from the walk's leftovers was satisfied by
+    it vacuously: the index landed, the copies and the settings write landed,
+    and the run exited 6 with the store failing its own checker. Every re-run
+    then said `Nothing to write.` on the dry-run and exited 6 on the confirm —
+    a store only a hand-edit of a file memkit itself copied could clear.
+
+    The dry-run and the confirm are asked of the same tree twice here, because
+    "nothing left to do" followed by "this did not finish" is the wedge, and
+    one turn cannot see it.
+    """
+    _harness(profile, "-home-u", {
+        "MEMORY.md": "# index\n\n- [gone](gone.md) — a memory deleted by hand\n",
+        "note.md": TRAP,
+    })
+    # The control, beside it: an index whose every row resolves is copied.
+    _harness(profile, "-home-ok", {
+        "MEMORY.md": "# idx\n\n- [beta](beta.md) — a row that resolves\n",
+        "beta.md": BARE,
+    })
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-u/MEMORY.md: it is an index" in manifest.stdout, manifest.stdout
+    assert "gone.md points at no file this store is getting" in manifest.stdout, (
+        manifest.stdout
+    )
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    whole = store / "search" / init.ADOPT_DIRNAME / "-home-ok"
+    assert sorted(p.name for p in whole.iterdir()) == ["MEMORY.md", "beta.md"]
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    # And it converges: what the dry-run says is left is what the confirm does.
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
 def _folds_case(where) -> bool:
     """Whether this filesystem hands the same directory to two spellings."""
     probe = where / "case-probe"

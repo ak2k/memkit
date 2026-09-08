@@ -4555,12 +4555,24 @@
       "name": "init-adoption-copies-an-index-of-a-directory-it-left-behind",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if name in _LEDGER_NAMES:\n                copying = {os.path.basename(a.path) for a in mine}\n                omitted = [\n                    _clean(n) for n in project.files\n                    if n not in _LEDGER_NAMES and n not in copying\n                ]\n                if omitted:\n                    skipped.append(\n                        f\"{shown}: it is an index of the directory it came \"\n                        \"from, copied with no rewriting, and this store is \"\n                        \"not getting that directory whole — \"\n                        f\"{', '.join(omitted)} \"\n                        f\"{'was' if len(omitted) == 1 else 'were'} left \"\n                        \"behind, so any row it carries for those is a row for \"\n                        \"a file that is not there\"\n                    )\n                    continue\n",
+      "old": "            if name in _LEDGER_NAMES:\n                landing = {\n                    os.path.normpath(action.path)\n                    for action in actions + mine\n                    if action.op == CREATE_FILE\n                }\n                unresolved = _rows_pointing_nowhere(text, dest, store, landing)\n                copying = {os.path.basename(action.path) for action in mine}\n                omitted = [\n                    _clean(n) for n in project.files\n                    if n not in _LEDGER_NAMES and n not in copying\n                ]\n                reasons = []\n                if unresolved:\n                    reasons.append(\n                        f\"{', '.join(unresolved)} \"\n                        f\"{'points' if len(unresolved) == 1 else 'point'} at \"\n                        \"no file this store is getting\"\n                    )\n                if omitted:\n                    reasons.append(\n                        f\"{', '.join(omitted)} \"\n                        f\"{'was' if len(omitted) == 1 else 'were'} left behind\"\n                    )\n                if reasons:\n                    skipped.append(\n                        f\"{shown}: it is an index of the directory it came \"\n                        \"from, copied with no rewriting, and \"\n                        + \" and \".join(reasons)\n                        + \" — so a row it carries would be a row for a file \"\n                        \"that is not there\"\n                    )\n                    continue\n",
       "new": "",
       "tests": [
-        "tests/test_init.py::test_adoption_never_lands_an_index_for_a_directory_it_left_behind"
+        "tests/test_init.py::test_adoption_never_lands_an_index_for_a_directory_it_left_behind",
+        "tests/test_init.py::test_adoption_never_lands_an_index_rowing_a_memory_that_is_not_there"
       ],
-      "why": "a ledger name is copied byte for byte and nothing regenerates it, so an index landed beside files adoption declined to copy rows files that are not in the store. The integrity check init runs over its own work then fails on adoption's own skip rules — a red check, and with it a store the adopter is told is broken, manufactured out of nothing but the feature being careful."
+      "why": "a ledger name is copied byte for byte and nothing regenerates it, so an index landed beside files this store is not getting rows files that are not in it. The integrity check init runs over its own work then fails on adoption's own skip rules — a red check, and with it a store the adopter is told is broken, manufactured out of nothing but the feature being careful."
+    },
+    {
+      "name": "init-adoption-copies-an-index-rowing-a-memory-that-is-not-there",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "                unresolved = _rows_pointing_nowhere(text, dest, store, landing)\n",
+      "new": "                unresolved = []\n",
+      "tests": [
+        "tests/test_init.py::test_adoption_never_lands_an_index_rowing_a_memory_that_is_not_there"
+      ],
+      "why": "the inventory's leftovers are not what an index promises. A row for a memory the adopter deleted by hand names a file the walk never enumerated, so the leftover arm alone is satisfied by it vacuously: the index lands carrying a row for nothing, the run exits 6 on its own checker, and every re-run says there is nothing left to write while the confirm keeps exiting 6 — a store only a hand-edit of a file memkit itself copied can clear."
     },
     {
       "name": "init-adoption-decides-an-index-before-the-files-it-rows",

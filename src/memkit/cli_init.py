@@ -1267,6 +1267,32 @@ _YAML_INDICATORS = set("-?:,[]{}#&*!|>%@`")
 _TIER_RE = re.compile(r"^tier:\s*\S+", re.MULTILINE)
 # A markdown link's destination, the way the checker reads a ledger's rows.
 _LINK_RE = re.compile(r"\(([^)]+\.md)\)")
+# The same links read the way the checker's DEAD-LINK rule reads them, which
+# is not the same question: a row's destination need not end in `.md` to fail
+# that check, so an index rowing a `.png` that is not coming wedges the store
+# exactly as a `.md` row does.
+_MD_LINK_RE = re.compile(r"!?\[[^\[\]\n]*\]\(([^)\n]*)\)")
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+# The checker's own list. A destination with no slash in it is a path only if
+# it ends in one of these; anything else is an anchor or a word and is left
+# alone rather than guessed at.
+_PATH_SUFFIXES = (
+    ".md",
+    ".py",
+    ".sh",
+    ".nix",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".txt",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".webp",
+)
 # A heading, whose text stands in for a description the file does not have.
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+(\S.*?)[ \t]*$", re.MULTILINE)
 
@@ -1853,6 +1879,53 @@ def _as_spelled(base: str, entries: list, target: str) -> str | None:
     return None
 
 
+def _rows_pointing_nowhere(text: str, dest: str, store: str, landing: set) -> list:
+    """The destinations in `text` that resolve to no file, read from `dest`.
+
+    WHAT AN INDEX PROMISES, not what the walk happened to see. A row for a
+    memory the adopter deleted by hand names a file the inventory never
+    enumerated, so a rule computed from the inventory's leftovers is satisfied
+    by it vacuously and the index is copied carrying a row for nothing.
+
+    RESOLVES MEANS WHAT THE CHECKER MEANS BY IT, restated rather than called:
+    `memory_integrity` exits at import below 3.12 and this module answers to
+    the 3.9 floor the dispatcher runs on, so its `_link_path` cannot be
+    imported here. A 3.12 case runs the checker's own link check over a store
+    this rule passed, so a restatement that drifts fails there.
+
+    Two deliberate differences from that rule, both toward refusing to copy:
+    code fences and inline spans are not masked, so a link quoted as an
+    example counts, and a link is answered against the DESTINATION rather than
+    the source — a file landing in this run resolves, one only in the source
+    directory does not.
+    """
+    out: list = []
+    root = os.path.realpath(store)
+    here = os.path.dirname(dest)
+    for raw in _MD_LINK_RE.findall(text):
+        if not raw.strip():
+            continue
+        target = raw.strip().split()[0].strip("<>").split("#", 1)[0].strip()
+        if not target or _SCHEME_RE.match(target):
+            continue
+        if "/" not in target and not target.lower().endswith(_PATH_SUFFIXES):
+            continue
+        path = os.path.expanduser(target)
+        if os.path.isabs(path):
+            path = os.path.realpath(path)
+            rel = os.path.relpath(path, root)
+            if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+                continue
+        else:
+            path = os.path.normpath(os.path.join(here, path))
+        if path in landing or os.path.exists(path):
+            continue
+        shown = _clean(target)
+        if shown not in out:
+            out.append(shown)
+    return out
+
+
 def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     """(actions, ledger rows, notes) for every harness memory this would adopt.
 
@@ -1967,29 +2040,6 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             # which strips the same characters and keeps the spacing a path
             # needs.
             shown = f"{_clean(project.key)}/{_clean(name)}"
-            # AN INDEX IS A CLAIM ABOUT THE DIRECTORY AROUND IT. A ledger name
-            # is copied byte for byte and nothing regenerates it, so the rows
-            # it carries for siblings this loop declined to copy arrive in the
-            # store pointing at files that are not there — and the integrity
-            # check init runs over its own work goes red on adoption's own
-            # skip rules. Whatever adoption lands passes that check.
-            if name in _LEDGER_NAMES:
-                copying = {os.path.basename(a.path) for a in mine}
-                omitted = [
-                    _clean(n) for n in project.files
-                    if n not in _LEDGER_NAMES and n not in copying
-                ]
-                if omitted:
-                    skipped.append(
-                        f"{shown}: it is an index of the directory it came "
-                        "from, copied with no rewriting, and this store is "
-                        "not getting that directory whole — "
-                        f"{', '.join(omitted)} "
-                        f"{'was' if len(omitted) == 1 else 'were'} left "
-                        "behind, so any row it carries for those is a row for "
-                        "a file that is not there"
-                    )
-                    continue
             # AND A NAME NO LINE CAN CARRY IS NOT COPIED AT ALL. Sanitising
             # the note leaves the destination path line, which must keep its
             # spacing byte for byte to name a file that exists — so the only
@@ -2035,6 +2085,52 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     "so nothing was written"
                 )
                 continue
+            # AN INDEX IS A CLAIM ABOUT THE FILES IT ROWS. A ledger name is
+            # copied byte for byte and nothing regenerates it, so a row it
+            # carries for a file this store is not getting arrives pointing at
+            # nothing — and the integrity check init runs over its own work
+            # goes red on adoption's own skip rules, on a store the adopter
+            # can only clear by hand-editing a file memkit copied. Whatever
+            # adoption lands passes that check.
+            #
+            # ASKED OF THE ROWS AND OF THE INVENTORY BOTH. The rows are the
+            # claim, and they name files the walk never saw; the inventory's
+            # leftovers catch what a row shape this rule does not read would
+            # have missed. Decided here, after the files it indexes, because
+            # what an index promises is answered against what is landing.
+            if name in _LEDGER_NAMES:
+                landing = {
+                    os.path.normpath(action.path)
+                    for action in actions + mine
+                    if action.op == CREATE_FILE
+                }
+                unresolved = _rows_pointing_nowhere(text, dest, store, landing)
+                copying = {os.path.basename(action.path) for action in mine}
+                omitted = [
+                    _clean(n) for n in project.files
+                    if n not in _LEDGER_NAMES and n not in copying
+                ]
+                reasons = []
+                if unresolved:
+                    reasons.append(
+                        f"{', '.join(unresolved)} "
+                        f"{'points' if len(unresolved) == 1 else 'point'} at "
+                        "no file this store is getting"
+                    )
+                if omitted:
+                    reasons.append(
+                        f"{', '.join(omitted)} "
+                        f"{'was' if len(omitted) == 1 else 'were'} left behind"
+                    )
+                if reasons:
+                    skipped.append(
+                        f"{shown}: it is an index of the directory it came "
+                        "from, copied with no rewriting, and "
+                        + " and ".join(reasons)
+                        + " — so a row it carries would be a row for a file "
+                        "that is not there"
+                    )
+                    continue
             rule = ""
             row = None
             if name not in _LEDGER_NAMES:
