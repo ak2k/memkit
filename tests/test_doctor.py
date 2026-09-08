@@ -3708,8 +3708,9 @@ def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
     assert "~/.claude/settings.json" in row.detail
 
 
+@pytest.mark.parametrize("shape", ["real", "symlinked", "equal", "sibling"])
 def test_no_row_of_the_envelope_spells_the_home_directory_out(
-    profile, monkeypatch
+    profile, monkeypatch, shape
 ) -> None:
     """The rule, once, over the whole report rather than per branch.
 
@@ -3721,6 +3722,13 @@ def test_no_row_of_the_envelope_spells_the_home_directory_out(
     issue, so no row of it spells the home directory — as a path or as the key
     spelling of one — whichever branch of whichever check produced the row.
 
+    FOUR SHAPES, because a fixture that builds home real and points nothing at
+    it answers this for one of them. A symlinked `$HOME` separates the path the
+    environment spells from the path a project key is built out of; a
+    configured directory that IS home is where home is a prefix of nothing; and
+    a `<home>_old` sibling is where a rule that redacts too much names a
+    directory nobody can open.
+
     THE CAPS ARE LIFTED, because on a fixture home a hundred characters deep
     they answer this for the wrong reason: a raw copy cut off before the path
     is reached is not a redaction, and a real `/Users/someone` is not cut off.
@@ -3730,11 +3738,21 @@ def test_no_row_of_the_envelope_spells_the_home_directory_out(
     monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 8000)
     monkeypatch.setattr(doctor, "PATH_SHOWN", 2000)
     monkeypatch.setattr(doctor, "PARSER_SHOWN", 2000)
-    home = profile / "home"
+    if shape == "symlinked":
+        resolved = profile / "resolved-home"
+        resolved.mkdir()
+        home = profile / "linked-home"
+        home.symlink_to(resolved)
+        monkeypatch.setenv("HOME", str(home))
+    else:
+        home = profile / "home"
     config = home / ".claude"
     config.mkdir(parents=True)
     monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
-    work = home / "work" / "acme"
+    # THE SESSION STANDS BESIDE HOME in one shape and under it in the rest: a
+    # key built from a directory whose name merely starts with home's is what a
+    # rule matching characters rather than components rewrites.
+    work = (profile / "home_old" if shape == "sibling" else home / "work") / "acme"
     work.mkdir(parents=True)
     monkeypatch.chdir(work)
     path = _store_config(home, stores=["personal"])
@@ -3744,21 +3762,30 @@ def test_no_row_of_the_envelope_spells_the_home_directory_out(
     (projects / "-home-u-git-app" / "memory" / "one.md").write_text(
         "x\n", encoding="utf-8"
     )
+    # And one the harness would have written for a session under home. The
+    # inventory prints these keys raw, so the key rule at the choke point is the
+    # only thing between this name and the report.
+    mine = harness_memory.key_spelling(os.path.realpath(home)) + "-work-acme"
+    (projects / mine / "memory").mkdir(parents=True)
+    (projects / mine / "memory" / "two.md").write_text("x\n", encoding="utf-8")
     settings = config / doctor.SETTINGS_NAME
 
     def _write(**blob) -> None:
         settings.write_text(json.dumps(blob), encoding="utf-8")
 
+    elsewhere = str(home) if shape == "equal" else str(home / "elsewhere")
     branches = {
         "on": lambda: _write(),
         "off": lambda: _write(autoMemoryEnabled=False),
-        "redirected": lambda: _write(autoMemoryDirectory=str(home / "elsewhere")),
+        "redirected": lambda: _write(autoMemoryDirectory=elsewhere),
         "unparsed": lambda: settings.write_text(
             '{"autoMemoryEnabled": false,,}', encoding="utf-8"
         ),
         "forbidden": lambda: (_write(autoMemoryEnabled=False), settings.chmod(0o000)),
         "unreadable": lambda: (_write(), projects.chmod(0o000)),
     }
+    spellings = (str(home), os.path.realpath(home))
+    keys = tuple(harness_memory.key_spelling(one) for one in spellings)
     for name, arrange in branches.items():
         try:
             arrange()
@@ -3772,10 +3799,20 @@ def test_no_row_of_the_envelope_spells_the_home_directory_out(
         # were there and were re-spelled.
         assert "~/" in spoken, name
         for check in checks:
-            for spelling in (str(home), harness_memory.key_spelling(str(home))):
-                assert spelling not in check.detail, (name, check.id)
-                assert spelling not in check.remedy, (name, check.id)
-
+            for text in (check.detail, check.remedy):
+                # ON A COMPONENT BOUNDARY, which is the only form of the claim
+                # the sibling shape can satisfy: `<home>_old/x` contains
+                # `str(home)` and has to, because that is its name.
+                for spelling in spellings:
+                    assert not re.search(re.escape(spelling) + r"(?![\w.-])", text), (
+                        shape, name, check.id, text
+                    )
+                for key in keys:
+                    assert not re.search(re.escape(key) + r"(?!\w)", text), (
+                        shape, name, check.id, text
+                    )
+                # And the other direction: a sibling re-spelled as a child.
+                assert "~_old" not in text, (shape, name, check.id, text)
 
 def test_a_directory_beside_home_keeps_the_name_it_has(profile, monkeypatch) -> None:
     """`~_old/x` names a directory that is not there.
