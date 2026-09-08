@@ -323,7 +323,7 @@ def default_dir(config_dir: str, cwd: str) -> str:
 
 
 def inventory(config_dir: str) -> tuple:
-    """`(every project directory under `config_dir` holding memories, read_ok)`.
+    """`(project directories holding memories, read_ok, what would not answer)`.
 
     A directory qualifies on holding at least one `*.md` that is not the index.
     Direct children only, because the harness writes flat — a `search/` below
@@ -352,14 +352,21 @@ def inventory(config_dir: str) -> tuple:
     both — `scandir` raises that, not `OSError`, on an embedded NUL, and this
     path is built from an environment variable.
 
-    BUT THE TOP-LEVEL FAILURE IS RETURNED, not swallowed into the empty list,
-    and that is what the second element carries. An enumeration that failed
-    and an enumeration that found nothing produce the same list, so a caller
-    handed only the list reads a directory it could not open as a directory
-    with nothing in it — and the sentence hanging off that emptiness here is
-    "memkit is the only memory system here". A missing `projects/` is the one
+    BUT THE FAILURE IS RETURNED, not swallowed into the empty list, and that
+    is what the second element carries. An enumeration that failed and an
+    enumeration that found nothing produce the same list, so a caller handed
+    only the list reads a directory it could not open as a directory with
+    nothing in it — and the sentence hanging off that emptiness here is
+    "memkit is the only memory system here". A missing directory is the one
     failure that IS an answer: a machine that has never run the feature has no
-    such directory, and every other error is a walk that did not happen.
+    `projects/`, and the harness creates a project's `memory/` with the first
+    memory it writes there. Every other error is a walk that did not happen.
+
+    THE THIRD ELEMENT IS THE FIRST PATH THAT WOULD NOT ANSWER, `""` when the
+    walk read cleanly, because `read_ok` false no longer means `projects/`
+    failed: a single project directory or a single `memory/` reaches it too,
+    and a caller that says "its projects directory could not be read" over
+    either of those names a directory that is fine.
 
     Sorted by memory count descending, then by key — the order a report that
     can show only a few of them wants, and stable for two directories holding
@@ -379,9 +386,9 @@ def inventory(config_dir: str) -> tuple:
                     read_ok = False
                     unreadable = unreadable or entry.path
     except FileNotFoundError:
-        return [], True
+        return [], True, ""
     except (OSError, ValueError):
-        return [], False
+        return [], False, os.path.join(config_dir, "projects")
     found = []
     for key, path, linked_project in projects:
         memory = os.path.join(path, "memory")
@@ -397,7 +404,14 @@ def inventory(config_dir: str) -> tuple:
                         listed.append((entry.name, entry.is_symlink()))
                     except OSError:
                         continue
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
+            # THE ONE FAILURE THAT IS AN ANSWER, per project: the harness
+            # creates `memory/` with the first memory and not before, so a
+            # project without one wrote nothing rather than refused to answer.
+            continue
+        except (OSError, ValueError):
+            read_ok = False
+            unreadable = unreadable or memory
             continue
         listed.sort()
         files = [name for name, _ in listed]
@@ -414,7 +428,7 @@ def inventory(config_dir: str) -> tuple:
             )
         )
     found.sort(key=lambda project: (-project.memories, project.key))
-    return found, read_ok
+    return found, read_ok, unreadable
 
 
 def switch(scopes, key: str) -> tuple:

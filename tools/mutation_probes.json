@@ -2114,6 +2114,42 @@
       "why": "A real config directory holds thousands of project entries. Guarded per walk rather than per name, one entry whose link test raises takes the whole enumeration with it, and the row reports an empty inventory for a machine with months of memories on it."
     },
     {
+      "name": "inventory-reads-a-projects-directory-that-is-not-there-as-a-failure",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "    except FileNotFoundError:\n        return [], True, \"\"\n",
+      "new": "    except FileNotFoundError:\n        return [], False, os.path.join(config_dir, \"projects\")\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_a_config_dir_with_nothing_written_yields_an_empty_inventory",
+        "tests/test_harness_memory.py::test_a_projects_directory_that_cannot_be_read_is_not_an_empty_one"
+      ],
+      "why": "A machine that has never run the feature has no projects/ at all, which is the commonest state there is and an ANSWER. Reported as a walk that failed, every row that reads this flag disclaims a count it made correctly and names a directory whose absence is the whole finding."
+    },
+    {
+      "name": "inventory-reads-a-projects-directory-that-will-not-list-as-empty",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "    except (OSError, ValueError):\n        return [], False, os.path.join(config_dir, \"projects\")\n",
+      "new": "    except (OSError, ValueError):\n        return [], True, \"\"\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_inventory_survives_a_config_dir_that_is_not_a_path",
+        "tests/test_harness_memory.py::test_a_projects_directory_that_cannot_be_read_is_not_an_empty_one"
+      ],
+      "why": "An enumeration that failed and one that found nothing produce the same list. Read as the second, doctor asserts an absence it never observed — and the sentence hanging off that emptiness is `memkit is the only memory system here`."
+    },
+    {
+      "name": "inventory-reads-a-memory-directory-that-will-not-list-as-one-that-wrote-nothing",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "        except (FileNotFoundError, NotADirectoryError):\n            # THE ONE FAILURE THAT IS AN ANSWER, per project: the harness\n            # creates `memory/` with the first memory and not before, so a\n            # project without one wrote nothing rather than refused to answer.\n            continue\n        except (OSError, ValueError):\n            read_ok = False\n            unreadable = unreadable or memory\n            continue\n",
+      "new": "        except (OSError, ValueError):\n            continue\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_a_memory_directory_that_will_not_list_is_named_by_the_walk",
+        "tests/test_doctor.py::test_a_memory_directory_that_will_not_list_is_the_path_the_row_names"
+      ],
+      "why": "A project with no memory/ wrote nothing, because the harness creates that directory with the first memory. A memory/ that refuses to list is a walk that did not happen. Collapsed into one handler, a project directory an adopter cannot read is counted as a project that has nothing in it, and the row passes on a count it could not make."
+    },
+    {
       "name": "project-key-answers-for-a-cwd-that-is-not-a-path",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",

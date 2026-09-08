@@ -2268,6 +2268,38 @@ def test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone(
     assert doctor.verdict([row]) == "OK"
 
 
+def test_a_memory_directory_that_will_not_list_is_the_path_the_row_names(
+    profile, monkeypatch
+) -> None:
+    """The directory the walk stopped on, in the detail and in the remedy.
+
+    A failed enumeration used to mean one thing — `projects/` would not list —
+    and both strings said so. One project's `memory/` fails the walk too, and
+    over that state the row sent an adopter to a directory that is already
+    readable while the one that is not went unnamed.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    shut = profile / "claude-config" / "projects" / "-p-shut" / "memory"
+    shut.mkdir(parents=True)
+    (shut / "one.md").write_text("x\n", encoding="utf-8")
+    shut.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        shut.chmod(0o755)
+    assert str(shut) in row.detail and str(shut) in row.remedy
+    assert "projects" not in row.remedy.replace(str(shut), "")
+    # And the walk that failed bears out nothing, so the claim is not made.
+    assert "memkit is the only memory system here" not in row.detail
+    assert row.actor == doctor.USER
+
+
 def test_a_directory_inside_a_store_is_retrieved_and_passes(profile, monkeypatch):
     """The state this whole check exists to send an adopter to: the harness
     writing into a directory of its own INSIDE the corpus root, where memkit

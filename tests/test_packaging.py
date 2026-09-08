@@ -667,15 +667,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("harness_memory.py", "_project_path", "except", 2): (
         "an unknown root, or a failing resolve, leaves the resolved path"
     ),
-    ("harness_memory.py", "inventory", "except", 2): (
-        "a projects/ that is not there read cleanly and holds nothing"
-    ),
-    ("harness_memory.py", "inventory", "except", 3): (
-        "a projects/ that will not list is read_ok False, never empty"
-    ),
-    ("harness_memory.py", "inventory", "except", 5): (
-        "a project whose memory/ will not list drops out of the walk"
-    ),
     ("harness_memory.py", "switch", "if->exit", 1): (
         "the first scope in the harness's order that declares the key answers"
     ),
@@ -932,4 +923,4 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 88, checked
+    assert checked == 91, checked

@@ -3711,7 +3711,7 @@ def _consolidation_recency(default: str) -> str:
 
 
 def _inventoried(machine: Machine, config_dir: str) -> tuple:
-    """`(retrieved, in a store, outside, what the walk could not read)`.
+    """`(retrieved, in a store, outside, what the walk could not read, where)`.
 
     THE RELATION IS ASKED OF EVERY DIRECTORY, not only of the linked ones.
     Being reached through a link is how a project directory comes to be
@@ -3730,11 +3730,16 @@ def _inventoried(machine: Machine, config_dir: str) -> tuple:
     enumeration failure is the same thing every other branch owes: saying what
     it could not read. Empty when the walk succeeded, and every count beside
     it is then a count of what is there rather than of what could be listed.
+
+    THE FIFTH IS THE PATH THAT SENTENCE NAMES, carried out rather than
+    re-derived: the remedy has to name the same directory the detail does, and
+    the walk fails on a project directory or a `memory/` as readily as on
+    `projects/`.
     """
     retrieved: list = []
     held: list = []
     outside: list = []
-    found, read_ok = harness_memory.inventory(config_dir)
+    found, read_ok, unreadable = harness_memory.inventory(config_dir)
     for project in found:
         how = _store_relation(machine, project.path)[2]
         bucket = retrieved if how == "inside" else outside if not how else held
@@ -3743,25 +3748,28 @@ def _inventoried(machine: Machine, config_dir: str) -> tuple:
         ""
         if read_ok
         else (
-            "what the harness has already written cannot be counted: its "
-            f"projects directory could not be read, at "
-            f"{_shown(os.path.join(config_dir, 'projects'))}"
+            "what the harness has already written cannot be counted: "
+            f"{_shown(unreadable)} could not be read"
         )
     )
-    return retrieved, held, outside, unread
+    return retrieved, held, outside, unread, unreadable
 
 
-def _unreadable_remedy(config_dir: str) -> str:
-    """The repair for a `projects/` this process could not enumerate.
+def _unreadable_remedy(unreadable: str) -> str:
+    """The repair for the directory this process could not enumerate.
+
+    THE PATH THE WALK STOPPED ON, not `projects/`: a single project directory
+    or a single `memory/` fails the walk too, and naming `projects/` over
+    either of those sends the adopter to a directory that is already readable.
 
     NEVER "move them" and never "switch it off": both are advice about
     memories whose number this run does not know, and the only honest first
     step is making the directory answer.
     """
     return (
-        f"Make {_shown(os.path.join(config_dir, 'projects'))} readable, then "
-        "run this again — until it lists, nothing here can say how much the "
-        "harness has already written or where it went."
+        f"Make {_shown(unreadable)} readable, then run this again — until it "
+        "lists, nothing here can say how much the harness has already written "
+        "or where it went."
     )
 
 
@@ -3954,7 +3962,9 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # longer returns without one: a switch that is off stops the harness
         # WRITING, and every memory it wrote before is still on disk. This is
         # the branch whose sentence stops an adopter looking for them.
-        in_store, held, outside, unread = _inventoried(machine, config_dir)
+        in_store, held, outside, unread, unreadable = _inventoried(
+            machine, config_dir
+        )
         # WHAT THE COUNT DOES NOT COVER, in one value: a walk that failed and a
         # config directory whose spelling resolves only from here are both
         # reasons this branch's own sentence is not something it observed.
@@ -4055,7 +4065,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     "auto-memory",
                     INFO,
                     _detail(off, unsure, left, placed, recent),
-                    _unreadable_remedy(config_dir) if unread else _UNROOTED_REMEDY,
+                    _unreadable_remedy(unreadable) if unread else _UNROOTED_REMEDY,
                     actor=USER,
                 )
             ]
@@ -4138,7 +4148,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # A directory a store already holds is not a second memory system, and a
     # link into a corpus root is the wiring docs/STORE.md recommends — counted
     # as one, this row alarms about the state it exists to send adopters to.
-    in_store, held, outside, unread = _inventoried(machine, config_dir)
+    in_store, held, outside, unread, _unreadable = _inventoried(machine, config_dir)
 
     here = False
     if underived:
