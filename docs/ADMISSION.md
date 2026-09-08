@@ -13,7 +13,7 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **108 files, about 3.3 MiB**
+The table below counts **the tree this file ships in** — **108 files, about 3.4 MiB**
 — which is the tree the next release pins. The marketplace pin still installs the
 v0.4.0 tree — **101 files, about 3.0 MiB** — and everything added since arrives
 from the next release. The recipe at the bottom reproduces either one, against
