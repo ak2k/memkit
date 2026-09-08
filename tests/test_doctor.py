@@ -2592,6 +2592,26 @@ def test_a_corpus_root_under_a_pruned_name_indexes_nothing_at_all(
     assert row.status == doctor.PASS
 
 
+def test_a_pair_that_stops_resolving_is_answered_as_reaching_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    """Which way this predicate fails is the whole of its safety.
+
+    The pair resolved a moment ago — containment said so — so an exception
+    here means the tree moved under the run, and the two answers are not
+    symmetric: "nothing there is retrieved" sends an adopter to look, while
+    "it is retrieved" closes the question on a walk that never happened. Only
+    the raising path is left to a test, because reaching it through a real
+    filesystem means racing the removal.
+    """
+
+    def _gone(_path: str) -> str:
+        raise OSError("the pair stopped resolving under the run")
+
+    monkeypatch.setattr(os.path, "realpath", _gone)
+    assert doctor._pruned(str(tmp_path / "under"), str(tmp_path)) is True
+
+
 def test_a_store_configured_and_not_on_disk_retrieves_nothing(
     profile, monkeypatch
 ) -> None:
@@ -2854,6 +2874,41 @@ def test_an_environment_override_stops_the_row_naming_a_directory(
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert row.status == doctor.INFO
     assert "CLAUDE_CODE_PROJECT_DIR_NAME" in row.detail
+
+
+def test_an_override_leaves_the_derived_row_a_remedy_and_somebody_to_act_on_it(
+    profile, monkeypatch
+) -> None:
+    """The derived-default branch over a machine that is otherwise settled.
+
+    Naming the variable is not the disclosure. That sentence rides in the same
+    tuple whichever way the branch goes, so a row that concluded anyway would
+    carry it too — what separates the two answers is that one hands the adopter
+    something to do and addresses it to them, and the other closes the question
+    on a directory nobody here resolved.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "gearbox shim stack after the rebuild")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    _memory(mine, "written.md", "what the harness wrote after the rebuild")
+    project = (
+        profile / "claude-config" / "projects" / harness_memory.project_key(os.getcwd())
+    )
+    project.mkdir(parents=True)
+    (project / "memory").symlink_to(mine)
+    (settled,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert settled.remedy == ""
+    assert settled.actor == doctor.AGENT
+
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE_MEMORY_DIR", "/u/elsewhere")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "CLAUDE_CODE_REMOTE_MEMORY_DIR" in row.detail
+    assert row.remedy
+    assert row.actor == doctor.USER
 
 
 def test_the_switch_facts_outlive_a_project_list_that_overruns_the_detail(
@@ -3285,6 +3340,32 @@ def test_off_is_information_when_a_lower_scope_declares_it_otherwise(
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert row.status == doctor.PASS
     assert "auto-memory is off in managed settings" in row.detail
+
+
+def test_a_zero_under_a_false_is_two_answers_and_not_one(profile, monkeypatch) -> None:
+    """`False == 0` in Python, and the harness reads the two as opposites.
+
+    A lower scope holding `0` under one holding `false` is the disagreement
+    this row exists to report — `0` is a value the harness goes on writing
+    under. Compared with `==` the two files agree, and the row then states the
+    settings' answer as though one file held it, which is the most confident
+    sentence here resting on an order that decided something after all.
+    """
+    path = _store_config(profile, stores=["personal"])
+    managed = profile / "managed"
+    managed.mkdir()
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    _settings(profile, autoMemoryEnabled=0)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "user settings declare it otherwise" in row.detail
+    assert "memkit is the only memory system here" not in row.detail
+    assert row.actor == doctor.USER
 
 
 def test_a_config_directory_this_tree_chose_does_not_pass_its_own_inventory(

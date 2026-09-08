@@ -653,7 +653,12 @@ def test_the_directory_is_the_one_the_harness_normalises_to(config_dir) -> None:
     write to is the whole of what this module exists to prevent.
     """
     home = os.environ["HOME"]
-    refused = ("~", "~/", "~/.", "~/..", "~/../elsewhere", ".", "..", "/a", "/")
+    # `/a/` is the value the ORDER decides: three characters as written and two
+    # once the separator is gone, so testing the string before it is stripped
+    # calls it usable and names `/a` as a directory the harness never writes to.
+    refused = (
+        "~", "~/", "~/.", "~/..", "~/../elsewhere", ".", "..", "/a", "/a/", "/"
+    )
     for value in refused:
         assert not harness_memory.usable_dir(value), value
     # Normalised and de-separated, so what is named is what the harness uses.

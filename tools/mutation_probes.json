@@ -2246,6 +2246,39 @@
       "why": "Three environment variables decide where the harness writes above every settings scope, and memkit resolves none of them. Passing the configured directory while one is in effect names a directory that is not the one being written to, with this row's most confident status on it."
     },
     {
+      "name": "auto-memory-passes-the-derived-directory-under-an-environment-override",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        and not switch_theirs\n        and not environed\n    ):\n        return [Check(\"auto-memory\", PASS, _detail(*fixed))]\n",
+      "new": "        and not switch_theirs\n    ):\n        return [Check(\"auto-memory\", PASS, _detail(*fixed))]\n",
+      "tests": [
+        "tests/test_doctor.py::test_an_override_leaves_the_derived_row_a_remedy_and_somebody_to_act_on_it"
+      ],
+      "why": "the row closes the question on the derived directory while a variable it never resolved decides where the harness writes, and the note naming that variable rides along in the same detail either way"
+    },
+    {
+      "name": "auto-memory-calls-a-pair-that-stopped-resolving-retrieved",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        # they did; the answer that claims no retrieval is the one to give.\n        return True\n",
+      "new": "        # they did; the answer that claims no retrieval is the one to give.\n        return False\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_pair_that_stops_resolving_is_answered_as_reaching_nothing"
+      ],
+      "why": "a tree that moved under the run answers 'the indexer reaches this', which closes the question on a walk that never happened instead of sending an adopter to look"
+    },
+    {
+      "name": "auto-memory-reads-a-zero-below-a-false-as-the-same-answer",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        if other is not None and json.dumps(other) != json.dumps(value):\n",
+      "new": "        if other is not None and other != value:\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_zero_under_a_false_is_two_answers_and_not_one"
+      ],
+      "why": "`False == 0` in Python and the harness reads the two as opposites, so two scopes that disagree are read as one answer and the row's most confident sentence rests on an order that did decide something"
+    },
+    {
       "name": "auto-memory-reads-the-disable-variable-as-a-one-way-switch",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
@@ -2290,6 +2323,17 @@
         "tests/test_harness_memory.py::test_the_directory_is_the_one_the_harness_normalises_to"
       ],
       "why": "The harness normalises and strips trailing separators BEFORE it tests for absolute, three characters and a NUL — so `/a/` is a two-character path it refuses. Tested in the caller's spelling, the value passes and every comparison after it is against a directory the harness does not use."
+    },
+    {
+      "name": "harness-directory-is-tested-before-its-separators-are-stripped",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "    path = os.path.normpath(value).rstrip(os.sep) or os.sep\n    if not os.path.isabs(path) or len(path) < 3 or \"\\x00\" in path:\n        return None\n",
+      "new": "    if not os.path.isabs(value) or len(value) < 3 or \"\\x00\" in value:\n        return None\n    path = os.path.normpath(value).rstrip(os.sep) or os.sep\n",
+      "tests": [
+        "tests/test_harness_memory.py::test_the_directory_is_the_one_the_harness_normalises_to"
+      ],
+      "why": "`/a/` passes a three-character test the stripped `/a` fails, so memkit names a directory the harness replaces with its default"
     },
     {
       "name": "cli-bare-invocation-is-a-usage-error",
