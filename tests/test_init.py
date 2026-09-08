@@ -3852,6 +3852,39 @@ def test_store_membership_is_asked_of_the_config_being_written(profile) -> None:
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
+def test_an_adopted_copy_is_never_more_readable_than_its_original(
+    profile,
+) -> None:
+    """A COPY OF A PRIVATE NOTE IS AS PRIVATE AS THE NOTE. The copy path asked
+    for `0644` while the function it asked has its own `0600`, so a memory the
+    adopter had deliberately chmod'd `0600` came back readable by everyone on
+    the machine — published by the command whose whole subject is where private
+    memories live, and disclosed nowhere: the only mode the manifest named was
+    `0700` for the cache directory.
+
+    Both sources are here because the widening was invisible from the `0644`
+    one: they land at the same mode now, and it is the narrower one.
+    """
+    memory = _harness(profile, "-home-u", {"open.md": TRAP, "private.md": BARE})
+    (memory / "open.md").chmod(0o644)
+    (memory / "private.md").chmod(0o600)
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "Each copy lands mode 0600" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    for name in ("open.md", "private.md"):
+        assert stat.S_IMODE(os.stat(adopted / name).st_mode) == 0o600, name
+    assert stat.S_IMODE(os.stat(store / "SEARCH.md").st_mode) == 0o600
+    # The originals are not touched on any path, mode included.
+    assert stat.S_IMODE(os.stat(memory / "open.md").st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(memory / "private.md").st_mode) == 0o600
+
+
 def test_the_write_refuses_a_name_it_could_not_create_a_temporary_for(
     tmp_path,
 ) -> None:

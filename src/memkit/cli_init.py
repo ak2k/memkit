@@ -2281,6 +2281,17 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
         f"{normalised} normalised, {len(skipped)} skipped, {already} already "
         f"adopted, {len(diverged)} diverged."
     ]
+    # THE MODE IS PART OF WHAT IS BEING CONSENTED TO. These are a person's
+    # private notes, and a copy of one is as sensitive as the note — so it
+    # lands at what memkit writes everything else at rather than at whatever
+    # the source happened to carry, and the manifest says so before the copy
+    # is made rather than leaving it to a `stat` afterwards.
+    if files:
+        notes.append(
+            "  Each copy lands mode 0600 — readable by you and by nothing "
+            "else, whatever the original carried. The originals keep their "
+            "own; a destination that already exists keeps its own too."
+        )
     # EVERY ONE OF THEM, uncapped. A count an adopter cannot reconcile against
     # their own `ls` is the number this list exists to make checkable, and the
     # diverged lines in particular are the only place a file adoption declined
@@ -3437,10 +3448,15 @@ def _perform(
         # what makes two concurrent inits with distinct appends both survive —
         # so for those, a file that moved is the case being handled rather than
         # a reason to stop.
+        # NO MODE, so these take `_write_atomically`'s own 0600. An adopted
+        # copy of a note somebody deliberately kept private is as sensitive as
+        # the note, and this branch writes it: widening it to 0644 published a
+        # 0600 source to everyone on the machine, out of a command whose whole
+        # subject is where private memories live. An existing file keeps its
+        # own permissions either way.
         after = _write_atomically(
             action.path,
             action.content,
-            mode=0o644,
             expect=action.before,
             confine=action.confine,
         )

@@ -4585,6 +4585,17 @@
       "why": "the write creates `<name>.<pid>.tmp` beside the file and renames over it, so the name the plan approves is shorter than the name the write actually makes. Without the plan measuring the longer one, a memory name a little under the limit passes the dry-run and then fails `os.open` at apply time: exit 6, the checker red, nothing copied, and every re-run the same. The write's own copy of the rule refuses rather than crashes, but a refusal mid-apply is not a manifest an adopter could have read first."
     },
     {
+      "name": "init-adoption-widens-the-mode-of-the-note-it-copies",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        after = _write_atomically(\n            action.path,\n            action.content,\n            expect=action.before,\n            confine=action.confine,\n        )\n",
+      "new": "        after = _write_atomically(\n            action.path,\n            action.content,\n            mode=0o644,\n            expect=action.before,\n            confine=action.confine,\n        )\n",
+      "tests": [
+        "tests/test_init.py::test_an_adopted_copy_is_never_more_readable_than_its_original"
+      ],
+      "why": "these are a person's private notes and a copy of one is as sensitive as the note. Asking for 0644 here — while the function being asked has its own 0600 — hands back a memory the adopter deliberately chmod'd 0600 as readable by everyone on the machine, out of the command whose whole subject is where private memories live, and the manifest names no mode for it."
+    },
+    {
       "name": "init-adoption-copies-an-index-of-a-directory-it-left-behind",
       "module": "init",
       "file": "src/memkit/cli_init.py",
