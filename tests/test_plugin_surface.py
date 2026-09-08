@@ -3367,6 +3367,11 @@ _OWN_FILE_OUTCOMES = {
     "gets them rewritten": "rewritten",
     "gets them rewritten too": "rewritten",
 }
+_LINK_CASES = {
+    "the setting is not yours to set and no settings file of yours outranks "
+    "the one that carries it": "outranked",
+    "that setting is not yours to set": "any-scope",
+}
 _LINK_REACHES = {
     "reaches nothing: the harness writes where that file sends it, not to the "
     "directory the key names": "unreachable",
@@ -3622,6 +3627,21 @@ def _unset_target_streams(section: str) -> str:
         r"an unset `\$target` fails `mkdir`, which ([^.]+)\.",
         _UNSET_TARGET_STREAMS,
         "what an unset `$target` prints",
+    )
+
+
+def _link_case(section: str) -> str:
+    """The case the page offers the symlink for.
+
+    The paragraph names two states in which the setting is not the reader's to
+    set and rules the link out of both, so the sentence that opens it has to
+    name the state that is left rather than promise the whole class.
+    """
+    return _stated(
+        section,
+        r"A symlink does the same job where ([^.]+)\.",
+        _LINK_CASES,
+        "which case the symlink is the route for",
     )
 
 
@@ -4302,6 +4322,12 @@ def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
     # was offered as that route while the page's own account of the setting
     # says the harness writes where the setting sends it, which the link never
     # touches.
+    # The link is offered for one case, and it is the one this paragraph's own
+    # two exclusions leave: a scope above the reader's carries the setting and
+    # nothing they can write outranks it.
+    assert _link_case(section) == "outranked", (
+        "the page offers the link for cases its own next sentences rule out"
+    )
     # What the link reaches there is the reason the reader is routed at all,
     # so it is read rather than spanned: the clause used to sit inside a `.*?`
     # and could be inverted back to offering the link with every case green.

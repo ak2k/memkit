@@ -288,10 +288,11 @@ and is wrong. Read from the code, not exercised: the precedence among settings
 scopes, highest first, is managed policy, the `--settings` flag,
 `.claude/settings.local.json`, `.claude/settings.json`, then user settings.
 
-A symlink does the same job, and is the route to know when that setting is not
-yours to set. The shape is one link per project: the harness's own memory
-directory for this repository — `<config dir>/projects/<key>/memory`, for the
-key the block above prints — becomes a symlink into the store. Retrieval then
+A symlink does the same job where the setting is not yours to set and no
+settings file of yours outranks the one that carries it. The shape is one link
+per project: the harness's own memory directory for this repository —
+`<config dir>/projects/<key>/memory`, for the key the block above prints —
+becomes a symlink into the store. Retrieval then
 reads what the harness writes, and the harness goes on writing to the path it
 already knows. Point the link at a directory of the harness's own, for the
 reason the setting has one: a corpus directory that also holds your own memory
