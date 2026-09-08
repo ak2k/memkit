@@ -4371,6 +4371,17 @@
         "tests/test_harness_shape.py::test_a_version_that_is_not_one_never_travels"
       ],
       "why": "The highest entry under versions/ is the hand-built one, so rejecting it whole throws away the releases installed beside it. A beta or a patched build next to 2.1.258 is an ordinary machine, and the shape then says the machine had no version at all."
+    },
+    {
+      "name": "harness-shape-the-machines-policy-file-follows-every-capture",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            managed=args.managed or _is_own_config_dir(config_dir),\n",
+      "new": "            managed=True,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_machines_policy_file_travels_only_with_its_own_machines_tree"
+      ],
+      "why": "managed-settings.json is the one file read off the machine rather than out of --config-dir, and on a corporate laptop it is where an employer's hook keys and plugin names live. Read for every capture, it files them under a key that reads as the captured tree's — and the tree a fixture is built from is a copied or temporary one."
     }
   ]
 }

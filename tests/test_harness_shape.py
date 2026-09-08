@@ -842,7 +842,7 @@ def test_the_managed_scope_anonymises_the_way_the_user_scope_does(tmp_path) -> N
             }
         ),
     )
-    out = _run("--config-dir", str(config), env=_managed_env(managed))
+    out = _run("--config-dir", str(config), "--managed", env=_managed_env(managed))
     assert out.returncode == 0, out.stderr
     assert SENTINEL not in out.stdout
     scope = json.loads(out.stdout)["settings"]["managed"]
@@ -855,6 +855,45 @@ def test_the_managed_scope_anonymises_the_way_the_user_scope_does(tmp_path) -> N
         "hooks": ["PreToolUse", "h1"],
         "plugins": ["p1@q1"],
     }
+
+
+def test_the_machines_policy_file_travels_only_with_its_own_machines_tree(
+    tmp_path,
+) -> None:
+    """Every other row in a shape comes out of `--config-dir`; this one comes
+    off the machine, and a capture of a tree that is not this machine's used to
+    fold it in anyway.
+
+    That is an org's hook keys and an org's plugin names filed under a key that
+    reads as the captured tree's — a copied or temporary directory, which is
+    what a fixture is built from. So the scope is read for the config directory
+    this process's own harness would use, and otherwise only when the operator
+    passes `--managed` to say the tree they named is that machine's: the ssh
+    flow names another user's home under `sudo -n`, where the process's own
+    default is root's and no automatic test can recognise it.
+    """
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    managed = tmp_path / "managed"
+    _write(
+        managed / "managed-settings.json",
+        json.dumps({"hooks": {f"Gate--{SENTINEL}": []}}),
+    )
+    env = _managed_env(managed)
+    assert _shape("--config-dir", str(config), env=env)["settings"] == {}
+    asserted = _shape("--config-dir", str(config), "--managed", env=env)
+    assert asserted["settings"]["managed"]["hooks"] == ["h1"]
+
+    # The same tree, now the one this process's harness would use. Named
+    # through a LINK, because a home reached through one — and a `~/.claude`
+    # linked into a dotfiles checkout — are both ordinary, and a comparison of
+    # the two strings answers no for both.
+    link = tmp_path / "link-to-config"
+    os.symlink(config, link)
+    own = dict(env, CLAUDE_CONFIG_DIR=str(config))
+    assert _shape("--config-dir", str(link), env=own)["settings"]["managed"][
+        "hooks"
+    ] == ["h1"]
 
 
 ROOT = hasattr(os, "geteuid") and os.geteuid() == 0

@@ -230,7 +230,31 @@ def _settings_scope(data: dict, names: _Pseudonyms, anonymise: bool) -> dict:
     }
 
 
-def _settings(config_dir: str, names: _Pseudonyms, anonymise: bool) -> dict:
+def _default_config_dir() -> str:
+    """The config directory this process's own harness would use.
+
+    One spelling for the argparse default and for the ownership test below, so
+    a machine whose harness lives under `$CLAUDE_CONFIG_DIR` answers the same
+    question both times.
+    """
+    return os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
+
+
+def _is_own_config_dir(config_dir: str) -> bool:
+    """Whether `config_dir` is the harness config directory of THIS process.
+
+    `realpath` on both sides: a home reached through a link, and `~/.claude`
+    itself linked into a dotfiles checkout, are both ordinary and both would
+    fail a string comparison.
+    """
+    return os.path.realpath(os.path.expanduser(config_dir)) == os.path.realpath(
+        os.path.expanduser(_default_config_dir())
+    )
+
+
+def _settings(
+    config_dir: str, names: _Pseudonyms, anonymise: bool, managed: bool
+) -> dict:
     """The two scopes a whole-tree capture can honestly read.
 
     `user` and the platform `managed` file, and NOT doctor's `local` or
@@ -241,23 +265,26 @@ def _settings(config_dir: str, names: _Pseudonyms, anonymise: bool) -> dict:
     "no managed settings on this machine" and "managed settings that set
     nothing" are different machines.
 
-    AND `managed` IS THE EXCEPTION TO `_harness`'s RULE, stated here because
-    the two docstrings otherwise contradict each other. That file sits at a
-    fixed platform path whatever `--config-dir` names — `cli_doctor`'s own
-    `settings_scopes` reads it the same way, for the same reason — so it is
-    the MACHINE's and not the config directory's. Correct for the flow this
-    tool is for, where the machine is the thing being captured; wrong for a
-    capture of a copied or temporary tree, which then reports the operator's
-    own managed settings under a key that reads as the captured tree's. The
-    round-trip test asserts `settings == {}` with the seam above pointed
-    somewhere empty, which is what makes that reach visible instead of
-    depending on whether the runner happens to have such a file.
+    AND `managed` IS A MACHINE PATH, which is `_harness`'s rule turned around:
+    that file sits at a fixed platform location whatever `--config-dir` names
+    — `cli_doctor`'s own `settings_scopes` reads it the same way — so it
+    describes the config directory being captured only when that directory is
+    one this machine's harness actually runs on. It is therefore read when the
+    caller says so and not otherwise, and `main` says so for the config
+    directory this process's own harness would use, or when `--managed` is
+    passed for the tree the operator names on a host they are capturing whole.
+    A shape captured either other way omits the scope, which reads the same as
+    a machine with no policy file: what a consumer can rely on is that a
+    `managed` scope in a shape came off the machine the rest of the shape
+    describes, never that its absence proves the machine had none.
     """
+    scopes = [("user", os.path.join(config_dir, "settings.json"))]
+    if managed:
+        scopes.append(
+            ("managed", os.path.join(_managed_dir(), "managed-settings.json"))
+        )
     found = {}
-    for scope, path in (
-        ("user", os.path.join(config_dir, "settings.json")),
-        ("managed", os.path.join(_managed_dir(), "managed-settings.json")),
-    ):
+    for scope, path in scopes:
         data = _read_json(path)
         if data is not None:
             found[scope] = _settings_scope(data, names, anonymise)
@@ -672,8 +699,13 @@ def _memory_dir(
     )
 
 
-def capture(config_dir: str, anonymise: bool = True) -> dict:
+def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> dict:
     """The whole shape of one config directory.
+
+    `managed` defaults OFF because every other row here is read out of
+    `config_dir` and that one is read off the machine: a caller who has not
+    established that the two are the same machine's gets the tree it named and
+    nothing from beside it.
 
     A project directory is LISTED when it holds at least one `*.md`, index
     included — so an index-only directory appears, with its rows and no
@@ -741,7 +773,7 @@ def capture(config_dir: str, anonymise: bool = True) -> dict:
         "tool": "harness_shape",
         "anonymised": anonymise,
         "harness": _harness(config_dir, anonymise),
-        "settings": _settings(config_dir, names, anonymise),
+        "settings": _settings(config_dir, names, anonymise, managed),
         "projects_total": len(keys),
         "memory_dirs_total": memory_dirs_total,
         # TWO counters, because a half-failed capture that is
@@ -835,10 +867,19 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--config-dir",
-        default=os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude",
+        default=_default_config_dir(),
         help="the harness config directory (default: $CLAUDE_CONFIG_DIR or ~/.claude)",
     )
     parser.add_argument("--out", help="write here instead of stdout")
+    parser.add_argument(
+        "--managed",
+        action="store_true",
+        help=(
+            "read the platform managed-settings.json as well; implied when "
+            "--config-dir is this machine's own, and needed only for another "
+            "config directory on a machine you are capturing whole"
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--anonymise",
@@ -879,7 +920,15 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        shape = capture(config_dir, anonymise=not args.raw)
+        shape = capture(
+            config_dir,
+            anonymise=not args.raw,
+            # The machine's policy file describes the tree being captured when
+            # the tree is one this machine's harness runs on. `--managed` is
+            # how the documented ssh flow says so for another user's home
+            # under `sudo -n`, where the process's own default is root's.
+            managed=args.managed or _is_own_config_dir(config_dir),
+        )
     except OSError as exc:
         # A capture that could not read the projects directory reports no
         # shape rather than an empty one.
