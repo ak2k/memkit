@@ -3952,6 +3952,52 @@ def test_a_zsh_case_fails_rather_than_skips_where_no_context_declares_it(
         _needs_zsh()
 
 
+def test_a_zsh_case_fails_on_a_shell_free_path_rather_than_reporting_a_skip(
+    tmp_path,
+) -> None:
+    """The zsh half, run for real on a PATH that has no zsh.
+
+    The case above monkeypatches one function; this one composes the whole
+    context the guard exists for — the shell genuinely absent, nothing
+    declaring it absent — and looks at what the run reports. The failure worth
+    preventing is a context that reports green having executed none of these
+    cells, and only counting the outcomes of a real run tells a green that ran
+    from a green that skipped.
+    """
+    import xml.etree.ElementTree as ET
+
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    for name in ("bash", "sh", "git", "env", "mkdir", "rm", "ln", "ls", "tr",
+                 "printf", "cat", "sed", "grep", "cp", "mv", "chmod", "uname"):
+        found = shutil.which(name)
+        if found:
+            os.symlink(found, shim / name)
+    assert shutil.which("zsh", path=str(shim)) is None, "the shim PATH carries a zsh"
+
+    report = tmp_path / "report.xml"
+    env = {**os.environ, "PATH": str(shim), "PYTHONDONTWRITEBYTECODE": "1"}
+    env.pop("MEMKIT_NO_ZSH", None)
+    # By name, so this case cannot select itself: a nested run of the whole
+    # zsh selection would recurse until the timeout.
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__).resolve()),
+         "-k", "store_in_git_section_runs_where_it_is_pasted and zsh",
+         "-p", "no:cacheprovider", "--junitxml", str(report)],
+        cwd=str(REPO), env=env, capture_output=True, text=True, timeout=900,
+    )
+    assert report.exists(), (out.stdout, out.stderr)
+    root = ET.parse(report).getroot()
+    suite = root if root.tag == "testsuite" else root[0]
+    counts = suite.attrib
+    ran = int(counts["tests"])
+    failed = int(counts["failures"]) + int(counts["errors"])
+    assert ran, (out.stdout, out.stderr)
+    assert int(counts["skipped"]) == 0, (counts, out.stdout)
+    assert failed == ran, (counts, out.stdout)
+    assert out.returncode != 0, out.stdout
+
+
 def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
     """Three sentences about one ordering, checked against each other.
 
@@ -3989,13 +4035,49 @@ def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
 
 
 def _uncommented(text: str) -> str:
-    """The file without its comment lines.
+    """The file with everything a `#` comments out removed.
 
     A name matched anywhere in a file is satisfied by a comment mentioning it,
     which is exactly what deleting the thing the comment describes leaves
-    behind — so the construct is matched, and only in what runs.
+    behind — so the construct is matched, and only in what runs. A comment on
+    the END of a code line is that same edit with the comment moved, so the cut
+    is at the `#` wherever one opens a comment, and quoted `#` is left alone
+    because both files this reads carry it inside strings.
     """
-    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    kept = []
+    for line in text.splitlines():
+        quote = None
+        cut = len(line)
+        i = 0
+        while i < len(line):
+            char = line[i]
+            if quote is not None:
+                if char == "\\" and quote == '"':
+                    i += 1
+                elif char == quote:
+                    quote = None
+            elif char in "\"'":
+                quote = char
+            elif char == "#":
+                cut = i
+                break
+            i += 1
+        kept.append(line[:cut].rstrip())
+    return "\n".join(kept)
+
+
+def _nix_list(attrset: str, name: str) -> list:
+    """One `name = [ ... ];` binding of a nix attrset, as its elements.
+
+    Read as a list rather than searched as text: a substring assertion over the
+    attrset passes on a name that is in a comment, in a neighbouring binding,
+    or in a string, and the thing the build needs is that the name be an
+    ELEMENT. Nix separates list elements by whitespace, so splitting is the
+    whole parse this needs.
+    """
+    found = re.search(rf"\b{re.escape(name)}\s*=\s*\[(.*?)\]\s*;", attrset, re.S)
+    assert found, f"no `{name}` list in the attrset:\n{attrset}"
+    return found.group(1).split()
 
 
 def _workflow_job(workflow: str, job: str) -> str:
@@ -4013,29 +4095,51 @@ def _workflow_job(workflow: str, job: str) -> str:
     return "\n".join(lines[starts[0] : ends[0] if ends else len(lines)]) + "\n"
 
 
+def _workflow_steps(job: str) -> list:
+    """The job's steps, in the order the runner takes them.
+
+    Order is half of what the zsh step is for: installed after the suite has
+    run it is installed for nothing, and the job's own list order is the only
+    place that fact lives.
+    """
+    return job.split("\n      - ")[1:]
+
+
 def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
     """The marker has no producer, and both gating legs install the shell.
 
     A test that skips on an environment variable is a test anybody can turn
     off; what makes this one honest is that no CI context sets it, so the two
-    legs where these cases are the gate cannot take the skip.
+    legs where these cases are the gate cannot take the skip. The marker is
+    matched by NAME: a nix attribute, an `export` in a builder, an `env:` map
+    and a `run:` line spell the same arming five ways, and an assertion that
+    knows one spelling is an assertion that misses four.
     """
-    flake = (REPO / "flake.nix").read_text(encoding="utf-8")
-    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
-    # The assignment, not the name: the flake explains the marker in a comment
-    # next to the zsh it carries, which is where that explanation belongs.
-    assert 'MEMKIT_NO_ZSH = "1"' not in flake
-    assert "MEMKIT_NO_ZSH" not in workflow
-    # The nix leg: zsh in the inputs of the builder every suite is made with,
-    # not merely somewhere in the file.
-    builder = re.search(r'runCommand "memkit-\$\{name\}" \{(.*?)\n\s*\} ', _uncommented(flake), re.S)
-    assert builder, "the shared suite builder is no longer recognisable"
-    assert "pkgs.zsh" in builder.group(1), builder.group(1)
-    # The python leg: a step of the gating job that runs it, not a comment.
-    steps = _workflow_job(workflow, "python")
-    assert re.search(r"\n +run: \|\n(?: +\S.*\n)*? +zsh --version\b", steps), (
-        "no step in the `python` job runs `zsh --version`"
+    flake = _uncommented((REPO / "flake.nix").read_text(encoding="utf-8"))
+    workflow = _uncommented(
+        (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
     )
+    assert "MEMKIT_NO_ZSH" not in flake
+    assert "MEMKIT_NO_ZSH" not in workflow
+    # The nix leg: zsh among the inputs of the builder every suite is made
+    # with, as an element of the list the build reads.
+    builder = re.search(r'runCommand "memkit-\$\{name\}" \{(.*?)\n\s*\} ', flake, re.S)
+    assert builder, "the shared suite builder is no longer recognisable"
+    assert "pkgs.zsh" in _nix_list(builder.group(1), "nativeBuildInputs"), builder.group(1)
+    # The python leg: the gating job installs the shell, and then runs the
+    # suite that needs it. Either one alone leaves the cells uncovered under a
+    # context branch protection requires.
+    steps = _workflow_steps(_workflow_job(workflow, "python"))
+    installs = [i for i, step in enumerate(steps) if re.search(r"\bzsh --version\b", step)]
+    # The whole suite, which is the invocation these cells ride in: a pytest
+    # naming a file is some other step's narrower gate.
+    runs = [
+        i for i, step in enumerate(steps)
+        if re.search(r"\brun: \S*python -m pytest(?:\s+-\S+)*\s*$", step, re.M)
+    ]
+    assert len(installs) == 1, f"{len(installs)} steps of the `python` job run `zsh --version`"
+    assert len(runs) == 1, f"{len(runs)} steps of the `python` job run the whole suite"
+    assert installs[0] < runs[0], "the `python` job installs zsh after it runs the suite"
 
 
 def test_no_page_names_a_setting_the_harness_does_not_have() -> None:
