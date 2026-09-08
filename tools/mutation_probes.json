@@ -4476,6 +4476,17 @@
       "why": "a credential floored on the prompt path is floored silently"
     },
     {
+      "name": "task-record-drops-the-side-channel-fold",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        nonlocal logged\n        rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)\n        rec.update(_lex_fired())\n",
+      "new": "        nonlocal logged\n        rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_spawn_inside_a_repository_is_never_handed_a_credential"
+      ],
+      "why": "a credential floored for a subagent is floored silently, on the surface with the least oversight"
+    },
+    {
       "name": "credential-scan-flags-are-not-scoped-to-their-branch",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",

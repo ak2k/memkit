@@ -10250,6 +10250,7 @@ def _spawn(
     tool: str = "Agent",
     extra: dict | None = None,
     event: object = "PreToolUse",
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess:
     """One PreToolUse invocation, driven the way the harness drives it.
 
@@ -10281,6 +10282,7 @@ def _spawn(
         text=True,
         timeout=120,
         env=env,
+        cwd=cwd,
     )
 
 
@@ -13938,7 +13940,12 @@ _UNSET = object()
 
 
 def _project_checkout(
-    tmp_path: Path, *, name: str = "repo", body: str = PROJECT_MEMORY, blob=_UNSET
+    tmp_path: Path,
+    *,
+    name: str = "repo",
+    body: str = PROJECT_MEMORY,
+    memory: str = "unionfs_perms.md",
+    blob=_UNSET,
 ) -> Path:
     """A directory `_repo_root` will answer with, carrying a project file.
 
@@ -13950,7 +13957,7 @@ def _project_checkout(
     (repo / hook._DOT_GIT).mkdir(parents=True)
     corpus = repo / PROJECT_STORE_DIR / "search"
     corpus.mkdir(parents=True)
-    (corpus / "unionfs_perms.md").write_text(body, encoding="utf-8")
+    (corpus / memory).write_text(body, encoding="utf-8")
     if blob is not _UNSET:
         (repo / hook.PROJECT_CONFIG_NAME).write_text(
             json.dumps(blob) if not isinstance(blob, str) else blob,
@@ -15581,6 +15588,67 @@ def test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log(
     assert "unionfs_perms.md" not in hidden, hidden
     assert rec["lex_secret"] == 1, rec
     assert "AKIA" not in hidden
+
+
+# A memory a BRIEF reaches: the task path's floor asks for
+# TASK_MIN_MATCHED_TERMS, which `PROJECT_MEMORY`'s three-word subject cannot
+# meet, so the shape that says anything on this path is the fourteen-word one.
+TASK_PROJECT_MEMORY = (
+    "---\nname: backlash_shims\n"
+    "description: sprocket backlash after a gearbox rebuild is a shim stack "
+    "fault, not chain tension\n"
+    "type: reference\n---\n\n"
+    f"# Backlash and the shim stack\n\n{_SUBJECT}\n{_SUBJECT}\n"
+)
+
+
+def test_a_spawn_inside_a_repository_is_never_handed_a_credential(
+    tmp_path: Path,
+) -> None:
+    """The subagent path's copy of the refusal, and the fold that records it.
+
+    The store a project file declares is the CWD's store, so a spawn made
+    anywhere else never reaches one — which is why this drives the hook from
+    inside the checkout. The agent on the other end of this path is
+    unattended: it cannot notice a credential the way an operator reading a
+    prompt might, so the refusal has to hold here, and `lex_secret` has to
+    survive into this emitter's record or a floored credential is floored
+    silently on the surface with the least oversight.
+    """
+    env = _env(tmp_path)
+    brief = _SUBJECT + " " + "Investigate every measurement. " * 12
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    control = _project_checkout(
+        tmp_path,
+        name="clean",
+        body=TASK_PROJECT_MEMORY,
+        memory="backlash_shims.md",
+        blob=_project_blob(),
+    )
+    planted = _project_checkout(
+        tmp_path,
+        name="dirty",
+        body=TASK_PROJECT_MEMORY + "\nAKIA0123456789ABCDEF\n",
+        memory="backlash_shims.md",
+        blob=_project_blob(),
+    )
+
+    def drive(tool_use_id: str, repo: Path) -> tuple:
+        out = _spawn(env, brief, tool_use_id=tool_use_id, cwd=str(repo))
+        assert out.returncode == 0, out.stderr[-400:]
+        return out.stdout, json.loads(log.read_text().splitlines()[-1])
+
+    # The control, and it is what makes the case below mean anything: the same
+    # brief in the same shape of checkout DOES reach the subagent.
+    shown, clean_rec = drive("tu_clean", control)
+    assert "backlash_shims.md" in shown, shown
+    assert clean_rec["outcome"] == "task:injected", clean_rec
+    assert "lex_secret" not in clean_rec, clean_rec
+
+    hidden, rec = drive("tu_dirty", planted)
+    assert "backlash_shims.md" not in hidden, hidden
+    assert "AKIA" not in hidden, hidden
+    assert rec["lex_secret"] == 1, rec
 
 
 def test_the_search_clis_record_says_a_credential_was_floored_too(
