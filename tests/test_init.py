@@ -3732,6 +3732,66 @@ def test_a_key_the_store_already_holds_another_spelling_of_diverges(
     assert "Nothing to write" in again.stdout, again.stdout
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_file_the_store_already_holds_another_spelling_of_diverges(
+    profile,
+) -> None:
+    """THE SAME RULE, ONE LEVEL DOWN. A row points at a memory by writing the
+    project key and the file name into one path, and only the key was being
+    asked which spelling the disk really holds. A memory renamed `alpha.md` ->
+    `Alpha.md` in the harness directory therefore opened the `alpha.md` this
+    store already had — read as "already adopted", so nothing was copied —
+    while the generated row named `Alpha.md`. Two rows for one file on disk,
+    STALE out of the checker, exit 6, and every re-run the same.
+
+    Three turns, because the wedge is what the second and third do: the store
+    stays as it is, the ledger carries one row, and the dry-run that follows
+    has nothing left to say.
+    """
+    if not _folds_case(profile):
+        pytest.skip("a case-sensitive filesystem tells the two names apart")
+    memory = _harness(profile, "-home-u", {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": BARE})
+    store = profile / "notes"
+    seed = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert seed.returncode == init.EXIT_OK, seed.stdout + seed.stderr
+    out = _confirm(
+        profile, _digest_of(seed), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert [p.name for p in adopted.iterdir()] == ["alpha.md"]
+
+    # The rename the adopter does by hand, in the harness's own directory.
+    (memory / "alpha.md").rename(memory / "Alpha.md")
+    assert [p.name for p in memory.iterdir()] == ["Alpha.md"]
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "already holds as `alpha.md`" in manifest.stdout, manifest.stdout
+    # The control, in the same run: an untouched memory is still already adopted.
+    assert "1 already adopted" in manifest.stdout, manifest.stdout
+    again = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert [p.name for p in adopted.iterdir()] == ["alpha.md"], "the copy went in"
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    rows = [line for line in ledger.splitlines() if "projects/-home-u/" in line]
+    assert len(rows) == 1, ledger
+    assert "Alpha.md" not in ledger, ledger
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    settled = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in settled.stdout, settled.stdout
+
+
 def test_a_red_integrity_check_still_redirects_the_harness(
     profile, monkeypatch, capsys
 ) -> None:

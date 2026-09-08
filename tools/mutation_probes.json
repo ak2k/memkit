@@ -4552,6 +4552,17 @@
       "why": "the destination guard above is made of path strings and `os.path.realpath` does not canonicalise case, so on a case-insensitive filesystem — APFS, the default on macOS — a key differing from an existing directory only in case passes every one of them. The copy lands in the directory that is there, the row names the spelling that is not, the checker calls it an orphan, `memory-integrity --write` repairs the row to the on-disk name and the next init writes the key's spelling back: the two rewriting each other forever, with no link involved at all."
     },
     {
+      "name": "init-adoption-rows-a-file-spelling-the-disk-does-not-hold",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            spelled_file = _as_spelled(target, held_entries, dest)\n            if spelled_file is not None and spelled_file != name:\n                diverged.append(\n                    f\"{_display_path(dest)} is the file this store already \"\n                    f\"holds as `{_clean(spelled_file)}` — this filesystem does \"\n                    \"not tell the two spellings apart, so the copy would land \"\n                    \"in that one while the row named this one, and nothing was \"\n                    \"written for it\"\n                )\n                continue\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_a_file_the_store_already_holds_another_spelling_of_diverges"
+      ],
+      "why": "the key is one half of the path a row points at and the file name is the other, so a spelling rule stated at the key alone leaves the half a memory is actually named by unguarded. On a case-insensitive filesystem — APFS, the default on macOS — a memory renamed `alpha.md` -> `Alpha.md` in the harness opens the `alpha.md` the store already holds, reads as already adopted so nothing is copied, and the generated row names the spelling the disk does not carry: two rows for one file, STALE out of the checker, and a confirm that exits 6 on every re-run."
+    },
+    {
       "name": "init-adoption-copies-an-index-of-a-directory-it-left-behind",
       "module": "init",
       "file": "src/memkit/cli_init.py",

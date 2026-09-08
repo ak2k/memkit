@@ -1863,10 +1863,14 @@ def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
 def _as_spelled(base: str, entries: list, target: str) -> str | None:
     """The name `base` really holds `target` under, or None if it holds none.
 
+    ONE RULE FOR EVERY LEVEL A SPELLING IS DECIDED AT: the project key and the
+    file name are the two halves of the path a row points at, and both are
+    asked here.
+
     `os.path.realpath` follows links and does not canonicalise CASE, so on a
-    case-insensitive filesystem — APFS, the default on macOS — a path opens a
-    directory whose name is spelled some other way and every comparison
-    between the two still says they are the same path. The ledger row has to
+    case-insensitive filesystem — APFS, the default on macOS — a path opens an
+    entry whose name is spelled some other way and every comparison between the
+    two still says they are the same path. The ledger row has to
     carry the name the checker enumerates off disk, so the name is asked of
     the OS by identity rather than derived from a rule about which spellings a
     given filesystem folds together — which is a property of the mount and not
@@ -2023,6 +2027,16 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 "this project"
             )
             continue
+        # THE SAME RULE, ONE LEVEL DOWN. The key is half the path a row points
+        # at and the file name is the other half, so the spelling has to be
+        # asked of the disk at both — a memory renamed `alpha.md` -> `Alpha.md`
+        # in the harness opens the `alpha.md` this store already holds, reads
+        # as "already adopted", and the row generated for it names a spelling
+        # the disk does not carry. Read once, before the loop: planning writes
+        # nothing, so it does not change underneath.
+        held_entries: list = []
+        with contextlib.suppress(OSError):
+            held_entries = os.listdir(target)
         group = (
             f"from {_display_path(project.path)} "
             f"-> {_display_path(target)}{os.sep}"
@@ -2083,6 +2097,16 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     f"{_display_path(_terminal_realpath(dest))} — a copy would "
                     "write through it, at a path this manifest does not name, "
                     "so nothing was written"
+                )
+                continue
+            spelled_file = _as_spelled(target, held_entries, dest)
+            if spelled_file is not None and spelled_file != name:
+                diverged.append(
+                    f"{_display_path(dest)} is the file this store already "
+                    f"holds as `{_clean(spelled_file)}` — this filesystem does "
+                    "not tell the two spellings apart, so the copy would land "
+                    "in that one while the row named this one, and nothing was "
+                    "written for it"
                 )
                 continue
             # AN INDEX IS A CLAIM ABOUT THE FILES IT ROWS. A ledger name is
