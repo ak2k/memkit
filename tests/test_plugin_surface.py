@@ -3848,7 +3848,9 @@ _STORE_IN_GIT_CASES = tuple(
 @pytest.mark.parametrize(
     "cell,opts",
     _STORE_IN_GIT_CASES,
-    ids=[f"{cell}-{'errexit' if opts else 'no-options'}" for cell, opts in _STORE_IN_GIT_CASES],
+    # The default-options run keeps the cell's own name, so what a case is
+    # called does not change with the axis it gained.
+    ids=[f"{cell}-errexit" if opts else cell for cell, opts in _STORE_IN_GIT_CASES],
 )
 def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, shell) -> None:
     """The page's two commands, run on real filesystems.

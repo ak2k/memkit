@@ -3874,8 +3874,8 @@
       "name": "admission-file-count-is-last-releases",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**101 files, about 3.0 MiB**",
-      "new": "**99 files, about 3.0 MiB**",
+      "old": "**101 files, about 3.1 MiB**",
+      "new": "**99 files, about 3.1 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
         "tests/test_plugin_surface.py::test_the_admission_notes_breakdown_sums_to_the_total_it_states",
@@ -4153,12 +4153,67 @@
       "name": "store-doc-the-line-needs-fewer-variables-than-it-does",
       "module": "docs",
       "file": "docs/STORE.md",
-      "old": "all three are yours to set before the",
-      "new": "both are yours to set before the",
+      "old": "and all three\nare yours to set before the line runs",
+      "new": "and both\nare yours to set before the line runs",
       "tests": [
         "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-store-unset-bash]"
       ],
       "why": "a reader who sets the number the page counts and no more leaves `$store` empty, and the line then stops with a status and no message that the page's next sentence explains wrongly"
+    },
+    {
+      "name": "store-doc-the-key-block-aborts-under-errexit",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "--git-common-dir 2>/dev/null) || root=",
+      "new": "--git-common-dir 2>/dev/null)",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-non-git-errexit-bash]"
+      ],
+      "why": "outside a repository the first rev-parse fails, and without a status errexit will not act on, `set -e` aborts the block at its first line: no key, no message, rc 128, and the documented cwd fallback never runs"
+    },
+    {
+      "name": "store-doc-dir-is-defined-as-the-key-not-the-directory",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$key/memory; ls -ld \"$dir\"`",
+      "new": "`dir=$key; ls -ld \"$dir\"`",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-dir-from-the-page-bash]"
+      ],
+      "why": "a reader who sets `$dir` to the key rather than the directory gets rc 1 with nothing on either stream, which is the documented outcome of a `$dir` that is not a link — so the page hands them a wrong diagnosis of their own silent no-op"
+    },
+    {
+      "name": "store-doc-a-recreated-dir-keeps-the-link-in-place",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "recreation between `rm` and `ln` leaves the link inside `$dir` rather than in\nits place",
+      "new": "recreation between `rm` and `ln` leaves the link where it belongs",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-harness-recreated-dir-bash]"
+      ],
+      "why": "the section's one safety instruction: a harness left running recreates `$dir` between the two commands, and the link then lands one level down where nothing reads through it"
+    },
+    {
+      "name": "store-doc-an-unset-target-stops-as-quietly-as-the-others",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "an unset `$target` fails `mkdir`, which does say so on stderr",
+      "new": "an unset `$target` fails `mkdir`, which says nothing on stderr",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-target-unset-bash]"
+      ],
+      "why": "the sentence's whole point is the asymmetry — two of the three variables stop a test and print nothing, the third stops a command that reports itself — and a reader told all three are silent has no way to read the failure they get"
+    },
+    {
+      "name": "store-doc-the-blocked-reader-is-routed-below-what-blocks-them",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`.claude/settings.local.json`, which the\nharness reads above it",
+      "new": "`.claude/settings.local.json`, which the\nharness reads below it",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
+      ],
+      "why": "a route that does not outrank the scope it routes around is not a route, and this is the reader whose checked-in settings the flag refuses"
     }
   ]
 }
