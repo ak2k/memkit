@@ -4637,6 +4637,28 @@
         "tests/test_harness_shape.py::test_an_index_that_cannot_be_read_is_not_an_index_with_no_rows"
       ],
       "why": "An index whose bytes this capture cannot reach — a mode it has no rights to, a name that is not a plain file, root-squash on the NFS home it was piped into — measures as an index with no rows and nothing dangling, which is exactly what an index that genuinely has no rows records, and a corpus rebuilt from the shape reproduces a number nobody took."
+    },
+    {
+      "name": "harness-shape-the-harness-record-is-gated-by-its-values-only",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        \"harness\": {frozenset(shape[\"harness\"])},\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_field_set_gate_rejects_a_key_the_tool_does_not_emit"
+      ],
+      "why": "The gate read `harness.version_hint` and `harness.install` by name and built no field set for the record holding them, so a third key there — `captured_from`, holding a real absolute path — passed both gates on a committed fixture, while the same planting one level up was caught. A record addressed by key is a record whose keys nobody is reading."
+    },
+    {
+      "name": "harness-shape-the-harness-record-takes-any-kind-of-value",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "    _typed(shape[\"harness\"], HARNESS_TYPES, where)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "`VERSION_RE.fullmatch` on a non-string raises a TypeError out of the gate rather than refusing the fixture, so the one record whose values are adopter-controlled strings was the one record whose values were never typed."
     }
   ]
 }

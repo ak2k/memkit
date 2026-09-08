@@ -102,6 +102,13 @@ FILE_TYPES = {
 }
 INDEX_TYPES = {"rows": int, "dangling_rows": int, "truncated": bool}
 SCOPE_TYPES = {"unreadable": bool}
+# The harness record's two values are read by name below, and a number in
+# either of them reaches `VERSION_RE.fullmatch` as a `TypeError` — an error
+# the gate raises rather than a name it refuses.
+HARNESS_TYPES = {
+    "version_hint": (str, type(None)),
+    "install": (str, type(None)),
+}
 
 
 def _run(*args: str, env=None) -> subprocess.CompletedProcess:
@@ -2184,7 +2191,10 @@ def _gated(shape: dict, where) -> None:
     assert shape["read_errors"] == 0, where
     _typed(shape, SHAPE_TYPES, where)
     # The two harness rows, which are adopter-controlled strings and were
-    # the only free text in either committed fixture.
+    # the only free text in either committed fixture. Typed BEFORE they are
+    # read: a record addressed by key is gated by its key set (`_field_sets`)
+    # and by its value types, the way every other record here is.
+    _typed(shape["harness"], HARNESS_TYPES, where)
     version = shape["harness"]["version_hint"]
     assert version is None or VERSION_RE.fullmatch(version), (where, version)
     install = shape["harness"]["install"]
@@ -2265,6 +2275,12 @@ def _injected(shape: dict, which: str) -> dict:
         _with_files(planted)["lock_age_s"] = "acme-corp-host-01"
     elif which == "a flag where a count belongs":
         _with_files(planted)["key_len"] = True
+    elif which == "a path under the harness record":
+        planted["harness"]["captured_from"] = "/Users/alice/.claude"
+    elif which == "a number where a version hint belongs":
+        planted["harness"]["version_hint"] = 20250908
+    elif which == "an extra field in a file record":
+        _with_files(planted)["files"][0]["symlink_target_kind"] = "socket"
     else:
         raise AssertionError(which)
     return planted
@@ -2279,6 +2295,7 @@ def _injected(shape: dict, which: str) -> dict:
         "a path where a description length belongs",
         "a hostname where a lock age belongs",
         "a flag where a count belongs",
+        "a number where a version hint belongs",
     ],
 )
 def test_the_artifact_gate_rejects_a_name_it_was_not_looking_at(injection) -> None:
@@ -2317,6 +2334,7 @@ def _field_sets(shape: dict) -> dict:
         scopes.add(frozenset(scope))
     return {
         "shape": {frozenset(shape)},
+        "harness": {frozenset(shape["harness"])},
         "memory_dir": dirs,
         "file": files,
         "index": indexes,
@@ -2358,3 +2376,33 @@ def test_a_committed_shape_carries_the_field_set_the_tool_emits_today(
         for kind, found in _field_sets(shape).items():
             stale = [sorted(record) for record in found - emitted[kind]]
             assert not stale, (path.name, kind, stale)
+
+
+@pytest.mark.parametrize(
+    "injection,kind",
+    [
+        ("a path under the harness record", "harness"),
+        ("an extra field in a file record", "file"),
+    ],
+)
+def test_the_field_set_gate_rejects_a_key_the_tool_does_not_emit(
+    injection, kind, tmp_path,
+) -> None:
+    """A record read by key is gated by its key set too.
+
+    The gate above read `harness.version_hint` and `harness.install` by name
+    and built no field set for the record holding them, so a third key there —
+    `captured_from`, an absolute path — passed both gates, while the same
+    planting one level up was caught. The set of kinds `_field_sets` returns
+    is the list of records anything may address by key.
+    """
+    fixtures = _fixture_files(SHAPES) if SHAPES.is_dir() else []
+    if not fixtures:
+        pytest.skip("no shapes captured yet")
+    emitted = _field_sets(_shape("--config-dir", str(_tree(tmp_path / "plain"))))
+    shape = _fixture_shape(fixtures[0])
+    # The same comparison over the untouched fixture, so a kind the live
+    # capture has none of cannot pass this test by being empty.
+    assert not _field_sets(shape)[kind] - emitted[kind], kind
+    planted = _injected(shape, injection)
+    assert _field_sets(planted)[kind] - emitted[kind], injection
