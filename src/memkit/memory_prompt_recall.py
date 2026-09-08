@@ -609,6 +609,17 @@ _PROJECT_TOP_KEYS = frozenset((PROJECT_SCHEMA_KEY, "store", "note"))
 _PROJECT_STORE_KEYS = frozenset(("id", "dir", "note"))
 
 
+def _inside(root: str, path: str) -> bool:
+    """Whether resolved `path` is `root` or below it.
+
+    Both sides must already be resolved: this is string arithmetic, and it is
+    a function only so that the two containment decisions a project file gets
+    — the directory it names, and the directory retrieval actually walks —
+    cannot drift into two spellings of one rule.
+    """
+    return path == root or path.startswith(root + os.sep)
+
+
 def _project_value(value: object) -> str:
     """A value out of a project file, safe to put in a reason an agent reads."""
     return _display_cap(sanitize(str(value)), PROJECT_VALUE_MAX_CHARS)
@@ -719,9 +730,10 @@ def _project_store(root: str, taken):
             f"{PROJECT_CONFIG_NAME}: 'dir' must stay inside the repository, "
             f"and '{_project_value(rel)}' climbs out of it"
         )
-    # THE containment decision, made against resolved paths on both sides. The
-    # `..` refusal above is for the message; a `dir` that is a SYMLINK out of
-    # the tree spells no `..` at all, and only realpath sees that one.
+    # The first of TWO containment decisions, made against resolved paths on
+    # both sides. The `..` refusal above is for the message; a `dir` that is a
+    # SYMLINK out of the tree spells no `..` at all, and only realpath sees
+    # that one.
     try:
         root_real = os.path.realpath(root)
         resolved = os.path.realpath(os.path.join(root, rel))
@@ -730,10 +742,22 @@ def _project_store(root: str, taken):
             f"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: "
             f"{_project_value(exc.strerror or type(exc).__name__)}"
         )
-    if resolved != root_real and not resolved.startswith(root_real + os.sep):
+    if not _inside(root_real, resolved):
         return None, f"{PROJECT_CONFIG_NAME}: 'dir' resolves outside the repository"
     if not os.path.isdir(resolved):
         return None, f"{PROJECT_CONFIG_NAME}: 'dir' is not a directory in this checkout"
+    # AND AGAIN on the directory that is actually WALKED, which is not `dir`:
+    # retrieval roots at `_search_root(dir)`, and `os.walk` refuses to descend
+    # into a symlinked subdirectory but follows its own top argument. So a
+    # committed `<dir>/search` pointing anywhere indexes that tree instead, and
+    # every file under it is served as a pointer under an in-repo path — the
+    # containment decision above says nothing about a level below the one it
+    # was made at.
+    if not _inside(root_real, os.path.realpath(_search_root(resolved))):
+        return None, (
+            f"{PROJECT_CONFIG_NAME}: the corpus under 'dir' resolves outside "
+            "the repository"
+        )
     # `live_root` is the repository root itself rather than a name in `roots`:
     # Store requires a non-empty one, and a synthetic entry in `roots` would be
     # a mutation of the user's config to hold a value only this store reads.

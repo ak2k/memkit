@@ -14008,6 +14008,42 @@ def _replace_with(make):
     return go
 
 
+def _corpus_symlinked_out(target):
+    """Replace the corpus root `<dir>/search` with a link, `dir` untouched.
+
+    `target(repo)` names what it points at, because the two spellings a
+    checkout can carry are not the same evidence: an absolute target is a link
+    that only resolves on the machine it was made on, and a RELATIVE one
+    resolves the same way in every clone — which is the shape that travels.
+    """
+
+    def go(repo: Path) -> None:
+        corpus = repo / PROJECT_STORE_DIR / "search"
+        for entry in corpus.iterdir():
+            entry.unlink()
+        corpus.rmdir()
+        os.symlink(target(repo), str(corpus))
+        (repo / hook.PROJECT_CONFIG_NAME).write_text(
+            json.dumps(_project_blob()), encoding="utf-8"
+        )
+
+    return go
+
+
+def _outside_corpus(repo: Path) -> str:
+    outside = repo.parent / "private-notes"
+    outside.mkdir(exist_ok=True)
+    (outside / "unionfs_perms.md").write_text(PROJECT_MEMORY, encoding="utf-8")
+    return str(outside)
+
+
+def _outside_corpus_relative(repo: Path) -> str:
+    _outside_corpus(repo)
+    # From `<repo>/docs/memories/`, three levels up is the parent of the
+    # checkout — the spelling git stores verbatim and every clone resolves.
+    return os.path.join("..", "..", "..", "private-notes")
+
+
 def _dir_symlinked_out(repo: Path) -> None:
     outside = repo.parent / "outside"
     outside.mkdir(exist_ok=True)
@@ -14110,6 +14146,18 @@ REFUSALS = [
         "climbs out of it",
     ),
     ("a dir symlinked out of the tree", _dir_symlinked_out, "resolves outside"),
+    # `dir` itself is inside the checkout in both of these. What leaves it is
+    # the level below — the directory retrieval actually walks.
+    (
+        "a corpus root symlinked out of the tree",
+        _corpus_symlinked_out(_outside_corpus),
+        "the corpus under 'dir' resolves outside",
+    ),
+    (
+        "a corpus root linked out by a relative path",
+        _corpus_symlinked_out(_outside_corpus_relative),
+        "the corpus under 'dir' resolves outside",
+    ),
     (
         "a dir that is not there",
         _write_json(_project_blob(dir="docs/nowhere")),
@@ -14176,6 +14224,86 @@ def test_a_device_symlink_a_checkout_carries_is_refused_without_hanging(
     assert os.path.islink(str(repo / hook.PROJECT_CONFIG_NAME))
     assert os.path.realpath(str(repo / hook.PROJECT_CONFIG_NAME)) == "/dev/zero"
     assert "is not a regular file" in _refusal(home, monkeypatch, repo)
+
+
+def _prompt_and_debug(tmp_path: Path, repo: Path) -> tuple[str, str]:
+    """The two model-facing surfaces, from inside `repo`, through the shipped
+    file — the pointer block a prompt gets and what `--debug-config` says."""
+    env = _env(tmp_path)
+    served = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "corpus", "prompt": INJECT_PROMPT}),
+        capture_output=True, text=True, timeout=60, env=env, cwd=str(repo),
+    )
+    assert served.returncode == 0, served.stderr[-400:]
+    debug = subprocess.run(
+        ["python3", HOOK, "--debug-config"],
+        capture_output=True, text=True, timeout=60, env=env, cwd=str(repo),
+    )
+    return served.stdout, debug.stdout
+
+
+def test_a_corpus_root_that_leaves_the_checkout_serves_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`dir` inside the checkout does not make `<dir>/search` inside it.
+
+    `os.walk` will not descend into a symlinked subdirectory but it follows the
+    top it was handed, and `_store_path`'s leaf rule passes every file under
+    that top because the files are not themselves links. So the whole of a
+    directory outside the repository was indexed and served as pointers whose
+    paths were all in-repo — the one surface that answers "where did this come
+    from" naming the checkout for bytes that were never in it.
+    """
+    repo = _project_checkout(tmp_path)
+    _corpus_symlinked_out(_outside_corpus_relative)(repo)
+    outside = tmp_path / "private-notes" / "unionfs_perms.md"
+    assert outside.exists(), "the fixture planted nothing to escape with"
+    served, debug = _prompt_and_debug(tmp_path, repo)
+    assert "unionfs_perms.md" not in served, served
+    assert "the corpus under 'dir' resolves outside" in debug, debug
+    # And no store: the refusal is the whole file's, not the corpus root's.
+    cfg = _config_at(tmp_path, monkeypatch, repo)
+    assert cfg.project_store() is None
+
+
+def test_a_corpus_root_link_that_lands_back_inside_the_checkout_is_kept(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Containment is the property, not the absence of links.
+
+    A checkout that keeps its memories at `docs/notes` and links
+    `docs/memories/search` at them is publishing bytes it already owns, under a
+    path inside itself. Refusing that would be refusing the shape rather than
+    the escape — and it is the same reading `_store_path` gives a linked store
+    root.
+    """
+    repo = _project_checkout(tmp_path)
+    notes = repo / "docs" / "notes"
+    notes.mkdir(parents=True)
+    (notes / "unionfs_perms.md").write_text(PROJECT_MEMORY, encoding="utf-8")
+    _corpus_symlinked_out(lambda _repo: os.path.join("..", "notes"))(repo)
+    cfg = _config_at(tmp_path, monkeypatch, repo)
+    assert cfg.project_store() is not None, cfg.project_error
+    served, _ = _prompt_and_debug(tmp_path, repo)
+    assert "unionfs_perms.md" in served, served
+
+
+def test_the_same_escaping_checkout_without_a_project_file_serves_nothing(
+    tmp_path: Path,
+) -> None:
+    """The control that makes the two above about this feature: the identical
+    link, and no `.memkit.json`. Nothing is searched, so nothing escapes —
+    which is what says the exposure arrived with the file and not with the
+    link."""
+    repo = _project_checkout(tmp_path)
+    _corpus_symlinked_out(_outside_corpus_relative)(repo)
+    (repo / hook.PROJECT_CONFIG_NAME).unlink()
+    served, debug = _prompt_and_debug(tmp_path, repo)
+    assert "unionfs_perms.md" not in served, served
+    # The project block is the only thing this surface writes at column zero
+    # under that word; the user's own store happens to be called `project`.
+    assert not [ln for ln in debug.splitlines() if ln.startswith("project")], debug
 
 
 def test_a_project_file_that_only_annotates_itself_is_admitted(

@@ -4218,6 +4218,18 @@
       "why": "a scripts key naming an absent callable installs a console script that tracebacks on first use, past every other gate here"
     },
     {
+      "name": "project-corpus-root-may-climb-out-of-the-repository",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if not _inside(root_real, os.path.realpath(_search_root(resolved))):\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: the corpus under 'dir' resolves outside \"\n            \"the repository\"\n        )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_corpus_root_that_leaves_the_checkout_serves_nothing",
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-corpus-root-linked-out-by-a-relative-path]"
+      ],
+      "why": "`dir` being inside the checkout says nothing about `<dir>/search`, which is what retrieval walks. Without this a committed link there indexes any tree on the machine and serves its files as pointers under in-repo paths."
+    },
+    {
       "name": "project-store-candidates-forget-the-repository-chose-them",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
