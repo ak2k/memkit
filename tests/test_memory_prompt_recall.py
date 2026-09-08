@@ -14181,6 +14181,13 @@ REFUSALS = [
         _write_json(_project_blob(dir="docs/nowhere")),
         "is not a directory in this checkout",
     ),
+    # A NUL byte is not a failed syscall but a string no syscall can be spelled
+    # with, so `os.path.*` raises ValueError and the guard caught OSError.
+    (
+        "a dir holding a NUL byte",
+        _write_json(_project_blob(dir="docs/mem\x00ories")),
+        "'dir' does not resolve",
+    ),
 ]
 
 
@@ -14258,7 +14265,26 @@ def _prompt_and_debug(tmp_path: Path, repo: Path) -> tuple[str, str]:
         ["python3", HOOK, "--debug-config"],
         capture_output=True, text=True, timeout=60, env=env, cwd=str(repo),
     )
+    # Both return codes, because a repository that can make this surface EXIT
+    # takes away the diagnostic in the one checkout somebody is diagnosing.
+    assert debug.returncode == 0, debug.stderr[-400:]
     return served.stdout, debug.stdout
+
+
+def test_a_nul_byte_in_dir_is_refused_rather_than_taking_a_surface_down(
+    tmp_path: Path,
+) -> None:
+    """The refusal table asks the guard; this asks the two surfaces.
+
+    The guard's own `except` never saw this one, so the failure was not a
+    served memory but a dead diagnostic: the prompt path answered 0 and
+    `--debug-config` exited 2 with an exception's message, in exactly the
+    checkout whose config somebody had just gone looking for.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob(dir="docs/mem\x00ories"))
+    served, debug = _prompt_and_debug(tmp_path, repo)
+    assert "unionfs_perms.md" not in served, served
+    assert "'dir' does not resolve" in debug, debug
 
 
 def test_a_corpus_root_that_leaves_the_checkout_serves_nothing(

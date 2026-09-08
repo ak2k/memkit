@@ -4375,6 +4375,17 @@
         "tests/test_memory_prompt_recall.py::test_a_candidate_that_is_not_a_regular_file_is_refused_not_awaited"
       ],
       "why": "a pipe named like a memory stops the every-prompt hook for the session"
+    },
+    {
+      "name": "project-dir-resolution-catches-only-oserror",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    except (OSError, ValueError) as exc:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: \"\n            f\"{_project_value(getattr(exc, 'strerror', None) or type(exc).__name__)}\"\n        )\n",
+      "new": "    except OSError as exc:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: \"\n            f\"{_project_value(exc.strerror or type(exc).__name__)}\"\n        )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_nul_byte_in_dir_is_refused_rather_than_taking_a_surface_down"
+      ],
+      "why": "a NUL byte raises ValueError, and an uncaught one exits --debug-config"
     }
   ]
 }

@@ -742,10 +742,15 @@ def _project_store(root: str, taken):
     try:
         root_real = os.path.realpath(root)
         resolved = os.path.realpath(os.path.join(root, rel))
-    except OSError as exc:
+    # ValueError as well as OSError: a NUL byte in a path is not a failed
+    # syscall but a string the syscall cannot be spelled with, and it left an
+    # exception nothing caught — which took `--debug-config` down with exit 2
+    # in the one checkout whose config an operator was trying to read. The
+    # exception type is the reason where there is no `strerror`.
+    except (OSError, ValueError) as exc:
         return None, (
             f"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: "
-            f"{_project_value(exc.strerror or type(exc).__name__)}"
+            f"{_project_value(getattr(exc, 'strerror', None) or type(exc).__name__)}"
         )
     if not _inside(root_real, resolved):
         return None, f"{PROJECT_CONFIG_NAME}: 'dir' resolves outside the repository"
