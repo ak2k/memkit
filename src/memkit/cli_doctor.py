@@ -362,6 +362,18 @@ def _managed_dir() -> str:
     return "/etc/claude-code"
 
 
+# WHY A SCOPE DID NOT ANSWER, as three states rather than one message. They are
+# three different things to have happened to an adopter's machine and three
+# different repairs: a syntax error is theirs to fix, a refused open is
+# somebody's to grant and never theirs to edit — the managed scope is an
+# administrator's root-owned policy file — and anything else is a question
+# about what is at that path at all. Collapsed into one string, the sentence
+# written for the commonest of them gets asserted over the other two.
+UNPARSED = "unparsed"
+FORBIDDEN = "forbidden"
+UNREADABLE = "unreadable"
+
+
 class Settings:
     """One settings file: where it is, what it holds, and why it does not.
 
@@ -372,7 +384,7 @@ class Settings:
     what the parser said.
     """
 
-    __slots__ = ("scope", "path", "data", "error", "adopter_owned")
+    __slots__ = ("scope", "path", "data", "error", "failure", "adopter_owned")
 
     def __init__(self, scope: str, path: str, adopter_owned: bool = True) -> None:
         self.scope = scope
@@ -387,15 +399,37 @@ class Settings:
         self.adopter_owned = adopter_owned
         self.data: dict = {}
         self.error = ""
-        if not os.path.isfile(path):
+        # WHICH of `UNPARSED`, `FORBIDDEN`, `UNREADABLE`, or "" for a scope
+        # that answered — read off the exception rather than written once for
+        # the case that motivated the message.
+        self.failure = ""
+        if not path:
             return
+        # THE OPEN IS THE TEST. `os.path.isfile` swallows its own `OSError` and
+        # answers False, so a settings file sitting in a directory this process
+        # may not traverse read as no file at all — the one unreadable state
+        # this class was blind to, and the one that let a row conclude from
+        # settings nobody had read. Only the errors that mean "nothing is
+        # there" return silently.
         try:
             with open(path, encoding="utf-8") as f:
                 blob = json.load(f)
-        except (OSError, ValueError) as exc:
+        except (FileNotFoundError, NotADirectoryError):
+            return
+        except PermissionError as exc:
+            self.failure = FORBIDDEN
+            self.error = str(exc)
+            return
+        except OSError as exc:
+            self.failure = UNREADABLE
+            self.error = str(exc)
+            return
+        except ValueError as exc:
+            self.failure = UNPARSED
             self.error = str(exc)
             return
         if not isinstance(blob, dict):
+            self.failure = UNPARSED
             self.error = "top level is not an object"
             return
         self.data = blob
@@ -497,14 +531,29 @@ def _unparsed_settings(scopes: list) -> str:
     The verdict before the path, and the parser's text last: `_bound` cuts from
     the end, and of the three facts here the one an adopter's own file decides
     the length of is the one worth losing.
+
+    THE VERB COMES OFF THE EXCEPTION. "Could not be parsed" over a file that
+    parses perfectly and was merely refused is an assertion about content this
+    process never saw — the exact overstatement this whole check exists to
+    stop, aimed at memkit's own diagnostic.
     """
     return "; ".join(
-        f"{scope.scope} settings could not be parsed, so its keys read as "
+        f"{scope.scope} settings {_FAILED[scope.failure]}, so its keys read as "
         f"unset here: {_shown(scope.path)} "
         f"({_display_cap(scope.error, PARSER_SHOWN)})"
         for scope in scopes
-        if scope.error
+        if scope.failure
     )
+
+
+# What happened to a scope, in the words of the thing that happened. One per
+# failure kind, because a message that names a failure mode has to be derived
+# from the exception rather than written once for the common case.
+_FAILED = {
+    UNPARSED: "could not be parsed",
+    FORBIDDEN: "could not be read: this process is not permitted to open it",
+    UNREADABLE: "could not be read",
+}
 
 
 def _unparsed_remedy(scopes: list) -> str:
@@ -514,14 +563,65 @@ def _unparsed_remedy(scopes: list) -> str:
     advice to edit a file whose next read will discard the edit along with
     everything else in it, and that is the shape of this finding: the row that
     could not read the file told its author to write to it.
+
+    AND NEVER "edit it" FOR A FILE NOBODY HERE COULD OPEN. One repair per
+    failure kind, in the order an adopter can act on them: a refused open is
+    not repaired by editing, and the managed scope's file is an
+    administrator's root-owned policy — telling its reader to make it parse,
+    and then to keep a copy of it, is advice to edit and copy a file they were
+    just denied.
     """
-    paths = ", ".join(_shown(scope.path) for scope in scopes if scope.error)
-    return (
-        f"Make {paths} parse as JSON before setting any key in it — while it "
-        "does not, nothing in it is read here and a value added to it changes "
-        "nothing. Keep a copy first: a file this report cannot read is one "
-        "whose contents are still yours."
-    )
+    parts = []
+    for kind in (UNPARSED, FORBIDDEN, UNREADABLE):
+        named = [scope for scope in scopes if scope.failure == kind]
+        if not named:
+            continue
+        paths = ", ".join(_shown(scope.path) for scope in named)
+        if kind == UNPARSED:
+            parts.append(
+                f"Make {paths} parse as JSON before setting any key in it — "
+                "while it does not, nothing in it is read here and a value "
+                "added to it changes nothing. Keep a copy first: a file this "
+                "report could not parse is one whose contents are still yours."
+            )
+        elif kind == FORBIDDEN:
+            whose = (
+                " — for a managed policy file that is your administrator, not "
+                "you"
+                if any(scope.scope == "managed" for scope in named)
+                else ""
+            )
+            parts.append(
+                f"Ask whoever owns {paths} for read access{whose}, or run this "
+                "as a user who has it. Do not edit it on this report's account: "
+                "nothing here has seen what is in it."
+            )
+        else:
+            parts.append(
+                f"Find out what is at {paths}: the open failed for a reason "
+                "that is neither a syntax error nor a permission, so what the "
+                "harness reads there is not something this report can say."
+            )
+    return " ".join(parts)
+
+
+def _relative_to_cwd(path: str) -> str:
+    """`path` as a remedy standing in this directory spells it, or "".
+
+    NORMALISED on both sides and never an escape upwards: a `..` answer is not
+    a spelling any remedy here uses, and matching on one would suppress a
+    remedy naming some other file entirely.
+    """
+    cwd = _session_cwd()
+    if not path or not cwd:
+        return ""
+    try:
+        relative = os.path.relpath(os.path.normpath(path), os.path.normpath(cwd))
+    except (OSError, ValueError):
+        return ""
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        return ""
+    return relative
 
 
 def _with_unparsed(rows: list, scopes: list) -> list:
@@ -538,13 +638,17 @@ def _with_unparsed(rows: list, scopes: list) -> list:
     if not note:
         return rows
     fix = _unparsed_remedy(scopes)
-    # Both spellings, because a remedy names a settings file either way and
-    # this test is what decides whether that remedy survives.
+    # EVERY SPELLING A REMEDY USES, which is three and not two: the remedy
+    # this rule most needs to drop is `_CHECKOUT_REMEDY`, and it names the file
+    # the way an adopter standing in that directory would — relatively. Matched
+    # on the two absolute forms alone it walked straight through, and one
+    # remedy then said both "make settings.local.json parse" and "set a key in
+    # settings.local.json".
     spellings = tuple(
         spelling
         for scope in scopes
-        if scope.error
-        for spelling in (scope.path, _shown(scope.path))
+        if scope.failure
+        for spelling in (scope.path, _shown(scope.path), _relative_to_cwd(scope.path))
         if spelling
     )
     return [

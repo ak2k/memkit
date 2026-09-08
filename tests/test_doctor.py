@@ -3379,6 +3379,113 @@ def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
     assert "docs/STORE.md" in row.remedy
 
 
+def test_a_file_this_process_may_not_open_is_not_a_file_that_will_not_parse(
+    profile, monkeypatch
+) -> None:
+    """One `except (OSError, ValueError)` made three failures one string, and
+    the sentence written for the commonest of them was then asserted over the
+    other two.
+
+    The managed scope is the one where it bites: a root-owned policy file that
+    parses perfectly is described as unparseable, and the adopter is told to
+    edit it — and then to keep a copy of a file they were just refused.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    managed = profile / "managed"
+    managed.mkdir()
+    policy = managed / doctor.MANAGED_SETTINGS_NAME
+    policy.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    policy.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        policy.chmod(0o600)
+    assert row.status == doctor.INFO
+    assert row.actor == doctor.USER
+    # The claim is about what happened, and what happened is a refused open.
+    assert "could not be parsed" not in row.detail
+    assert "could not be read" in row.detail
+    assert str(policy) in row.detail
+    # And the repair is not an edit of somebody else's policy file.
+    assert "parse as JSON" not in row.remedy
+    assert "administrator" in row.remedy
+    assert "Keep a copy" not in row.remedy
+
+    # A file that really is malformed keeps the sentence written for it.
+    policy.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "managed settings could not be parsed" in row.detail
+    assert "parse as JSON" in row.remedy
+
+
+def test_a_settings_directory_that_cannot_be_reached_is_reported_not_silence(
+    profile, monkeypatch
+) -> None:
+    """`os.path.isfile` answers False for a file whose DIRECTORY is unreadable,
+    and the whole mechanism is keyed on a message that guard prevents.
+
+    So the one unreadable state the wrapper does not detect is the one where a
+    row goes on to PASS on settings nobody read — which is the harm the
+    wrapper exists to stop, reached through its own precondition.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    hidden = pathlib.Path(os.getcwd()) / ".claude"
+    hidden.mkdir(parents=True, exist_ok=True)
+    (hidden / doctor.SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    hidden.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        hidden.chmod(0o755)
+    assert row.status != doctor.PASS
+    assert "project settings could not be read" in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_the_remedy_dropped_for_naming_the_unread_file_is_dropped_however_spelled(
+    profile, monkeypatch
+) -> None:
+    """The suppression compared two ABSOLUTE spellings, and the remedy that
+    most needed dropping names its file relatively.
+
+    So one remedy told the adopter both to make `.claude/settings.local.json`
+    parse and to set a key in it — the contradiction the suppression exists to
+    prevent, walking through a spelling it did not match.
+    """
+    path = _store_config(profile, stores=["personal"])
+    claude = pathlib.Path(os.getcwd()) / ".claude"
+    claude.mkdir(parents=True, exist_ok=True)
+    (claude / doctor.SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    (claude / doctor.LOCAL_SETTINGS_NAME).write_text(
+        '{"autoDreamEnabled": false,,}', encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "local settings could not be parsed" in row.detail
+    assert doctor.LOCAL_SETTINGS_NAME not in row.remedy.split("Keep a copy first")[-1]
+
+
 def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
     profile, monkeypatch
 ) -> None:
