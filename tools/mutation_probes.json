@@ -2279,6 +2279,18 @@
       "why": "`False == 0` in Python and the harness reads the two as opposites, so two scopes that disagree are read as one answer and the row's most confident sentence rests on an order that did decide something"
     },
     {
+      "name": "auto-memory-describes-a-checked-in-settings-file-as-untracked-by-convention",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if scope == harness_memory.CHECKOUT_SCOPE:\n        return (\n            f\"a checked-in .claude/{SETTINGS_NAME}\",\n            \"that file is checked into this repository and travels with every \"\n            \"clone\",\n        )\n    if scope == \"local\":\n",
+      "new": "    if scope in (\"local\", harness_memory.CHECKOUT_SCOPE):\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_checked_in_settings_file_decides_and_is_reported_not_passed",
+        "tests/test_doctor.py::test_a_checkout_that_turns_the_feature_on_is_reported_the_same_way"
+      ],
+      "why": "the one file a repository checks in by design is described as untracked by convention, which understates to every clone's reader exactly what travels with the clone"
+    },
+    {
       "name": "auto-memory-reads-the-disable-variable-as-a-one-way-switch",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
