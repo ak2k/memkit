@@ -1768,6 +1768,7 @@ def test_a_device_that_never_ends_is_refused_rather_than_read_forever(
     config = tmp_path / "config"
     (config / "projects").mkdir(parents=True)
     os.symlink("/dev/zero", str(config / "settings.json"))
+    run = None
     try:
         run = subprocess.run(
             [sys.executable, str(TOOL), "--config-dir", str(config)],
@@ -1776,7 +1777,7 @@ def test_a_device_that_never_ends_is_refused_rather_than_read_forever(
         )
     except subprocess.TimeoutExpired:
         pytest.fail("the capture is still reading a device that never ends")
-    assert run.returncode == 0, run.stdout + run.stderr
+    assert run is not None and run.returncode == 0, run
     assert json.loads(run.stdout)["settings"] == {
         "user": {"unreadable": True, "memory_keys": {}, "hooks": [], "plugins": []}
     }
