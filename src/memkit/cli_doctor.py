@@ -510,6 +510,19 @@ def settings_scopes(cwd: str | None = None) -> list[Settings]:
 # settings file can empty of everything else.
 PARSER_SHOWN = 120
 
+# And how much of the WHOLE note, however many scopes contribute to it. Capping
+# the parts was not capping the note: one scope reaches ~490 characters between
+# its prose, its path and its parser message, so two of them filled a 600-byte
+# detail on their own and `_bound`, which cuts from the end, took the row's own
+# verdict with them. A qualifier that erases what it qualifies says less than
+# nothing.
+#
+# HALF THE BUDGET, and that is the whole of the guarantee: the note goes first,
+# so bounding it to half of `DETAIL_MAX_BYTES` leaves the other half for the row
+# — and every row here already leads with its own verdict clause, for the same
+# reason. What a long note now costs is its own tail rather than the answer.
+NOTE_SHOWN = DETAIL_MAX_BYTES // 2
+
 
 def _unparsed_settings(scopes: list) -> str:
     """What a settings file that would not parse costs the rows below it, or "".
@@ -537,12 +550,15 @@ def _unparsed_settings(scopes: list) -> str:
     process never saw — the exact overstatement this whole check exists to
     stop, aimed at memkit's own diagnostic.
     """
-    return "; ".join(
-        f"{scope.scope} settings {_FAILED[scope.failure]}, so its keys read as "
-        f"unset here: {_shown(scope.path)} "
-        f"({_display_cap(scope.error, PARSER_SHOWN)})"
-        for scope in scopes
-        if scope.failure
+    return _display_cap(
+        "; ".join(
+            f"{scope.scope} settings {_FAILED[scope.failure]}, so its keys read "
+            f"as unset here: {_shown(scope.path)} "
+            f"({_display_cap(_redacted(scope.error), PARSER_SHOWN)})"
+            for scope in scopes
+            if scope.failure
+        ),
+        NOTE_SHOWN,
     )
 
 
@@ -3180,6 +3196,24 @@ def _shown(path: str) -> str:
     return _display_cap(_display_path(path), PATH_SHOWN)
 
 
+def _redacted(text: str) -> str:
+    """`text` with the home directory re-spelled `~` wherever it appears in it.
+
+    `_shown` re-spells a path this report BUILT; this one re-spells the paths
+    inside a string it was HANDED. `str(exc)` for an `OSError` ends in the
+    absolute path the call failed on, so a row that printed one carried a
+    second, raw copy of a path it had just taken the trouble to shorten.
+
+    ON A COMPONENT BOUNDARY, the rule `_display_key` already applies: a
+    directory whose name merely starts with home's is a different directory,
+    and re-spelling it would name one that is not there.
+    """
+    home = os.path.expanduser("~")
+    if not text or not home or home == os.sep:
+        return text
+    return re.sub(re.escape(home) + r"(?![^\W_]|[-.])", "~", text)
+
+
 def _display_key(key: str) -> str:
     """One harness project key as a detail prints it.
 
@@ -3196,6 +3230,23 @@ def _display_key(key: str) -> str:
     if home and key.startswith(home + "-"):
         return "~" + key[len(home) :]
     return key
+
+
+def _shown_derived(default: str) -> str:
+    """The derived memory directory as a detail prints it: the KEY too.
+
+    `_shown` re-spells a `$HOME` PREFIX, and the home in this path is not a
+    prefix — it is inside the project key, in the middle, with its separators
+    replaced. So the one path this row builds that carries two spellings of
+    home needed both re-spellers, and had one.
+    """
+    head, memory = os.path.split(default)
+    projects, key = os.path.split(head)
+    if not key or not memory:
+        return _shown(default)
+    return _display_cap(
+        os.path.join(_display_path(projects), _display_key(key), memory), PATH_SHOWN
+    )
 
 
 def _within(child: str, parent: str) -> bool:
@@ -3639,7 +3690,7 @@ def _default_memory_dir(machine: Machine, config_dir: str) -> tuple:
     except ValueError as exc:
         return "", (
             "where the harness writes for this project is unknown: "
-            f"{_display_cap(str(exc), PATH_SHOWN + 160)}"
+            f"{_display_cap(_redacted(str(exc)), PATH_SHOWN + 160)}"
         )
 
 
@@ -3717,6 +3768,16 @@ def _unreadable_remedy(config_dir: str) -> str:
         "run this again — until it lists, nothing here can say how much the "
         "harness has already written or where it went."
     )
+
+
+# The repair for a `$CLAUDE_CONFIG_DIR` that is not absolute. Unsetting it
+# first, because the harness's own default is what almost every adopter wants
+# and a relative value is far likelier to be an accident than a choice.
+_UNROOTED_REMEDY = (
+    "Unset $CLAUDE_CONFIG_DIR, or give it an absolute path — a relative one "
+    "names a different directory from every directory you start a session in, "
+    "and nothing here can say which of them the harness used."
+)
 
 
 def _already_placed(retrieved: list, held: list) -> str:
@@ -3841,15 +3902,32 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     odd_enabled = _odd_switch(harness_memory.ENABLED_KEY, enabled, enabled_scope)
     if forced is not None:
         enabled = forced
-    config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
+    config_value = os.environ.get(CONFIG_DIR_ENV) or ""
+    config_dir = config_value or os.path.expanduser("~/.claude")
     # THE SAME VARIABLE `settings_scopes` guards, guarded the same way. Read
     # raw it decided three things — the directory printed as the derived
     # default, the inventory whose emptiness chooses PASS over INFO, and the
     # file the remedy names — so a repository that redirects it moved this row
     # to its most reassuring answer.
     steered = _under_cwd(config_dir)
+    # AND A RELATIVE ONE NAMES NOTHING. `..`-relative lands outside the
+    # session's directory, so the containment guard above says nothing about
+    # it, and every path this row prints is then one that resolves only from
+    # where this process happens to stand — including the ones in the remedy.
+    unrooted = (
+        "$CLAUDE_CONFIG_DIR is a relative path, so every directory named here "
+        "resolves only from the directory this session stands in: "
+        f"{_display_cap(config_value, PATH_SHOWN)}"
+        if config_value and not os.path.isabs(config_value)
+        else ""
+    )
     default, underived = _default_memory_dir(machine, config_dir)
-    recent = _consolidation_recency(default)
+    configured, where = harness_memory.configured_dir(machine.settings)
+    # THE LOCK BESIDE THE DIRECTORY IN USE. Read from the derived one whatever
+    # the settings said, this reported the recency of a directory the harness
+    # stopped writing to the moment `autoMemoryDirectory` was set — and said
+    # nothing about the one it writes to now.
+    recent = _consolidation_recency(configured or default)
 
     # `is False` and not falsiness: JSON `0`, `""`, `[]` and `{}` are every one
     # of them a value the harness goes on writing under, and read as off they
@@ -3871,6 +3949,10 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # WRITING, and every memory it wrote before is still on disk. This is
         # the branch whose sentence stops an adopter looking for them.
         in_store, held, outside, unread = _inventoried(machine, config_dir)
+        # WHAT THE COUNT DOES NOT COVER, in one value: a walk that failed and a
+        # config directory whose spelling resolves only from here are both
+        # reasons this branch's own sentence is not something it observed.
+        unsure = _detail(unrooted, unread)
         left = _left_behind(outside)
         if left:
             left = f"{left}, and {ADOPT_ADVICE}"
@@ -3884,7 +3966,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             "auto-memory is off in this process's environment"
             if forced is not None
             else f"auto-memory is off in {enabled_scope} settings"
-            + ("" if left or unread else "; memkit is the only memory system here")
+            + ("" if left or unsure else "; memkit is the only memory system here")
         )
         if forced is not None:
             # NOT A PASS, and not the settings' answer either: the variable
@@ -3898,7 +3980,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     _detail(
                         off,
                         environed,
-                        unread,
+                        unsure,
                         left,
                         placed,
                         f'"{harness_memory.ENABLED_KEY}" is also set in '
@@ -3920,7 +4002,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     _detail(
                         f"{off} while this checkout says so — the value is in "
                         f"{switch_source}, and {switch_travels}",
-                        unread,
+                        unsure,
                         left,
                         placed,
                         recent,
@@ -3947,7 +4029,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                         "wins is read from the harness's directory resolver "
                         "and inferred for this key, which resolves through an "
                         "accessor that reports no scope",
-                        unread,
+                        unsure,
                         left,
                         placed,
                         recent,
@@ -3959,15 +4041,15 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     actor=USER,
                 )
             ]
-        if unread:
+        if unsure:
             # A PASS here is a claim about what is on the machine, and the
             # walk that would have borne it out is the one that failed.
             return [
                 Check(
                     "auto-memory",
                     INFO,
-                    _detail(off, unread, left, placed, recent),
-                    _unreadable_remedy(config_dir),
+                    _detail(off, unsure, left, placed, recent),
+                    _unreadable_remedy(config_dir) if unread else _UNROOTED_REMEDY,
                     actor=USER,
                 )
             ]
@@ -3980,7 +4062,6 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         if switch_theirs
         else ""
     )
-    configured, where = harness_memory.configured_dir(machine.settings)
     if configured is not None:
         checkout = not _adopter_owns(machine.settings, where)
         source, travels = (
@@ -4059,14 +4140,14 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     elif os.path.isdir(default):
         first = (
             f"the harness writes this project's memories to "
-            f"{_shown(default)} (project key from the git root)"
+            f"{_shown_derived(default)} (project key from the git root)"
         )
         here, says, _target = _placed(machine, default)
         if here:
             first = f"{first}, and that directory {says}"
     else:
         first = (
-            f"the harness would write to {_shown(default)} "
+            f"the harness would write to {_shown_derived(default)} "
             "(derived from the git root)"
         )
 
@@ -4101,6 +4182,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     fixed = (
         environed,
         redirected,
+        unrooted,
         unread,
         first,
         switched_on,
@@ -4117,6 +4199,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         and not outside
         and not held
         and not unread
+        and not unrooted
         and not steered
         and not switch_theirs
         and not environed

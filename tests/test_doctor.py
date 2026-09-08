@@ -2374,6 +2374,99 @@ def test_auto_memory_reports_whether_a_consolidation_actually_ran(
     assert "consolidation ran" in row.detail
 
 
+def test_consolidation_is_read_from_the_directory_the_harness_actually_uses(
+    profile, monkeypatch
+) -> None:
+    """The lock was stat'd beside the DERIVED directory whatever the settings
+    said, so with `autoMemoryDirectory` set the row reported the recency of a
+    directory the harness had stopped writing to — and stayed silent about the
+    one it writes to now.
+    """
+    path = _store_config(profile, stores=["personal"])
+    elsewhere = profile / "elsewhere"
+    elsewhere.mkdir()
+    _settings(profile, autoMemoryDirectory=str(elsewhere))
+    derived = (
+        profile
+        / "claude-config"
+        / "projects"
+        / harness_memory.project_key(os.getcwd())
+        / "memory"
+    )
+    derived.mkdir(parents=True)
+    (derived / doctor.CONSOLIDATE_LOCK).touch()
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "consolidation ran" not in row.detail
+    assert "last consolidation" not in row.detail
+
+    (elsewhere / doctor.CONSOLIDATE_LOCK).touch()
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "consolidation ran" in row.detail
+
+
+def test_the_derived_directory_prints_a_project_key_with_home_respelled(
+    profile, monkeypatch
+) -> None:
+    """A project key is a path with its separators replaced, so `$HOME` is as
+    legible in it as in any path this report re-spells — and this row prints
+    one inside the directory it derives, at a call site the earlier fix did not
+    reach.
+    """
+    path = _store_config(profile, stores=["personal"])
+    home = pathlib.Path(os.path.expanduser("~"))
+    work = home / "work" / "acme"
+    work.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    spelled = harness_memory.key_spelling(str(home))
+    assert spelled not in row.detail
+    assert "~-work-acme" in row.detail
+
+
+def test_a_project_key_too_long_to_name_does_not_print_the_raw_session_path(
+    profile, monkeypatch
+) -> None:
+    """The refusal interpolates the session's own cwd, which is a path under
+    the adopter's home like every other path this report shortens."""
+    path = _store_config(profile, stores=["personal"])
+    home = pathlib.Path(os.path.expanduser("~"))
+    deep = home.joinpath(*[f"segment{n:02d}" for n in range(24)])
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "where the harness writes for this project is unknown" in row.detail
+    assert str(home) not in row.detail
+
+
+def test_a_relative_config_dir_is_not_named_as_though_it_resolved_anywhere(
+    profile, monkeypatch
+) -> None:
+    """`$CLAUDE_CONFIG_DIR` is taken as spelled, and a relative value names a
+    directory that resolves only from where this session happens to stand.
+
+    `..`-relative is the case the containment guard does not cover: it lands
+    outside the session's own directory, so the row read as an ordinary
+    machine's and could PASS.
+    """
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, os.path.join(os.pardir, "claude-config"))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status != doctor.PASS
+    assert "resolves only from the directory this session stands in" in row.detail
+
+
 def test_within_is_containment_rather_than_a_prefix_match() -> None:
     """`/store/search-old` starts with every character of `/store/search`, and
     a prefix test calls it retrieved. The separator is the whole of what makes
@@ -3423,6 +3516,65 @@ def test_a_file_this_process_may_not_open_is_not_a_file_that_will_not_parse(
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert "managed settings could not be parsed" in row.detail
     assert "parse as JSON" in row.remedy
+
+
+def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
+    profile, monkeypatch
+) -> None:
+    """`str(exc)` for an `OSError` ends in the absolute path it failed on, and
+    the note prints it immediately after the same path went through the
+    re-speller. One sentence, the path twice, the second copy raw.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    home = pathlib.Path(os.path.expanduser("~"))
+    under_home = home / ".claude"
+    under_home.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(under_home))
+    path = _store_config(profile, stores=["personal"])
+    refused = under_home / doctor.SETTINGS_NAME
+    refused.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    # THE CAPS LIFTED, because on a fixture whose home is 100 characters deep
+    # they answer this for the wrong reason: the raw copy is cut off before
+    # the home path is reached, and a real `/Users/someone` is not.
+    monkeypatch.setattr(doctor, "PARSER_SHOWN", 600)
+    refused.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        refused.chmod(0o600)
+    assert "could not be read" in row.detail
+    assert str(home) not in row.detail
+    assert "~/.claude/settings.json" in row.detail
+
+
+def test_the_note_about_an_unread_scope_cannot_eat_the_rows_own_verdict(
+    profile, monkeypatch
+) -> None:
+    """Each erroring scope contributes prose, a path capped at 300 and a parser
+    message capped at 120 — and the note as a whole was capped at nothing.
+
+    Two scopes therefore filled the budget on their own, and `_bound`, which
+    cuts from the end, took the row's answer with them: what was left read as a
+    disclosure with no verdict attached to it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    deep = pathlib.Path(os.getcwd()).joinpath(*[f"segment{n:02d}" for n in range(20)])
+    (deep / ".claude").mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    for name in (doctor.SETTINGS_NAME, doctor.LOCAL_SETTINGS_NAME):
+        (deep / ".claude" / name).write_text('{"autoDreamEnabled": true,,}', "utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "could not be parsed" in row.detail
+    # The row still says what it found, which is the whole point of the row.
+    assert "where the harness writes for this project is unknown" in row.detail
 
 
 def test_a_settings_directory_that_cannot_be_reached_is_reported_not_silence(
