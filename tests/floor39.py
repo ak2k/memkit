@@ -203,6 +203,62 @@ check("the hook exits 0 in that checkout", out.returncode, 0)
 check("the user's own store is still served there", "pooling.md" in out.stdout, True)
 os.remove(memkit_json)
 
+# --- the guarded open, the credential scan, and the read-only branch ---------
+#
+# The guard above reaches `_project_store` and no line of the trio underneath
+# it, and all three are the shape this file exists for: an O_NONBLOCK open, an
+# fstat, a lazily compiled alternation, and the one branch that reads a file a
+# REPOSITORY chose. A break in any of them at this floor is an every-prompt
+# hook that hangs, or one that puts a committed credential in front of a model.
+
+fifo = os.path.join(home, "fifo")
+os.mkfifo(fifo)
+try:
+    hook._regular_fd(fifo)
+    check("a fifo is refused as not a regular file", "returned a descriptor",
+          "_NotRegular")
+except hook._NotRegular:
+    pass
+except OSError as exc:  # pragma: no cover - a floor break is what this reports
+    check("a fifo is refused as not a regular file", type(exc).__name__,
+          "_NotRegular")
+
+plain = os.path.join(home, "plain.txt")
+with open(plain, "w") as f:
+    f.write("x" * 17)
+regular_fd, regular_st = hook._regular_fd(plain)
+os.close(regular_fd)
+check("the guarded open reports the file's own size", regular_st.st_size, 17)
+
+planted_key = "aws_secret_access_key = " + "A" * 40
+check("the scan sees a committed key",
+      hook._secret_re().search(planted_key) is not None, True)
+# The SHAPE is what the scan is about: the same word in prose, with no
+# assignment behind it, is a memory somebody wrote about credentials.
+check("the scan leaves prose about one alone",
+      hook._secret_re().search(
+          "the aws_secret_access_key is the field name, and it is not here"
+      ) is not None, False)
+
+corpus = os.path.join(checkout, "docs", "memories", "search")
+planted = os.path.join(corpus, "creds.md")
+with open(planted, "w") as f:
+    f.write("---\nname: creds\ndescription: pgbouncer transaction pooling notes\n"
+            "type: reference\n---\n\n"
+            "pgbouncer transaction pooling breaks prepared statements\n"
+            + planted_key + "\n")
+terms = ["pgbouncer", "transaction", "pooling"]
+corpus_real = os.path.realpath(corpus)
+# The evidence the index would have produced, so the two branches below differ
+# only in whether a repository chose the corpus.
+hook._LEX_MATCHED[planted] = set(terms)
+check("a repository's file carrying a key earns no evidence",
+      hook._relevance(terms, planted, corpus_real, True), ([], len(terms), "?"))
+check("and the same file in a store the user configured earns its own",
+      hook._relevance(terms, planted, corpus_real, False),
+      (terms, len(terms), "reference"))
+os.remove(planted)
+
 if failures:
     for line in failures:
         sys.stderr.write("floor39: " + line + "\n")
