@@ -4791,6 +4791,17 @@
         "tests/test_packaging.py::test_the_floor_steps_select_the_tests_they_name"
       ],
       "why": "A `-k` is a test name written down a second time, in a file no rename touches. A token that matches nothing selects nothing, and nothing compared the two copies."
+    },
+    {
+      "name": "harness-shape-a-fixture-nobody-committed-passes-the-artifact-gate",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "    assert _fixture_files(directory) == tracked, (\n        \"a file under the fixtures directory nobody committed\"\n    )\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_fixture_nobody_committed_is_a_failure_of_the_gate"
+      ],
+      "why": "The artifact gate has two halves: every file present is checked for names, and the files present are the ones somebody reviewed. The second was watched by nothing, so a shape that arrived some other way — a capture aimed at the wrong directory, a copy left behind while debugging — was one deleted line from being admitted."
     }
   ]
 }

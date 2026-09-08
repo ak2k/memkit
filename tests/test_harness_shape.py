@@ -2418,7 +2418,7 @@ def _fixture_shape(path: Path) -> dict:
     return shape
 
 
-def _tracked_fixtures():
+def _tracked_fixtures(repo: Path = REPO, directory: Path = SHAPES):
     """The files git holds under the fixtures directory, or None outside a
     checkout.
 
@@ -2428,14 +2428,36 @@ def _tracked_fixtures():
     wrong directory — is then a red test rather than a fixture nobody chose.
     An unpacked archive is not a checkout and has no answer to give, which is
     why this is allowed to have none.
+
+    The two arguments default to this repository's own and are here so the
+    rule below can be run against a checkout a test builds: the real fixtures
+    directory is not somewhere a case may plant a file to see the guard fire.
     """
     found = subprocess.run(
-        ["git", "-C", str(REPO), "ls-files", "-z", "--", str(SHAPES)],
+        ["git", "-C", str(repo), "ls-files", "-z", "--", str(directory)],
         capture_output=True, text=True, timeout=300,
     )
     if found.returncode != 0:
         return None
-    return sorted(REPO / name for name in found.stdout.split("\0") if name)
+    return sorted(repo / name for name in found.stdout.split("\0") if name)
+
+
+def _fixtures_are_the_files_that_were_committed(
+    repo: Path = REPO, directory: Path = SHAPES
+) -> None:
+    """Every file under `directory` is one `repo` was asked to keep.
+
+    The other half of the artifact gate. The walk says every file present is
+    checked for names; this says the files present are the ones somebody
+    reviewed — and outside a checkout there is no answer, so nothing is
+    claimed.
+    """
+    tracked = _tracked_fixtures(repo, directory)
+    if tracked is None:
+        return
+    assert _fixture_files(directory) == tracked, (
+        "a file under the fixtures directory nobody committed"
+    )
 
 
 def test_the_artifact_gate_finds_a_fixture_wherever_it_was_put(tmp_path) -> None:
@@ -2557,11 +2579,45 @@ def test_the_committed_shapes_carry_no_names() -> None:
             "no shapes captured yet — "
             "`python3 tools/harness_shape.py --out tests/data/harness_shapes/<name>.json`"
         )
-    tracked = _tracked_fixtures()
-    if tracked is not None:
-        assert fixtures == tracked, "a file under the fixtures directory nobody committed"
+    _fixtures_are_the_files_that_were_committed()
     for path in fixtures:
         _gated(_fixture_shape(path), path.name)
+
+
+def test_a_fixture_nobody_committed_is_a_failure_of_the_gate(tmp_path) -> None:
+    """The half of the artifact gate that says these files were REVIEWED, held
+    to its own rule.
+
+    It has been correct and unwatched: nothing turned red if the comparison
+    went away, so the guard against a shape that arrived some other way — a
+    capture aimed at the wrong directory, a copy left behind while debugging —
+    was one edit from being decoration. Run on a checkout this case builds,
+    never on `tests/data/`: a case that plants a file there to prove a point
+    is a case that leaves a fixture behind when it fails.
+    """
+    repo = tmp_path / "checkout"
+    shapes = repo / "tests" / "data" / "harness_shapes"
+    _write(shapes / "one.json", "{}\n")
+
+    # Not a checkout: no answer to give, and nothing claimed either way.
+    assert _tracked_fixtures(repo, shapes) is None
+    _fixtures_are_the_files_that_were_committed(repo, shapes)
+
+    def git(*args: str) -> None:
+        done = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, text=True, timeout=300,
+        )
+        assert done.returncode == 0, done.stdout + done.stderr
+
+    git("init", "-q")
+    git("add", "--", str(shapes))
+    assert _tracked_fixtures(repo, shapes) == [shapes / "one.json"]
+    _fixtures_are_the_files_that_were_committed(repo, shapes)
+
+    _write(shapes / "two.json", "{}\n")
+    with pytest.raises(AssertionError, match="nobody committed"):
+        _fixtures_are_the_files_that_were_committed(repo, shapes)
 
 
 def _with_files(shape: dict) -> dict:
