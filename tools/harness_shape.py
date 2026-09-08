@@ -17,9 +17,12 @@ deterministic pseudonyms that keep the segment count, paired with the ORIGINAL
 key length — those two are what make a rebuilt tree exercise the same paths,
 because what a 164-character key tests is the length, not the letters. So
 `--anonymise` is the DEFAULT rather than a flag somebody has to remember, and
-`--raw` is refused outright when its output would land inside a git worktree:
-the failure this closes is a debugging run whose redirect happened to point at
-the repository.
+`--raw` is refused wherever this can SEE where its output lands inside a git
+worktree — `--out`, and a stdout redirected straight at a file. The failure
+that closes is a debugging run whose redirect happened to point at the
+repository. A pipe is not visible to it: the far end of the ssh recipe below
+is a machine this process cannot ask about, so what happens to those bytes is
+yours to get right.
 
 AND NO FREE STRING ANYWHERE ELSE. The rows that are not pseudonyms are the
 ones that leaked — a version hint, an install method, a hook event key, a

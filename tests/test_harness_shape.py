@@ -607,6 +607,42 @@ def test_raw_refuses_to_write_where_a_fixture_would_be_committed(tmp_path) -> No
     assert _run("--config-dir", str(tmp_path), "--raw").returncode == 0
 
 
+def test_the_headline_docstring_states_the_exemption_the_guard_really_has(
+    tmp_path,
+) -> None:
+    """A guarantee is read or executed, and this one is both.
+
+    The headline said `--raw` was "refused outright" when its output would
+    land inside a git worktree. A PIPE is exempt, deliberately and correctly —
+    the far end of the documented ssh recipe is a machine this process cannot
+    ask about — and the sentence saying so was 590 lines further down, in the
+    docstring of the function that implements it. The headline is what an
+    operator reads before trusting the guard.
+    """
+    headline = _tool_module().__doc__ or ""
+    claim = headline[: headline.index("AND NO FREE STRING")]
+    assert "refused outright" not in claim, claim
+    assert "A pipe is not visible to it" in claim, claim
+    assert "--out" in claim and "redirected straight at a file" in claim, claim
+
+    # And the exemption is real, which is why the prose has to say it.
+    tree = tmp_path / "repo"
+    (tree / ".git").mkdir(parents=True)
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    piped = _run("--config-dir", str(config), "--raw")
+    assert piped.returncode == 0, piped.stderr
+    assert json.loads(piped.stdout)["anonymised"] is False
+    redirected = tree / "oops.json"
+    with redirected.open("w") as handle:
+        refused = subprocess.run(
+            [sys.executable, str(TOOL), "--config-dir", str(config), "--raw"],
+            stdout=handle, stderr=subprocess.PIPE, text=True, timeout=300,
+        )
+    assert refused.returncode == 2, refused.stderr
+    assert redirected.read_text(encoding="utf-8") == ""
+
+
 def test_raw_refuses_a_work_tree_that_holds_no_dot_git_at_all(tmp_path) -> None:
     """Which directory is a work tree is a fact about a repository somewhere
     else, so the last word is git's.
