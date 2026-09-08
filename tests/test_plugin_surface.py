@@ -3302,8 +3302,13 @@ def _repoint_line(section: str) -> str:
 
 
 def _recovery_line(section: str) -> str:
-    """The command the page gives for a `$dir` the harness recreated mid-repoint."""
-    return _inline_command(section, 'rm -r "$dir"')
+    """The command the page gives for a `$dir` the harness recreated mid-repoint.
+
+    Found by the test it opens with rather than by its `rm`: the command has to
+    carry its own guard, because the state it is for is one `ls -ld` cannot
+    tell from a `$dir` the harness has since written memories into.
+    """
+    return _inline_command(section, '[ -d "$target" ]')
 
 
 def _dir_line(section: str) -> str:
@@ -3348,7 +3353,7 @@ _RECREATED_DIR_OUTCOMES = {
     "leaves the link where it belongs": "in-place",
 }
 _RACED_DIR_DETECTIONS = {
-    "a directory holding one link named for `$target`": "raced",
+    "a directory": "raced",
     "a symlink": "done",
 }
 _STOPPED_LINE_STREAMS = {
@@ -4208,6 +4213,84 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert not named_store.exists(), f"{named_store} was created"
     if not target_existed:
         assert not target.exists(), f"{target} was created"
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+@pytest.mark.parametrize(
+    "state",
+    ("harness-wrote-into-it", "dir-with-a-trailing-slash", "target-not-there"),
+)
+def test_the_recovery_for_a_recreated_dir_refuses_what_ls_ld_cannot_show(
+    tmp_path, state, shell
+) -> None:
+    """The recovery line, driven into the states the page's diagnostic hides.
+
+    `ls -ld` prints one line about `$dir` and never its contents, so the three
+    states here are indistinguishable to the reader from the one state the
+    line is for. A harness left running recreates `$dir` AND writes memories
+    into it; shell directory-completion appends a `/` that makes `rm -r` follow
+    the link and empty the corpus while leaving the link itself healthy-looking;
+    and a `$target` that is not there ends with `$dir` pointing at nothing.
+    Each must stop at a non-zero status with every file where it was — the
+    precondition belongs in the command, not in an assertion here.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+    store = home / "notes"
+    with_search, _without = _target_rule(section)
+    target = Path(with_search.replace("$store", str(store)))
+    (store / "search").mkdir(parents=True)
+    if state != "target-not-there":
+        target.mkdir()
+        (target / "MEMORY.md").write_text("---\nname: m\n---\nm\n", encoding="utf-8")
+        (target / "note.md").write_text("---\nname: n\n---\nn\n", encoding="utf-8")
+
+    dir_ = home / ".claude" / "projects" / "a-repo" / "memory"
+    dir_.parent.mkdir(parents=True)
+    named_dir = str(dir_)
+    if state == "dir-with-a-trailing-slash":
+        # The healthy state, named the way a shell completes a directory.
+        os.symlink(target, dir_)
+        named_dir += "/"
+    else:
+        # What the race leaves: `$dir` recreated, the link one level down.
+        dir_.mkdir()
+        os.symlink(target, dir_ / target.name)
+        if state == "harness-wrote-into-it":
+            (dir_ / "session-note.md").write_text(
+                "---\nname: s\n---\ns\n", encoding="utf-8"
+            )
+
+    before = _file_map(store)
+    dir_before = None if dir_.is_symlink() else _file_map(dir_)
+    script = "\n".join([
+        f"store={shlex.quote(str(store))}",
+        f"dir={shlex.quote(named_dir)}",
+        f"target={shlex.quote(str(target))}",
+        _recovery_line(section),
+    ])
+    out = _shell_out(shell, script, home, home)
+
+    assert out.returncode != 0, (script, out.stdout, out.stderr)
+    assert _file_map(store) == before, (script, _file_map(store))
+    if dir_before is None:
+        assert os.path.islink(dir_), (script, _file_map(dir_.parent))
+        assert os.readlink(dir_) == str(target), (script, os.readlink(dir_))
+    elif state == "harness-wrote-into-it":
+        # The line gets as far as the link the race left — which points at
+        # `$target`, still there — and `rmdir` refuses the rest. What the
+        # harness wrote is what had to survive, and it does.
+        assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` became a link")
+        assert _file_map(dir_) == {
+            name: what
+            for name, what in dir_before.items()
+            if not what.startswith("link:")
+        }, (script, _file_map(dir_))
+    else:
+        # `$target` is not there, so the first test fails and nothing runs.
+        assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` became a link")
+        assert _file_map(dir_) == dir_before, (script, _file_map(dir_))
 
 
 def test_a_zsh_case_fails_rather_than_skips_where_no_context_declares_it(

@@ -337,11 +337,16 @@ its place.
 `[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
 
 That race ends at rc 0 all the same, and `ls -ld "$dir"` then shows a directory
-where it showed a link. Where it shows a directory holding one link named for
-`$target`, the harness recreated `$dir`, and with the harness quit this puts
-the link back:
+where it showed a link. Where it shows a directory, the harness recreated
+`$dir`, and with the harness quit this puts the link back:
 
-`rm -r "$dir" && ln -sn "$target" "$dir"`
+`[ -d "$target" ] && rm "$dir/$(basename "$target")" && rmdir "$dir" && ln -sn "$target" "$dir"`
+
+`rmdir` refuses a `$dir` with anything else in it, and the first test refuses a
+`$target` that is not there, so a `$dir` that is not the race's own leftover
+ends at rc 1 with every file where it was. That is the reason the line carries
+its own check rather than asking you for one: `ls -ld` prints one line about
+the directory and never its contents.
 
 `$target` is the harness's directory under the corpus root:
 `$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
