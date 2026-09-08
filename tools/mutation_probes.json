@@ -4232,8 +4232,8 @@
       "name": "init-adoption-never-asks-the-managed-scope-whether-the-feature-is-off",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER:\n",
-      "new": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER[1:]:\n",
+      "old": "        # instead.\n        for name in _scopes_outranking_user():\n",
+      "new": "        # instead.\n        for name in _scopes_outranking_user()[1:]:\n",
       "tests": [
         "tests/test_init.py::test_adoption_refuses_while_the_harness_feature_is_switched_off"
       ],
@@ -4243,8 +4243,8 @@
       "name": "init-adoption-never-asks-the-local-scope-whether-the-feature-is-off",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER:\n",
-      "new": "        # feature nobody turned on costs a directory they now have to clean up.\n        for name in harness_memory.SCOPE_ORDER[:1] + harness_memory.SCOPE_ORDER[2:]:\n",
+      "old": "        # instead.\n        for name in _scopes_outranking_user():\n",
+      "new": "        # instead.\n        for name in _scopes_outranking_user()[:1] + _scopes_outranking_user()[2:]:\n",
       "tests": [
         "tests/test_init.py::test_adoption_refuses_while_the_harness_feature_is_switched_off"
       ],
@@ -4320,8 +4320,8 @@
       "name": "init-a-red-integrity-check-strands-the-actions-after-it",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            incomplete = code\n    return incomplete\n",
-      "new": "            return code\n    return incomplete\n",
+      "old": "            incomplete = code\n",
+      "new": "            return code\n",
       "tests": [
         "tests/test_init.py::test_a_red_integrity_check_still_redirects_the_harness"
       ],
@@ -4432,8 +4432,8 @@
       "name": "init-adoption-writes-through-a-symlinked-destination",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if os.path.islink(dest):\n                diverged.append(\n",
-      "new": "            if False:\n                diverged.append(\n",
+      "old": "            if os.path.islink(dest):\n                divergent.add(name)\n                diverged.append(\n",
+      "new": "            if False:\n                divergent.add(name)\n                diverged.append(\n",
       "tests": [
         "tests/test_init.py::test_a_destination_that_is_a_link_is_named_and_never_written_through"
       ],
@@ -4555,7 +4555,7 @@
       "name": "init-adoption-rows-a-file-spelling-the-disk-does-not-hold",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            spelled_file = _as_spelled(target, held_entries, dest)\n            if spelled_file is not None and spelled_file != name:\n                diverged.append(\n                    f\"{_display_path(dest)} is the file this store already \"\n                    f\"holds as `{_clean(spelled_file)}` — this filesystem does \"\n                    \"not tell the two spellings apart, so the copy would land \"\n                    \"in that one while the row named this one, and nothing was \"\n                    \"written for it\"\n                )\n                continue\n",
+      "old": "            spelled_file = _as_spelled(target, held_entries, dest)\n            if spelled_file is not None and spelled_file != name:\n                divergent.add(name)\n                diverged.append(\n                    f\"{_display_path(dest)} is the file this store already \"\n                    f\"holds as `{_clean(spelled_file)}` — this filesystem does \"\n                    \"not tell the two spellings apart, so the copy would land \"\n                    \"in that one while the row named this one, and nothing was \"\n                    \"written for it\"\n                )\n                continue\n",
       "new": "",
       "tests": [
         "tests/test_init.py::test_a_file_the_store_already_holds_another_spelling_of_diverges"
@@ -4599,7 +4599,7 @@
       "name": "init-adoption-copies-an-index-of-a-directory-it-left-behind",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "            if name in _LEDGER_NAMES:\n                landing = {\n                    os.path.normpath(action.path)\n                    for action in actions + mine\n                    if action.op == CREATE_FILE\n                }\n                unresolved = _rows_pointing_nowhere(text, dest, store, landing)\n                copying = {os.path.basename(action.path) for action in mine}\n                omitted = [\n                    _clean(n) for n in project.files\n                    if n not in _LEDGER_NAMES and n not in copying\n                ]\n                reasons = []\n                if unresolved:\n                    reasons.append(\n                        f\"{', '.join(unresolved)} \"\n                        f\"{'points' if len(unresolved) == 1 else 'point'} at \"\n                        \"no file this store is getting\"\n                    )\n                if omitted:\n                    reasons.append(\n                        f\"{', '.join(omitted)} \"\n                        f\"{'was' if len(omitted) == 1 else 'were'} left behind\"\n                    )\n                if reasons:\n                    skipped.append(\n                        f\"{shown}: it is an index of the directory it came \"\n                        \"from, copied with no rewriting, and \"\n                        + \" and \".join(reasons)\n                        + \" — so a row it carries would be a row for a file \"\n                        \"that is not there\"\n                    )\n                    continue\n",
+      "old": "            if name in _LEDGER_NAMES:\n                landing = {\n                    os.path.normpath(action.path)\n                    for action in actions + mine\n                    if action.op == CREATE_FILE\n                }\n                unresolved = _rows_pointing_nowhere(text, dest, store, landing)\n                copying = {os.path.basename(action.path) for action in mine}\n                omitted = [\n                    _clean(n) for n in project.files\n                    if n not in _LEDGER_NAMES\n                    and n not in copying\n                    and n not in divergent\n                ]\n                reasons = []\n                if unresolved:\n                    reasons.append(\n                        f\"{', '.join(unresolved)} \"\n                        f\"{'points' if len(unresolved) == 1 else 'point'} at \"\n                        \"no file this store is getting\"\n                    )\n                if omitted:\n                    reasons.append(\n                        f\"{', '.join(omitted)} \"\n                        f\"{'was' if len(omitted) == 1 else 'were'} left behind\"\n                    )\n                if reasons:\n                    skipped.append(\n                        f\"{shown}: it is an index of the directory it came \"\n                        \"from, copied with no rewriting, and \"\n                        + \" and \".join(reasons)\n                        + \" — so a row it carries would be a row for a file \"\n                        \"that is not there\"\n                    )\n                    continue\n",
       "new": "",
       "tests": [
         "tests/test_init.py::test_adoption_never_lands_an_index_for_a_directory_it_left_behind",
