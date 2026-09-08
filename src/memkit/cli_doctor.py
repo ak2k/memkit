@@ -3299,7 +3299,14 @@ def _pruned(directory: str, root: str) -> bool:
 
 
 def _store_relation(machine: Machine, directory: str) -> tuple:
-    """`(store id, corpus root, how the two overlap)`, or `("", "", "")`.
+    """`(store id, corpus root, how the two overlap, whether a config was read)`.
+
+    THE FOURTH VALUE SEPARATES TWO EMPTY ANSWERS. A config this run could not
+    read produces the same first three as a directory that was compared with
+    every store and found outside all of them, and the sentence a caller hangs
+    off that emptiness — "outside every store, so nothing retrieves what lands
+    there" — is a claim about every store on the machine. Made from a file
+    nothing opened, it is this row's most alarming answer given for free.
 
     EVERY configured store, not `searched_stores()`. A store gated to a root
     this session is standing outside of still holds whatever the harness writes
@@ -3324,7 +3331,7 @@ def _store_relation(machine: Machine, directory: str) -> tuple:
     """
     cfg = machine.config()
     if cfg is None:
-        return "", "", ""
+        return "", "", "", False
     # The first store the directory is merely INSIDE, kept rather than
     # returned: a later store whose corpus root this directory holds is the
     # worse state and the one worth reporting.
@@ -3339,11 +3346,11 @@ def _store_relation(machine: Machine, directory: str) -> tuple:
             # paths are one directory, and that case belongs to the rewrite.
             if _within(root, directory):
                 same = _within(directory, root)
-                return store.id, root, "at" if same else "over"
+                return store.id, root, "at" if same else "over", True
             if _within(directory, root) and not within:
                 tiered = os.path.join(live, "search")
                 within = (store.id, root, _how_inside(directory, root, tiered))
-    return within or ("", "", "")
+    return (within or ("", "", "")) + (True,)
 
 
 def _how_inside(directory: str, root: str, tiered: str) -> str:
@@ -3376,11 +3383,14 @@ def _placed(machine: Machine, directory: str) -> tuple:
     a directory that HOLDS the corpus root is retrieved and rewritten at once.
     Containment alone reports both as the state this check exists to reach.
     """
-    store, root, how = _store_relation(machine, directory)
+    store, root, how, known = _store_relation(machine, directory)
     if not store:
         return (
             False,
-            "is outside every store, so nothing retrieves what lands there",
+            "is outside every store, so nothing retrieves what lands there"
+            if known
+            else "cannot be placed: this run did not read a config, so no "
+            "store was compared with it",
             "",
         )
     safe = os.path.join(root, harness_memory.SAFE_SUBDIR)
@@ -3704,6 +3714,11 @@ def _consolidation_recency(default: str) -> str:
     ):
         with contextlib.suppress(OSError):
             age = int(time.time() - os.stat(candidate).st_mtime)
+            if age < 0:
+                # Clocks disagree — a lock written on another machine, or
+                # before a time step. An elapsed time is the one thing this
+                # cannot report, and a negative one reads as a typo.
+                return "the consolidation lock is dated in the future"
             if age < CONSOLIDATE_RECENT:
                 return f"a consolidation ran {age}s ago"
             return f"last consolidation {age // 3600}h ago"
@@ -3942,6 +3957,15 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # stopped writing to the moment `autoMemoryDirectory` was set — and said
     # nothing about the one it writes to now.
     recent = _consolidation_recency(configured or default)
+    # THE SAME QUESTION `_store_relation` ASKS, asked once for the row: every
+    # placement sentence below rests on a config this run parsed, and without
+    # one "outside every store" and "already inside a store" are both unread.
+    store_unknown = (
+        ""
+        if machine.config() is not None
+        else "no config this run could read, so nothing here compared what "
+        "the harness writes with a store"
+    )
 
     # `is False` and not falsiness: JSON `0`, `""`, `[]` and `{}` are every one
     # of them a value the harness goes on writing under, and read as off they
@@ -3968,7 +3992,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # WHAT THE COUNT DOES NOT COVER, in one value: a walk that failed and a
         # config directory whose spelling resolves only from here are both
         # reasons this branch's own sentence is not something it observed.
-        unsure = _detail(unrooted, unread)
+        unsure = _detail(unrooted, unread, store_unknown)
         left = _left_behind(outside)
         if left:
             left = f"{left}, and {ADOPT_ADVICE}"
@@ -4065,7 +4089,15 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     "auto-memory",
                     INFO,
                     _detail(off, unsure, left, placed, recent),
-                    _unreadable_remedy(unreadable) if unread else _UNROOTED_REMEDY,
+                    # ONE REMEDY PER DISCLOSURE, because the gate is now wider
+                    # than the two it was written for: a disclosure with no
+                    # repair of its own gets none, rather than the repair for
+                    # whichever one happened to be last in the ternary.
+                    _unreadable_remedy(unreadable)
+                    if unread
+                    else _UNROOTED_REMEDY
+                    if unrooted
+                    else "",
                     actor=USER,
                 )
             ]

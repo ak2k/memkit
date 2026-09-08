@@ -571,9 +571,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("cli_doctor.py", "_within", "except", 1): (
         "a path that will not resolve is inside nothing"
     ),
-    ("cli_doctor.py", "_store_relation", "if->exit", 1): (
-        "no config means no store, no root and no relation to report"
-    ),
     ("cli_doctor.py", "_store_relation", "if->exit", 2): (
         "the first store root holding the directory decides at versus over"
     ),
@@ -630,9 +627,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ),
     ("cli_doctor.py", "_consolidation_recency", "if->exit", 1): (
         "no default directory means no recency to report"
-    ),
-    ("cli_doctor.py", "_consolidation_recency", "if->exit", 2): (
-        "an age inside the window says a consolidation ran that recently"
     ),
     ("cli_doctor.py", "_left_behind", "if->exit", 1): (
         "nothing outside the configured directory is nothing left behind"
@@ -923,4 +917,4 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 91, checked
+    assert checked == 93, checked

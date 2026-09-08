@@ -1417,6 +1417,28 @@
       "why": "Any stat failure but ENOENT says the walk could not find out; unproven absence reaching the sweep drops a memory that is sitting right there on one EACCES."
     },
     {
+      "name": "auto-memory-places-a-directory-against-a-config-it-never-read",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    cfg = machine.config()\n    if cfg is None:\n        return \"\", \"\", \"\", False\n",
+      "new": "    cfg = machine.config()\n    if cfg is None:\n        return \"\", \"\", \"\", True\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_config_this_run_could_not_read_is_not_a_directory_outside_every_store"
+      ],
+      "why": "A config that did not parse gives the same empty relation as a directory compared with every store and found outside all of them. Told the two apart by nothing, the row asserts `outside every store, so nothing retrieves what lands there` — its most alarming sentence — about a machine whose stores this run never opened."
+    },
+    {
+      "name": "auto-memory-renders-a-future-consolidation-lock-as-an-elapsed-time",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            if age < 0:\n                # Clocks disagree — a lock written on another machine, or\n                # before a time step. An elapsed time is the one thing this\n                # cannot report, and a negative one reads as a typo.\n                return \"the consolidation lock is dated in the future\"\n            if age < CONSOLIDATE_RECENT:\n                return f\"a consolidation ran {age}s ago\"\n            return f\"last consolidation {age // 3600}h ago\"\n",
+      "new": "            return f\"a consolidation ran {age}s ago\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_consolidation_lock_dated_in_the_future_is_said_rather_than_counted"
+      ],
+      "why": "Clocks disagree, so `now - mtime` on a lock another machine wrote is negative. Put through the elapsed-time arithmetic anyway the row reads `a consolidation ran -41s ago`, and the same collapse reports a two-day-old lock in seconds — two numbers an adopter cannot act on, from the clause that exists to say when the feature last ran."
+    },
+    {
       "name": "verdict-counts-fail-not-non-pass",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",

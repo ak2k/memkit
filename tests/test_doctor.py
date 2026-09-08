@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -2444,6 +2445,67 @@ def test_auto_memory_reports_whether_a_consolidation_actually_ran(
         "auto-memory",
     )
     assert "consolidation ran" in row.detail
+
+
+def test_a_consolidation_lock_dated_in_the_future_is_said_rather_than_counted(
+    profile, monkeypatch
+) -> None:
+    """Clocks disagree, and `now - mtime` on a lock written by another machine
+    or before a time step is negative. Rendered through the same arithmetic it
+    read as "a consolidation ran -41s ago", which is a number nobody can act on
+    and the row's own evidence that it is guessing.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoDreamEnabled=True)
+    project = (
+        profile
+        / "claude-config"
+        / "projects"
+        / harness_memory.project_key(os.getcwd())
+        / "memory"
+    )
+    project.mkdir(parents=True)
+    lock = project / doctor.CONSOLIDATE_LOCK
+    lock.touch()
+    ahead = time.time() + 7200
+    os.utime(lock, (ahead, ahead))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "consolidation lock is dated in the future" in row.detail
+    assert "-" not in row.detail.split("consolidation lock")[1].split(";")[0]
+
+    # And a lock older than the window still reports in hours: the future
+    # clause is a third answer beside the two, not a replacement for either.
+    behind = time.time() - 7200
+    os.utime(lock, (behind, behind))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "last consolidation 2h ago" in row.detail
+
+
+def test_a_config_this_run_could_not_read_is_not_a_directory_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """"outside every store" is a claim about every store on the machine, and
+    a run that could not parse the config has not read one of them.
+
+    The empty relation `_store_relation` returns for an unreadable config is
+    byte-identical to the one it returns for a directory it looked at and
+    found outside — so the row asserted the state it exists to warn about,
+    from something the process never opened.
+    """
+    broken = profile / "memkit.json"
+    broken.write_text("{ not json", encoding="utf-8")
+    elsewhere = profile / "notes"
+    elsewhere.mkdir()
+    _settings(profile, autoMemoryDirectory=str(elsewhere))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, str(broken))),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert "config" in row.detail
 
 
 def test_consolidation_is_read_from_the_directory_the_harness_actually_uses(
