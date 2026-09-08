@@ -111,6 +111,48 @@ check("no doctor check raised", [c["id"] for c in broke], [])
 check("every check ran", len({c["id"] for c in report["checks"]}),
       len(cli_doctor.CHECK_IDS))
 
+# --- the repository's own file is read, on a checkout built here -------------
+#
+# EXECUTED rather than type-checked: pyright had the whole of this code and a
+# 3.9 configuration, and what it cannot see is the class this file exists for —
+# a name that is present in the version it was told about and absent in the one
+# the harness runs. The guard is a walk, an open, an fstat and a realpath, so
+# it is exactly the shape that breaks that way.
+
+# Realpath'd here, because the walk realpaths what it is handed and `$TMPDIR`
+# is behind a symlink on macOS — the shape this file exists to run on.
+checkout = os.path.realpath(os.path.join(home, "checkout"))
+os.makedirs(os.path.join(checkout, ".git"))
+os.makedirs(os.path.join(checkout, "docs", "memories", "search"))
+memkit_json = os.path.join(checkout, ".memkit.json")
+
+
+def write_project(spec):
+    with open(memkit_json, "w") as f:
+        json.dump({"memkit_project": 1, "store": spec}, f)
+
+
+write_project({"id": "app", "dir": os.path.join("docs", "memories")})
+check("the checkout is found from inside it",
+      hook._repo_root(os.path.join(checkout, "docs")), checkout)
+project, why = hook._project_store(checkout, {"notes"})
+check("the project file is accepted", why, "")
+check("the project store is read-only",
+      project is not None and project.read_only, True)
+check("the project corpus is the directory the file named",
+      project is not None and project.resolved_dir,
+      os.path.realpath(os.path.join(checkout, "docs", "memories")))
+
+# And the refusal path, which is most of the guard: a `dir` outside the
+# checkout is the one every other rejection is shaped like.
+write_project({"id": "app", "dir": "/etc"})
+refused, why = hook._project_store(checkout, {"notes"})
+check("an absolute dir is refused", refused, None)
+check("the refusal says which key", "'dir'" in why and "is absolute" in why, True)
+os.remove(memkit_json)
+check("no file at all is not a refusal", hook._project_store(checkout, set()),
+      (None, ""))
+
 # --- and the hook SERVES a pointer, run as the harness runs it ---------------
 
 store = os.path.join(home, "notes", "search")
