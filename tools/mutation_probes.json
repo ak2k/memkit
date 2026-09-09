@@ -4785,6 +4785,28 @@
         "tests/test_init.py::test_a_memory_directory_landing_in_another_store_is_not_copied_into_this_one"
       ],
       "why": "`_store_relation` answers four overlaps and `at` — the wiring docs/STORE.md prescribes — is one of them. Reading only `inside` leaves a memory directory wired into ANOTHER configured store adoptable, so that store's whole corpus is duplicated into this one under a project key."
+    },
+    {
+      "name": "init-adoption-reads-the-links-in-a-memory-it-does-not-index",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    unresolved = _rows_pointing_nowhere(text, dest, store, landing)\n    if unresolved:\n        return (\n            f\"{', '.join(unresolved)} \"\n            f\"{'points' if len(unresolved) == 1 else 'point'} at no file this \"\n            \"store is getting\"\n        )\n    return \"\"\n",
+      "new": "    return \"\"\n",
+      "tests": [
+        "tests/test_init.py::test_a_body_link_pointing_at_no_adopted_file_is_skipped"
+      ],
+      "why": "the question was asked only of files whose NAME is a ledger name, and the copy it protects happens in every branch. A relative link in the body of an ordinary memory resolves against the destination, where its target never arrived: the copy landed, nothing was skipped and nothing was said, and the confirm exited 6 on a store the same command had just built."
+    },
+    {
+      "name": "init-adoption-reads-a-description-from-where-the-memory-lands",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            desc, os.path.join(store, \"SEARCH.md\"), store, landing\n",
+      "new": "            desc, dest, store, landing\n",
+      "tests": [
+        "tests/test_init.py::test_a_description_linking_a_sibling_that_is_adopted_is_still_skipped"
+      ],
+      "why": "a description is lifted verbatim into a row in SEARCH.md at the store ROOT, three directories above the memory it describes, so the checker resolves its links from there. Answered from the destination instead, a description linking a sibling that IS adopted alongside reads as fine and the store still goes red — the one case no other reading of this defect reaches."
     }
   ]
 }

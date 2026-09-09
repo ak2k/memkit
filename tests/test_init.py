@@ -4437,6 +4437,151 @@ def test_a_memory_directory_landing_in_another_store_is_not_copied_into_this_one
         [doctor.CANARY_NAME, "kept.md"]
     )
 
+DESC_LINK = (
+    "---\nname: desc link\ndescription: see [the plan](plan.md) for the rest\n"
+    "---\n# d\nbody\n"
+)
+BODY_LINK = (
+    "---\nname: body link\ndescription: a plain one\n---\n# b\n\n"
+    "see [the plan](plan.md)\n"
+)
+PLAN = "---\nname: plan\ndescription: the plan itself\n---\n# p\nbody\n"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_description_linking_nowhere_is_skipped_before_the_confirm(
+    profile,
+) -> None:
+    """A DESCRIPTION IS LIFTED INTO A ROW VERBATIM, so a markdown link in one
+    becomes a live link in the ledger memkit generates — and the checker
+    resolves that link against the STORE ROOT, where it points at nothing. The
+    run exited 6 on a store it had just built, `memory-integrity --write`
+    regenerated the same row, and every later run said `Nothing to write.` and
+    exited 6 again.
+
+    The rule is asked of the plan, so the adopter reads it before consenting.
+    """
+    _harness(profile, "-home-d", {"note.md": DESC_LINK})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-d/note.md: its description carries a link" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "plan.md" in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-d").exists()
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_description_linking_a_sibling_that_is_adopted_is_still_skipped(
+    profile,
+) -> None:
+    """THE ROW IS NOT WHERE THE MEMORY IS. The description's link resolves
+    beautifully beside the memory — and the row carrying it sits in SEARCH.md at
+    the store root, three directories up, so the checker reads it from there and
+    finds nothing. A rule that asked the question against the destination
+    answered yes and left the store red.
+
+    The sibling still lands: only the memory whose description cannot be carried
+    is left behind.
+    """
+    _harness(profile, "-home-s", {"note.md": DESC_LINK, "plan.md": PLAN})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-s/note.md: its description carries a link" in manifest.stdout, (
+        manifest.stdout
+    )
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-s"
+    assert sorted(p.name for p in adopted.iterdir()) == ["plan.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_body_link_pointing_at_no_adopted_file_is_skipped(profile) -> None:
+    """A relative link in the BODY resolves against the destination, and the
+    memory it names stayed in the harness directory: the copy landed, nothing
+    was skipped, nothing was said, and the checker called the store broken.
+
+    The control beside it is the one that makes the rule narrow: the same link
+    with its target adopted alongside is copied, both files.
+    """
+    _harness(profile, "-home-b", {"note.md": BODY_LINK})
+    _harness(profile, "-home-ok", {"note.md": BODY_LINK, "plan.md": PLAN})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-b/note.md: plan.md points at no file" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "-home-ok/note.md" not in manifest.stdout.split("skipped:")[-1], (
+        manifest.stdout
+    )
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-b").exists()
+    whole = store / "search" / init.ADOPT_DIRNAME / "-home-ok"
+    assert sorted(p.name for p in whole.iterdir()) == ["note.md", "plan.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_wiki_links_in_a_description_and_a_body_are_still_adopted(profile) -> None:
+    """WHAT THE CHECKER WARNS ABOUT IS NOT WHAT IT FAILS ON. A dangling
+    `[[wikilink]]` is a WARN and leaves the store green, so refusing to adopt a
+    memory carrying one would cost the adopter a real memory for nothing.
+    """
+    _harness(profile, "-home-w", {
+        "note.md": (
+            "---\nname: wiki\ndescription: see [[the plan]] for the rest\n"
+            "---\n# w\n\nand [[another one]] here\n"
+        ),
+    })
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "0 skipped" in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-w"
+    assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
 
 def test_an_adopted_copy_is_never_more_readable_than_its_original(
     profile,

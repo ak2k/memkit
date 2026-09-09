@@ -1870,6 +1870,48 @@ def _search_ledger_text(store: str, entries: list) -> str:
     return f"{preamble}\n\n{body}\n"
 
 
+def _would_wedge_the_store(
+    text: str, dest: str, desc: str, store: str, landing: set
+) -> str:
+    """Why the check init runs over its own work would go red on this copy, or "".
+
+    WHAT ADOPTION LANDS HAS TO PASS THE CHECK ADOPTION THEN RUNS. The rule was
+    asked only of files whose NAME is a ledger name, and the copy it protects
+    happens in every branch: an ordinary memory carrying a relative link went in
+    unread, the confirm exited 6 on a store it had just built, and no re-run
+    cleared it — `memory-integrity --write` regenerates the same row, and the
+    next dry-run says there is nothing left to do.
+
+    THE DESCRIPTION IS READ FROM SOMEWHERE ELSE THAN THE MEMORY IS. It is lifted
+    verbatim into a row in SEARCH.md at the store ROOT, so a link in it resolves
+    from there and not from beside the file — which is why a description linking
+    a sibling that IS adopted alongside still leaves the store red. Asked first
+    because it is the specific answer whenever both are true.
+
+    A REASON, NOT A BOOLEAN, because the answer is a line the adopter reads
+    before consenting: what is skipped and why is the whole difference between
+    this and the exit 6 it replaces.
+    """
+    if desc:
+        nowhere = _rows_pointing_nowhere(
+            desc, os.path.join(store, "SEARCH.md"), store, landing
+        )
+        if nowhere:
+            return (
+                f"its description carries a link to {', '.join(nowhere)}, and "
+                "the ledger row generated from it is read from the store root, "
+                "where that resolves to no file"
+            )
+    unresolved = _rows_pointing_nowhere(text, dest, store, landing)
+    if unresolved:
+        return (
+            f"{', '.join(unresolved)} "
+            f"{'points' if len(unresolved) == 1 else 'point'} at no file this "
+            "store is getting"
+        )
+    return ""
+
+
 def _adoptable(machine: Machine, store: str, project) -> bool:
     """Whether adoption will copy out of this project directory at all.
 
@@ -2173,6 +2215,11 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
         # files left outside the store. Their own `diverged:` line says what
         # actually happened to each.
         divergent: set = set()
+        # WHAT A COPY WOULD COST IF IT IS DROPPED. The rule below runs after the
+        # loop and can take a file back out of the plan, so the row it would
+        # have written, the line naming it and the counts it moved all have to
+        # be reachable from the action rather than from the loop that built it.
+        held_back: dict = {}
         # LEDGER NAMES LAST, and stable so nothing else moves. A ledger is
         # copied with no rewriting at all, rows included, so whether it can be
         # copied depends on what the rest of this loop leaves behind — and an
@@ -2301,6 +2348,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     continue
             rule = ""
             row = None
+            desc = ""
             if name not in _LEDGER_NAMES:
                 text, rule = _normalise(text, os.path.splitext(name)[0])
                 if _TIER_RE.search(text[:4096]):
@@ -2363,8 +2411,43 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                        note=f"{_clean(name)}: {rule}" if rule else "",
                        group=group, confine=store)
             )
-            if row is not None:
-                rows.append(row)
+            held_back[dest] = (
+                shown, desc, row, len(_utf8(text)),
+                "already" if held is not None else ("normalised" if rule else ""),
+            )
+        # AFTER THE LOOP, AND TO A FIXPOINT. `landing` is what this run is
+        # getting, and it is built one file at a time — a link answered inline
+        # would be answered against a half-built set, so a memory whose target
+        # simply had not been planned yet would be skipped for pointing at a
+        # file that does arrive. Dropping one file can strand a link in
+        # another, so the question is asked again until nobody moves.
+        while mine:
+            landing = {
+                os.path.normpath(action.path)
+                for action in actions + mine
+                if action.op == CREATE_FILE
+            }
+            for action in mine:
+                shown, desc, _row, size, counted = held_back[action.path]
+                why = _would_wedge_the_store(
+                    action.content, action.path, desc, store, landing
+                )
+                if why:
+                    break
+            else:
+                break
+            skipped.append(f"{shown}: {why}")
+            mine.remove(action)
+            del held_back[action.path]
+            payload -= size
+            if counted == "already":
+                already -= 1
+            elif counted == "normalised":
+                normalised -= 1
+        rows.extend(
+            held_back[action.path][2] for action in mine
+            if held_back[action.path][2] is not None
+        )
         if not mine:
             continue
         if not directories:
