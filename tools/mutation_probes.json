@@ -4784,6 +4784,28 @@
         "tests/test_memory_prompt_recall.py::test_every_path_guard_call_uses_the_value_it_returns"
       ],
       "why": "a guard that judges a path returns the resolution it judged, and a call made for its effect leaves the caller free to act on a path nothing looked at — this module has shipped that twice, in the spelling `_repo_root` was asked about and the one the scan then used"
+    },
+    {
+      "name": "the-prompt-frames-provenance-sentence-is-said-unconditionally",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    provenance = (\n        (\n            f\" A line beginning `- {PROJECT_MARK}` was chosen by the \"\n            \"repository you are working in rather than by you.\"\n        )\n        if any(line.startswith(f\"- {PROJECT_MARK}\") for line in body)\n        else \"\"\n    )\n",
+      "new": "    provenance = (\n        (\n            f\" A line beginning `- {PROJECT_MARK}` was chosen by the \"\n            \"repository you are working in rather than by you.\"\n        )\n        if True\n        else \"\"\n    )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_provenance_sentence_is_not_said_when_no_repository_chose_a_line"
+      ],
+      "why": "the sentence is the block's only rule for the mark, so said in a session no repository reached it teaches a rule for a mark that is not there"
+    },
+    {
+      "name": "the-briefs-provenance-sentence-is-dropped",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    provenance = (\n        (\n            f\" A line beginning `- {PROJECT_MARK}` was chosen by the \"\n            \"repository the spawn was made from rather than by the user.\"\n        )\n        if any(line.startswith(f\"- {PROJECT_MARK}\") for line in body)\n        else \"\"\n    )\n",
+      "new": "    provenance = \"\"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_briefs_provenance_sentence_is_said_exactly_when_a_mark_is_there"
+      ],
+      "why": "this reader is unattended, so a mark it has no rule for is a mark it cannot weigh — and the line it is on was chosen by whoever can land a commit in the checkout"
     }
   ]
 }

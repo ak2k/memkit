@@ -16168,6 +16168,116 @@ def test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not(
     assert hook.PROJECT_MARK in out.stdout.split("\n- ", 1)[0], "the preamble is silent"
 
 
+def test_the_provenance_sentence_is_not_said_when_no_repository_chose_a_line(
+    tmp_path: Path,
+) -> None:
+    """The sentence is the block's only claim about where a line came from, and
+    an unattended reader has no other rule for the mark. Said in a session no
+    repository reached, it teaches a rule for a mark that is not there — and
+    then the same reader has been told the rule twice, once truthfully.
+
+    Pinned in the direction nothing else pins: the sentence NEVER APPEARING.
+    The mark's own presence is asserted a screen up, so a frame that said this
+    unconditionally passed every existing row.
+
+    Two cwds, because "no repository chose a line" has two shapes and the
+    frames must not tell them apart: a checkout with no `.memkit.json` in it,
+    and a directory that is no checkout at all. The bodies are the user's own
+    store either way, so the blocks are the same bytes once the frame's nonce
+    is normalised.
+    """
+    env = _env(tmp_path)
+    mine = tmp_path / PERSONAL_DIR / "search" / "my_unionfs.md"
+    mine.write_text(
+        "---\nname: my_unionfs\n"
+        "description: unionfs mount permissions, my own note\n"
+        "type: reference\n---\n\n"
+        "unionfs mount permissions: the media group has to be primary.\n",
+        encoding="utf-8",
+    )
+    undeclared = _project_checkout(tmp_path, name="undeclared")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    def drive(session: str, cwd: Path) -> str:
+        out = subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps({"session_id": session, "prompt": INJECT_PROMPT}),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+            cwd=str(cwd),
+        )
+        assert out.returncode == 0, out.stderr[-400:]
+        return out.stdout
+
+    checkout_block = drive("prov_none1", undeclared)
+    plain_block = drive("prov_none2", plain)
+    # Non-vacuity: a block was emitted at all, so the absences below are about
+    # what the frame said and not about there being no frame.
+    for block in (checkout_block, plain_block):
+        assert "my_unionfs.md" in block, block
+        assert hook.PROJECT_MARK not in block, block
+        assert "chosen by the repository" not in block, block
+
+    nonce = re.compile(re.escape(hook.FRAME_TAG) + r"-[0-9a-f]+")
+    assert nonce.sub("tag", checkout_block) == nonce.sub("tag", plain_block)
+
+
+def test_the_briefs_provenance_sentence_is_said_exactly_when_a_mark_is_there(
+    tmp_path: Path,
+) -> None:
+    """The task path's twin, and the one that matters more: this reader is
+    unattended, so the mark it is handed is usable only if the frame says what
+    it means. The sentence could be deleted here with the whole suite green.
+
+    Both directions through the real payload, since a frame that always says it
+    and a frame that never does are both wrong and one assertion catches one of
+    them: a spawn from a declaring checkout carries a marked line AND the
+    sentence, and a spawn from a checkout with no `.memkit.json` — reaching the
+    user's own store, so a block is still built — carries neither.
+    """
+    env = _env(tmp_path)
+    brief = _SUBJECT + " " + "Investigate every measurement. " * 12
+    mine = tmp_path / PERSONAL_DIR / "search" / "my_backlash.md"
+    mine.write_text(TASK_PROJECT_MEMORY, encoding="utf-8")
+    declaring = _project_checkout(
+        tmp_path,
+        name="declaring",
+        body=TASK_PROJECT_MEMORY,
+        memory="backlash_shims.md",
+        blob=_project_blob(),
+    )
+    undeclared = _project_checkout(
+        tmp_path,
+        name="undeclared",
+        body=TASK_PROJECT_MEMORY,
+        memory="backlash_shims.md",
+    )
+    sentence = "the spawn was made from rather than by the user."
+
+    def brief_out(tool_use_id: str, cwd: Path) -> str:
+        out = _spawn(env, brief, tool_use_id=tool_use_id, cwd=str(cwd))
+        assert out.returncode == 0, out.stderr[-400:]
+        payload = json.loads(out.stdout)
+        return payload["hookSpecificOutput"]["updatedInput"]["prompt"]
+
+    theirs = brief_out("tu_declaring", declaring)
+    marked = [
+        ln for ln in theirs.splitlines() if ln.startswith(f"- {hook.PROJECT_MARK} ")
+    ]
+    assert len(marked) == 1 and "backlash_shims.md" in marked[0], theirs
+    assert sentence in theirs, theirs
+
+    ours = brief_out("tu_undeclared", undeclared)
+    # Non-vacuity: the control still reached a store, so what is missing from
+    # it is the sentence rather than the whole block.
+    assert "my_backlash.md" in ours, ours
+    assert hook.PROJECT_MARK not in ours, ours
+    assert sentence not in ours, ours
+
+
 def test_a_memory_cannot_spell_its_way_into_the_repository_mark(
     tmp_path: Path, monkeypatch
 ) -> None:
