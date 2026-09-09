@@ -16079,10 +16079,8 @@ def test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file
     """
     mark = hook.PROJECT_MARK
 
-    def spell(text):
-        return None if text is None else text.replace("OPEN", mark[:-1]).replace(
-            "MARK", mark
-        )
+    def spell(text: str) -> str:
+        return text.replace("OPEN", mark[:-1]).replace("MARK", mark)
 
     root = tmp_path / "corpus"
     root.mkdir()

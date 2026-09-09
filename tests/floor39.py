@@ -211,9 +211,9 @@ os.remove(memkit_json)
 # not staged on any interpreter — the recursion limit is what it is here.
 
 links = sys.getrecursionlimit() + 100
-os.symlink(os.path.join("docs", "memories"), os.path.join(checkout, "l%d" % (links - 1)))
+os.symlink(os.path.join("docs", "memories"), os.path.join(checkout, f"l{links - 1}"))
 for i in range(links - 2, -1, -1):
-    os.symlink("l%d" % (i + 1), os.path.join(checkout, "l%d" % i))
+    os.symlink(f"l{i + 1}", os.path.join(checkout, f"l{i}"))
 try:
     os.path.realpath(os.path.join(checkout, "l0"))
     deep = False
@@ -224,7 +224,7 @@ write_project({"id": "app", "dir": "l0"})
 chained, why = hook._project_store(checkout, {"notes"})
 check("a dir behind a symlink chain is refused", chained, None)
 check("the refusal names the key and the resolution",
-      why, "%s: 'dir' does not resolve: RecursionError" % hook.PROJECT_CONFIG_NAME)
+      why, f"{hook.PROJECT_CONFIG_NAME}: 'dir' does not resolve: RecursionError")
 out = subprocess.run(
     [sys.executable, os.path.join(REPO, "src", "memkit", "memory_prompt_recall.py")],
     input=json.dumps({"session_id": "floor39s", "prompt":
@@ -236,7 +236,7 @@ check("the hook exits 0 behind that chain", out.returncode, 0)
 check("the user's own store survives the chain", "pooling.md" in out.stdout, True)
 os.remove(memkit_json)
 for i in range(links):
-    os.remove(os.path.join(checkout, "l%d" % i))
+    os.remove(os.path.join(checkout, f"l{i}"))
 
 # --- the guarded open, the credential scan, and the read-only branch ---------
 #
