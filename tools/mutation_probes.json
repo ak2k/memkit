@@ -4575,8 +4575,8 @@
       "name": "harness-shape-a-frontmatter-read-cut-at-the-cap-says-nothing",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    return head, len(raw) > FRONTMATTER_BYTES\n",
-      "new": "    return head, False\n",
+      "old": "    return head, len(raw) > FRONTMATTER_BYTES, size\n",
+      "new": "    return head, False, size\n",
       "tests": [
         "tests/test_harness_shape.py::test_frontmatter_cut_at_the_cap_says_so_rather_than_reading_as_none"
       ],
@@ -4631,8 +4631,8 @@
       "name": "harness-shape-an-unreadable-index-counts-as-an-index-with-no-rows",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    head, truncated = _read_head(path)\n    if head is None:\n        return None, 0\n",
-      "new": "    head, truncated = _read_head(path)\n    if head is None:\n        return {\"rows\": 0, \"dangling_rows\": 0, \"truncated\": False}, 0\n",
+      "old": "    head, truncated, _ = _read_head(path)\n    if head is None:\n        return None, 0\n",
+      "new": "    head, truncated, _ = _read_head(path)\n    if head is None:\n        return {\"rows\": 0, \"dangling_rows\": 0, \"truncated\": False}, 0\n",
       "tests": [
         "tests/test_harness_shape.py::test_an_index_that_cannot_be_read_is_not_an_index_with_no_rows"
       ],
@@ -4686,8 +4686,8 @@
       "name": "harness-shape-the-byte-cap-is-counted-in-characters",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    try:\n        with _open_regular_bytes(path) as handle:\n            raw = handle.read(FRONTMATTER_BYTES + 1)\n    except OSError:\n        return None, False\n    head = raw[:FRONTMATTER_BYTES].decode(\"utf-8\", \"replace\")\n    return head, len(raw) > FRONTMATTER_BYTES\n",
-      "new": "    try:\n        with _open_regular(path, errors=\"replace\") as handle:\n            text = handle.read(FRONTMATTER_BYTES + 1)\n    except OSError:\n        return None, False\n    return text[:FRONTMATTER_BYTES], len(text) > FRONTMATTER_BYTES\n",
+      "old": "    try:\n        with _open_regular_bytes(path) as handle:\n            raw = handle.read(FRONTMATTER_BYTES + 1)\n            # AFTER the read, not at the open: a file that grows past the cap\n            # while it is being read would otherwise be recorded as truncated\n            # beside a size at or below the cap.\n            size = os.fstat(handle.fileno()).st_size\n    except OSError:\n        return None, False, None\n    head = raw[:FRONTMATTER_BYTES].decode(\"utf-8\", \"replace\")\n    return head, len(raw) > FRONTMATTER_BYTES, size\n",
+      "new": "    try:\n        with _open_regular(path, errors=\"replace\") as handle:\n            text = handle.read(FRONTMATTER_BYTES + 1)\n            size = os.fstat(handle.fileno()).st_size\n    except OSError:\n        return None, False, None\n    return text[:FRONTMATTER_BYTES], len(text) > FRONTMATTER_BYTES, size\n",
       "tests": [
         "tests/test_harness_shape.py::test_the_cap_named_in_bytes_is_counted_in_bytes"
       ],
@@ -5049,6 +5049,17 @@
         "tests/test_harness_shape.py::test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2[fd 1 closed before the interpreter started]"
       ],
       "why": "Fd 1 closed before the interpreter starts leaves `sys.stdout` at None, so the write raises AttributeError — not one of the four failures the boundary maps, and the route whose whole contract is one line and a 2 answers with a traceback and a 1 instead."
+    },
+    {
+      "name": "harness-shape-a-records-size-is-taken-back-off-the-name",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            head, truncated, size = _read_head(path)\n",
+      "new": "            head, truncated, _ = _read_head(path)\n            size = os.lstat(path).st_size\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_size_and_the_frontmatter_in_one_record_come_from_one_file"
+      ],
+      "why": "The size asked of the name after the read is a measurement of whatever the name means by then. A memory file that is a link back into the directory is opened and read, and an `lstat` does not follow it, so the record states a nine-byte file carrying its target's 120-character description — a record no rebuilt corpus can reproduce and no consumer can tell from a real one."
     }
   ]
 }

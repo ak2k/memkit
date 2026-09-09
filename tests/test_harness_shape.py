@@ -1222,6 +1222,46 @@ def test_what_is_opened_is_decided_by_where_the_link_lands(tmp_path) -> None:
     assert files["linked.md"]["size"] != (outside / "memo.md").stat().st_size
 
 
+def test_the_size_and_the_frontmatter_in_one_record_come_from_one_file(
+    tmp_path,
+) -> None:
+    """A record's size described the NAME and its frontmatter described
+    whatever that name resolved to, with no descriptor shared between them.
+
+    It needs neither the cap nor a big file to contradict itself. A memory file
+    that is a link back into the directory is opened — those bytes are being
+    read anyway, and that is the rule — while the size was taken by an `lstat`
+    that does not follow it: a nine-byte name recorded as carrying its target's
+    120-character description. No rebuilt corpus can reproduce that record and
+    no consumer can tell it from a real one.
+    """
+    config = tmp_path / "config"
+    memory = _memory_dir(config, "-a")
+    head = "---\nname: t\ndescription: " + "d" * 120 + "\n---\n\n"
+    body = "b" * (186 - len(head.encode("utf-8")) - 1) + "\n"
+    _write(memory / "target.md", head + body)
+    os.symlink("target.md", memory / "m2.md")
+
+    files = {
+        item["name"]: item
+        for item in _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
+    }
+    record = files["m2.md"]
+    assert (memory / "m2.md").lstat().st_size == 9, "the link's own size"
+    assert record["is_symlink"] is True
+    assert record["unreadable"] is False
+    assert record["description_len"] == 120
+    assert record["size"] == 186
+    # The two things a record may not say at once, and the second `lstat` said
+    # both: a description longer than the file it was read from, and a
+    # truncation flag on a file at or below the cap.
+    assert record["size"] >= record["description_len"]
+    assert record["frontmatter_truncated"] is False
+    # The link and the file it names differ in the link flag and the name, and
+    # in nothing else — one file was measured, once.
+    assert record == {**files["target.md"], "name": "m2.md", "is_symlink": True}
+
+
 def test_frontmatter_cut_at_the_cap_says_so_rather_than_reading_as_none(
     tmp_path,
 ) -> None:

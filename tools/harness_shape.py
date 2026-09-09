@@ -585,7 +585,7 @@ def _resolves_inside(path: str, directory: str) -> bool:
 
 
 def _read_head(path: str) -> tuple:
-    """`(head, truncated)` for the first `FRONTMATTER_BYTES` of `path`.
+    """`(head, truncated, size)` for the first `FRONTMATTER_BYTES` of `path`.
 
     `head` is None if it could not be read, rather than `""`: an unreadable
     file and an empty one produced the same four `false` flags, and a capture
@@ -604,14 +604,25 @@ def _read_head(path: str) -> tuple:
     the cap exists to bound. Cutting on a byte boundary can halve a character,
     and `replace` is what stands in its place — the same answer this read has
     always given for bytes that are not UTF-8.
+
+    AND THE SIZE COMES BACK WITH IT, off the descriptor this already holds,
+    because it is the only size that describes the same inode as the facts
+    read here: a caller asking the NAME afterwards asks about whatever that
+    name means by then, which for a link is the link and for a file rewritten
+    under the walk is a different file. `size` is None where nothing was
+    opened, and the caller answers for that case itself.
     """
     try:
         with _open_regular_bytes(path) as handle:
             raw = handle.read(FRONTMATTER_BYTES + 1)
+            # AFTER the read, not at the open: a file that grows past the cap
+            # while it is being read would otherwise be recorded as truncated
+            # beside a size at or below the cap.
+            size = os.fstat(handle.fileno()).st_size
     except OSError:
-        return None, False
+        return None, False, None
     head = raw[:FRONTMATTER_BYTES].decode("utf-8", "replace")
-    return head, len(raw) > FRONTMATTER_BYTES
+    return head, len(raw) > FRONTMATTER_BYTES, size
 
 
 # --- pseudonyms -------------------------------------------------------------
@@ -837,7 +848,7 @@ def _index(memory_dir: str, listed: list) -> tuple:
     path = os.path.join(memory_dir, INDEX_NAME)
     if os.path.islink(path) and not _resolves_inside(path, memory_dir):
         return None, 0
-    head, truncated = _read_head(path)
+    head, truncated, _ = _read_head(path)
     if head is None:
         return None, 0
     lines = head.splitlines()
@@ -919,20 +930,7 @@ def _memory_dir(
     for name, linked in listed:
         path = os.path.join(memory_dir, name)
         failed = False
-        try:
-            # `lstat`: the size of the LINK, never of what it points at. A
-            # memory file that is a link out of the directory had the target's
-            # size and the target's description length recorded, which is a
-            # measurement of a file outside the capture.
-            size = os.lstat(path).st_size
-        except OSError:
-            size = None
-            failed = True
-        record = {
-            "name": names.file(name) if anonymise else name,
-            "size": size,
-            "is_symlink": linked,
-        }
+        size = None
         head = ""
         truncated = False
         unreadable = False
@@ -940,7 +938,13 @@ def _memory_dir(
         # out of it reaches somebody else's file through a name in here, and
         # `sudo -n` was given the directory rather than the target.
         if not linked or _resolves_inside(path, memory_dir):
-            head, truncated = _read_head(path)
+            # ONE RECORD, ONE INODE, ONE INSTANT: the size arrives with the
+            # read, off the descriptor the read held. Asked of the name
+            # afterwards it described whatever the name meant then — a link
+            # back into this directory is opened and read, and an `lstat` does
+            # not follow it, so a nine-byte name was recorded as carrying its
+            # target's 120-character description.
+            head, truncated, size = _read_head(path)
             if head is None:
                 head, failed, unreadable = "", True, True
         else:
@@ -949,6 +953,21 @@ def _memory_dir(
             # them and the record says so the same way. `read_errors` does not
             # move: nothing failed, the rule declined to look.
             unreadable = True
+        if unreadable:
+            try:
+                # `lstat`, and ONLY where nothing was opened: the size of the
+                # LINK, never of what it points at. A memory file that is a
+                # link out of the directory had the target's size recorded,
+                # which is a measurement of a file outside the capture — and
+                # where the read itself failed, the name is all there is.
+                size = os.lstat(path).st_size
+            except OSError:
+                failed = True
+        record = {
+            "name": names.file(name) if anonymise else name,
+            "size": size,
+            "is_symlink": linked,
+        }
         record["unreadable"] = unreadable
         # A FILE NOBODY COULD READ IS NOT A FILE WITH NO FRONTMATTER, which is
         # what the four flags and the null length said — the same record a
