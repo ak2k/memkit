@@ -1431,7 +1431,7 @@
       "name": "auto-memory-renders-a-future-consolidation-lock-as-an-elapsed-time",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "            if age < 0:\n                # Clocks disagree — a lock written on another machine, or\n                # before a time step. An elapsed time is the one thing this\n                # cannot report, and a negative one reads as a typo.\n                return \"the consolidation lock is dated in the future\"\n            if age < CONSOLIDATE_RECENT:\n                return f\"a consolidation ran {age}s ago\"\n            return f\"last consolidation {age // 3600}h ago\"\n",
+      "old": "            if age < 0:\n                # Clocks disagree — a lock written on another machine, or\n                # before a time step. An elapsed time is the one thing this\n                # cannot report, and a negative one reads as a typo.\n                return \"the consolidation lock is dated in the future\"\n            if age < CONSOLIDATE_RECENT:\n                return f\"a consolidation ran {age}s ago\"\n            hours = age // 3600\n            return f\"last consolidation {hours}h ago\"\n",
       "new": "            return f\"a consolidation ran {age}s ago\"\n",
       "tests": [
         "tests/test_doctor.py::test_a_consolidation_lock_dated_in_the_future_is_said_rather_than_counted"
@@ -2007,8 +2007,8 @@
       "name": "auto-memory-remedy-names-the-key-that-does-not-turn-it-off",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "            'To run memkit alone, set \"autoMemoryEnabled\": false in '\n",
-      "new": "            'To run memkit alone, set \"autoDreamEnabled\": false in '\n",
+      "old": "    \"enabled_key\": harness_memory.ENABLED_KEY,\n",
+      "new": "    \"enabled_key\": harness_memory.DREAM_KEY,\n",
       "tests": [
         "tests/test_doctor.py::test_auto_memory_armed_is_information_and_names_the_setting"
       ],
@@ -2167,7 +2167,7 @@
       "new": "        except (OSError, ValueError):\n            continue\n",
       "tests": [
         "tests/test_harness_memory.py::test_a_memory_directory_that_will_not_list_is_named_by_the_walk",
-        "tests/test_doctor.py::test_a_memory_directory_that_will_not_list_is_the_path_the_row_names"
+        "tests/test_doctor.py::test_a_memory_directory_that_will_not_list_is_named_by_its_role"
       ],
       "why": "A project with no memory/ wrote nothing, because the harness creates that directory with the first memory. A memory/ that refuses to list is a walk that did not happen. Collapsed into one handler, a project directory an adopter cannot read is counted as a project that has nothing in it, and the row passes on a count it could not make."
     },
@@ -2351,8 +2351,8 @@
       "name": "auto-memory-describes-a-checked-in-settings-file-as-untracked-by-convention",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    if scope == harness_memory.CHECKOUT_SCOPE:\n        return (\n            f\"a checked-in .claude/{SETTINGS_NAME}\",\n            \"that file is checked into this repository and travels with every \"\n            \"clone\",\n        )\n    if scope == \"local\":\n",
-      "new": "    if scope in (\"local\", harness_memory.CHECKOUT_SCOPE):\n",
+      "old": "_TRAVELS = {\n    \"project\": \"that file is checked into this repository and travels with \"\n    \"every clone\",\n",
+      "new": "_TRAVELS = {\n    \"project\": \"that file is untracked by convention rather than by \"\n    \"anything git enforces\",\n",
       "tests": [
         "tests/test_doctor.py::test_a_checked_in_settings_file_decides_and_is_reported_not_passed",
         "tests/test_doctor.py::test_a_checkout_that_turns_the_feature_on_is_reported_the_same_way"
@@ -2366,7 +2366,7 @@
       "old": "_PATH_TAIL = r\"(?![\\w.-])\"\n",
       "new": "_PATH_TAIL = r\"\"\n",
       "tests": [
-        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[sibling]"
+        "tests/test_doctor.py::test_no_spelling_of_home_survives_the_choke_point"
       ],
       "why": "without the boundary a directory whose name merely starts with home's is re-spelled `~`, and the report names a path that is nowhere on the machine"
     },
@@ -2377,7 +2377,7 @@
       "old": "    for path in (os.path.expanduser(\"~\"), os.path.realpath(os.path.expanduser(\"~\"))):\n",
       "new": "    for path in (os.path.expanduser(\"~\"),):\n",
       "tests": [
-        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[symlinked]"
+        "tests/test_doctor.py::test_no_spelling_of_home_survives_the_choke_point"
       ],
       "why": "a project key is built from the resolved path while the environment spells the logical one, so under a symlinked $HOME neither the key nor the resolved path is redacted at all"
     },
@@ -2388,7 +2388,7 @@
       "old": "    spellings += [(key, _KEY_TAIL) for key in keys]\n",
       "new": "    spellings += []\n",
       "tests": [
-        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[symlinked]"
+        "tests/test_doctor.py::test_no_spelling_of_home_survives_the_choke_point"
       ],
       "why": "a key is a whole absolute path with its separators replaced, so home is as legible in one as in the paths this report already re-spells"
     },
@@ -2399,7 +2399,7 @@
       "old": "_KEY_TAIL = r\"(?!\\w)\"\n",
       "new": "_KEY_TAIL = r\"(?![\\w.-])\"\n",
       "tests": [
-        "tests/test_doctor.py::test_no_row_of_the_envelope_spells_the_home_directory_out[real]"
+        "tests/test_doctor.py::test_no_spelling_of_home_survives_the_choke_point"
       ],
       "why": "`-` is a key's own separator, so the path rule blocks every child key and the inventory prints home whole in every one of them"
     },

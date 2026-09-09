@@ -577,15 +577,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("cli_doctor.py", "_placed", "if->exit", 2): (
         "a directory at or over a corpus root is refused, with what it costs"
     ),
-    ("cli_doctor.py", "_placed", "if->exit", 3): (
-        "a directory under a pruned name is refused as never indexed"
-    ),
-    ("cli_doctor.py", "_placed", "if->exit", 4): (
-        "a store with no search/ yet is refused, naming the root it would get"
-    ),
-    ("cli_doctor.py", "_nearest_store", "if->exit", 1): (
-        "no config means no nearest store and a distance of zero"
-    ),
     ("cli_doctor.py", "_odd_switch", "if->exit", 1): (
         "no scope, or a real bool, is not an odd value to remark on"
     ),
