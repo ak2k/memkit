@@ -4773,6 +4773,17 @@
         "tests/test_memory_prompt_recall.py::test_the_order_the_refusals_are_made_in_is_the_order_they_answer_in"
       ],
       "why": "the `..` refusal stands in front of the realpath containment for the SENTENCE, so a spelling that climbs out is told so in the words its author can act on; reordered, every existing refusal row stays green because each matches one check alone"
+    },
+    {
+      "name": "a-path-guard-is-called-for-its-effect-and-its-answer-dropped",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    desc = _description(path, _lex_root(path))\n    shown = \", \".join(matched[:6]) + (\", …\" if len(matched) > 6 else \"\")\n",
+      "new": "    desc = _description(path, _lex_root(path))\n    _lex_marked(path)\n    shown = \", \".join(matched[:6]) + (\", …\" if len(matched) > 6 else \"\")\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_every_path_guard_call_uses_the_value_it_returns"
+      ],
+      "why": "a guard that judges a path returns the resolution it judged, and a call made for its effect leaves the caller free to act on a path nothing looked at — this module has shipped that twice, in the spelling `_repo_root` was asked about and the one the scan then used"
     }
   ]
 }
