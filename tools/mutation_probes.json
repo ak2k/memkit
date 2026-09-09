@@ -4884,6 +4884,18 @@
         "tests/test_init.py::test_a_memory_the_walk_could_not_list_is_named_in_the_manifest"
       ],
       "why": "the entries this line is asked about are the ones the walk could not classify — a symlink loop, a named pipe — so following one is how a disclosure comes to raise or hang where the thing it discloses only returned early."
+    },
+    {
+      "name": "init-makes-a-confined-directory-at-a-second-resolution",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        made = _refuse_escape(action.path, action.confine)\n        os.makedirs(made, mode=mode, exist_ok=True)\n",
+      "new": "        _refuse_escape(action.path, action.confine)\n        os.makedirs(action.path, mode=mode, exist_ok=True)\n",
+      "tests": [
+        "tests/test_init.py::test_a_confined_directory_is_made_where_the_guard_judged_it",
+        "tests/test_init.py::test_every_escape_guard_call_uses_the_value_it_returns"
+      ],
+      "why": "`os.makedirs` re-traverses every component of the name it is handed, so a guard that judges `action.path` and then writes `action.path` has asked the question twice — a link swapped in between the two answers puts the directory, and every memory copied under it, outside the store the guard approved."
     }
   ]
 }

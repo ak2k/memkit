@@ -1889,6 +1889,113 @@ def test_the_settings_write_lands_when_nothing_moved_under_it(profile) -> None:
     assert blob[harness_memory.DIRECTORY_KEY], blob
 
 
+def test_a_confined_directory_is_made_where_the_guard_judged_it(
+    profile, monkeypatch
+) -> None:
+    """ONE RESOLUTION, JUDGED AND THEN WRITTEN.
+
+    `os.makedirs` re-traverses every component of the name it is given, so a
+    guard that answers about `action.path` and then hands `action.path` to the
+    write has asked the question twice: the link swapped in between the two
+    answers is the one the directory is made through. Every confined
+    CREATE_DIR goes this way — `search/`, `hot/`, and adoption's base and
+    per-key directories, which is where the memories then land.
+
+    Driven, not raced: the flip happens inside the guard's own return, so the
+    window is the same one every time and the assertion is about all 25.
+    """
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    real = profile / "real"
+    real.mkdir()
+    elsewhere = profile / "elsewhere"
+    elsewhere.mkdir()
+    store = profile / "notes"
+    store.symlink_to(real)
+    journal = init.Journal(str(machine.state_dir), "judged-digest")
+    guard = init._refuse_escape
+
+    def flipping(path, confine):
+        judged = guard(path, confine)
+        store.unlink()
+        store.symlink_to(elsewhere)
+        return judged
+
+    monkeypatch.setattr(init, "_refuse_escape", flipping)
+    for n in range(25):
+        action = init.Action(
+            init.CREATE_DIR,
+            str(store / "search" / "projects" / f"-home-{n}"),
+            confine=str(store),
+        )
+        init._perform(machine, journal, action, config)
+        store.unlink()
+        store.symlink_to(real)
+        assert (real / "search" / "projects" / f"-home-{n}").is_dir(), n
+        assert not (elsewhere / "search").exists(), n
+
+    # CONTROL ONE: a link that is already there when the guard looks is still a
+    # refusal, and still creates nothing outside. `_refuse_escape` is put back
+    # by name rather than with `monkeypatch.undo()`, which would also undo the
+    # profile fixture's own patches — the two share one instance.
+    monkeypatch.setattr(init, "_refuse_escape", guard)
+    (real / "linked").symlink_to(elsewhere)
+    with pytest.raises(init.Refusal) as raised:
+        init._perform(
+            machine,
+            journal,
+            init.Action(
+                init.CREATE_DIR,
+                str(store / "linked" / "projects"),
+                confine=str(store),
+            ),
+            config,
+        )
+    assert raised.value.name == "escapes-store", raised.value.name
+    assert not (elsewhere / "projects").exists()
+    # CONTROL TWO: an ordinary confined directory under an ordinary store is
+    # still made, at its own name.
+    plain = profile / "plain"
+    plain.mkdir()
+    init._perform(
+        machine,
+        journal,
+        init.Action(init.CREATE_DIR, str(plain / "search"), confine=str(plain)),
+        config,
+    )
+    assert (plain / "search").is_dir()
+
+
+def test_every_escape_guard_call_uses_the_value_it_returns(profile) -> None:
+    """The guard returns the ONE resolution it judged, and a call that drops it
+    has judged one path and written another. Grep-able as a lint, so it is one:
+    no call to it may stand alone as a statement.
+    """
+    import ast
+
+    tree = ast.parse(
+        pathlib.Path(init.__file__).read_text(encoding="utf-8"), init.__file__
+    )
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_refuse_escape"
+    ]
+    assert len(calls) >= 2, len(calls)
+    dropped = [
+        node.value.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "_refuse_escape"
+    ]
+    assert dropped == [], dropped
+
+
 def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
     """Same window, same file class: an append computed at plan time and
     written after a 300-second subprocess is an append against a file that may

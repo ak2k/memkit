@@ -2782,9 +2782,12 @@ def build_plan(
         # store that carries no `confine`: `_refuse_escape` judges the landing
         # place against `join(realpath(confine), relpath(path, confine))`, and
         # for a path that IS the root that name ends in `/.` and never equals
-        # its own realpath — every run would refuse. It is not confined to the
-        # parent either, because where the adopter puts their store is their
-        # answer and not a path this command gets to bound.
+        # its own realpath — every run would refuse. Confining it to its PARENT
+        # answers identically on a symlinked root, on a fresh root under a
+        # symlinked parent, on a plain root and on a deep root whose parents do
+        # not exist; what it would cost is `--store <path>/`, where the trailing
+        # slash makes the relative path `.` and the same comparison refuses a
+        # spelling of their own store the adopter is entitled to.
         Action(CREATE_DIR, store_path),
         # search/ FIRST, and the order in this list is the order they are made.
         # The trap init exists to prevent is a flat store that grows a `search/`
@@ -3818,8 +3821,14 @@ def _perform(
         # The same containment the file writes get, because `os.makedirs`
         # follows a symlinked component just as happily and a directory made
         # outside the store is where the files after it would land.
-        _refuse_escape(action.path, action.confine)
-        os.makedirs(action.path, mode=mode, exist_ok=True)
+        #
+        # AND THE DIRECTORY IS MADE AT THE ONE RESOLUTION THAT WAS JUDGED.
+        # `os.makedirs` re-traverses every component of the name, so a link
+        # swapped in after the guard returned is a second answer to the same
+        # question — the guard approved one path and the directory appeared at
+        # another, with the memories written under it following.
+        made = _refuse_escape(action.path, action.confine)
+        os.makedirs(made, mode=mode, exist_ok=True)
         journal.record(action, "dir")
     elif action.op == MERGE_CONFIG:
         with _Lock(machine.state_dir) as lock:
