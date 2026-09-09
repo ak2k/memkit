@@ -14768,6 +14768,36 @@ def test_a_project_file_nested_past_the_parsers_budget_refuses_rather_than_raise
     assert reason == hook.sanitize(reason), repr(reason)
 
 
+def test_a_dir_behind_a_chain_of_symlinks_refuses_rather_than_raises(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The other `RuntimeError` on this guard, and this one needs no staging.
+
+    `realpath` walks a symlink chain by recursing once per link, so a `dir`
+    behind a thousand committed links answers with `RecursionError` — neither
+    an `OSError` nor a `ValueError`, and uncaught it left the prompt path
+    emitting nothing at all: rc 0, no pointers, the user's own stores gone
+    with the repository's.
+
+    The chain is BUILT rather than staged, and the depth is proven by the
+    library call itself rather than by a number written here, so the case
+    stays honest if either the limit or `realpath` changes shape.
+    """
+    repo = _project_checkout(tmp_path, blob=_project_blob(dir="l0"))
+    links = sys.getrecursionlimit() + 100
+    os.symlink(PROJECT_STORE_DIR, repo / f"l{links - 1}")
+    for i in range(links - 2, -1, -1):
+        os.symlink(f"l{i + 1}", repo / f"l{i}")
+    with pytest.raises(RecursionError):
+        os.path.realpath(str(repo / "l0"))
+
+    reason = _refusal(tmp_path, monkeypatch, repo)
+    assert reason == (
+        f"{hook.PROJECT_CONFIG_NAME}: 'dir' does not resolve: RecursionError"
+    ), reason
+    assert reason == hook.sanitize(reason), repr(reason)
+
+
 def test_the_order_the_refusals_are_made_in_is_the_order_they_answer_in(
     tmp_path: Path, monkeypatch
 ) -> None:

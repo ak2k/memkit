@@ -780,7 +780,13 @@ def _project_store(root: str, taken):
     # exception nothing caught — which took `--debug-config` down with exit 2
     # in the one checkout whose config an operator was trying to read. The
     # exception type is the reason where there is no `strerror`.
-    except (OSError, ValueError) as exc:
+    #
+    # RecursionError with them, because realpath recurses once per link and a
+    # `RuntimeError` is neither of the other two: a committed chain of about a
+    # thousand symlinks is a `dir` that resolves nowhere, and uncaught it takes
+    # the prompt's whole retrieval with it — the user's own stores included,
+    # silently, since the hook must not speak on the prompt path.
+    except (OSError, ValueError, RecursionError) as exc:
         return None, (
             f"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: "
             f"{_project_value(getattr(exc, 'strerror', None) or type(exc).__name__)}"

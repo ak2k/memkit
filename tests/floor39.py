@@ -203,6 +203,41 @@ check("the hook exits 0 in that checkout", out.returncode, 0)
 check("the user's own store is still served there", "pooling.md" in out.stdout, True)
 os.remove(memkit_json)
 
+# --- a `dir` behind a chain of symlinks is one file refused too --------------
+#
+# The guard's other `RuntimeError`, and the chain itself is the evidence:
+# `realpath` recurses once per link, so a `dir` a repository committed behind
+# a thousand of them is neither an `OSError` nor a `ValueError`. This one is
+# not staged on any interpreter — the recursion limit is what it is here.
+
+links = sys.getrecursionlimit() + 100
+os.symlink(os.path.join("docs", "memories"), os.path.join(checkout, "l%d" % (links - 1)))
+for i in range(links - 2, -1, -1):
+    os.symlink("l%d" % (i + 1), os.path.join(checkout, "l%d" % i))
+try:
+    os.path.realpath(os.path.join(checkout, "l0"))
+    deep = False
+except RecursionError:
+    deep = True
+check("the chain is deep enough to recurse past the limit", deep, True)
+write_project({"id": "app", "dir": "l0"})
+chained, why = hook._project_store(checkout, {"notes"})
+check("a dir behind a symlink chain is refused", chained, None)
+check("the refusal names the key and the resolution",
+      why, "%s: 'dir' does not resolve: RecursionError" % hook.PROJECT_CONFIG_NAME)
+out = subprocess.run(
+    [sys.executable, os.path.join(REPO, "src", "memkit", "memory_prompt_recall.py")],
+    input=json.dumps({"session_id": "floor39s", "prompt":
+                      "why does pgbouncer transaction pooling break prepared statements"}),
+    capture_output=True, text=True, timeout=300, cwd=checkout,
+    env=dict(os.environ, MEMKIT_CONFIG=config),
+)
+check("the hook exits 0 behind that chain", out.returncode, 0)
+check("the user's own store survives the chain", "pooling.md" in out.stdout, True)
+os.remove(memkit_json)
+for i in range(links):
+    os.remove(os.path.join(checkout, "l%d" % i))
+
 # --- the guarded open, the credential scan, and the read-only branch ---------
 #
 # The guard above reaches `_project_store` and no line of the trio underneath

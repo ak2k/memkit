@@ -4620,6 +4620,17 @@
       "why": "`RecursionError` is a `RuntimeError`, and a document nested past the parser's budget fits in half this file's byte cap — escaping the whole-or-nothing guard it costs the checkout not one refused file but every prompt's whole retrieval"
     },
     {
+      "name": "a-chained-dir-resolves-outside-the-guard",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    except (OSError, ValueError, RecursionError) as exc:\n",
+      "new": "    except (OSError, ValueError) as exc:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_dir_behind_a_chain_of_symlinks_refuses_rather_than_raises"
+      ],
+      "why": "`realpath` recurses once per link, so a `dir` behind a committed chain of them raises the one exception class this clause does not name — and outside the guard it is the prompt that is lost, silently and with the user's own stores in it, not the file"
+    },
+    {
       "name": "the-scan-has-a-run-in-front-of-the-keyword",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
