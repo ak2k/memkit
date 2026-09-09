@@ -5060,6 +5060,17 @@
         "tests/test_harness_shape.py::test_the_size_and_the_frontmatter_in_one_record_come_from_one_file"
       ],
       "why": "The size asked of the name after the read is a measurement of whatever the name means by then. A memory file that is a link back into the directory is opened and read, and an `lstat` does not follow it, so the record states a nine-byte file carrying its target's 120-character description — a record no rebuilt corpus can reproduce and no consumer can tell from a real one."
+    },
+    {
+      "name": "harness-shape-a-failed-write-leaves-what-it-created",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    except OSError as exc:\n        # WHAT THIS RUN CREATED GOES WITH THE FAILURE, and the line says which\n        # way it went: the bytes that did land are a truncated document at the\n        # operator's name, and the create would refuse their next run over it.\n        note = (\n            \"nothing was left at this name\"\n            if landing.discard()\n            else \"the partial file it wrote is still there\"\n        )\n        sys.stderr.write(\n            f\"harness_shape: {args.out}: {exc.strerror or exc}; {note}\\n\"\n        )\n        return 2\n",
+      "new": "    except OSError as exc:\n        sys.stderr.write(f\"harness_shape: {args.out}: {exc.strerror or exc}\\n\")\n        return 2\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal"
+      ],
+      "why": "A write that fails after some bytes are out leaves a truncated JSON document at the operator's own name with mode 0600, and the O_EXCL create then refuses their retry: a destination that is neither written nor retryable, on a host an unattended capture may not get a second run at. Unlinking it is what makes the retry possible, and the one line has to say which way it went."
     }
   ]
 }

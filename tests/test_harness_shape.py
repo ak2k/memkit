@@ -1906,6 +1906,64 @@ _STDOUT_DOORS = (
 )
 
 
+def test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal(
+    tmp_path,
+) -> None:
+    """The create that will not write over a file, and a write that stops
+    part-way, compose into a destination that is neither written nor retryable.
+
+    The bytes that landed are a truncated JSON document at the operator's own
+    name with mode 0600, and the next run of the same command is refused by the
+    guard that made the name theirs — on a host an unattended capture may not
+    get a second run at, and under `sudo -n` the leftover is root's. The inode
+    is provably this run's, so what this run created goes with the failure and
+    the one line it leaves says so.
+
+    `RLIMIT_FSIZE` is the honest stand-in for the full disk and the exceeded
+    quota this is really about: the same write, the same handler, the same
+    errno class, and a limit a test can set on itself.
+    """
+    config = tmp_path / "config"
+    for index in range(12):
+        memory = _memory_dir(config, f"-p{index}")
+        _write(memory / "top.md", f"---\nname: t{index}\n---\nbody\n")
+        _write(memory / "hot" / "deep.md", f"---\nname: d{index}\n---\nbody\n")
+        _write(memory / "MEMORY.md", "- [a](top.md)\n- [b](hot/deep.md)\n")
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    argv = [sys.executable, str(TOOL), "--config-dir", str(config)]
+    whole = subprocess.run(argv, capture_output=True, text=True, timeout=300, env=env)
+    assert whole.returncode == 0, whole.stderr
+    # Past the stream's own buffer, so the limit is reached while the document
+    # is being written rather than before any of it is.
+    assert len(whole.stdout) > io.DEFAULT_BUFFER_SIZE, len(whole.stdout)
+    cap = len(whole.stdout) // 2
+    dest = tmp_path / "shape.json"
+
+    def refuse_to_grow():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (cap, cap))
+
+    run = subprocess.run(
+        argv + ["--out", str(dest)],
+        capture_output=True, text=True, timeout=300, env=env,
+        preexec_fn=refuse_to_grow,
+    )
+    assert run.returncode == 2, run.stdout + run.stderr
+    assert "Traceback" not in run.stderr, run.stderr
+    lines = run.stderr.strip().splitlines()
+    assert len(lines) == 1, run.stderr
+    assert "File too large" in lines[0], lines[0]
+    # DISCLOSED in that one line, because what the operator does next turns on
+    # it: a name still taken is a retry that will be refused.
+    assert "nothing was left at this name" in lines[0], lines[0]
+    assert not dest.exists(), "a truncated document at the operator's name"
+    again = subprocess.run(
+        argv + ["--out", str(dest)],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert json.loads(dest.read_text(encoding="utf-8"))["anonymised"] is True
+
+
 @pytest.mark.parametrize("door", _STDOUT_DOORS)
 def test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2(
     tmp_path, door,
@@ -3713,6 +3771,7 @@ _GUARDS = (
     ("_stdout_destination", "the path fd 1 writes to, or no answer"),
     ("_is_own_config_dir", "whether the tree named is this machine's own"),
     ("create", "_Landing: the descriptor of the destination it just made"),
+    ("discard", "_Landing: whether what it created is gone from the name"),
     ("inside_worktree", "_Landing: the checkout question asked of the descriptor"),
 )
 

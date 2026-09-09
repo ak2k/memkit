@@ -1218,9 +1218,16 @@ class _Landing:
         # The name of the level the descriptor was opened at, for the one
         # question that cannot be asked of a descriptor.
         self.judged = base
+        # The level a leaf was created in, taken only once there is a leaf to
+        # remove — see `discard`.
+        self.made_in = None
         self.fd = _open_dir(base)
 
     def close(self) -> None:
+        """Every descriptor this took, whether or not it created anything."""
+        if self.made_in is not None:
+            os.close(self.made_in)
+            self.made_in = None
         os.close(self.fd)
 
     def inside_worktree(self) -> bool:
@@ -1255,6 +1262,10 @@ class _Landing:
         answered before the capture, and a whole capture is time enough to
         rename the judged directory into a checkout. The file is `O_EXCL`-fresh
         and empty, so unlinking it destroys nothing.
+
+        AND THE LEVEL THE LEAF WAS MADE IN IS KEPT, because the other thing
+        that can happen to this file is a write that fails part-way, and by
+        then the name is not a way back to that directory — see `discard`.
         """
         current = os.dup(self.fd)
         try:
@@ -1297,9 +1308,50 @@ class _Landing:
                         "committed with real names is the one mistake this "
                         "tool exists to prevent"
                     )
+            try:
+                self.made_in = os.dup(current)
+            except OSError:
+                # With no descriptor of the level there is no way to remove
+                # this afterwards, so it goes now: an empty file at the
+                # operator's name would refuse their next run for nothing.
+                self._discard(fd, current)
+                raise
             return fd
         finally:
             os.close(current)
+
+    def discard(self) -> bool:
+        """Whether what this run created is gone from the destination name.
+
+        A write that failed part-way left a truncated document at the
+        operator's own name with mode 0600, and the `O_EXCL` create then
+        refused their retry: two guarantees that are each right and compose
+        into a destination that is neither written nor retryable, on a host an
+        unattended capture may not get a second run at. Removing it is safe for
+        the same reason the create is safe — `O_EXCL` proved the inode is this
+        run's and no other name was involved — and it goes through the
+        descriptor of the level the leaf was made in, so what is unlinked is
+        what was created and not whatever that path now means.
+
+        FALSE IS THE ANSWER THE CALLER'S LINE TURNS ON rather than a second
+        failure to report: a directory whose mode changed under the run keeps
+        the file, and an operator told otherwise is sent at a retry that will
+        be refused.
+        """
+        if self.made_in is None:
+            return False
+        gone = True
+        try:
+            os.unlink(self.leaf, dir_fd=self.made_in)
+        except FileNotFoundError:
+            # Somebody else took the name away, which leaves the retry exactly
+            # where this removing it would have.
+            pass
+        except OSError:
+            gone = False
+        os.close(self.made_in)
+        self.made_in = None
+        return gone
 
     def _discard(self, fd: int, current: int) -> None:
         """The just-created leaf removed, before anything is written to it."""
@@ -1723,7 +1775,17 @@ def _capture_and_write(args, landing) -> int:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
     except OSError as exc:
-        sys.stderr.write(f"harness_shape: {args.out}: {exc.strerror or exc}\n")
+        # WHAT THIS RUN CREATED GOES WITH THE FAILURE, and the line says which
+        # way it went: the bytes that did land are a truncated document at the
+        # operator's name, and the create would refuse their next run over it.
+        note = (
+            "nothing was left at this name"
+            if landing.discard()
+            else "the partial file it wrote is still there"
+        )
+        sys.stderr.write(
+            f"harness_shape: {args.out}: {exc.strerror or exc}; {note}\n"
+        )
         return 2
     return 0
 
