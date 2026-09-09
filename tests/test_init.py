@@ -3755,6 +3755,63 @@ def test_a_key_over_the_harness_limit_adopts_and_says_it_is_hashed(
     assert "Adoption: 2 files" in out.stdout, out.stdout
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_project_key_the_check_would_read_as_a_memory_is_skipped(
+    profile,
+) -> None:
+    """A KEY IS A DIRECTORY ENTRY THIS STORE IS GETTING, and the check init
+    runs over its own work enumerates memories by suffix. A harness project
+    key ending in `.md` — the harness derives keys from a path, and a path
+    can end in a file name — became `search/projects/<key>.md/`, which every
+    rule in the checker then opened as a file. `--write` opens it too, so the
+    documented recovery could not clear it either.
+    """
+    over_limit = "-home-u" + "b" * (harness_memory.KEY_MAX + 43)
+    _harness(profile, "-home-u-notes.md", {"note.md": TRAP})
+    _harness(profile, "-home-u", {"ok.md": BARE})
+    _harness(
+        profile,
+        over_limit,
+        {"far.md": "---\nname: far\ndescription: over the key limit\n---\n\nb\n"},
+    )
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    # Said on the DRY RUN, where the adopter reads it before consenting.
+    assert "'-home-u-notes.md': the project key ends in `.md`" in manifest.stdout, (
+        manifest.stdout
+    )
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert not (adopted / "-home-u-notes.md").exists(), sorted(
+        p.name for p in adopted.iterdir()
+    )
+    # The controls, in the same run: an ordinary key and one over the harness's
+    # own limit both adopt, and the over-limit one still says it is hashed.
+    assert "no frontmatter here" in (
+        (adopted / "-home-u" / "ok.md").read_text(encoding="utf-8")
+    )
+    assert (adopted / over_limit / "far.md").is_file()
+    assert f"'{over_limit}': over 200 characters, so the harness truncated" in (
+        manifest.stdout
+    ), manifest.stdout
+    # And the store init just built passes the check it runs over it, rather
+    # than dying inside it.
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "IsADirectoryError" not in checked.stderr, checked.stderr
+
+
 def test_the_manifest_says_where_a_linked_source_directory_resolves(
     profile,
 ) -> None:

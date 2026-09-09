@@ -2193,6 +2193,23 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 "ends at the first `)`, at a space, or at a newline"
             )
             continue
+        # AND IT MUST NOT BE A NAME THE CHECK READS AS A MEMORY. A key is a
+        # DIRECTORY entry created under `search/`, and the checker enumerates
+        # memories by suffix off the whole subtree — `rglob("*.md")`, which
+        # matches a directory as readily as a file. A key ending in `.md`
+        # therefore lands as a directory every rule then opens as one: the
+        # check init runs over its own work dies `IsADirectoryError` rather
+        # than reporting anything, `--write` opens it too, and no re-run
+        # clears it. The suffix is spelled exactly as the glob spells it, so
+        # this refuses no key the check would have been happy with.
+        if project.key.endswith(".md"):
+            skipped.append(
+                f"{_findable(project.key)}: the project key ends in `.md`, so "
+                "the directory a copy would create under this store is a name "
+                "the integrity check enumerates as a memory and opens as a "
+                "file"
+            )
+            continue
         target = os.path.join(base, project.key)
         # ONCE PER PROJECT, AND ON THE RESOLVED PATH. The link that moves a
         # write is as often a directory halfway up as the leaf, and

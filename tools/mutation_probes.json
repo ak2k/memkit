@@ -4851,6 +4851,17 @@
         "tests/test_init.py::test_a_red_finding_that_carries_a_line_number_is_attributed_too"
       ],
       "why": "ROW-LOST and STALE run their sentence straight on from the path with no em dash after it, so a store red only on those named no file at all — and STALE is what a ledger row for a file that is not there produces."
+    },
+    {
+      "name": "init-adoption-makes-a-store-directory-the-check-reads-as-a-memory",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        if project.key.endswith(\".md\"):\n            skipped.append(\n                f\"{_findable(project.key)}: the project key ends in `.md`, so \"\n                \"the directory a copy would create under this store is a name \"\n                \"the integrity check enumerates as a memory and opens as a \"\n                \"file\"\n            )\n            continue\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_a_project_key_the_check_would_read_as_a_memory_is_skipped"
+      ],
+      "why": "the checker enumerates memories with `rglob(\"*.md\")`, which matches a directory as readily as a file, so a harness project key ending in `.md` lands as a directory every rule then opens as one — the check init runs over its own work dies IsADirectoryError instead of reporting, and `--write` opens it too."
     }
   ]
 }
