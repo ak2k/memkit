@@ -2466,6 +2466,65 @@ def _rows_of(text: str) -> dict:
     return out
 
 
+def test_a_memory_the_walk_could_not_list_is_named_in_the_manifest(
+    profile,
+) -> None:
+    """WHAT THE INVENTORY DROPS IS WHAT THE ADOPTER CANNOT SEE.
+
+    The walk stats every entry in a memory directory, and an entry that raises
+    — a symlink loop, a chain past the kernel's limit — is caught by an
+    `except OSError` around the whole listing, so the project vanishes: from
+    adoption, from the count, and from every line of the manifest. An entry
+    that is merely not a regular file, a named pipe or a directory called
+    `note.md`, is dropped on its own and named nowhere either. Both read as
+    "nothing here" to whoever is deciding whether to type `--confirm`.
+    """
+    looped = _harness(profile, "-home-loop", {"alpha.md": TRAP, "beta.md": BARE})
+    (looped / "loop.md").symlink_to(looped / "loop.md")
+    piped = _harness(
+        profile,
+        "-home-pipe",
+        {"gamma.md": "---\nname: gamma\ndescription: an ordinary one\n---\n\nb\n"},
+    )
+    os.mkfifo(piped / "note.md")
+    (piped / "dead.md").symlink_to(piped / "nowhere-at-all")
+    _harness(
+        profile,
+        "-home-ok",
+        {"delta.md": "---\nname: delta\ndescription: the control\n---\n\nb\n"},
+    )
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    # The whole directory, named on the dry run rather than silently absent.
+    assert "'-home-loop': the walk returned none of the 3 `.md` entries" in (
+        manifest.stdout
+    ), manifest.stdout
+    # And the single entry, named for what it is.
+    assert "'-home-pipe': `note.md` is a named pipe" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "'-home-pipe': `dead.md` is a symlink resolving to no file" in (
+        manifest.stdout
+    ), manifest.stdout
+    # The control: a directory with nothing odd in it is named by no gap line.
+    assert "'-home-ok': the walk" not in manifest.stdout, manifest.stdout
+    assert "'-home-ok': `" not in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    # What the walk did list is adopted, entry by entry, and what it dropped is
+    # left where it is — which is exactly what the two lines above disclose.
+    assert (adopted / "-home-pipe" / "gamma.md").is_file()
+    assert (adopted / "-home-ok" / "delta.md").is_file()
+    assert not (adopted / "-home-loop").exists(), sorted(
+        p.name for p in adopted.iterdir()
+    )
+    assert (looped / "alpha.md").read_text(encoding="utf-8") == TRAP
+
+
 def test_a_harness_already_pointed_somewhere_else_refuses_by_name(profile) -> None:
     """Where an agent writes its memories is a decision somebody has already
     made, and a setup command that overwrote it would be making it again.

@@ -4862,6 +4862,28 @@
         "tests/test_init.py::test_a_project_key_the_check_would_read_as_a_memory_is_skipped"
       ],
       "why": "the checker enumerates memories with `rglob(\"*.md\")`, which matches a directory as readily as a file, so a harness project key ending in `.md` lands as a directory every rule then opens as one — the check init runs over its own work dies IsADirectoryError instead of reporting, and `--write` opens it too."
+    },
+    {
+      "name": "init-says-nothing-about-the-memories-the-walk-dropped",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    out.extend(_memory_the_walk_did_not_list(known))\n",
+      "new": "",
+      "tests": [
+        "tests/test_init.py::test_a_memory_the_walk_could_not_list_is_named_in_the_manifest"
+      ],
+      "why": "one entry the walk cannot stat abandons the whole project directory, and an entry that is not a regular file is dropped on its own — with no reconciliation the adopter reads `0 memories outside every store` about a directory holding two, and the key is named nowhere in the manifest they are consenting to."
+    },
+    {
+      "name": "init-follows-what-it-is-disclosing-instead-of-lstatting-it",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        mode = os.lstat(path).st_mode\n",
+      "new": "        mode = os.stat(path).st_mode\n",
+      "tests": [
+        "tests/test_init.py::test_a_memory_the_walk_could_not_list_is_named_in_the_manifest"
+      ],
+      "why": "the entries this line is asked about are the ones the walk could not classify — a symlink loop, a named pipe — so following one is how a disclosure comes to raise or hang where the thing it discloses only returned early."
     }
   ]
 }

@@ -2004,6 +2004,89 @@ def _adoptable(machine: Machine, store: str, project) -> bool:
     )
 
 
+def _entry_kind(path: str) -> str:
+    """What a directory entry IS, asked without following or opening it.
+
+    `os.lstat` and nothing else: the entries this is asked about are the ones
+    the walk could not classify, and a `stat` through an unresolved symlink or
+    an `open` of a named pipe is how a disclosure comes to hang where the thing
+    it discloses only returned early.
+    """
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return "an entry this scan cannot stat"
+    if stat.S_ISLNK(mode):
+        return "a symlink resolving to no file"
+    if stat.S_ISDIR(mode):
+        return "a directory"
+    if stat.S_ISFIFO(mode):
+        return "a named pipe"
+    if not stat.S_ISREG(mode):
+        return "not a regular file"
+    return "not a file the walk could list"
+
+
+def _memory_the_walk_did_not_list(known: list) -> list:
+    """Every harness memory entry the inventory dropped, one line each.
+
+    THE WALK IS A DIAGNOSTIC AND IT ABANDONS WHAT IT CANNOT STAT. An entry
+    that raises — a symlink loop, a chain past the kernel's limit — takes its
+    whole project directory with it, and an entry that is not a regular file
+    is dropped on its own. Either way it leaves no trace: not in the count,
+    not in the copy plan, and not in any line of the manifest, so an adopter
+    reads "0 memories outside every store" about a directory holding two.
+
+    THE SAME QUESTION ASKED FROM HERE, because the walk cannot answer it: what
+    it returns is what it managed to read, and the gap is only visible against
+    the directory itself. It is a read and stays one — names off `scandir`,
+    `os.lstat` for what an entry is, nothing followed and nothing opened — so
+    the disclosure cannot hang where the thing it discloses returned early.
+
+    A directory holding only `MEMORY.md` is not a gap: the walk drops it on
+    purpose, because the index is not a memory anyone is missing.
+    """
+    out: list = []
+    listed = {project.key: set(project.files) for project in known}
+    base = os.path.join(_harness_config_dir(), "projects")
+    try:
+        with os.scandir(base) as entries:
+            projects = sorted((entry.name, entry.path) for entry in entries)
+    except OSError:
+        return out
+    for key, path in projects:
+        memory = os.path.join(path, "memory")
+        try:
+            with os.scandir(memory) as entries:
+                names = sorted(
+                    entry.name
+                    for entry in entries
+                    if entry.name.endswith(".md")
+                )
+        except OSError:
+            continue
+        if key not in listed:
+            if not any(name != harness_memory.INDEX_NAME for name in names):
+                continue
+            out.append(
+                f"{_findable(key)}: the walk returned none of the "
+                f"{len(names)} `.md` "
+                f"{'entry' if len(names) == 1 else 'entries'} this directory "
+                "holds, so nothing in it is adopted, counted or named "
+                "anywhere else here — one entry it cannot stat abandons the "
+                f"whole directory ({_display_path(memory)})"
+            )
+            continue
+        out.extend(
+            f"{_findable(key)}: `{_clean(name)}` is "
+            f"{_entry_kind(os.path.join(memory, name))}, so it is not adopted "
+            "or counted"
+            for name in names
+            if name not in listed[key]
+        )
+    return out
+
+
 def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
     """What the harness has written, said in every manifest.
 
@@ -2038,6 +2121,7 @@ def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
         for project in known
         if not _adoptable(machine, store, project)
     )
+    out.extend(_memory_the_walk_did_not_list(known))
     # THE LIMIT IS ON DERIVING A KEY, NOT ON READING ONE. `KEY_MAX` refuses
     # inside `project_key`, which adoption never calls: adoption reads names
     # the harness already chose, and a directory the harness itself wrote over
