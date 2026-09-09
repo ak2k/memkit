@@ -6502,3 +6502,36 @@ def test_one_settings_file_is_one_scope_however_many_scopes_name_it(
     monkeypatch.chdir(work.parent)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert "checked into this repository" in row.detail
+
+
+def test_the_row_is_steered_only_by_a_variable_this_process_carries(
+    profile, monkeypatch
+) -> None:
+    """An adopter standing in their own home directory has no checkout
+    redirecting anything.
+
+    `~/.claude` is under the cwd there for the same reason every other
+    directory in home is, so a containment test asked of the DERIVED default
+    told them a tree had moved their harness and handed them a remedy for a
+    variable that is not in their environment.
+    """
+    monkeypatch.delenv(doctor.CONFIG_DIR_ENV, raising=False)
+    home = profile / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(home)
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    named = set(re.findall(r"\$([A-Z_]+)", f"{row.detail} {row.remedy}"))
+    assert all(os.environ.get(one) for one in named), (named, row.detail, row.remedy)
+    assert "$CLAUDE_CONFIG_DIR points inside" not in row.detail
+
+    # THE CONTROL. Set, and set inside the session's own directory: the
+    # sentence is true of that machine and the row still says it.
+    inside = home / "checkout" / ".claude"
+    inside.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(inside))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "$CLAUDE_CONFIG_DIR points inside" in row.detail

@@ -2230,7 +2230,7 @@
       "name": "auto-memory-reads-the-config-dir-variable-the-scopes-guard",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    steered = _under_cwd(config_dir)\n",
+      "old": "    steered = bool(config_value) and _under_cwd(config_dir)\n",
       "new": "    steered = False\n",
       "tests": [
         "tests/test_doctor.py::test_a_config_directory_this_tree_chose_does_not_pass_its_own_inventory"

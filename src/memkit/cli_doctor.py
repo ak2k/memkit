@@ -3970,7 +3970,12 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # default, the inventory whose emptiness chooses PASS over INFO, and the
     # file the remedy names — so a repository that redirects it moved this row
     # to its most reassuring answer.
-    steered = _under_cwd(config_dir)
+    # ASKED OF THE VALUE, NOT OF THE DERIVED DEFAULT. `~/.claude` is under the
+    # cwd whenever a session stands anywhere in home, so the containment test
+    # alone told an adopter in their own home directory that a checkout had
+    # redirected their harness — and offered them a remedy for a variable
+    # their environment does not carry.
+    steered = bool(config_value) and _under_cwd(config_dir)
     # AND A RELATIVE ONE NAMES NOTHING. `..`-relative lands outside the
     # session's directory, so the containment guard above says nothing about
     # it, and every path this row prints is then one that resolves only from
