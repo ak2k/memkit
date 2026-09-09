@@ -1469,6 +1469,146 @@ def test_out_writes_into_the_directory_it_judged_however_the_name_moves(
         flipper.join()
 
 
+def _raw_capture_tree(tmp_path):
+    """A config directory whose one memory carries a name worth not leaking."""
+    config = tmp_path / "config"
+    memory = config / "projects" / "-Users-realname-src-realrepo" / "memory"
+    memory.mkdir(parents=True)
+    _write(memory / "real-secret-name.md", "---\nname: a-real-memory-name\n---\nb\n")
+    return config
+
+
+def test_the_judged_directory_is_re_judged_when_the_file_is_created(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """The sixth spelling: the judged directory RENAMED INTO a checkout.
+
+    The five above it move the name and the descriptor answers about the inode,
+    which is right and is not enough — the question was asked before the
+    capture and the file is made after it, and a capture of a real machine is
+    seconds of window. Moving the inode satisfies every rule the descriptor
+    enforces, because it is still the directory that was judged and still the
+    one written into; it is simply somewhere else now.
+
+    So the question is asked again of the descriptor the file was created
+    relative to, and an answer that changed unlinks a file nothing has been
+    written to yet. The flipper above is a race and this is the seam: the
+    rename is driven once, inside the window, with no thread to lose.
+    """
+    module = _tool_module()
+    config = _raw_capture_tree(tmp_path)
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    real_capture = module.capture
+
+    def rename_into_the_checkout(*args, **kwargs):
+        shape = real_capture(*args, **kwargs)
+        os.rename(str(dest), str(checkout / "moved_dest"))
+        return shape
+
+    monkeypatch.setattr(module, "capture", rename_into_the_checkout)
+    argv = ["--config-dir", str(config), "--raw", "--out", str(dest / "leak.json")]
+    assert module.main(argv) == 2
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "Traceback" not in err, err
+    assert not (checkout / "moved_dest" / "leak.json").exists(), (
+        "real names landed in a checkout the destination was moved into"
+    )
+
+
+def test_a_destination_level_that_appears_during_the_capture_is_not_adopted(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """`--out a/b/c.json` where `b` does not exist yet, and something else
+    makes `b` a checkout while the capture runs.
+
+    Nothing judged `b`: the descriptor is on `a`, and the guarantee that
+    carries the judgement down is that everything below it is made by this
+    run and made empty. A level that turns out to be there already breaks
+    exactly that, so it is a refusal rather than a directory to adopt.
+
+    The arm WITHOUT `--raw` is the one that holds the rule on its own. With
+    `--raw` the re-ask at the leaf catches this particular level because it is
+    a checkout; an anonymised run asks nothing there, so an adopted level goes
+    unnoticed unless the adoption itself is refused.
+    """
+    module = _tool_module()
+    config = _raw_capture_tree(tmp_path)
+    land = tmp_path / "land"
+    land.mkdir()
+    newdir = land / "newdir"
+    real_capture = module.capture
+
+    def make_a_checkout(*args, **kwargs):
+        shape = real_capture(*args, **kwargs)
+        (newdir / ".git").mkdir(parents=True)
+        return shape
+
+    monkeypatch.setattr(module, "capture", make_a_checkout)
+    argv = ["--config-dir", str(config), "--raw", "--out", str(newdir / "shape.json")]
+    assert module.main(argv) == 2
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "Traceback" not in err, err
+    assert not (newdir / "shape.json").exists()
+
+    plain = land / "plain"
+
+    def make_a_directory(*args, **kwargs):
+        shape = real_capture(*args, **kwargs)
+        plain.mkdir()
+        return shape
+
+    monkeypatch.setattr(module, "capture", make_a_directory)
+    assert module.main(
+        ["--config-dir", str(config), "--out", str(plain / "shape.json")]
+    ) == 2
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "Traceback" not in err, err
+    assert not (plain / "shape.json").exists()
+
+    # The control the deferred creation is for: a level nobody else touches is
+    # still made, and the shape still lands in it.
+    monkeypatch.undo()
+    mine = tmp_path / "land" / "mine" / "shape.json"
+    assert module.main(["--config-dir", str(config), "--out", str(mine)]) == 0
+    assert json.loads(mine.read_text(encoding="utf-8"))["anonymised"] is True
+
+
+def test_a_landing_directory_that_will_not_open_is_a_refusal_and_not_a_no(
+    tmp_path,
+) -> None:
+    """A directory a shell can write in and `O_RDONLY` cannot open.
+
+    Mode 0333 grants write and search and no read, so a redirect lands there
+    and the walk that decides whether "there" is a checkout cannot take its
+    first step. Answering "not a checkout" to a question that was never
+    answered is how an un-anonymised shape reached a git checkout at exit 0
+    with an empty stderr, and the same directory at 0755 is refused.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses the mode bits this case is made of")
+    config = _raw_capture_tree(tmp_path)
+    tree = tmp_path / "wt"
+    (tree / ".git").mkdir(parents=True)
+    drop = tree / "drop"
+    drop.mkdir()
+    landing = drop / "raw.json"
+    argv = [sys.executable, str(TOOL), "--config-dir", str(config), "--raw"]
+    os.chmod(str(drop), 0o333)
+    try:
+        with landing.open("w") as handle:
+            refused = subprocess.run(
+                argv, stdout=handle, stderr=subprocess.PIPE, text=True, timeout=300,
+            )
+    finally:
+        os.chmod(str(drop), 0o755)
+    assert refused.returncode == 2, refused.stderr
+    assert "Traceback" not in refused.stderr, refused.stderr
+    assert landing.read_text(encoding="utf-8") == "", "it refused and wrote"
+
+
 def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(
     tmp_path,
 ) -> None:

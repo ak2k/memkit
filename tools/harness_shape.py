@@ -1128,7 +1128,7 @@ class _Landing:
     def inside_worktree(self) -> bool:
         return _worktree_above(self.fd, self.judged)
 
-    def create(self) -> int:
+    def create(self, judge_worktree: bool = False) -> int:
         """The destination created below the judged directory, or a refusal.
 
         `O_EXCL`: `--out` CREATES its destination and never writes over one.
@@ -1144,17 +1144,41 @@ class _Landing:
         `O_EXCL` a link is EEXIST whether it dangles or not, and what comes
         back is an inode this call made, so there is nothing left to ask about
         what was opened.
+
+        A LEVEL THAT ALREADY EXISTS IS A REFUSAL and not a level to adopt.
+        Every name in `missing` was absent when the descriptor above it was
+        judged, so one that is there now was made by somebody else while the
+        capture ran, and nothing has asked what it is; the whole point of
+        judging the ancestor is that what is made below it is made empty.
+
+        `judge_worktree` re-asks the checkout question of the descriptor the
+        file was just created relative to, which is the only descriptor that
+        answers about where the bytes are actually going: the pre-flight
+        answered before the capture, and a whole capture is time enough to
+        rename the judged directory into a checkout. The file is `O_EXCL`-fresh
+        and empty, so unlinking it destroys nothing.
         """
         current = os.dup(self.fd)
         try:
             for name in self.missing:
-                with contextlib.suppress(FileExistsError):
+                made = True
+                try:
                     os.mkdir(name, dir_fd=current)
+                except FileExistsError:
+                    # Whatever is at the name is opened below rather than
+                    # judged here, so a plain file still refuses as the
+                    # `Not a directory` it is.
+                    made = False
                 below = _open_dir(name, dir_fd=current)
                 os.close(current)
                 current = below
+                if not made:
+                    raise _Refused(
+                        f"{name} already stands under this path, and --out "
+                        f"makes the levels it writes below"
+                    )
             try:
-                return os.open(
+                fd = os.open(
                     self.leaf,
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                     0o600,
@@ -1162,8 +1186,30 @@ class _Landing:
                 )
             except FileExistsError:
                 raise _Refused(_occupant(current, self.leaf)) from None
+            if judge_worktree:
+                try:
+                    inside = _worktree_above(current, self.directory)
+                except _Refused:
+                    self._discard(fd, current)
+                    raise
+                if inside:
+                    self._discard(fd, current)
+                    raise _Refused(
+                        "--raw refuses to write inside a git worktree; a shape "
+                        "committed with real names is the one mistake this "
+                        "tool exists to prevent"
+                    )
+            return fd
         finally:
             os.close(current)
+
+    def _discard(self, fd: int, current: int) -> None:
+        """The just-created leaf removed, before anything is written to it."""
+        os.close(fd)
+        # A name somebody else has already taken away is not a name to chase:
+        # the refusal stands either way, and no byte of the shape was written.
+        with contextlib.suppress(OSError):
+            os.unlink(self.leaf, dir_fd=current)
 
 
 def _occupant(fd: int, leaf: str) -> str:
@@ -1260,9 +1306,19 @@ def _worktree_above(fd: int, directory: str) -> bool:
             here = os.fstat(current)
             if (here.st_dev, here.st_ino) in marks:
                 return True
-            above = os.open(
-                "..", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), dir_fd=current
-            )
+            try:
+                above = os.open(
+                    "..", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), dir_fd=current
+                )
+            except OSError as exc:
+                # A level this cannot open is a level this cannot clear, and
+                # the walk stopping early would report the checkout it never
+                # reached as no checkout at all.
+                raise _Refused(
+                    f"a directory above this one will not open, so whether "
+                    f"the destination is inside a git worktree cannot be "
+                    f"answered: {exc.strerror or exc}"
+                ) from None
             os.close(current)
             current = above
             info = os.fstat(current)
@@ -1280,12 +1336,20 @@ def _inside_worktree(directory: str) -> bool:
     `--out` is a file that does not exist yet, so its parent is what there is
     to walk, and a stdout redirect names no path at all — only the directory
     the process stands in.
+
+    A directory that will not open is a REFUSAL and not a False. A landing
+    directory at mode 0333 is writable and searchable by a shell and opaque to
+    `O_RDONLY`, so answering False there let the walk report an unread
+    checkout as no checkout — the leak this whole mechanism exists to stop,
+    with exit 0 and an empty stderr.
     """
     try:
         fd = _open_dir(os.path.realpath(directory))
-    except OSError:
-        # A directory that will not open is not one anything lands in.
-        return False
+    except OSError as exc:
+        raise _Refused(
+            f"this directory will not open, so whether it is inside a git "
+            f"worktree cannot be answered: {exc.strerror or exc}"
+        ) from None
     try:
         return _worktree_above(fd, os.path.realpath(directory))
     finally:
@@ -1421,28 +1485,38 @@ def _capture_and_write(args, landing) -> int:
     """The run itself, with the destination already open where there is one."""
     if args.raw:
         destination = args.out or _stdout_destination()
-        if destination is not None:
-            inside = (
-                landing.inside_worktree()
-                if landing is not None
-                else _inside_worktree(_landing_dir(destination))
-            )
-            if inside:
+        try:
+            if destination is not None:
+                inside = (
+                    landing.inside_worktree()
+                    if landing is not None
+                    else _inside_worktree(_landing_dir(destination))
+                )
+                if inside:
+                    sys.stderr.write(
+                        f"harness_shape: --raw refuses to write inside a git "
+                        f"worktree ({destination}); a shape committed with real "
+                        f"names is the one mistake this tool exists to prevent\n"
+                    )
+                    return 2
+            elif _stdout_is_a_file() and _inside_worktree(os.getcwd()):
+                # THE FALLBACK, for a kernel that will not name fd 1. The
+                # working directory is the wrong question — a redirect from
+                # outside a checkout into one is the leak, and this cannot see
+                # it — so it is what is left rather than what is asked, and it
+                # over-refuses.
                 sys.stderr.write(
-                    f"harness_shape: --raw refuses to write inside a git "
-                    f"worktree ({destination}); a shape committed with real "
-                    f"names is the one mistake this tool exists to prevent\n"
+                    "harness_shape: --raw refuses a redirect to a file from "
+                    "inside a git worktree; pass --out so the destination can "
+                    "be checked, and name one outside the checkout\n"
                 )
                 return 2
-        elif _stdout_is_a_file() and _inside_worktree(os.getcwd()):
-            # THE FALLBACK, for a kernel that will not name fd 1. The working
-            # directory is the wrong question — a redirect from outside a
-            # checkout into one is the leak, and this cannot see it — so it is
-            # what is left rather than what is asked, and it over-refuses.
+        except _Refused as exc:
+            # An unanswerable question is not a no. `--raw` carries real
+            # names, so the run that cannot establish where the bytes land
+            # writes none of them.
             sys.stderr.write(
-                "harness_shape: --raw refuses a redirect to a file from "
-                "inside a git worktree; pass --out so the destination can be "
-                "checked, and name one outside the checkout\n"
+                f"harness_shape: {destination or os.getcwd()}: {exc.args[0]}\n"
             )
             return 2
     config_dir = os.path.expanduser(args.config_dir)
@@ -1471,7 +1545,7 @@ def _capture_and_write(args, landing) -> int:
         sys.stdout.write(text)
         return 0
     try:
-        fd = landing.create()
+        fd = landing.create(judge_worktree=args.raw)
     except (OSError, _Refused) as exc:
         # NOTHING on this route escapes as a traceback: a capture reached once
         # over ssh has a wrapper reading the number, and every other
