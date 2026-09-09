@@ -736,6 +736,10 @@ def _outside(target: str) -> bool:
     )
 
 
+class _Unlooked(Exception):
+    """A row this run was not allowed to look at, carrying its target."""
+
+
 def _row_present(root: int, target: str) -> bool:
     """Whether `target` names something in the directory `root` is open on.
 
@@ -750,16 +754,26 @@ def _row_present(root: int, target: str) -> bool:
     does not follow either: a row pointing at a dead symlink counts as
     present, because the file is there to be moved and that is what the row is
     about.
+
+    THREE ANSWERS AND NOT TWO. `False` is a row that points at nothing, and
+    `_Unlooked` is a row this run was not allowed to ask about — two states a
+    single `False` reported as the same broken index, on a machine where being
+    refused a directory is the documented case rather than the strange one.
     """
     parts = os.path.normpath(target).split(os.sep)
-    current = os.dup(root)
+    current = None
     try:
+        # ACQUIRED INSIDE the handler that releases it. Taken one line above,
+        # an exhausted descriptor table escaped every handler in the walk and
+        # ended the capture of the whole machine, where the row that asked for
+        # the descriptor is the only thing that could not be measured.
+        current = os.dup(root)
         for part in parts[:-1]:
             below = _open_dir(part, dir_fd=current)
             os.close(current)
             current = below
         os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
-    except (OSError, ValueError):
+    except ValueError:
         # `ValueError` and not only `OSError`: a row target is adopter-authored
         # text and a NUL byte in it is valid UTF-8 that survives the read, and
         # `os.stat` and `os.open` refuse a path holding one before the kernel
@@ -768,13 +782,32 @@ def _row_present(root: int, target: str) -> bool:
         # to answer here; narrower, one such row ended the capture of the whole
         # machine.
         return False
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            # THE ROW REALLY POINTS AT NOTHING: the name is not there, or a
+            # component of it is not a directory. `ELOOP` sits here with
+            # `ENOTDIR` because a link at a component is a decision this
+            # function made rather than a failure — `O_NOFOLLOW` answers one
+            # errno on one kernel and the other on the next for the same link.
+            return False
+        # ANY OTHER ERRNO IS A QUESTION NOBODY GOT TO ASK, and answering it
+        # `False` scored the row on a lookup that never ran: EACCES on a tier
+        # — `sudo -n` into an NFS home under root-squash, which this file names
+        # as the expected failure — booked every row beneath it as dangling
+        # with `skipped` and `read_errors` both left at zero.
+        raise _Unlooked(target) from None
     finally:
-        os.close(current)
+        if current is not None:
+            os.close(current)
     return True
 
 
-def _index(memory_dir: str, listed: list):
+def _index(memory_dir: str, listed: list) -> tuple:
     """Row counts for `MEMORY.md`, and how many of the rows point at nothing.
+
+    A PAIR: the counts, and how many rows this run was refused a look at. The
+    second number belongs to the whole capture rather than to the index — see
+    `read_errors` — so it leaves here separately instead of as a field.
 
     `dangling_rows` is a COUNT and never a name. NOTHING JUDGES A
     HARNESS-WRITTEN INDEX TODAY — no rule in this repository reads one — so
@@ -803,10 +836,10 @@ def _index(memory_dir: str, listed: list):
     """
     path = os.path.join(memory_dir, INDEX_NAME)
     if os.path.islink(path) and not _resolves_inside(path, memory_dir):
-        return None
+        return None, 0
     head, truncated = _read_head(path)
     if head is None:
-        return None
+        return None, 0
     lines = head.splitlines()
     if truncated and lines and not head.endswith(("\n", "\r")):
         # What the cap cut is a fragment of a line — UNLESS it fell on a line
@@ -814,7 +847,7 @@ def _index(memory_dir: str, listed: list):
         # the file has.
         lines.pop()
     present = set(listed)
-    rows = dangling = 0
+    rows = dangling = unlooked = 0
     try:
         # ONCE, and every row is judged from it: a directory reopened by name
         # per row is a different directory each time somebody wants it to be.
@@ -822,7 +855,7 @@ def _index(memory_dir: str, listed: list):
     except OSError:
         # No descriptor on the directory the rows are about, so no row in it
         # can be looked at — a count nobody took, which is what None says.
-        return None
+        return None, 0
     try:
         for line in lines:
             match = _INDEX_ROW_RE.match(line)
@@ -832,11 +865,22 @@ def _index(memory_dir: str, listed: list):
             target = match.group(1).strip()
             if target in present:
                 continue
-            if _outside(target) or not _row_present(root, target):
+            if _outside(target):
+                dangling += 1
+                continue
+            try:
+                found = _row_present(root, target)
+            except _Unlooked:
+                unlooked += 1
+                continue
+            if not found:
                 dangling += 1
     finally:
         os.close(root)
-    return {"rows": rows, "dangling_rows": dangling, "truncated": truncated}
+    return (
+        {"rows": rows, "dangling_rows": dangling, "truncated": truncated},
+        unlooked,
+    )
 
 
 def _memory_dir(
@@ -923,6 +967,14 @@ def _memory_dir(
         if failed:
             read_errors += 1
     names_listed = [name for name, _ in listed]
+    index = None
+    if INDEX_NAME in names_listed:
+        # A ROW NOBODY WAS ALLOWED TO LOOK AT IS COUNTED WITH THE FILES NOBODY
+        # COULD READ. `dangling_rows` is a finding about the machine's index
+        # and there is no field that says a lookup was refused, so a refusal
+        # counted there is a wrong number in a document that exits 0.
+        index, unlooked = _index(memory_dir, names_listed)
+        read_errors += unlooked
     return (
         {
             "key": names.key(key) if anonymise else key,
@@ -930,11 +982,7 @@ def _memory_dir(
             "is_symlink": os.path.islink(memory_dir),
             "project_is_symlink": project_is_symlink,
             "files": files,
-            "index": (
-                _index(memory_dir, names_listed)
-                if INDEX_NAME in names_listed
-                else None
-            ),
+            "index": index,
             "lock_age_s": _lock_age(project_dir, memory_dir, now),
         },
         read_errors,
@@ -1076,7 +1124,8 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
         # byte-indistinguishable from a complete one is a capture nobody can
         # act on: `skipped` is a project this run could not look into — the
         # entry itself unreadable, or its memory directory unlistable —
-        # `read_errors` a file inside one that could not be measured.
+        # `read_errors` a file inside one that could not be measured, or an
+        # index row whose lookup was refused.
         "skipped": skipped,
         "read_errors": read_errors,
         "memory_dirs": memory_dirs,

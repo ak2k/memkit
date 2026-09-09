@@ -4553,7 +4553,7 @@
       "name": "harness-shape-the-index-is-read-through-a-link-out",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    if os.path.islink(path) and not _resolves_inside(path, memory_dir):\n        return None\n",
+      "old": "    if os.path.islink(path) and not _resolves_inside(path, memory_dir):\n        return None, 0\n",
       "new": "",
       "tests": [
         "tests/test_harness_shape.py::test_what_is_opened_is_decided_by_where_the_link_lands"
@@ -4631,8 +4631,8 @@
       "name": "harness-shape-an-unreadable-index-counts-as-an-index-with-no-rows",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    head, truncated = _read_head(path)\n    if head is None:\n        return None\n",
-      "new": "    head, truncated = _read_head(path)\n    if head is None:\n        return {\"rows\": 0, \"dangling_rows\": 0, \"truncated\": False}\n",
+      "old": "    head, truncated = _read_head(path)\n    if head is None:\n        return None, 0\n",
+      "new": "    head, truncated = _read_head(path)\n    if head is None:\n        return {\"rows\": 0, \"dangling_rows\": 0, \"truncated\": False}, 0\n",
       "tests": [
         "tests/test_harness_shape.py::test_an_index_that_cannot_be_read_is_not_an_index_with_no_rows"
       ],
@@ -4840,8 +4840,8 @@
       "name": "harness-shape-an-index-row-is-looked-up-by-its-whole-name",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "            if _outside(target) or not _row_present(root, target):\n",
-      "new": "            if _outside(target) or not os.path.lexists(\n                os.path.join(memory_dir, target)\n            ):\n",
+      "old": "            try:\n                found = _row_present(root, target)\n            except _Unlooked:\n",
+      "new": "            try:\n                found = os.path.lexists(\n                    os.path.join(memory_dir, target)\n                )\n            except _Unlooked:\n",
       "tests": [
         "tests/test_harness_shape.py::test_a_row_is_not_reached_through_a_linked_component"
       ],
@@ -4950,7 +4950,7 @@
       "name": "harness-shape-a-row-target-the-kernel-never-sees-ends-the-capture",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n    except (OSError, ValueError):\n",
+      "old": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n    except ValueError:\n",
       "new": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n    except OSError:\n",
       "tests": [
         "tests/test_harness_shape.py::test_a_row_target_holding_a_nul_byte_is_dangling_and_not_the_end_of_the_run"
@@ -4991,6 +4991,30 @@
         "tests/test_harness_shape.py::test_every_guard_call_uses_the_value_it_returns"
       ],
       "why": "A guard call whose answer is dropped judged one thing and let the caller act on another, which is every instance of that class this file has closed: the path re-derived from a string, the directory reopened by name, the descriptor taken twice. The lint is the cheap catch for the next call site, and a bare call is what it has to see."
+    },
+    {
+      "name": "harness-shape-the-row-walks-descriptor-is-taken-outside-its-handler",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    current = None\n    try:\n        # ACQUIRED INSIDE the handler that releases it. Taken one line above,\n        # an exhausted descriptor table escaped every handler in the walk and\n        # ended the capture of the whole machine, where the row that asked for\n        # the descriptor is the only thing that could not be measured.\n        current = os.dup(root)\n        for part in parts[:-1]:\n",
+      "new": "    current = os.dup(root)\n    try:\n        for part in parts[:-1]:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_one_row_short_of_a_descriptor_degrades_the_row_and_not_the_capture",
+        "tests/test_harness_shape.py::test_hostile_trees_exit_zero_or_two_with_no_traceback[one free descriptor for the whole walk -> exit 0]"
+      ],
+      "why": "A descriptor taken one line above the `try` reaches no handler in the walk: one EMFILE on it leaves by the exit-2 boundary and a machine whose every project was read gets no shape at all, where the row that wanted the descriptor is the only thing that could not be measured. The window is exactly one free descriptor wide, and a capture down an ssh pipe is where it is reached."
+    },
+    {
+      "name": "harness-shape-a-row-nobody-could-look-at-counts-as-a-dead-row",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        # as the expected failure — booked every row beneath it as dangling\n        # with `skipped` and `read_errors` both left at zero.\n        raise _Unlooked(target) from None\n",
+      "new": "        # as the expected failure — booked every row beneath it as dangling\n        # with `skipped` and `read_errors` both left at zero.\n        return False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_tier_this_run_may_not_enter_is_not_a_tier_full_of_dead_rows",
+        "tests/test_harness_shape.py::test_one_row_short_of_a_descriptor_degrades_the_row_and_not_the_capture"
+      ],
+      "why": "Every errno answering the same `False` scores a row on a lookup that never ran: a tier this capture may not enter — `sudo -n` into an NFS home under root-squash — reads as a tier of dead rows, and the document exits 0 with `skipped` and `read_errors` at zero and no field that says a lookup was refused."
     }
   ]
 }

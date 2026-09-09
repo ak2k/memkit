@@ -982,9 +982,9 @@ def test_a_row_one_directory_down_is_looked_at_rather_than_written_off(
     assert entry["index"] == {"rows": 5, "dangling_rows": 3, "truncated": False}
     module = _tool_module()
     asked = _recorded_lookups(module, monkeypatch)
-    assert module._index(str(memory), ["MEMORY.md", "sibling.md"]) == {
-        "rows": 5, "dangling_rows": 3, "truncated": False,
-    }
+    assert module._index(str(memory), ["MEMORY.md", "sibling.md"]) == (
+        {"rows": 5, "dangling_rows": 3, "truncated": False}, 0,
+    )
     # WHICH ROWS the filesystem is asked about, which is the half of this the
     # count alone does not say: `hot/beads.md` one directory down and
     # `nowhere.md`, and neither `/etc/hosts` nor `../sibling.md`. Component by
@@ -1029,9 +1029,9 @@ def test_a_row_is_not_reached_through_a_linked_component(
 
     module = _tool_module()
     asked = _recorded_lookups(module, monkeypatch)
-    assert module._index(str(memory), ["MEMORY.md", "own.md"]) == {
-        "rows": 3, "dangling_rows": 1, "truncated": False,
-    }
+    assert module._index(str(memory), ["MEMORY.md", "own.md"]) == (
+        {"rows": 3, "dangling_rows": 1, "truncated": False}, 0,
+    )
     # And nothing was asked by a name at all: every question is one component
     # put to a descriptor the walk already holds, which is what keeps a linked
     # component from being followed rather than what notices afterwards.
@@ -1077,6 +1077,99 @@ def test_a_row_target_holding_a_nul_byte_is_dangling_and_not_the_end_of_the_run(
     shape = _by_key(_shape("--config-dir", str(config), "--raw"))
     assert shape["-a"]["index"] == {"rows": 2, "dangling_rows": 1, "truncated": False}
     assert shape["-b"]["index"] == {"rows": 1, "dangling_rows": 0, "truncated": False}
+
+
+def test_a_tier_this_run_may_not_enter_is_not_a_tier_full_of_dead_rows(
+    tmp_path,
+) -> None:
+    """A directory the capture is refused is not a directory of dangling rows.
+
+    `sudo -n` into an NFS home under root-squash is the deployment this tool
+    was written for and the thing that turns a readable tier into EACCES, and
+    every errno from the component walk answered the same `False`: a tier at
+    mode 000 booked every row beneath it as pointing at nothing, with
+    `skipped` and `read_errors` both at zero and an exit 0. Nothing in the
+    document said a lookup had been refused, so the number a consumer would
+    judge the index on was wrong in the direction that looks like a finding.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root enters a directory at mode 000")
+    config = tmp_path / "config"
+    tiers = []
+    for key in ("-a", "-b", "-c"):
+        memory = _memory_dir(config, key)
+        _write(memory / "top.md", "x\n")
+        _write(memory / "hot" / "deep.md", "x\n")
+        _write(memory / "MEMORY.md", "- [a](top.md)\n- [b](hot/deep.md)\n")
+        tiers.append(memory / "hot")
+    readable = _shape("--config-dir", str(config), "--raw")
+    for tier in tiers:
+        tier.chmod(0o000)
+    try:
+        refused = _shape("--config-dir", str(config), "--raw")
+    finally:
+        for tier in tiers:
+            tier.chmod(0o755)
+    counts = [
+        (entry["index"]["rows"], entry["index"]["dangling_rows"])
+        for entry in refused["memory_dirs"]
+    ]
+    # THE ROWS ARE STILL COUNTED and NONE of them is dangling: the rows are
+    # read off the index, and whether the tier can be entered is a fact about
+    # this run rather than about the index.
+    assert counts == [(2, 0), (2, 0), (2, 0)], counts
+    assert counts == [
+        (entry["index"]["rows"], entry["index"]["dangling_rows"])
+        for entry in readable["memory_dirs"]
+    ], "the tier's mode moved a count it is not about"
+    # AND THE REFUSAL IS ON THE DOCUMENT, once per row that was not looked at,
+    # in the counter that already means "inside a directory this run reached
+    # and could not measure".
+    assert refused["read_errors"] == 3
+    assert refused["skipped"] == 0
+    assert readable["read_errors"] == 0
+
+
+def test_one_row_short_of_a_descriptor_degrades_the_row_and_not_the_capture(
+    tmp_path,
+) -> None:
+    """The descriptor the row walk needs, taken where the walk releases it.
+
+    Taken one line above the `try`, an `EMFILE` on it reached no handler in
+    the walk at all and left by the contract boundary: exit 2 and no shape for
+    a machine whose every project had been read, which is the one failure mode
+    a capture over a pipe cannot recover from. The table is squeezed to
+    exactly one free descriptor, which is the whole width of the window — with
+    none the interpreter cannot finish its own imports, and with two the walk
+    has room.
+
+    The child is the door the exit-contract table uses, because a descriptor
+    table with one entry left cannot be inherited across an `exec` that still
+    has imports of its own to take.
+    """
+    config = tmp_path / "config"
+    for key in ("-a", "-b", "-c"):
+        memory = _memory_dir(config, key)
+        _write(memory / "top.md", "x\n")
+        _write(memory / "hot" / "deep.md", "x\n")
+        _write(memory / "MEMORY.md", "- [a](top.md)\n- [b](hot/deep.md)\n")
+    door = _write(tmp_path / "door.py", _HOSTILE_DOOR)
+    run = subprocess.run(
+        [sys.executable, str(door), str(TOOL), "squeeze", str(config)],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "Traceback" not in run.stderr, run.stderr
+    shape = json.loads(run.stdout)
+    assert len(shape["memory_dirs"]) == 3
+    # Every row counted, none of them dangling, and one refusal booked per row
+    # the walk had no descriptor for.
+    assert [
+        (entry["index"]["rows"], entry["index"]["dangling_rows"])
+        for entry in shape["memory_dirs"]
+    ] == [(2, 0), (2, 0), (2, 0)]
+    assert shape["read_errors"] == 3
+    assert shape["skipped"] == 0
 
 
 def test_what_is_opened_is_decided_by_where_the_link_lands(tmp_path) -> None:
@@ -3294,7 +3387,7 @@ _HOSTILE_TREES = {
     "a fifo where a memory file goes -> exit 0": 0,
     "a symlink loop at a project and at a memory file -> exit 0": 0,
     "an unreadable projects directory -> exit 2": 2,
-    "one free descriptor for the whole walk -> exit 2": 2,
+    "one free descriptor for the whole walk -> exit 0": 0,
     "a projects directory that is a dangling link -> exit 2": 2,
     "a memory file whose name is not UTF-8 -> exit 0": 0,
     "an index row deeper than the recursion limit -> exit 0": 0,
