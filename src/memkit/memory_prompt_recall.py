@@ -4227,11 +4227,13 @@ def _secret_re() -> re.Pattern[str]:
     wrong is one pointer, visible as `lex_secret` in the soak record rather
     than silent.
 
-    The separator may be preceded by ONE closing quote, because a fenced JSON
-    block is an ordinary thing for a checked-in memory to hold and there the
-    key is spelled `"api_key":` — requiring the separator to follow the
-    keyword immediately reads every quoted key as prose, `private_key`
-    included, whose commonest spelling is that one.
+    The separator may be preceded by ONE closing quote or BACKTICK, because a
+    fenced JSON block is an ordinary thing for a checked-in memory to hold and
+    there the key is spelled `"api_key":` — requiring the separator to follow
+    the keyword immediately reads every quoted key as prose, `private_key`
+    included, whose commonest spelling is that one. The corpus this reads is
+    markdown, where inline code is the native way to write a key name, and the
+    paragraph above writes it that way itself.
 
     NO RUN IN FRONT of that keyword, which is what keeps the scan linear in
     the bytes it reads. A run there — bounded or not — makes the engine try
@@ -4261,8 +4263,18 @@ def _secret_re() -> re.Pattern[str]:
     (`https://user:pass@host`), Google service-account JSON as a document, or
     bare base64 blobs — each of those is either a shape with no keyword to
     anchor on or one whose recogniser costs more than a backstop may spend on
-    a module imported once per prompt. A store is still a repository's own
-    file, and the pointer is all that is ever served from one.
+    a module imported once per prompt.
+
+    Nor does it recognise the markdown spellings that put something other than
+    a quote, a backtick or a separator between the keyword and the value: a
+    BOLD key (`**api_key**: value`), a TABLE ROW (`| api_key | value |`), a
+    YAML BLOCK SCALAR (`api_key: |` with the value on the next line), a YAML
+    ANCHOR (`api_key: &name value`) and a CSV row all miss, because the
+    separator is not `:` or `=` where the pattern looks for it or the value at
+    that offset is one character. Each is a wider assignment shape rather than
+    a new anchor, and widening the shape is what the run in front of the
+    keyword cost 1.3 s to learn. A store is still a repository's own file, and
+    the pointer is all that is ever served from one.
     """
     global _SECRET
     if _SECRET is None:
@@ -4278,7 +4290,7 @@ def _secret_re() -> re.Pattern[str]:
                     r"(?i:authorization:\s*bearer\s+[A-Za-z0-9._~+/-]{20,})",
                     r"(?i:(?:password|passwd|secret|token|api_?key|private_key)"
                     r"[A-Za-z0-9_]{0,64})"
-                    r"""["']?\s*[:=]\s*\S{8,}""",
+                    r"""["'`]?\s*[:=]\s*\S{8,}""",
                 )
             )
         )

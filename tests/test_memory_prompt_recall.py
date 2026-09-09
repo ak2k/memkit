@@ -15543,6 +15543,11 @@ ADDED_SECRET_SHAPES = [
         '{"private_key": "-----BEGIN X-----"}',
         'the "private_key" entry is minted by the vault and never committed',
     ),
+    (
+        "inline-code-api-key",
+        "Set `api_key`: wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY in the deploy env.",
+        "Set the api_key in the deploy env; the platform team issues it.",
+    ),
 ]
 
 
