@@ -4980,6 +4980,17 @@
         "tests/test_harness_shape.py::test_hostile_trees_exit_zero_or_two_with_no_traceback[an unreadable projects directory -> exit 2]"
       ],
       "why": "Every way the machine underneath a capture fails arrives as an OSError, and no site enumerates them: a `.git` that is a file where a directory was named, a working directory removed under the process, a projects directory the run may not read. Without them at the boundary the wrapper on the far end of an ssh pipe reads a number the interpreter chose."
+    },
+    {
+      "name": "harness-shape-a-judgement-is-made-and-dropped",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    config_dir = os.path.expanduser(args.config_dir)\n",
+      "new": "    config_dir = os.path.expanduser(args.config_dir)\n    _outside(config_dir)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_every_guard_call_uses_the_value_it_returns"
+      ],
+      "why": "A guard call whose answer is dropped judged one thing and let the caller act on another, which is every instance of that class this file has closed: the path re-derived from a string, the directory reopened by name, the descriptor taken twice. The lint is the cheap catch for the next call site, and a bare call is what it has to see."
     }
   ]
 }

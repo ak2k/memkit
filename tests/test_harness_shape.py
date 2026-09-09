@@ -3390,3 +3390,76 @@ def test_hostile_trees_exit_zero_or_two_with_no_traceback(kind, tmp_path) -> Non
         assert run.stdout == "", "it failed and emitted a shape anyway"
     else:
         assert json.loads(run.stdout)["schema"] >= 1, run.stdout
+
+
+# Every helper here that JUDGES — a path, a descriptor, a repository — and the
+# one-line reason its answer has to be read. The judgement and the act on it
+# are one question asked once: a call whose value is dropped has asked it and
+# then done something else, which is the shape three rounds of this file closed
+# one instance at a time.
+_GUARDS = (
+    ("_regular_fd", "the descriptor IS the answer: an fstat judged what was opened"),
+    ("_resolves_inside", "whether a link reaches bytes this capture is reading"),
+    ("_outside", "whether a row target escapes the directory being walked"),
+    ("_row_present", "whether the row names something in the directory"),
+    ("_open_dir", "a descriptor for the level, refusing a link or a file at it"),
+    ("_landing_dir", "where a write actually lands, which is not its name"),
+    ("_occupant", "which way a destination name is already taken"),
+    ("_git_says_worktree", "git's own answer about a directory"),
+    ("_worktree_above", "whether a checkout stands above the descriptor"),
+    ("_inside_worktree", "the same question asked about a directory name"),
+    ("_stdout_is_a_file", "whether fd 1 is a file rather than a pipe"),
+    ("_stdout_destination", "the path fd 1 writes to, or no answer"),
+    ("_is_own_config_dir", "whether the tree named is this machine's own"),
+    ("create", "_Landing: the descriptor of the destination it just made"),
+    ("inside_worktree", "_Landing: the checkout question asked of the descriptor"),
+)
+
+
+def test_every_guard_call_uses_the_value_it_returns() -> None:
+    """A judgement nobody reads is a judgement that decided nothing.
+
+    Each name above answers a question, and the caller acts on the answer; a
+    call standing alone as a statement has asked and then gone on to act on
+    something else — the path re-derived from a string, the directory reopened
+    by name, the descriptor taken twice. Every instance of that class in this
+    file was a real defect, and the cheap catch for the next one is that no
+    call to any of them may be an expression statement or be assigned to `_`.
+    """
+    source = TOOL.read_text(encoding="utf-8")
+    tree = ast.parse(source, str(TOOL))
+    named = frozenset(name for name, _ in _GUARDS)
+
+    def called(node):
+        if not isinstance(node, ast.Call):
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id in named:
+            return node.func.id
+        if isinstance(node.func, ast.Attribute) and node.func.attr in named:
+            return node.func.attr
+        return None
+
+    # The lint is worth nothing if the names have moved: it would pass over a
+    # file that calls none of them.
+    reached = {
+        answer
+        for answer in (called(node) for node in ast.walk(tree))
+        if answer is not None
+    }
+    assert reached == named, sorted(named - reached)
+    dropped = []
+    for node in ast.walk(tree):
+        # A statement, or an assignment to the name that means "not read":
+        # `_ = guard(...)` drops the answer with a comment's worth of ceremony
+        # and nothing else.
+        if isinstance(node, ast.Expr) or (
+            isinstance(node, ast.Assign)
+            and all(
+                isinstance(target, ast.Name) and target.id == "_"
+                for target in node.targets
+            )
+        ):
+            answer = called(node.value)
+            if answer is not None:
+                dropped.append((answer, node.lineno))
+    assert dropped == [], dropped
