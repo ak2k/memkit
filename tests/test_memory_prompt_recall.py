@@ -15099,6 +15099,18 @@ def _corpus_linked_inside(tmp_path: Path) -> tuple[Path, Path]:
     return repo, elsewhere
 
 
+def _corpus_subdirectory(tmp_path: Path) -> tuple[Path, Path]:
+    """The memories moved a level down, so the named dir is strictly BELOW the
+    corpus — every byte it serves is still a byte the repository chose."""
+    repo = _two_memories(tmp_path)
+    corpus = repo / PROJECT_STORE_DIR / "search"
+    sub = corpus / "sub"
+    sub.mkdir()
+    for name in ("unionfs_perms.md", "unionfs_planted.md"):
+        (corpus / name).rename(sub / name)
+    return repo, sub
+
+
 # The spellings ONE directory arrives in, and what each door does with it.
 #
 # `--search --dir` and the prompt path answer the same question — did a
@@ -15126,6 +15138,13 @@ NAMED_DIR_SPELLINGS = [
     (
         "a-directory-above-the-corpus",
         lambda p: (lambda r: (r, r / "docs"))(_two_memories(p)),
+        None,
+        (True, False),
+        (True, False),
+    ),
+    (
+        "a-directory-below-the-corpus",
+        _corpus_subdirectory,
         None,
         (True, False),
         (True, False),
@@ -15174,7 +15193,7 @@ NAMED_DIR_SPELLINGS = [
 def test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does(
     tmp_path: Path, label: str, build, env_for, by_hook, by_dir
 ) -> None:
-    """One directory, spelled eight ways, through both doors.
+    """One directory, spelled nine ways, through both doors.
 
     The `--dir` door used to answer this with a second predicate — string
     containment, inside-only, over one spelling, with "there is no config" read

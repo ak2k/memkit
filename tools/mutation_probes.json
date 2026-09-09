@@ -4664,6 +4664,17 @@
       "why": "retrieval walks DOWNWARD from the directory it was handed, so `--dir <repo>` and `--dir <repo>/docs` serve every byte of the corpus underneath — asked inside-only, the classification misses exactly the spellings that serve the most"
     },
     {
+      "name": "a-named-dir-below-the-corpus-is-not-the-corpus",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    return store.read_only and (\n        _same_tree(corpus, real) or _same_tree(real, corpus)\n    )\n",
+      "new": "    return store.read_only and _same_tree(real, corpus)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
+      ],
+      "why": "the other half of the same question: a subdirectory of the corpus is repository bytes too, and asked at-or-above only, `--dir <corpus>/sub` prints a checked-in memory carrying a credential with the scan never having fired"
+    },
+    {
       "name": "the-named-dir-is-matched-by-its-spelling",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
