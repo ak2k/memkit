@@ -6459,3 +6459,46 @@ def test_a_store_root_and_a_configured_directory_are_normalised_alike(
     nfd_root = str(profile / "stores" / _NFD_STORE)
     nfc_child = str(profile / "stores" / _NFC_STORE / "search")
     assert doctor._within(nfc_child, nfd_root) is True
+
+
+def test_one_settings_file_is_one_scope_however_many_scopes_name_it(
+    profile, monkeypatch
+) -> None:
+    """Run doctor from your own home directory and `.claude/settings.json`
+    under the session's cwd IS the user scope.
+
+    Read a second time as `project`, the adopter's own configuration file was
+    reported as checked into a repository and travelling with every clone —
+    two false statements about a file nothing but that machine had ever
+    written, and both of them from one file counted twice.
+    """
+    home = profile / "home"
+    config = home / ".claude"
+    config.mkdir(parents=True, exist_ok=True)
+    settings = config / "settings.json"
+    settings.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
+    monkeypatch.chdir(home)
+
+    named = [scope for scope in doctor.settings_scopes() if scope.path]
+    assert len({os.path.realpath(scope.path) for scope in named}) == len(named)
+
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "checked into this repository" not in row.detail
+    assert "checked-in .claude" not in row.detail
+
+    # THE CONTROL. A session standing in a checkout, where the file under the
+    # cwd really is one the repository carries.
+    settings.unlink()
+    work = profile / "work" / ".claude"
+    work.mkdir(parents=True)
+    (work / "settings.json").write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    monkeypatch.chdir(work.parent)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "checked into this repository" in row.detail

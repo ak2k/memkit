@@ -533,17 +533,31 @@ def settings_scopes(cwd: str | None = None) -> list[Settings]:
     # `local` entries below are already untrusted by their paths; this is the
     # same rule for the one whose path is somebody's to choose.
     user_owned = not _under_cwd(os.path.join(user, SETTINGS_NAME))
+    # ONE FILE IS ONE SCOPE. Run from the directory that holds the config
+    # directory — an adopter's own home, which is where a first `memkit doctor`
+    # is most often typed — `.claude/` under the cwd IS the user scope, and
+    # read a second time as `project` the adopter's own settings file was
+    # reported as checked into a repository and travelling with every clone.
+    # Both scopes go, not just `project`: what these two entries model is a
+    # directory somebody else's checkout decides, and here there is no such
+    # directory to model.
+    project_dir = (
+        ""
+        if not cwd or _resolved(os.path.join(cwd, ".claude")) == _resolved(user)
+        else os.path.join(cwd, ".claude")
+    )
     return [
         Settings("managed", os.path.join(_managed_dir(), MANAGED_SETTINGS_NAME)),
         Settings("user", os.path.join(user, SETTINGS_NAME),
                  adopter_owned=user_owned),
         Settings(
-            "project", os.path.join(cwd, ".claude", SETTINGS_NAME) if cwd else "",
+            "project",
+            os.path.join(project_dir, SETTINGS_NAME) if project_dir else "",
             adopter_owned=False,
         ),
         Settings(
             "local",
-            os.path.join(cwd, ".claude", LOCAL_SETTINGS_NAME) if cwd else "",
+            os.path.join(project_dir, LOCAL_SETTINGS_NAME) if project_dir else "",
             adopter_owned=False,
         ),
     ]
