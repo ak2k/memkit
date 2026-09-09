@@ -4302,6 +4302,17 @@
         "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
       ],
       "why": "each sentence stays a spelling the tables know while the paragraph now offers the link for the state its own reason sentence says the link reaches nothing in"
+    },
+    {
+      "name": "zsh-gate-the-shell-is-commented-out-of-the-builder",
+      "module": "docs",
+      "file": "flake.nix",
+      "old": "nativeBuildInputs = [ pkgs.git pkgs.zsh ];",
+      "new": "nativeBuildInputs = [ pkgs.git /* pkgs.zsh */ ];",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "nix drops the element and the flake stays valid, so this is deleting the shell in the one spelling a scanner that knows only `#` reads as still present"
     }
   ]
 }

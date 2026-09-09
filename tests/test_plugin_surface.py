@@ -4586,8 +4586,8 @@ def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
     assert scopes[0] == "managed policy", scopes
 
 
-def _uncommented(text: str) -> str:
-    """The file with everything a `#` comments out removed.
+def _uncommented(text: str, block: bool = False) -> str:
+    """The file with everything a comment removes taken out.
 
     A construct matched anywhere in a file is satisfied by a comment mentioning
     it, which is exactly what deleting the thing the comment describes leaves
@@ -4600,26 +4600,43 @@ def _uncommented(text: str) -> str:
     is asserted absent from the raw text of both files, which no quoting shape
     can defeat and no scanner can be wrong about. This is for the constructs —
     the list the build reads, and the steps the runner takes.
+
+    Nix also comments with `/* ... */`, which removes a list element while the
+    file stays valid, so the nix caller asks for those too. The workflow does
+    not: `/*` is a glob there, not a comment, and cutting at one would eat a
+    path the runner takes.
     """
     kept = []
+    inblock = False
     for line in text.splitlines():
         quote = None
-        cut = len(line)
+        out = []
         i = 0
         while i < len(line):
             char = line[i]
-            if quote is not None:
+            if inblock:
+                if line.startswith("*/", i):
+                    inblock = False
+                    i += 1
+            elif quote is not None:
+                out.append(char)
                 if char == "\\" and quote == '"':
                     i += 1
+                    if i < len(line):
+                        out.append(line[i])
                 elif char == quote:
                     quote = None
-            elif char in "\"'":
-                quote = char
             elif char == "#":
-                cut = i
                 break
+            elif block and line.startswith("/*", i):
+                inblock = True
+                i += 1
+            else:
+                out.append(char)
+                if char in "\"'":
+                    quote = char
             i += 1
-        kept.append(line[:cut].rstrip())
+        kept.append("".join(out).rstrip())
     return "\n".join(kept)
 
 
@@ -4699,7 +4716,9 @@ def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
     # The nix leg: zsh among the inputs of the builder every suite is made
     # with, as an element of the list the build reads.
     builder = re.search(
-        r'runCommand "memkit-\$\{name\}" \{(.*?)\n\s*\} ', _uncommented(flake), re.S
+        r'runCommand "memkit-\$\{name\}" \{(.*?)\n\s*\} ',
+        _uncommented(flake, block=True),
+        re.S,
     )
     assert builder, "the shared suite builder is no longer recognisable"
     assert "pkgs.zsh" in _nix_list(builder.group(1), "nativeBuildInputs"), builder.group(1)
