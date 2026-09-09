@@ -1696,6 +1696,74 @@ def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(
     assert _shape("--config-dir", str(empty))["projects_total"] == 0
 
 
+def test_a_projects_directory_that_goes_away_under_the_walk_is_not_an_empty_machine(
+    tmp_path, monkeypatch,
+) -> None:
+    """The other way into the same arm, and the name cannot answer it.
+
+    `projects/` dropping mid-iteration — an unmounted NFS home, a directory
+    moved out from under the walk — raises the same `FileNotFoundError` as a
+    directory that was never there, and the name the arm asks about is gone by
+    the time it asks. So the re-raise was skipped, every project already
+    collected was thrown away, and a machine mid-unmount captured as a healthy
+    empty one at exit 0.
+
+    What the arm asks first now is whether the walk had already served an
+    entry, which is a fact about this run rather than about a name somebody
+    else owns.
+    """
+    module = _tool_module()
+    config = tmp_path / "config"
+    for number in range(4):
+        _write(
+            _memory_dir(config, f"-p{number}") / "MEMORY.md",
+            f"---\nname: n{number}\n---\nbody\n",
+        )
+    projects = str(config / "projects")
+    assert module.capture(str(config))["projects_total"] == 4
+
+    real_scandir = os.scandir
+
+    class _DropsAfterOneEntry:
+        """One entry served, and then the directory goes the way a mount does."""
+
+        def __init__(self, path) -> None:
+            self._inner = real_scandir(path)
+            self._path = path
+            self._served = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc) -> bool:
+            self._inner.close()
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self._served:
+                shutil.rmtree(self._path, ignore_errors=True)
+                raise FileNotFoundError(
+                    errno.ENOENT, os.strerror(errno.ENOENT), self._path
+                )
+            self._served += 1
+            return next(self._inner)
+
+    def scandir(path=".", *args, **kwargs):
+        # `module.os` IS the os module, so this patch is GLOBAL: everything
+        # that is not the one path being targeted is delegated, file
+        # descriptors and other directories included.
+        if isinstance(path, str) and path == projects and not args and not kwargs:
+            return _DropsAfterOneEntry(path)
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "scandir", scandir)
+    with pytest.raises(FileNotFoundError):
+        module.capture(str(config))
+
+
 def test_a_frontmatter_key_is_matched_the_way_the_checker_matches_it(
     tmp_path,
 ) -> None:

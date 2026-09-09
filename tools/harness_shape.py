@@ -956,12 +956,19 @@ def capture(config_dir: str, anonymise: bool = True, managed: bool = False) -> d
                     # It is counted here and still counted in `projects_total`.
                     skipped += 1
     except FileNotFoundError:
-        if os.path.lexists(projects_root):
+        if projects_total or os.path.lexists(projects_root):
             # THE NAME IS THERE and does not resolve — `projects/` as a link
             # to somewhere that has been moved or unmounted, which `scandir`
             # reports the same way it reports no name at all. That machine has
             # projects and this run cannot see them, so it is the failure
             # below and not the empty one above it.
+            #
+            # AND THE NAME IS ASKED AFTER THE RAISE, so a `projects/` that went
+            # away UNDER the walk — a dropped mount, a moved link — is a name
+            # nobody can find by the time the question is put, and the arm read
+            # a machine mid-unmount as a machine with nothing on it. An
+            # iteration that already served an entry is not that machine, and
+            # unlike the name, that fact cannot change while this is asked.
             raise
         # A config directory with no `projects/` is a machine with nothing
         # written yet, and that is a shape. EVERY OTHER failure is not: the
