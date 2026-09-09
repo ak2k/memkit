@@ -97,6 +97,24 @@ check("a project key is one directory name",
       "/" in harness_memory.project_key(os.getcwd()), False)
 check("nothing written is an empty inventory that was read",
       harness_memory.inventory(os.environ["CLAUDE_CONFIG_DIR"]), ([], True, ""))
+# THE CONTROL IS THE LINE ABOVE, AND IT IS NOT THE CHECK. An absent `projects/`
+# returns from the FileNotFoundError arm before the loop, so the empty answer
+# says nothing about the walk this block exists to run on the floor. One
+# project on disk is what makes the rest of the function execute.
+wrote = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "-k", "memory")
+os.makedirs(wrote)
+with open(os.path.join(wrote, harness_memory.INDEX_NAME), "w") as f:
+    f.write("# memories\n")
+with open(os.path.join(wrote, "torque.md"), "w") as f:
+    f.write("---\nname: torque\ndescription: a memory\ntype: reference\n---\n\n"
+            "torque spec after the recall\n")
+found, read_ok, unreadable = harness_memory.inventory(
+    os.environ["CLAUDE_CONFIG_DIR"])
+check("the walk reaches one project", [p.key for p in found], ["-k"])
+check("the walk lists what a move has to carry, sorted",
+      [p.files for p in found], [[harness_memory.INDEX_NAME, "torque.md"]])
+check("the index is carried and not counted", [p.memories for p in found], [1])
+check("the walk read cleanly", (read_ok, unreadable), (True, ""))
 check("doctor checks", len(cli_doctor.CHECK_IDS) > 20, True)
 check("version line", "hook:" in cli_doctor.version_line(), True)
 check("init default config is absolute after expansion",
