@@ -5015,6 +5015,18 @@
         "tests/test_harness_shape.py::test_one_row_short_of_a_descriptor_degrades_the_row_and_not_the_capture"
       ],
       "why": "Every errno answering the same `False` scores a row on a lookup that never ran: a tier this capture may not enter — `sudo -n` into an NFS home under root-squash — reads as a tier of dead rows, and the document exits 0 with `skipped` and `read_errors` at zero and no field that says a lookup was refused."
+    },
+    {
+      "name": "harness-shape-a-level-above-the-landing-that-will-not-open-is-unguarded",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            try:\n                above = os.open(\n                    \"..\", os.O_RDONLY | getattr(os, \"O_DIRECTORY\", 0), dir_fd=current\n                )\n            except OSError as exc:\n                # A level this cannot open is a level this cannot clear, and\n                # the walk stopping early would report the checkout it never\n                # reached as no checkout at all.\n                raise _Refused(\n                    f\"a directory above this one will not open, so whether \"\n                    f\"the destination is inside a git worktree cannot be \"\n                    f\"answered: {exc.strerror or exc}\"\n                ) from None\n",
+      "new": "            above = os.open(\n                \"..\", os.O_RDONLY | getattr(os, \"O_DIRECTORY\", 0), dir_fd=current\n            )\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_an_ancestor_that_will_not_open_is_a_refusal_on_both_raw_routes[--out]",
+        "tests/test_harness_shape.py::test_an_ancestor_that_will_not_open_is_a_refusal_on_both_raw_routes[redirect]"
+      ],
+      "why": "The landing directory opens and the level above it does not, which mode 0111 on any ancestor produces: unguarded, that step is a PermissionError out of the middle of the walk on both `--raw` routes. Guarded only by the exit-2 boundary the number is right and the line names `..`, so the refusal has to carry its own reason and the destination it is about."
     }
   ]
 }

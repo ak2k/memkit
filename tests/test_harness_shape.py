@@ -1784,6 +1784,63 @@ def test_a_landing_directory_that_will_not_open_is_a_refusal_and_not_a_no(
     assert landing.read_text(encoding="utf-8") == "", "it refused and wrote"
 
 
+@pytest.mark.parametrize("route", ["--out", "redirect"])
+def test_an_ancestor_that_will_not_open_is_a_refusal_on_both_raw_routes(
+    tmp_path, route,
+) -> None:
+    """The walk to the top of the tree, not just its first step.
+
+    The landing directory opens; a directory ABOVE it at mode 0111 takes the
+    `..` step and refuses `O_RDONLY`, and that step had no handler at all — a
+    `PermissionError` out of the middle of the walk on both `--raw` routes,
+    where the contract is one line and an exit 2 and where the operator is a
+    wrapper on the far end of an ssh pipe reading the number.
+
+    An unanswerable question is a refusal, and a refusal names the destination
+    it is about: leaving instead by the exit-2 boundary gives the same number
+    with `..` as the whole subject, which tells an operator nothing about
+    where they asked the bytes to go.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory at mode 0111")
+    config = _raw_capture_tree(tmp_path)
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    inner.mkdir(parents=True)
+    landing = inner / "raw.json"
+    argv = [sys.executable, str(TOOL), "--config-dir", str(config), "--raw"]
+    if route == "--out":
+        argv += ["--out", str(landing)]
+        os.chmod(str(outer), 0o111)
+        try:
+            run = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+        finally:
+            os.chmod(str(outer), 0o755)
+        assert not landing.exists(), "it could not answer and wrote anyway"
+    else:
+        with landing.open("w") as handle:
+            os.chmod(str(outer), 0o111)
+            try:
+                run = subprocess.run(
+                    argv, stdout=handle, stderr=subprocess.PIPE, text=True,
+                    timeout=300,
+                )
+            finally:
+                os.chmod(str(outer), 0o755)
+        # The redirect makes the file before this tool starts, so what says it
+        # refused is that nothing was written into it.
+        assert landing.read_text(encoding="utf-8") == "", "it refused and wrote"
+    assert run.returncode == 2, run.stderr
+    assert "Traceback" not in run.stderr, run.stderr
+    lines = run.stderr.strip().splitlines()
+    assert len(lines) == 1, run.stderr
+    assert lines[0].startswith("harness_shape:"), run.stderr
+    assert os.path.realpath(str(landing)) in lines[0], lines[0]
+    assert "worktree cannot be answered" in lines[0], lines[0]
+    assert "Permission denied" in lines[0], lines[0]
+
+
+
 def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(
     tmp_path,
 ) -> None:
