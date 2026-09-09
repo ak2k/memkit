@@ -3445,7 +3445,11 @@ def _placed(machine: Machine, directory: str) -> tuple:
             f"is inside {store}'s corpus root {_shown(root)} but under "
             f"a name retrieval prunes ({', '.join(sorted(EXCLUDE_DIRS))}), so "
             f"nothing written there is indexed",
-            safe,
+            # A corpus root under a pruned component prunes its own
+            # `auto-memory` too, and advice to move there is the state the
+            # adopter is already in. Nothing named sends the caller to the
+            # store walk instead.
+            "" if _pruned(safe, root) else safe,
         )
     if how == "flat":
         # `root` is the STORE root here, which is what `_search_root` answers
@@ -3559,7 +3563,7 @@ _CHECKOUT_REMEDY = (
 )
 
 
-def _checkout_remedy(decide_what: str, scope: str) -> str:
+def _checkout_remedy(decide_what: str, scope: str, config_dir: str) -> str:
     """What to tell an adopter about a value a file in this tree decided.
 
     ONE FUNCTION for what were two spellings of the same paragraph, because
@@ -3567,14 +3571,26 @@ def _checkout_remedy(decide_what: str, scope: str) -> str:
     different fact per scope, and a remedy that told the adopter to move the
     key into `.claude/settings.local.json` was nonsense addressed to the run
     where that file is what set it.
+
+    WHICH FILE HOLDS THE KEY is the other per-scope fact, and the same
+    paragraph got it wrong for the `user` scope. `$CLAUDE_CONFIG_DIR` pointing
+    inside the session's directory moves the trusted scope into this tree
+    without `settings.local.json` being involved at all, so the convention to
+    check is about a file the adopter would find the key absent from.
     """
     if scope == harness_memory.CHECKOUT_SCOPE:
         return f"{_CHECKOUT_COST}. To decide {decide_what}, {_CHECKOUT_REMEDY}."
+    out_of = (
+        f"{_shown(config_dir)}/{SETTINGS_NAME}, which is where "
+        "$CLAUDE_CONFIG_DIR put the settings this run reads as yours"
+        if scope == "user"
+        else f"it — and check that {LOCAL_SETTINGS_NAME} is untracked, because "
+        "a bare `git add` tracks it and then a clone carries it too"
+    )
     return (
         f"That value is in a file in the directory this session stands in "
         f"rather than in your own settings. To decide {decide_what}, take the "
-        f"key out of it — and check that {LOCAL_SETTINGS_NAME} is untracked, "
-        "because a bare `git add` tracks it and then a clone carries it too."
+        f"key out of {out_of}."
     )
 
 
@@ -4136,7 +4152,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                         placed,
                         recent,
                     ),
-                    _checkout_remedy("it yourself", enabled_scope),
+                    _checkout_remedy("it yourself", enabled_scope, config_dir),
                     actor=USER,
                 )
             ]
@@ -4234,9 +4250,13 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # remedy these two branches do not use, so asking for one was a walk of
         # every configured store whose answer was overwritten two lines later.
         if checkout:
-            remedy = _checkout_remedy("where your agent writes", where)
+            remedy = _checkout_remedy(
+                "where your agent writes", where, config_dir
+            )
         elif switch_theirs:
-            remedy = _checkout_remedy("whether it runs at all", enabled_scope)
+            remedy = _checkout_remedy(
+                "whether it runs at all", enabled_scope, config_dir
+            )
         elif unsure_remedy:
             # AHEAD OF THE STORE ADVICE, because moving a directory is advice
             # about a corpus this run could not enumerate: the first step is
@@ -4358,7 +4378,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             # where the harness writes is not the question while somebody else
             # decides whether it writes, and the two paragraphs together do not
             # fit inside this string's own bound.
-            _checkout_remedy("whether it runs at all", enabled_scope)
+            _checkout_remedy("whether it runs at all", enabled_scope, config_dir)
             if switch_theirs
             else "Two memory systems on one project is a choice rather than a "
             "fault. To put what the harness writes inside the store, set "

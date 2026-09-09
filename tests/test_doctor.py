@@ -2415,7 +2415,9 @@ def test_a_checkout_that_decided_the_switch_still_discloses_the_scopes_that_disa
     assert "this checkout says so" in row.detail
     assert "user settings declare it otherwise" in row.detail
     # The remedy stays the one that does not send an adopter into the clone.
-    assert row.remedy == doctor._checkout_remedy("it yourself", "project")
+    assert row.remedy == doctor._checkout_remedy(
+        "it yourself", "project", str(profile / "claude-config")
+    )
 
 
 def test_a_gated_store_still_holds_what_the_harness_writes_into_it(
@@ -6574,3 +6576,96 @@ def test_a_path_that_will_not_resolve_is_inside_nothing(profile) -> None:
     store = str(profile / "stores" / "personal" / "search")
     assert doctor._within(f"{store}/no\x00where", store) is False
     assert doctor._within(store, f"{store}/no\x00where") is False
+
+
+def test_a_config_dir_inside_the_session_is_remedied_by_the_file_that_set_it(
+    profile, monkeypatch
+) -> None:
+    """The remedy names the file the value is in, and that file is per scope.
+
+    One paragraph served two scopes. "Check that settings.local.json is
+    untracked" is the right second half for a value a checkout's own
+    `settings.local.json` set, and it is about a file that is not involved at
+    all once `$CLAUDE_CONFIG_DIR` puts the trusted scope inside the session's
+    directory: there the deciding file is that directory's own settings.json,
+    and an adopter sent to the wrong file finds the key absent from it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "clutch bleed order after the master swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    theirs = profile / "project" / ".config" / "claude"
+    theirs.mkdir(parents=True)
+    (theirs / doctor.SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryDirectory": str(mine)}), encoding="utf-8"
+    )
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(theirs))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert f"{theirs}/{doctor.SETTINGS_NAME}" in row.remedy, row.remedy
+    assert doctor.LOCAL_SETTINGS_NAME not in row.remedy, row.remedy
+    assert row.actor == doctor.USER
+
+    # THE CONTROL. A `local` scope is still told about the convention that
+    # keeps its file out of a clone, because there that file is what set the
+    # key.
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(profile / "claude-config"))
+    local = pathlib.Path(os.getcwd()) / ".claude" / doctor.LOCAL_SETTINGS_NAME
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(json.dumps({"autoMemoryDirectory": str(mine)}), encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "untracked" in row.remedy, row.remedy
+    assert f"{theirs}/{doctor.SETTINGS_NAME}" not in row.remedy, row.remedy
+
+
+def test_a_pruned_corpus_root_is_not_the_directory_the_remedy_names(
+    profile, monkeypatch
+) -> None:
+    """The advice for a pruned directory may not be another pruned directory.
+
+    `<corpus root>/auto-memory` is the answer to "where should the harness
+    write", and it is not an answer when the corpus root itself sits under a
+    pruned component: the walk descends into neither, so the remedy named a
+    directory as retrievable that the indexer skips for the same reason as
+    the one the adopter is being moved out of. Answering with nothing sends
+    the caller to the store walk, which names a store rather than a path
+    inside this one.
+    """
+    path = _store_config(
+        profile,
+        stores=["personal", "team"],
+        dirs={"personal": "archive/notes/personal"},
+    )
+    corpus = profile / "archive" / "notes" / "personal" / "search"
+    _memory(corpus, "kept.md", "brake bleed order after the caliper swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    machine = _machine(profile, monkeypatch, path)
+    retrieved, says, target = doctor._placed(machine, str(mine))
+    assert retrieved is False
+    assert "nothing written there is indexed" in says
+    assert target == "", target
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    # Empty is what sends `_auto_memory_rows` on to the store walk, and the
+    # count of stores is the part only that walk can produce.
+    assert "stores you have" in row.remedy, row.remedy
+
+    # THE CONTROL. Under a corpus root the walk does descend into, the pruned
+    # arm still names that root's own `auto-memory`.
+    other = _store_config(
+        profile, stores=["personal"], dirs={"personal": "notes/personal"}
+    )
+    plain = profile / "notes" / "personal" / "search"
+    _memory(plain, "kept.md", "torque sequence after the head swap")
+    ours = plain / "hot"
+    ours.mkdir()
+    _settings(profile, autoMemoryDirectory=str(ours))
+    machine = _machine(profile, monkeypatch, other)
+    assert doctor._placed(machine, str(ours))[2] == str(
+        plain / harness_memory.SAFE_SUBDIR
+    )
