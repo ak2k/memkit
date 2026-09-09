@@ -2241,8 +2241,8 @@
       "name": "auto-memory-reads-a-settings-file-that-will-not-parse-as-one-declaring-nothing",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "            f\"({_display_cap(scope.error, PARSER_SHOWN)})\"\n            for scope in scopes\n            if scope.failure\n",
-      "new": "            f\"({_display_cap(scope.error, PARSER_SHOWN)})\"\n            for scope in scopes\n            if False\n",
+      "old": "            )\n            for scope in scopes\n            if scope.failure\n",
+      "new": "            )\n            for scope in scopes\n            if False\n",
       "tests": [
         "tests/test_doctor.py::test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it"
       ],
@@ -4685,6 +4685,28 @@
         "tests/test_doctor.py::test_an_environment_variable_that_forces_the_feature_on_never_settles_the_row"
       ],
       "why": "the variable is read before any settings file and returns before them, so a row handing the settings' answer back answers a question the harness never asked. Inverted, the branch fires for the runs the variable decided nothing in."
+    },
+    {
+      "name": "auto-memory-row-names-the-directory-a-settings-key-chose",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        named = (\n            _NAMED[\"directory_key\"] + \" in \" + source + \" names a directory \"\n            \"that \" + _PLACEMENT[how]\n        )\n",
+      "new": "        named = (\n            _NAMED[\"directory_key\"] + \" in \" + source + f\" names {configured}, \"\n            \"which \" + _PLACEMENT[how]\n        )\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_auto_memory_row_renders_no_path"
+      ],
+      "why": "the value of that key is a path a clone chooses the length and the content of, and every round of this class arrived as one more branch interpolating one — so the rule is over the syntax, and a rule nothing exercises is a comment"
+    },
+    {
+      "name": "settings-note-quotes-an-open-failure-that-carries-the-path",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                if scope.failure == UNPARSED\n",
+      "new": "                if scope.failure\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_auto_memory_row_names_no_path_at_the_shipped_caps"
+      ],
+      "why": "`json` writes a line and a column, while `str(OSError)` ends in the file it failed on — so quoting the message for every failure kind puts the raw settings path into four producers' details through one shared note"
     }
   ]
 }

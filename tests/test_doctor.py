@@ -23,7 +23,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import unicodedata
 
 import pytest
 
@@ -2897,11 +2899,11 @@ def test_a_flat_store_does_not_settle_a_directory_a_search_dir_would_unretrieve(
     """Containment is decided against the corpus root the store WILL have.
 
     `_search_root` falls back to the store root while `search/` is absent, so
-    `<store>/auto-memory` read as inside and passed — while `_nearest_store`,
-    in the same run, refused that directory and recommended
-    `<store>/search/auto-memory`. Creating `search/` later flips the row to
-    INFO and `corpus-root` to FAIL, which this file elsewhere calls the single
-    most expensive silent state in the field log.
+    `<store>/auto-memory` read as inside and passed, in the same run whose
+    remedy for a directory outside every store recommends a place under
+    `search/`. Creating `search/` later flips the row to INFO and `corpus-root`
+    to FAIL, which this file elsewhere calls the single most expensive silent
+    state in the field log.
     """
     path = _store_config(profile, stores=["personal"])
     flat = profile / "stores" / "personal"
@@ -3563,7 +3565,7 @@ def test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it(
     broken = profile / "claude-config" / "settings.json"
     broken.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
     checks = doctor.collect(_machine(profile, monkeypatch, path))
-    named = [c for c in checks if str(broken) in c.detail]
+    named = [c for c in checks if doctor._ROLE["user"] in c.detail]
     assert named, [c.id for c in checks]
     for row in named:
         assert "could not be parsed" in row.detail
@@ -3601,8 +3603,10 @@ def test_a_settled_row_never_stands_on_a_scope_that_would_not_parse(
         "auto-memory",
     )
     assert row.status == doctor.INFO
-    assert "project settings could not be parsed" in row.detail
-    assert str(checked_in) in row.detail
+    assert doctor._ROLE["project"] + " could not be parsed" in row.detail
+    # By role and not by path: the note reaches four producers' details, and
+    # the raw settings path was reaching the report through all of them.
+    assert str(checked_in) not in row.detail
     assert row.actor == doctor.USER
 
     # Repair the file and the row answers from what it says, PASS or not.
@@ -3682,7 +3686,7 @@ def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
     checked_in.parent.mkdir(parents=True, exist_ok=True)
     checked_in.write_text('{"autoDreamEnabled": false,,}', encoding="utf-8")
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert "project settings could not be parsed" in row.detail
+    assert doctor._ROLE["project"] + " could not be parsed" in row.detail
     assert "the STORE guide" in row.remedy
 
 
@@ -3718,8 +3722,8 @@ def test_a_file_this_process_may_not_open_is_not_a_file_that_will_not_parse(
     assert row.actor == doctor.USER
     # The claim is about what happened, and what happened is a refused open.
     assert "could not be parsed" not in row.detail
-    assert "could not be read" in row.detail
-    assert str(policy) in row.detail
+    assert doctor._ROLE["managed"] + " could not be read" in row.detail
+    assert str(policy) not in row.detail
     # And the repair is not an edit of somebody else's policy file.
     assert "parse as JSON" not in row.remedy
     assert "administrator" in row.remedy
@@ -3728,7 +3732,7 @@ def test_a_file_this_process_may_not_open_is_not_a_file_that_will_not_parse(
     # A file that really is malformed keeps the sentence written for it.
     policy.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert "managed settings could not be parsed" in row.detail
+    assert doctor._ROLE["managed"] + " could not be parsed" in row.detail
     assert "parse as JSON" in row.remedy
 
 
@@ -3736,8 +3740,14 @@ def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
     profile, monkeypatch
 ) -> None:
     """`str(exc)` for an `OSError` ends in the absolute path it failed on, and
-    the note prints it immediately after the same path went through the
+    the note printed it immediately after the same path went through the
     re-speller. One sentence, the path twice, the second copy raw.
+
+    NOT REDACTED — NOT QUOTED. The message a row passes on is the PARSER's, and
+    `json` writes a line and a column; an open that was refused or that failed
+    answers with the file, which is the fact this note no longer renders by any
+    route. The caps stay where the tree ships them, because there is nothing
+    left here for a cut to be the thing that saved.
     """
     if os.geteuid() == 0:
         pytest.skip("root reads a file whatever its mode says")
@@ -3749,10 +3759,6 @@ def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
     refused = under_home / doctor.SETTINGS_NAME
     refused.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
     monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
-    # THE CAPS LIFTED, because on a fixture whose home is 100 characters deep
-    # they answer this for the wrong reason: the raw copy is cut off before
-    # the home path is reached, and a real `/Users/someone` is not.
-    monkeypatch.setattr(doctor, "PARSER_SHOWN", 600)
     refused.chmod(0o000)
     try:
         (row,) = _only(
@@ -3761,9 +3767,10 @@ def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
         )
     finally:
         refused.chmod(0o600)
-    assert "could not be read" in row.detail
+    assert doctor._ROLE["user"] + " could not be read" in row.detail
     assert str(home) not in row.detail
-    assert "~/.claude/settings.json" in row.detail
+    assert "~/.claude/settings.json" not in row.detail
+    assert "Permission denied" not in row.detail
 
 
 @pytest.mark.parametrize("shape", ["real", "symlinked", "equal", "sibling"])
@@ -3886,37 +3893,31 @@ def test_a_directory_beside_home_keeps_the_name_it_has(profile, monkeypatch) -> 
     The rule was already "on a component boundary", and the lookahead spelling
     it read was `[^\\W_]` — word characters except the underscore — so a name
     starting with home's and continuing with `_` was the one shape the boundary
-    did not hold for. What the row then printed was a path an adopter cannot
-    open, inside the note whose whole purpose is naming the file to repair.
+    did not hold for. What the report then printed was a path an adopter cannot
+    open, in the sentence whose whole purpose is naming the file to repair.
+
+    ASKED OF THE ROWS THAT STILL RENDER ONE: the auto-memory row names its files
+    by role, so what reaches a reader beside home is a store — which is a path
+    an adopter chose the name of, through the re-speller, in a report they paste
+    somewhere.
     """
-    if os.geteuid() == 0:
-        pytest.skip("root reads a file whatever its mode says")
-    path = _store_config(profile, stores=["personal"])
     monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
-    # THE CAPS LIFTED: the parser's own message carries the path at its END,
-    # and a cut that lands before it answers this for the wrong reason.
-    monkeypatch.setattr(doctor, "PARSER_SHOWN", 2000)
-    monkeypatch.setattr(doctor, "NOTE_SHOWN", 4000)
     for tail in ("_old", "-old", "old"):
         beside = profile / f"home{tail}"
-        (beside / ".claude").mkdir(parents=True)
-        refused = beside / ".claude" / doctor.SETTINGS_NAME
-        refused.write_text("{}", encoding="utf-8")
+        corpus = beside / "stores" / "personal" / "search"
+        _memory(corpus / harness_memory.SAFE_SUBDIR, "kept.md", "clutch free play")
+        path = _store_config(beside, stores=["personal"])
         monkeypatch.chdir(beside)
-        refused.chmod(0o000)
-        try:
-            (row,) = _only(
-                doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
-                "auto-memory",
-            )
-        finally:
-            refused.chmod(0o600)
-        assert "could not be read" in row.detail, tail
-        assert str(beside) in row.detail, tail
+        checks = doctor.collect(_machine(profile, monkeypatch, path))
+        spoken = " ".join(f"{c.detail} {c.remedy}" for c in checks)
         # THE PATH ROUTE, and only it: a project key is a lossy spelling, so
         # `<home>-old` and `<home>/old` really do key to one directory name and
         # an absence asserted over the key would be unsatisfiable.
-        assert f"~{tail}/.claude" not in row.detail, tail
+        assert f"~{tail}/" not in spoken, tail
+        # AND THE CONTROL, after it: a directory beside home is not under it, so
+        # it is spelled the way it is named, and an absence over a report that
+        # never mentioned it is a green about the fixture.
+        assert str(beside) in spoken, tail
 
 
 def test_the_note_about_an_unread_scope_cannot_eat_the_rows_own_verdict(
@@ -3973,7 +3974,7 @@ def test_a_settings_directory_that_cannot_be_reached_is_reported_not_silence(
     finally:
         hidden.chmod(0o755)
     assert row.status != doctor.PASS
-    assert "project settings could not be read" in row.detail
+    assert doctor._ROLE["project"] + " could not be read" in row.detail
     assert row.actor == doctor.USER
 
 
@@ -4001,7 +4002,7 @@ def test_the_remedy_dropped_for_naming_the_unread_file_is_dropped_however_spelle
         doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
         "auto-memory",
     )
-    assert "local settings could not be parsed" in row.detail
+    assert doctor._ROLE["local"] + " could not be parsed" in row.detail
     assert doctor.LOCAL_SETTINGS_NAME not in row.remedy.split("Keep a copy first")[-1]
 
 
@@ -6443,3 +6444,282 @@ def test_a_config_dir_inside_the_session_is_remedied_by_the_file_that_set_it(
     assert "untracked" in row.remedy, row.remedy
     assert doctor._ROLE["user"] not in row.remedy, row.remedy
 
+
+# --- the row's own rule ------------------------------------------------------
+
+# `_auto_memory` and every helper only it calls. Frozen here rather than walked
+# for from the producer: a helper added to the row falls under the rule below
+# once it is named here, and naming it is the cheaper half of adding it.
+_ROW_PRODUCERS = (
+    "_auto_memory",
+    "_auto_memory_rows",
+    "_placed",
+    "_how_inside",
+    "_odd_switch",
+    "_checkout_remedy",
+    "_checkout_source",
+    "_env_switch_note",
+    "_env_switch_remedy",
+    "_override_note",
+    "_declared_below",
+    "_default_memory_dir",
+    "_consolidation_recency",
+    "_inventoried",
+    "_unreadable_remedy",
+    "_already_placed",
+    "_left_behind",
+    "_adopter_owns",
+)
+
+# The tables a sentence may look a word up in. Each is module-level and closed,
+# so a value off the machine decides which entry is read and never what it says.
+_ROW_TABLES = ("_ROLE", "_TRAVELS", "_CONVENTION", "_DECIDE", "_NAMED", "_PLACEMENT")
+
+# The only bare names the row may interpolate: the two integers the elapsed-time
+# clause binds. `_count` is the other renderer, and it is a call.
+_ROW_INT_NAMES = ("age", "hours")
+
+# Everything that turns a path into a string, by any spelling it is called by.
+_ROW_FORBIDDEN = (
+    "_display_path",
+    "_display_cap",
+    "_cut",
+    "_shown",
+    "_resolved",
+    "_relative_to_cwd",
+    "_redacted",
+    "_redact",
+    "key_spelling",
+    "harness_dir",
+    "expanduser",
+    "realpath",
+    "fsdecode",
+)
+
+# Where a display cap may live at all. Both of these bound a string an adopter's
+# own settings file decides the length of, and neither is reachable from the row.
+_CAP_HOLDERS = ("_shown", "_unparsed_settings")
+
+
+def test_the_auto_memory_row_renders_no_path() -> None:
+    """The rule the row is now built to, asserted against the syntax.
+
+    Six rounds closed this class one rendered path at a time, and each fix was
+    a sentence: the next branch added its own path back, because nothing said
+    the row may not have one. What says it here is the shape of the code —
+    every word the row puts in front of an adopter is a literal, a count, or an
+    entry read out of a closed table, so there is no expression left for a path
+    to arrive through.
+
+    A LITERAL IS FREE, and that is deliberate: a remedy naming `settings.json`
+    under the checkout's `.claude` directory is a repair an adopter can act on
+    and is not a path off this machine. What is refused is INTERPOLATION — a
+    name, an attribute, a call — because that is the half a value can reach.
+    """
+    import ast
+
+    source = (REPO / "src" / "memkit" / "cli_doctor.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert [n for n in _ROW_PRODUCERS if n not in functions] == []
+    assert [t for t in _ROW_TABLES if f"\n{t} = {{" not in source] == []
+
+    def called(node: ast.Call) -> str:
+        return getattr(node.func, "id", "") or getattr(node.func, "attr", "")
+
+    def renders(node: ast.AST) -> bool:
+        """May the row put this value in front of an adopter?"""
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, ast.Call):
+            return called(node) == "_count"
+        if isinstance(node, ast.Name):
+            return node.id in _ROW_INT_NAMES
+        if isinstance(node, ast.Subscript):
+            return isinstance(node.value, ast.Name) and node.value.id in _ROW_TABLES
+        return False
+
+    broken = []
+    for name in _ROW_PRODUCERS:
+        for node in ast.walk(functions[name]):
+            if isinstance(node, ast.JoinedStr):
+                for part in node.values:
+                    if isinstance(part, ast.FormattedValue) and not renders(part.value):
+                        broken.append((name, node.lineno, ast.unparse(part.value)))
+            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+                broken.append((name, node.lineno, ast.unparse(node)))
+            elif isinstance(node, ast.Call):
+                spelling = called(node)
+                first = node.args[0] if node.args else None
+                literal = isinstance(first, (ast.Tuple, ast.List)) and all(
+                    isinstance(element, ast.Constant) for element in first.elts
+                )
+                # `os.path.join` needs no entry of its own: what is refused is
+                # a join over anything but literals, and a path is built out of
+                # values.
+                if (
+                    (spelling == "format" and isinstance(node.func, ast.Attribute))
+                    or (spelling == "join" and not literal)
+                    or (spelling == "str" and not isinstance(first, ast.Constant))
+                    or spelling in _ROW_FORBIDDEN
+                ):
+                    broken.append((name, node.lineno, ast.unparse(node)))
+    assert broken == [], broken
+
+    # ANTI-VACUITY, both directions: the walk reads f-strings in these functions,
+    # and the rule refuses the one shape every round of this class arrived as.
+    assert any(
+        isinstance(node, ast.JoinedStr)
+        for node in ast.walk(functions["_consolidation_recency"])
+    )
+    assert renders(ast.parse("_ROLE[scope.scope]", mode="eval").body)
+    assert not renders(ast.parse("scope.path", mode="eval").body)
+
+    # AND NO EIGHTH CAP SITE. A cap is what a rendered path was bounded by, so
+    # the file-wide half of the rule is which functions may hold one: the row
+    # calls neither, and a new caller of `_display_cap` is a new renderer.
+    holders = set()
+
+    def scan(node: ast.AST, holder: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scan(child, child.name)
+                continue
+            if isinstance(child, ast.Call) and called(child) == "_display_cap":
+                holders.add(holder)
+            scan(child, holder)
+
+    scan(tree, "<module>")
+    assert holders == set(_CAP_HOLDERS), holders
+
+
+
+
+def _strings(blob) -> list:
+    """Every string in a nested envelope entry, keys as well as values."""
+    if isinstance(blob, str):
+        return [blob]
+    if isinstance(blob, dict):
+        return [
+            text
+            for key, value in blob.items()
+            for text in _strings(key) + _strings(value)
+        ]
+    if isinstance(blob, (list, tuple)):
+        return [text for item in blob for text in _strings(item)]
+    return []
+
+
+def test_the_auto_memory_row_names_no_path_at_the_shipped_caps(monkeypatch) -> None:
+    """The behavioural half of the rule above, at the caps the tree ships.
+
+    THE CAPS ARE NOT LIFTED, and that is the case rather than an incidental of
+    it: what this closes was a raw home spelling that reached the report for a
+    twenty-two-character band of config-directory lengths and for no other,
+    because all that stood between the path and the reader was a cut. Lift the
+    cap and a different question is being answered; lower it and the answer is
+    only that a cut happened.
+
+    THREE HOMES AND A SWEEP. Two lengths, because where the cut lands is a
+    function of how long the strings before it are; and one home spelled
+    decomposed, because the harness composes what it derives and the two
+    spellings are then different byte sequences for one directory.
+
+    The settings file is unreadable on purpose: a refused open is the route that
+    carried the path, through the note every settings-reading row wears.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    # AS SHIPPED. Asserted here rather than monkeypatched, so a change to any of
+    # them arrives with this case rather than through it.
+    assert (doctor.DETAIL_MAX_BYTES, doctor.PATH_SHOWN) == (600, 300)
+    assert (doctor.PARSER_SHOWN, doctor.NOTE_SHOWN) == (120, 300)
+
+    # A SHORT ROOT is a requirement and not a convenience: home has to fit
+    # inside a 300-byte cap for a cut to be able to leave it whole, and pytest's
+    # own temporary directory is a hundred characters deep.
+    short = os.path.realpath("/tmp")
+    if not os.path.isdir(short) or len(short) > 24:
+        pytest.skip("no temporary directory short enough for a 33-character home")
+    root = tempfile.mkdtemp(dir=short)
+    reports = 0
+    monkeypatch.setattr(doctor, "__file__", "/opt/under-test/src/memkit/cli_doctor.py")
+    for name in (
+        hook.PLUGIN_ENV,
+        hook.PLUGIN_DATA_ENV,
+        "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
+        "CLAUDE_PLUGIN_ROOT",
+        harness_memory.DISABLE_ENV,
+        *harness_memory.OVERRIDE_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        for shape, width in (("plain", 33), ("plain", 60), ("decomposed", 33)):
+            leaf = "alice" if shape == "plain" else unicodedata.normalize("NFD", "café")
+            leaf += "x" * (width - len(root) - 1 - len(leaf))
+            home = pathlib.Path(root) / leaf
+            assert len(str(home)) == width, str(home)
+            project = home / "project"
+            project.mkdir(parents=True)
+            corpus = home / "stores" / "personal" / "search"
+            _memory(corpus / harness_memory.SAFE_SUBDIR, "kept.md", "clutch free play")
+            config_path = _store_config(home, stores=["personal"])
+            monkeypatch.setenv("HOME", str(home))
+            monkeypatch.chdir(project)
+            spellings = {str(home), os.path.realpath(str(home)), str(corpus)}
+            spellings |= {
+                unicodedata.normalize(form, str(home)) for form in ("NFC", "NFD")
+            }
+            for pad in range(140):
+                config = home / ("d" * pad or "cfg") / "cfg"
+                memory = config / "projects" / "-x-y" / "memory"
+                memory.mkdir(parents=True)
+                (memory / "one.md").write_text("x\n", encoding="utf-8")
+                settings = config / doctor.SETTINGS_NAME
+                settings.write_text('{"autoMemoryEnabled": false}', encoding="utf-8")
+                settings.chmod(0o000)
+                monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
+                machine = _machine(home, monkeypatch, config_path)
+                # THE ROW AT EVERY LENGTH and the whole report at a few: what
+                # the sweep is for is where the note's cut lands, and that is
+                # this row's own entry. The other rows render paths the cap
+                # cannot cut a home out of, because the substitution runs
+                # before the cut — so a raw one there is asserted often enough
+                # to catch a redaction that stopped running.
+                try:
+                    (row,) = [c.as_dict() for c in doctor._PRODUCERS["auto-memory"](machine)]
+                    blob = (
+                        doctor.envelope(doctor.collect(machine))
+                        if pad % 20 == 0 or pad == 139
+                        else {}
+                    )
+                finally:
+                    settings.chmod(0o600)
+                where = (shape, width, pad)
+                named = spellings | {str(config), leaf} | {
+                    harness_memory.key_spelling(one)
+                    for one in (str(home), os.path.realpath(str(home)), str(config))
+                }
+                for text in _strings(row):
+                    # NO SEPARATOR AT ALL is the whole of the claim: a sentence
+                    # with no `/` and no `~` in it carries no path, whatever
+                    # this machine's directories happen to be called.
+                    assert "/" not in text, (where, text)
+                    assert "~" not in text, (where, text)
+                    for spelling in named:
+                        assert spelling not in text, (where, spelling, text)
+                # AND THE WHOLE ENVELOPE, for the raw spellings only: the other
+                # rows do render paths, re-spelled `~`, which is what makes a
+                # raw one there a redaction that did not run.
+                for text in _strings(blob):
+                    for spelling in spellings:
+                        assert spelling not in text, (where, spelling, text)
+                reports += 1 if blob else 0
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    # Anti-vacuity: the whole-report half really ran, on every home.
+    assert reports == 24, reports

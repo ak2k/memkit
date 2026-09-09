@@ -607,9 +607,11 @@ def _unparsed_settings(scopes: list) -> str:
     stub — and a diagnostic that asserted either behaviour would be guessing
     with the adopter's configuration.
 
-    The verdict before the path, and the parser's text last: `_bound` cuts from
-    the end, and of the three facts here the one an adopter's own file decides
-    the length of is the one worth losing.
+    THE SCOPE BY ROLE AND NOT BY PATH, and the parser's text only where the
+    parser wrote it: `json` answers with a line and a column, while a refused
+    or failed open answers with the file it was refused — the raw settings
+    path, reaching four producers' details through this one note. What a
+    reader needs to act is which file, and its role is which file.
 
     THE VERB COMES OFF THE EXCEPTION. "Could not be parsed" over a file that
     parses perfectly and was merely refused is an assertion about content this
@@ -618,9 +620,15 @@ def _unparsed_settings(scopes: list) -> str:
     """
     return _display_cap(
         "; ".join(
-            f"{scope.scope} settings {_FAILED[scope.failure]}, so its keys read "
-            f"as unset here: {_shown(scope.path)} "
-            f"({_display_cap(scope.error, PARSER_SHOWN)})"
+            _ROLE[scope.scope]
+            + " "
+            + _FAILED[scope.failure]
+            + ", so its keys read as unset here"
+            + (
+                " (" + _display_cap(scope.error, PARSER_SHOWN) + ")"
+                if scope.failure == UNPARSED
+                else ""
+            )
             for scope in scopes
             if scope.failure
         ),
@@ -658,10 +666,10 @@ def _unparsed_remedy(scopes: list) -> str:
         named = [scope for scope in scopes if scope.failure == kind]
         if not named:
             continue
-        paths = ", ".join(_shown(scope.path) for scope in named)
+        files = ", ".join(_ROLE[scope.scope] for scope in named)
         if kind == UNPARSED:
             parts.append(
-                f"Make {paths} parse as JSON before setting any key in it — "
+                f"Make {files} parse as JSON before setting any key in it — "
                 "while it does not, nothing in it is read here and a value "
                 "added to it changes nothing. Keep a copy first: a file this "
                 "report could not parse is one whose contents are still yours."
@@ -674,13 +682,13 @@ def _unparsed_remedy(scopes: list) -> str:
                 else ""
             )
             parts.append(
-                f"Ask whoever owns {paths} for read access, or run this "
+                f"Ask whoever owns {files} for read access, or run this "
                 f"as a user who has it{whose}. Do not edit it on this "
                 "report's account: nothing here has seen what is in it."
             )
         else:
             parts.append(
-                f"Find out what is at {paths}: the open failed for a reason "
+                f"Find out what is at {files}: the open failed for a reason "
                 "that is neither a syntax error nor a permission, so what the "
                 "harness reads there is not something this report can say."
             )
@@ -3398,9 +3406,9 @@ def _how_inside(directory: str, root: str, tiered: str) -> str:
     a `search/` appears, the same directory is above the corpus root and
     nothing in it is retrieved. That is the state this file's `corpus-root`
     case calls the single most expensive silent one in the field log, and it is
-    reached by creating a directory. So the question asked here is the one
-    `_nearest_store` already answers when it recommends a value: is this inside
-    the corpus root the store WILL have. `tiered` is that root, `<live>/search`
+    reached by creating a directory. So the question asked here is about the
+    corpus root the store WILL have rather than the one it has: `tiered` is that
+    root, `<live>/search`
     whether or not it is there yet, and on a store already laid out by tier it
     is `root` itself.
     """
