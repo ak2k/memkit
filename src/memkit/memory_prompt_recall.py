@@ -505,15 +505,20 @@ def _session_cwd() -> str:
         raise _RootUnknown(f"the session directory is unreadable: {exc}") from exc
 
 
-def _repo_root(start: str):
+def _repo_root(start: str, *, resolve: bool = True):
     """The directory holding the checkout `start` is in, or None.
 
     None means there is no repository above `start` — a bare repository
     included, which has no worktree. `_RootUnknown` means the walk could not
     begin.
+
+    `resolve=False` climbs the parents `start` is SPELLED with instead of the
+    ones it resolves to. The two differ only where a link is committed into a
+    checkout, and there the spelling is the question a caller asked: the
+    default stays the resolved walk every prompt-path caller wants.
     """
     try:
-        current = os.path.realpath(start)
+        current = os.path.realpath(start) if resolve else os.path.abspath(start)
     except OSError as exc:
         raise _RootUnknown(f"{start!r} does not resolve: {exc}") from exc
     while True:
@@ -2286,33 +2291,6 @@ def _search_dirs() -> list[tuple[str, bool]]:
     return _live_dirs(cfg) if cfg is not None else []
 
 
-def _same_tree(root: str, path: str) -> bool:
-    """`path` IS `root` or lies under it, decided by inode identity.
-
-    `_inside`'s string arithmetic is the right instrument where both sides came
-    out of one resolution. Here they did not: one path was spelled by a caller
-    on a command line and the other by a repository in its own file, and a
-    directory has more than one spelling — a case variant on a case-insensitive
-    filesystem, or a link reached from either side. Two spellings of one
-    directory getting two answers is the whole of what this walk removes.
-
-    Costs one `stat` per level and only for a directory named on the command
-    line; the every-prompt path never arrives here.
-    """
-    try:
-        target = os.stat(root)
-        here = path
-        while True:
-            if os.path.samestat(os.stat(here), target):
-                return True
-            parent = os.path.dirname(here)
-            if parent == here:
-                return False
-            here = parent
-    except OSError:
-        return False
-
-
 def _named_dir_read_only(d: str) -> bool:
     """Whether a directory a CALLER named is one a repository chose.
 
@@ -2332,6 +2310,13 @@ def _named_dir_read_only(d: str) -> bool:
     own bytes too. Over-marking is the safe direction and under-marking is the
     leak.
 
+    ASKED OF BOTH SPELLINGS. A checkout can commit its corpus as a link out of
+    itself, and the resolved path is then in nobody's repository — so asked
+    only that way, committing the link is the cheap route past the scan, and
+    the pointer line renders the in-repository spelling while the bytes came
+    from outside. The path as named is still inside the checkout that named
+    it, and either spelling answering is enough.
+
     Two states are not "a repository chose nothing here". A `.memkit.json` this
     hook REFUSED is still a repository asking for a corpus, and refusing it
     must not be the cheaper way to get a checkout's bytes in front of a model
@@ -2346,25 +2331,29 @@ def _named_dir_read_only(d: str) -> bool:
     cfg = _config()
     if cfg is not None and not cfg.project_config:
         return False
-    try:
-        real = os.path.realpath(d)
-        root = _repo_root(real)
-    except (_RootUnknown, OSError, ValueError):
-        return False
-    if root is None:
-        return False
     taken = {s.id for s in cfg.stores} if cfg is not None else set()
-    store, refusal = _project_store(root, taken)
-    if store is None:
-        return refusal != ""
-    # Containment is asked of the checkout the walk already found. Asked of
-    # the corpus, this door was not monotone in depth: `--dir <repo>/docs`
-    # contains the corpus, so the whole subtree classified read-only and a
-    # planted file under `docs/adr/` was refused — while `--dir
-    # <repo>/docs/adr`, a directory no project file names, classified writable
-    # and printed the same file with its credential. Narrowing a search must
-    # not be the way to lose the scan.
-    return store.read_only and _same_tree(root, real)
+    for resolve in (True, False):
+        try:
+            root = _repo_root(d, resolve=resolve)
+        except (_RootUnknown, OSError, ValueError):
+            return False
+        if root is None:
+            continue
+        store, refusal = _project_store(root, taken)
+        if store is None:
+            if refusal != "":
+                return True
+            continue
+        # No second containment question: the walk that found the checkout
+        # answered it. Asked of the CORPUS this door was not monotone in
+        # depth — `--dir <repo>/docs` contains the corpus, so the whole
+        # subtree classified read-only and a planted file under `docs/adr/`
+        # was refused, while `--dir <repo>/docs/adr`, a directory no project
+        # file names, classified writable and printed the same file with its
+        # credential. Narrowing a search must not be the way to lose the scan.
+        if store.read_only:
+            return True
+    return False
 
 
 def _config_state() -> tuple:

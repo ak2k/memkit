@@ -15115,6 +15115,23 @@ def _beside_the_corpus(tmp_path: Path) -> tuple[Path, Path]:
     return repo, beside
 
 
+def _corpus_linked_out_of_the_checkout(tmp_path: Path) -> tuple[Path, Path]:
+    """The corpus committed as a link OUT of the checkout.
+
+    Resolved, the named directory is in nobody's repository, so the door that
+    asks only that way finds no store, runs no scan and marks no line — while
+    the pointer it prints spells the path inside the checkout. The hook's own
+    search refuses this corpus outright, which is why the two columns differ.
+    """
+    repo = _two_memories(tmp_path)
+    corpus = repo / PROJECT_STORE_DIR / "search"
+    outside = tmp_path / "elsewhere" / "notes"
+    outside.parent.mkdir(parents=True)
+    corpus.rename(outside)
+    os.symlink(str(outside), str(corpus))
+    return repo, corpus
+
+
 def _corpus_subdirectory(tmp_path: Path) -> tuple[Path, Path]:
     """The memories moved a level down, so the named dir is strictly BELOW the
     corpus — every byte it serves is still a byte the repository chose."""
@@ -15200,6 +15217,8 @@ NAMED_DIR_SPELLINGS = [
      (True, False), (True, False)),
     ("a-directory-beside-the-corpus", _beside_the_corpus, None,
      (True, False), (True, False)),
+    ("a-corpus-linked-out-of-the-checkout", _corpus_linked_out_of_the_checkout,
+     None, (False, False), (True, False)),
 ]
 
 
@@ -15211,7 +15230,7 @@ NAMED_DIR_SPELLINGS = [
 def test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does(
     tmp_path: Path, label: str, build, env_for, by_hook, by_dir
 ) -> None:
-    """One directory, spelled ten ways, through both doors.
+    """One directory, spelled eleven ways, through both doors.
 
     The `--dir` door used to answer this with a second predicate — string
     containment, inside-only, over one spelling, with "there is no config" read

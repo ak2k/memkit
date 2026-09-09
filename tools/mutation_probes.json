@@ -4679,8 +4679,8 @@
       "name": "a-named-dir-above-the-corpus-is-not-the-corpus",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "    return store.read_only and _same_tree(root, real)\n",
-      "new": "    return store.read_only and _same_tree(_search_root(store.resolved_dir), real)\n",
+      "old": "        if store.read_only:\n            return True\n    return False\n",
+      "new": "        if store.read_only and _inside(\n            os.path.realpath(_search_root(store.resolved_dir)), os.path.realpath(d)\n        ):\n            return True\n    return False\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
@@ -4690,8 +4690,8 @@
       "name": "a-named-dir-below-the-corpus-is-not-the-corpus",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "    return store.read_only and _same_tree(root, real)\n",
-      "new": "    return store.read_only and _same_tree(real, _search_root(store.resolved_dir))\n",
+      "old": "        if store.read_only:\n            return True\n    return False\n",
+      "new": "        if store.read_only and _inside(\n            os.path.realpath(d), os.path.realpath(_search_root(store.resolved_dir))\n        ):\n            return True\n    return False\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
@@ -4701,23 +4701,23 @@
       "name": "the-named-dir-door-is-monotone-in-depth",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "    return store.read_only and _same_tree(root, real)\n",
-      "new": "    corpus = _search_root(store.resolved_dir)\n    return store.read_only and (\n        _same_tree(corpus, real) or _same_tree(real, corpus)\n    )\n",
+      "old": "        if store.read_only:\n            return True\n    return False\n",
+      "new": "        corpus = os.path.realpath(_search_root(store.resolved_dir))\n        here = os.path.realpath(d)\n        if store.read_only and (\n            _inside(corpus, here) or _inside(here, corpus)\n        ):\n            return True\n    return False\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
       "why": "asked of the corpus instead of the checkout, the door is not monotone in depth: a directory beside the corpus classifies writable while a shallower one containing both classifies read-only, so narrowing `--dir` prints a checked-in file with its credential"
     },
     {
-      "name": "the-named-dir-is-matched-by-its-spelling",
+      "name": "the-named-dir-door-resolves-before-it-asks-which-repository",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        target = os.stat(root)\n        here = path\n        while True:\n            if os.path.samestat(os.stat(here), target):\n                return True\n            parent = os.path.dirname(here)\n            if parent == here:\n                return False\n            here = parent\n",
-      "new": "        return _inside(os.path.realpath(root), os.path.realpath(path))\n",
+      "old": "            root = _repo_root(d, resolve=resolve)\n",
+      "new": "            root = _repo_root(d)\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
-      "why": "one directory has more than one spelling — a case variant on a case-insensitive filesystem, a link reached from either side — and string containment gives the same directory two answers at the two doors, which is the whole defect this walk removes"
+      "why": "a checkout that commits its corpus as a link out of itself resolves to nobody's repository, so asked only of the resolved path the door runs no scan and marks no line — while the pointer it prints spells the path inside the checkout the bytes never came from"
     },
     {
       "name": "the-project-corpus-line-is-spelled-its-own-way",
