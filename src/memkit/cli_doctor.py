@@ -667,9 +667,9 @@ def _unparsed_remedy(scopes: list) -> str:
                 else ""
             )
             parts.append(
-                f"Ask whoever owns {paths} for read access{whose}, or run this "
-                "as a user who has it. Do not edit it on this report's account: "
-                "nothing here has seen what is in it."
+                f"Ask whoever owns {paths} for read access, or run this "
+                f"as a user who has it{whose}. Do not edit it on this "
+                "report's account: nothing here has seen what is in it."
             )
         else:
             parts.append(
@@ -3963,9 +3963,10 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # every settings scope agrees with it.
     forced, forced_value = harness_memory.env_switch()
     # ONE ANSWER to "did something outside every settings file decide part of
-    # this row", carried into every detail and gating every PASS in it: a
-    # PASS is a claim about the machine, and neither of these is answerable
-    # from the environment this one process happens to have inherited.
+    # this row", carried into every detail and gating every settled answer in
+    # it: a settled answer is a claim about the machine, and neither of these
+    # is answerable from the environment this one process happens to have
+    # inherited.
     environed = _detail(
         _env_switch_note(forced, forced_value),
         _override_note(harness_memory.overrides()),
@@ -3983,9 +3984,9 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     config_dir = config_value or os.path.expanduser("~/.claude")
     # THE SAME VARIABLE `settings_scopes` guards, guarded the same way. Read
     # raw it decided three things — the directory printed as the derived
-    # default, the inventory whose emptiness chooses PASS over INFO, and the
-    # file the remedy names — so a repository that redirects it moved this row
-    # to its most reassuring answer.
+    # default, the inventory whose emptiness settles the row rather than
+    # leaving it a remedy, and the file the remedy names — so a repository
+    # that redirects it moved this row to its most reassuring answer.
     # ASKED OF THE VALUE, NOT OF THE DERIVED DEFAULT. `~/.claude` is under the
     # cwd whenever a session stands anywhere in home, so the containment test
     # alone told an adopter in their own home directory that a checkout had
@@ -4091,7 +4092,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # THE CLAIM ONLY WHERE THE INVENTORY BEARS IT OUT. "memkit is the only
         # memory system here" beside a count of memories no store holds is a
         # sentence contradicted two clauses later; off is still off, so this
-        # stays a PASS and says the narrower true thing. A walk that FAILED
+        # stays settled and says the narrower true thing. A walk that FAILED
         # bears nothing out either way, which is the second condition here.
         # The third: the checkout branch appends "while this checkout says so"
         # to this string, and a clone that can switch the feature back on is
@@ -4180,8 +4181,8 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                 )
             ]
         if unsure:
-            # A PASS here is a claim about what is on the machine, and the
-            # walk that would have borne it out is the one that failed.
+            # A settled answer here is a claim about what is on the machine,
+            # and the walk that would have borne it out is the one that failed.
             return [
                 Check(
                     "auto-memory",
@@ -4223,12 +4224,12 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             f"that {says}"
         )
         named_value = f"{harness_memory.DIRECTORY_KEY} is {_shown(configured)}"
-        # THE WALK GATES THIS PASS TOO. The configured directory being inside a
-        # store says nothing about the projects the harness wrote before the
+        # THE WALK GATES THIS ANSWER TOO. The configured directory being inside
+        # a store says nothing about the projects the harness wrote before the
         # key was set, and this branch returned before the inventory was ever
-        # asked — so the one state that voids every other branch's pass, a
+        # asked — so the one state that voids every other branch's answer, a
         # listing that would not answer, was invisible in the only branch that
-        # passes silently. The parallel derived-directory guard below already
+        # settles silently. The parallel derived-directory guard below already
         # gated on it.
         if (
             retrieved
@@ -4330,7 +4331,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             'To run memkit alone, set "autoMemoryEnabled": false in '
             f"{_shown(config_dir)}/settings.json."
         )
-    # THE TWO FACTS THAT VOID THE PASS AHEAD OF THE ONE THE ROW IS ABOUT.
+    # THE TWO FACTS THAT VOID THE ANSWER AHEAD OF THE ONE THE ROW IS ABOUT.
     # `first` ends in a path and carries a second one inside `says`, so the
     # sentence saying this whole count belongs to a directory the tree chose
     # was the one `_bound` cut — on an ordinary machine, with no long value in

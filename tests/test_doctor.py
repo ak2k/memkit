@@ -2301,7 +2301,7 @@ def test_a_memory_directory_that_will_not_list_is_the_path_the_row_names(
     assert row.actor == doctor.USER
 
 
-def test_a_directory_inside_a_store_is_retrieved_and_passes(profile, monkeypatch):
+def test_a_directory_inside_a_store_is_retrieved_and_settles_the_row(profile, monkeypatch):
     """The state this whole check exists to send an adopter to: the harness
     writing into a directory of its own INSIDE the corpus root, where memkit
     retrieves what it writes. One memory system, two writers.
@@ -2912,7 +2912,7 @@ def test_nested_stores_answer_the_same_whichever_is_declared_first(
     assert (row.status, row.remedy) == SETTLED, row.detail
 
 
-def test_a_flat_store_does_not_pass_a_directory_a_search_dir_would_unretrieve(
+def test_a_flat_store_does_not_settle_a_directory_a_search_dir_would_unretrieve(
     profile, monkeypatch
 ) -> None:
     """Containment is decided against the corpus root the store WILL have.
@@ -3034,7 +3034,7 @@ def test_only_false_turns_the_switches_off(profile, monkeypatch) -> None:
     assert f'"{harness_memory.DREAM_KEY}" is 0' in row.detail
 
 
-def test_an_environment_variable_that_forces_the_feature_on_is_never_a_pass(
+def test_an_environment_variable_that_forces_the_feature_on_never_settles_the_row(
     profile, monkeypatch
 ) -> None:
     """`CLAUDE_CODE_DISABLE_AUTO_MEMORY=0` turns auto-memory ON before the
@@ -3708,7 +3708,7 @@ def test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it(
             "registrations-count"} <= {c.id for c in named}
 
 
-def test_a_pass_never_stands_on_a_scope_that_would_not_parse(
+def test_a_settled_row_never_stands_on_a_scope_that_would_not_parse(
     profile, monkeypatch
 ) -> None:
     """The state the wrapper exists for: the scopes that DID parse agree, and

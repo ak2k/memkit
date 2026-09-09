@@ -2087,7 +2087,7 @@
       "old": "    if not _within(directory, tiered):\n        return \"flat\"\n",
       "new": "",
       "tests": [
-        "tests/test_doctor.py::test_a_flat_store_does_not_pass_a_directory_a_search_dir_would_unretrieve"
+        "tests/test_doctor.py::test_a_flat_store_does_not_settle_a_directory_a_search_dir_would_unretrieve"
       ],
       "why": "_search_root answers with the store root while a store has no search/, so a directory beside the store's memories reads as inside the corpus root — until a search/ appears and un-retrieves it in one step. Doctor would be passing what _nearest_store refuses to recommend in the same run."
     },
@@ -2315,7 +2315,7 @@
       "why": "the pass this branch gives is a claim about the machine, and every disclosure the row carries — an environment override, a redirected config directory, a listing that would not answer, a config this run could not read — is a reason it was not measured here"
     },
     {
-      "name": "auto-memory-passes-the-derived-directory-under-an-environment-override",
+      "name": "auto-memory-settles-the-derived-directory-under-an-environment-override",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
       "old": "        and not unsure\n        and not switch_theirs\n    ):\n        return [Check(\"auto-memory\", INFO, _detail(*fixed))]\n",
@@ -2411,7 +2411,7 @@
       "new": "    if word in _ENV_ON:\n        return None, \"\"\n",
       "tests": [
         "tests/test_harness_memory.py::test_the_environment_decides_the_switch_above_every_settings_scope",
-        "tests/test_doctor.py::test_an_environment_variable_that_forces_the_feature_on_is_never_a_pass"
+        "tests/test_doctor.py::test_an_environment_variable_that_forces_the_feature_on_never_settles_the_row"
       ],
       "why": "Read from the 2.1.258 code: a FALSY word in CLAUDE_CODE_DISABLE_AUTO_MEMORY makes the gate return true before it opens a settings file, so the feature runs over `autoMemoryEnabled: false` in every scope. Read as a variable that can only disable, this row PASSes `memkit is the only memory system here` on a machine with two of them."
     },
@@ -4682,7 +4682,7 @@
       "old": "        if forced is not None:\n            # NOT A PASS, and not the settings' answer either: the variable\n",
       "new": "        if forced is None:\n            # NOT A PASS, and not the settings' answer either: the variable\n",
       "tests": [
-        "tests/test_doctor.py::test_an_environment_variable_that_forces_the_feature_on_is_never_a_pass"
+        "tests/test_doctor.py::test_an_environment_variable_that_forces_the_feature_on_never_settles_the_row"
       ],
       "why": "the variable is read before any settings file and returns before them, so a row handing the settings' answer back answers a question the harness never asked. Inverted, the branch fires for the runs the variable decided nothing in."
     }
