@@ -3554,8 +3554,16 @@ def _package_path() -> str:
 
 
 # A checker finding, as the checker prints one: two leading spaces, a code in
-# capitals, the path it is about, and an em dash before the reason.
-_CHECKER_FINDING = re.compile(r"^ +([A-Z][A-Z0-9-]*): (\S+) — ")
+# capitals, the path it is about, and an em dash before the reason. Every rule
+# with a line to point at spells that path `{where}:{line}`, so the number is
+# matched and dropped here rather than left glued to the file name, where it
+# names nothing on disk.
+_CHECKER_FINDING = re.compile(r"^ +([A-Z][A-Z0-9-]*): (\S+?)(?::\d+)? — ")
+# The rules whose sentence runs straight on from the path with no em dash to
+# end it. Named one code at a time because a general "code, path, anything"
+# shape would also match the rules whose second word is a DIRECTORY or a
+# ledger's row count, and neither is a file an adopter can be told to fix.
+_CHECKER_PLAIN_FINDING = re.compile(r"^ +(ROW-LOST|STALE): (\S+?)(?::\d+)? ")
 
 
 def _files_the_checker_names(output: str, store: str) -> list:
@@ -3567,13 +3575,30 @@ def _files_the_checker_names(output: str, store: str) -> list:
     actually there under this store. A path joined onto the wrong root is a
     file name the adopter cannot act on, which is the failure the sentence
     below it exists to end.
+
+    ROW-LOST spells its path from the store's PARENT instead, so the store's
+    own directory name is dropped when it is what stands between the path and
+    a file that is there.
+
+    A WARNING NAMES A FILE TOO. Warnings share the block errors are printed
+    in, so a store that is red for one reason can carry a warning about a
+    second file; attributing that file as well is the question this answers
+    — did this run write it — asked of every file the block names.
     """
     named: list = []
     for line in output.splitlines():
-        found = _CHECKER_FINDING.match(line)
+        found = _CHECKER_FINDING.match(line) or _CHECKER_PLAIN_FINDING.match(line)
         if found is None:
             continue
-        full = os.path.normpath(os.path.join(store, found.group(2)))
+        rel = found.group(2)
+        full = os.path.normpath(os.path.join(store, rel))
+        head, _, tail = rel.partition("/")
+        if (
+            not os.path.lexists(full)
+            and tail
+            and head == os.path.basename(os.path.normpath(store))
+        ):
+            full = os.path.normpath(os.path.join(store, tail))
         if full not in named and os.path.lexists(full):
             named.append(full)
     return named

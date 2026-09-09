@@ -4829,6 +4829,28 @@
         "tests/test_init.py::test_a_closed_fence_is_adopted_and_so_is_the_example_link_inside_it"
       ],
       "why": "the checker blanks every line inside a closed fence before it reads links, so a memory quoting `[the plan](plan.md)` in an example has no dead link in it. Read raw, the adopter loses a real memory to a skip line for a store that would have been green — the rule refusing more than the check it restates."
+    },
+    {
+      "name": "init-red-verify-drops-a-finding-that-carries-a-line-number",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "_CHECKER_FINDING = re.compile(r\"^ +([A-Z][A-Z0-9-]*): (\\S+?)(?::\\d+)? — \")",
+      "new": "_CHECKER_FINDING = re.compile(r\"^ +([A-Z][A-Z0-9-]*): (\\S+) — \")",
+      "tests": [
+        "tests/test_init.py::test_a_red_finding_that_carries_a_line_number_is_attributed_too"
+      ],
+      "why": "every checker rule with a line to point at spells the path `file.md:8`, DEAD-LINK — the canonical red an adoption run earns — included. Read greedily, the line number stays glued to the name, nothing on disk answers to it, and exit 6 names no file and prints neither recovery sentence."
+    },
+    {
+      "name": "init-red-verify-skips-a-finding-with-no-em-dash",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        found = _CHECKER_FINDING.match(line) or _CHECKER_PLAIN_FINDING.match(line)\n",
+      "new": "        found = _CHECKER_FINDING.match(line)\n",
+      "tests": [
+        "tests/test_init.py::test_a_red_finding_that_carries_a_line_number_is_attributed_too"
+      ],
+      "why": "ROW-LOST and STALE run their sentence straight on from the path with no em dash after it, so a store red only on those named no file at all — and STALE is what a ledger row for a file that is not there produces."
     }
   ]
 }

@@ -4860,6 +4860,80 @@ def test_the_two_shapes_of_exit_six_say_in_their_output_which_one_they_are(
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )
+def test_a_red_finding_that_carries_a_line_number_is_attributed_too(
+    profile,
+) -> None:
+    """THE PARSER IS FED THE CHECKER'S OWN BYTES, not a hand-typed line.
+
+    The two cases above stub the checker out and hand it a block spelled the
+    way no line-numbered rule spells one. Every rule with a line to point at
+    writes the path as `file.md:8`, which resolves to nothing on disk, so the
+    finding fell out of the attribution and took the recovery paragraph with
+    it — on DEAD-LINK, the canonical red an adoption run earns. A store the
+    real checker really is red about is the only thing that pins the spelling.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "alpha.md": (
+                "---\nname: alpha\ndescription: one adopted memory\n---\n\n"
+                "See [[not-a-memory-anywhere]] for the rest.\n"
+            )
+        },
+    )
+    store = profile / "notes"
+    theirs = store / "search" / "not-from-here.md"
+    theirs.parent.mkdir(parents=True)
+    theirs.write_text(
+        "---\nname: theirs\ndescription: a file this run does not write\n---\n\n"
+        "See [the other one](./nowhere-at-all.md) for the rest.\n",
+        encoding="utf-8",
+    )
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    err = out.stderr
+    mine = store / "search" / init.ADOPT_DIRNAME / "-home-u" / "alpha.md"
+    assert mine.is_file(), err
+    # The checker's own spelling, line number and all, on both files.
+    assert "DEAD-LINK: ./search/not-from-here.md:" in err, err
+    assert "DANGLING-WIKILINK: ./search/" in err, err
+    # And the attribution, which is what the spelling used to cost.
+    assert f"{mine} — this run wrote it" in err, err
+    assert f"{theirs} — this run did not write it" in err, err
+    assert "what landed has moved the old one" in err, err
+    assert "no re-run will change" in err, err
+
+    # A rule that puts no em dash after the path is attributed as well, again
+    # on the checker's own bytes: a ledger row for a file that is not there.
+    ledger = store / "SEARCH.md"
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + "- [gone](search/gone.md) — a row for a file that is not there\n",
+        encoding="utf-8",
+    )
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    stale = [
+        line
+        for line in checked.stdout.splitlines()
+        if line.strip().startswith("STALE:")
+    ]
+    assert stale, checked.stdout + checked.stderr
+    assert init._files_the_checker_names("\n".join(stale), str(store)) == [str(ledger)]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
 def test_a_destination_the_adopter_edited_is_named_as_one_this_run_left_alone(
     profile,
 ) -> None:
