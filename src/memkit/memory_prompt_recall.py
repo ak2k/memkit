@@ -4187,11 +4187,13 @@ def _secret_re() -> re.Pattern[str]:
     The last branch is an ASSIGNMENT shape — a name, a separator, then eight
     unbroken characters — rather than the bare word, and it is the SHAPE that
     keeps ordinary prose about passwords off the floor, not a word boundary.
-    Which is why the keyword may carry identifier characters on either side:
-    a word-boundary anchor cannot fire between `_` and `secret`, so the
-    anchored form of this branch reads right and misses
-    `aws_secret_access_key = <40 chars>`, the commonest credential a checkout
-    carries. A short value still passes, so a key like
+    Which is why the keyword may carry identifier characters AFTER it and
+    needs none written in front: a word-boundary anchor cannot fire between
+    `_` and `secret`, so the anchored form of this branch reads right and
+    misses `aws_secret_access_key = <40 chars>`, the commonest credential a
+    checkout carries, while `re.search` starts at every offset and so reaches
+    that name from its `secret` with the trailing run covering the rest. A
+    short value still passes, so a key like
     `password_reset_seconds: 3600` is prose here too. What it costs when it is
     wrong is one pointer, visible as `lex_secret` in the soak record rather
     than silent.
@@ -4202,16 +4204,16 @@ def _secret_re() -> re.Pattern[str]:
     keyword immediately reads every quoted key as prose, `private_key`
     included, whose commonest spelling is that one.
 
-    BOUNDED on both sides of that keyword, which is what keeps the scan linear
-    in the bytes it reads. An unbounded `[A-Za-z0-9_]*` in front of an
-    alternation makes the engine try every split of the run at every start
-    offset, so a committed memory carrying an unbroken run of word characters
-    costs quadratic time: 8 KiB of `a` took 1.1 s and 64 KiB — the cap this
-    scan reads to — had not answered in a minute, on a scan that runs AFTER
-    recall()'s deadline, where nothing is left to stop it. Every prompt in that
-    checkout, for a file the repository chose. 64 is wider than any identifier
-    a real credential is spelled with, and no other branch here has a run in
-    front of an alternation.
+    NO RUN IN FRONT of that keyword, which is what keeps the scan linear in
+    the bytes it reads. A run there — bounded or not — makes the engine try
+    every split of it at every start offset, so a committed memory carrying an
+    unbroken run of word characters costs superlinear time: with a `{0,64}`
+    run in front, 64 KiB of the keyword — the cap this scan reads to — took
+    1.3 s, and unbounded it had not answered in a minute, on a scan that runs
+    AFTER recall()'s deadline, where nothing is left to stop it. Every prompt
+    in that checkout, for a file the repository chose. The trailing run is
+    bounded at 64, wider than any identifier a real credential is spelled
+    with, and no branch here has a run in front of an alternation.
 
     `api_?key` and `private_key` join that same assignment branch rather than
     getting branches of their own, so the shape keeps deciding: a sentence
@@ -4245,8 +4247,7 @@ def _secret_re() -> re.Pattern[str]:
                     r"xox[baprs]-[A-Za-z0-9-]{10,}",
                     r"[rs]k_live_[A-Za-z0-9]{10,}",
                     r"(?i:authorization:\s*bearer\s+[A-Za-z0-9._~+/-]{20,})",
-                    r"(?i:[A-Za-z0-9_]{0,64}"
-                    r"(?:password|passwd|secret|token|api_?key|private_key)"
+                    r"(?i:(?:password|passwd|secret|token|api_?key|private_key)"
                     r"[A-Za-z0-9_]{0,64})"
                     r"""["']?\s*[:=]\s*\S{8,}""",
                 )

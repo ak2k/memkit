@@ -15468,9 +15468,21 @@ def _scan_elapsed(call) -> float:
 # and reaches 21 s at 4096, so the second row measures a shorter pair rather
 # than making every future run of this file wait out a regression. Each pair
 # doubles a different number of times, so each carries its own ratio bar.
+#
+# The third row measures the length that actually reaches the engine: the scan
+# reads to SECRET_SCAN_MAX_BYTES, so a bound that holds only at 2 KiB bounds
+# nothing a repository can commit. Its pair is the cap and a quarter of it.
 SCAN_COST_BODIES = [
     ("a-run-of-one-character", "a", 1024, 8192, 32.0, 0.2),
     ("a-run-of-the-keyword", "password", 512, 2048, 20.0, 0.2),
+    (
+        "a-run-of-the-keyword-at-the-cap",
+        "token",
+        hook.SECRET_SCAN_MAX_BYTES // 4,
+        hook.SECRET_SCAN_MAX_BYTES,
+        20.0,
+        0.2,
+    ),
 ]
 
 

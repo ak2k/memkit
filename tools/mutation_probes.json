@@ -4620,15 +4620,15 @@
       "why": "`RecursionError` is a `RuntimeError`, and a document nested past the parser's budget fits in half this file's byte cap — escaping the whole-or-nothing guard it costs the checkout not one refused file but every prompt's whole retrieval"
     },
     {
-      "name": "the-scan-run-in-front-of-the-keyword-is-unbounded",
+      "name": "the-scan-has-a-run-in-front-of-the-keyword",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "                    r\"(?i:[A-Za-z0-9_]{0,64}\"\n",
-      "new": "                    r\"(?i:[A-Za-z0-9_]*\"\n",
+      "old": "                    r\"(?i:(?:password|passwd|secret|token|api_?key|private_key)\"\n",
+      "new": "                    r\"(?i:[A-Za-z0-9_]{0,64}(?:password|passwd|secret|token|api_?key|private_key)\"\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_credential_scan_costs_no_more_than_the_bytes_it_reads"
       ],
-      "why": "an unbounded run in front of an alternation is retried at every split at every offset, and the input is a committed file scanned after recall()'s deadline — 8 KiB of word characters cost 1.1 s and the 64 KiB the scan reads to never answered"
+      "why": "any run in front of an alternation is retried at every split at every offset, and the input is a committed file scanned after recall()'s deadline — bounded at 64 it costs 1.3 s on the 64 KiB the scan reads to, past the whole budget the prompt path has; unbounded it never answered, so the bounded revert is the cheap witness that the cap-sized row kills"
     },
     {
       "name": "the-scan-run-behind-the-keyword-is-unbounded",
