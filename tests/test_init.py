@@ -438,13 +438,18 @@ def test_nothing_that_can_refuse_runs_before_the_guard(profile, monkeypatch) -> 
     # And behaviourally, at both sites, so the shape above is not the only
     # thing standing.
     for target in ("_resolve_config", "build_plan"):
+        # PUT BACK BY NAME. `monkeypatch.undo()` here would also undo the
+        # `profile` fixture's HOME and config directory — it is the same
+        # monkeypatch — and the next iteration's unpatched half would plan
+        # against the developer's real machine.
+        real = getattr(init, target)
         monkeypatch.setattr(
             init,
             target,
             lambda *a, **k: (_ for _ in ()).throw(init.Refusal("synthetic", "no")),
         )
         assert init.run(_args()) == init.EXIT_REFUSED
-        monkeypatch.undo()
+        monkeypatch.setattr(init, target, real)
 
 
 def test_init_requires_a_mode_rather_than_defaulting_to_one(profile) -> None:
