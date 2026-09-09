@@ -14117,6 +14117,12 @@ def test_a_candidate_a_repository_published_costs_one_stat_and_one_open(
     Counted through the syscalls rather than through the module's own read
     counters, which count CALLS and not syscalls.
     """
+    # The index this drives is a real one, so it needs a real directory that is
+    # not the runner's: the autouse fixture deletes `XDG_CACHE_HOME` on purpose,
+    # which leaves `_state_dir` following HOME, and `recall` suppresses the
+    # sqlite error a cache it may not write raises. That failure arrives here as
+    # zero hits and names neither the cache nor the error.
+    monkeypatch.setattr(hook, "_state_dir", lambda: str(tmp_path))
     repo = _project_checkout(tmp_path, blob=_project_blob())
     corpus = repo / PROJECT_STORE_DIR / "search"
     for n in range(2):
