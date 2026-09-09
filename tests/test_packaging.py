@@ -546,6 +546,14 @@ def test_harness_shape_runs_on_a_real_floor_interpreter(tmp_path, version) -> No
     AND THE SAME BYTES AS 3.12, because a shape captured over ssh is compared
     against shapes captured here: an interpreter that runs the tool and answers
     a different document is a fixture nobody can reproduce.
+
+    AND THE DESTINATION HALF, which no other gate here executes at all: `--out`
+    is `os.open`, `os.mkdir` and `os.stat` called with `dir_fd=`, and which of
+    those the floor's `os.supports_dir_fd` actually holds is stated by a
+    comment in the tool rather than by a run. ONE ROUTE IS EXEMPT and named so
+    rather than silently absent — `--raw` redirected at a file, which reaches
+    `_stdout_destination`'s `F_GETPATH` and needs a redirect this harness would
+    have to build around the interpreter it is testing.
     """
     interpreter = _require_floor_interpreter(version)
     memory = tmp_path / "config" / "projects" / "-h-u-git-app" / "memory"
@@ -576,6 +584,41 @@ def test_harness_shape_runs_on_a_real_floor_interpreter(tmp_path, version) -> No
     shape = json.loads(by_path.stdout)
     assert shape["anonymised"] is True
     assert len(shape["memory_dirs"]) == 1, shape
+
+    landing = tmp_path / "shape.json"
+    wrote = subprocess.run(
+        [interpreter, str(tool), *args, "--out", str(landing)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert wrote.returncode == 0, wrote.stdout + wrote.stderr
+    assert json.loads(landing.read_text(encoding="utf-8")) == shape
+    # The exit code alone is not the assertion, on any of these: an exit 2 for
+    # the wrong reason is the failure this whole file is written against, and
+    # every refusal below has a sibling that answers 2 for something else.
+    taken = subprocess.run(
+        [interpreter, str(tool), *args, "--out", str(landing)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert taken.returncode == 2, taken.stdout + taken.stderr
+    assert "already at this name" in taken.stderr.splitlines()[0], taken.stderr
+    below = tmp_path / "made" / "here" / "shape.json"
+    made = subprocess.run(
+        [interpreter, str(tool), *args, "--out", str(below)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert made.returncode == 0, made.stdout + made.stderr
+    assert json.loads(below.read_text(encoding="utf-8")) == shape
+    checkout = tmp_path / "co"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(checkout), check=True, timeout=60)
+    leak = checkout / "raw.json"
+    refused = subprocess.run(
+        [interpreter, str(tool), *args, "--raw", "--out", str(leak)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "inside a git worktree" in refused.stderr.splitlines()[0], refused.stderr
+    assert not leak.exists(), "refused and written anyway"
 
 
 def _floor_step_selectors() -> list:
