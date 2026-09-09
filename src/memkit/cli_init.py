@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -636,6 +637,11 @@ def _foreign_canary(store: str, nonce: str) -> str:
         with open(path, encoding="utf-8") as f:
             body = f.read(4096)
     except (OSError, ValueError):
+        # swallow: ticket class-5 _foreign_canary — a canary this process
+        # cannot read reads as "no other config owns this store", so
+        # `canary-belongs-to-another-config` does not fire and no line says
+        # why; the write half is still safe, because the create refuses a
+        # differing destination.
         return ""
     found = re.search(r"\bmkc[0-9a-f]{10}\b", body)
     if not found or found.group(0) == nonce:
@@ -1171,6 +1177,8 @@ def _git_tracked(path: str) -> bool:
     try:
         out = run_git(GitRoute.TRACKED, repo=parent, path=path, timeout=15)
     except (OSError, subprocess.SubprocessError, Untrusted):
+        # swallow: ticket class-5 _git_tracked — the manifest loses the
+        # "tracked by git" warning and says nothing about having lost it.
         return False
     return out.returncode == 0
 
@@ -2063,7 +2071,19 @@ def _memory_the_walk_did_not_list(known: list) -> list:
     try:
         with os.scandir(base) as entries:
             projects = sorted((entry.name, entry.path) for entry in entries)
-    except OSError:
+    except OSError as exc:
+        # NOT THERE AND CANNOT BE READ ARE DIFFERENT ANSWERS. A machine whose
+        # harness has never run has no `projects/` and nothing was dropped;
+        # every other errno means this scan does not know what it is missing,
+        # and the walk it reconciles against returns the same empty inventory
+        # for both.
+        if exc.errno != errno.ENOENT:
+            out.append(
+                "the harness project directory could not be listed "
+                f"({exc.strerror or exc}), so whether it holds memories this "
+                "run passed over is unknown "
+                f"({_display_path(base)})"
+            )
         return out
     for key, path in projects:
         memory = os.path.join(path, "memory")
@@ -2074,7 +2094,14 @@ def _memory_the_walk_did_not_list(known: list) -> list:
                     for entry in entries
                     if entry.name.endswith(".md")
                 )
-        except OSError:
+        except OSError as exc:
+            if exc.errno != errno.ENOENT:
+                out.append(
+                    f"{_findable(key)}: this directory could not be listed "
+                    f"({exc.strerror or exc}), so what it holds is not adopted, "
+                    "counted or named anywhere else here "
+                    f"({_display_path(memory)})"
+                )
             continue
         if key not in listed:
             if not any(name != harness_memory.INDEX_NAME for name in names):
@@ -3322,6 +3349,8 @@ def _read_or_empty(path: str) -> str:
         with open(path, encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
+        # swallow: nothing to read is not a read that failed — the
+        # `unreadable-config` refusal below is where a failed one goes.
         return ""
     except (OSError, ValueError) as exc:
         raise Refusal(

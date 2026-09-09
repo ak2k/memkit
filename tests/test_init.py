@@ -1996,6 +1996,96 @@ def test_every_escape_guard_call_uses_the_value_it_returns(profile) -> None:
     assert dropped == [], dropped
 
 
+
+def test_no_oserror_handler_swallows_silently(profile) -> None:
+    """A READ THAT COULD NOT LOOK NEVER ANSWERS WITH THE EMPTY COLLECTION.
+
+    An `except OSError` whose whole body is `pass`, `continue` or an empty
+    return spends a failed read as "nothing here", and every reader downstream
+    — the count, the manifest, the adopter deciding whether to type `--confirm`
+    — reads a healthy empty directory. So a silent body is admitted only with
+    a `# swallow:` comment on its own line naming the check or the line that
+    does report the failure, and this prints the allowlist so a reviewer reads
+    the reasons rather than trusting they exist.
+
+    `memory_integrity.py` and `harness_memory.py` hold the same class and are
+    frozen on this branch; the lint is promoted over them at the merge round.
+    """
+    import ast
+
+    catches = {
+        "OSError",
+        "IOError",
+        "FileNotFoundError",
+        "PermissionError",
+        "IsADirectoryError",
+        "NotADirectoryError",
+        "Exception",
+    }
+    source = pathlib.Path(init.__file__).read_text(encoding="utf-8")
+    lines = source.splitlines()
+
+    def caught(handler) -> set:
+        # A bare `except:` catches every OSError there is.
+        if handler.type is None:
+            return {"Exception"}
+        parts = (
+            handler.type.elts
+            if isinstance(handler.type, ast.Tuple)
+            else [handler.type]
+        )
+        return {getattr(n, "id", getattr(n, "attr", "")) for n in parts}
+
+    def silent(body) -> str:
+        if len(body) != 1:
+            return ""
+        one = body[0]
+        if isinstance(one, (ast.Pass, ast.Continue, ast.Break)):
+            return type(one).__name__.lower()
+        if not isinstance(one, ast.Return):
+            return ""
+        if one.value is None:
+            return "return"
+        value = one.value
+        if isinstance(value, ast.Constant) and (
+            value.value is None or value.value is False or value.value == ""
+        ):
+            return f"return {value.value!r}"
+        for kind, spelling in ((ast.List, "[]"), (ast.Tuple, "()")):
+            if isinstance(value, kind) and not value.elts:
+                return f"return {spelling}"
+        if isinstance(value, ast.Dict) and not value.keys:
+            return "return {}"
+        return ""
+
+    handlers = [
+        handler
+        for node in ast.walk(ast.parse(source, init.__file__))
+        for handler in getattr(node, "handlers", [])
+        if caught(handler) & catches
+    ]
+    assert len(handlers) >= 8, len(handlers)
+    allowlisted, offenders = [], []
+    for handler in handlers:
+        body = silent(handler.body)
+        if not body:
+            continue
+        first = handler.body[0].lineno
+        # The comment block the statement carries, read upwards: the reason a
+        # silent body is allowed is usually longer than one line.
+        above, cursor = [], first - 2
+        while cursor >= 0 and lines[cursor].strip().startswith("#"):
+            above.insert(0, lines[cursor].strip())
+            cursor -= 1
+        where = f"cli_init.py:{first}  except {'/'.join(sorted(caught(handler)))}"
+        excuse = [line for line in above if line.startswith("# swallow:")]
+        if excuse:
+            allowlisted.append(f"{where}  {body}  {excuse[0]}")
+        else:
+            offenders.append(f"{where}  {body}")
+    print("\n".join(["silent handlers, allowlisted:", *allowlisted]))
+    assert offenders == [], offenders
+
 def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
     """Same window, same file class: an append computed at plan time and
     written after a 300-second subprocess is an append against a file that may
@@ -2631,6 +2721,72 @@ def test_a_memory_the_walk_could_not_list_is_named_in_the_manifest(
     )
     assert (looped / "alpha.md").read_text(encoding="utf-8") == TRAP
 
+
+
+def test_a_memory_directory_that_cannot_be_listed_is_named(profile) -> None:
+    """A DIRECTORY NOBODY CAN OPEN IS NOT AN EMPTY DIRECTORY.
+
+    The walk answers a `scandir` that raised with no project at all, and the
+    reconciliation beside it answered the same way, so a memory directory whose
+    mode this process cannot read reached the adopter as "No harness
+    auto-memory to adopt" — the one line they have to decide on.
+    """
+    _harness(profile, "-home-ok", {"delta.md": TRAP})
+    shut = _harness(profile, "-home-shut", {"alpha.md": TRAP})
+    os.chmod(shut, 0o000)
+    try:
+        manifest = _dry(
+            profile, "--store", str(profile / "notes"), "--adopt-auto-memory"
+        )
+    finally:
+        os.chmod(shut, 0o700)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-shut': this directory could not be listed" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "Permission denied" in manifest.stdout, manifest.stdout
+    # The control: a directory this process can read is named by no gap line,
+    # and is adopted.
+    assert "'-home-ok': this directory could not be listed" not in (
+        manifest.stdout
+    ), manifest.stdout
+    assert "1 project memory directory holds" in manifest.stdout, manifest.stdout
+
+
+def test_a_harness_projects_directory_that_cannot_be_listed_is_named(
+    profile,
+) -> None:
+    """The same question one level up: an unreadable `projects/` is not a
+    machine with no harness memories on it, and only the reconciliation can say
+    so — the walk it reconciles against returns the same empty inventory for
+    both.
+    """
+    _harness(profile, "-home-ok", {"delta.md": TRAP})
+    base = profile / "claude-config" / "projects"
+    os.chmod(base, 0o000)
+    try:
+        manifest = _dry(
+            profile, "--store", str(profile / "notes"), "--adopt-auto-memory"
+        )
+    finally:
+        os.chmod(base, 0o700)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "the harness project directory could not be listed" in (
+        manifest.stdout
+    ), manifest.stdout
+    assert "Permission denied" in manifest.stdout, manifest.stdout
+
+
+def test_a_machine_with_no_harness_projects_directory_is_named_by_no_gap_line(
+    profile,
+) -> None:
+    """Absence is not a failed look: nothing was dropped, because there was
+    nothing to list. The control for both disclosures above.
+    """
+    manifest = _dry(profile, "--store", str(profile / "notes"), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "could not be listed" not in manifest.stdout, manifest.stdout
+    assert "No harness auto-memory to adopt." in manifest.stdout, manifest.stdout
 
 def test_a_harness_already_pointed_somewhere_else_refuses_by_name(profile) -> None:
     """Where an agent writes its memories is a decision somebody has already

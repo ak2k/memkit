@@ -4929,6 +4929,29 @@
         "tests/test_init.py::test_adoption_refuses_while_the_harness_feature_is_switched_off"
       ],
       "why": "\"turn it back on\" is an instruction to open something, and the boolean lives in one of several settings files — managed, local, project — not in the config directory the memories sit under. Naming the scope without the file leaves the adopter to guess which file to edit."
+    },
+    {
+      "name": "init-drops-a-memory-directory-it-could-not-list-in-silence",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        except OSError as exc:\n            if exc.errno != errno.ENOENT:\n                out.append(\n                    f\"{_findable(key)}: this directory could not be listed \"\n                    f\"({exc.strerror or exc}), so what it holds is not adopted, \"\n                    \"counted or named anywhere else here \"\n                    f\"({_display_path(memory)})\"\n                )\n            continue\n",
+      "new": "        except OSError:\n            continue\n",
+      "tests": [
+        "tests/test_init.py::test_a_memory_directory_that_cannot_be_listed_is_named",
+        "tests/test_init.py::test_no_oserror_handler_swallows_silently"
+      ],
+      "why": "an empty listing and a listing that raised become one answer, so a directory holding memories nobody can currently read reaches the adopter as a machine with none."
+    },
+    {
+      "name": "init-drops-an-unreadable-harness-projects-directory-in-silence",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    except OSError as exc:\n        # NOT THERE AND CANNOT BE READ ARE DIFFERENT ANSWERS. A machine whose\n        # harness has never run has no `projects/` and nothing was dropped;\n        # every other errno means this scan does not know what it is missing,\n        # and the walk it reconciles against returns the same empty inventory\n        # for both.\n        if exc.errno != errno.ENOENT:\n            out.append(\n                \"the harness project directory could not be listed \"\n                f\"({exc.strerror or exc}), so whether it holds memories this \"\n                \"run passed over is unknown \"\n                f\"({_display_path(base)})\"\n            )\n        return out\n",
+      "new": "    except OSError:\n        return out\n",
+      "tests": [
+        "tests/test_init.py::test_a_harness_projects_directory_that_cannot_be_listed_is_named"
+      ],
+      "why": "the reconciliation is the only thing that can tell an unreadable `projects/` from a machine without one — the walk returns the same empty inventory for both."
     }
   ]
 }
