@@ -15417,6 +15417,66 @@ def test_a_refusal_reason_carries_no_text_the_repository_chose(
 # --- the kill switch, in the one file no repository can write ----------------
 
 
+def test_a_project_file_this_build_refused_leaves_a_mark_on_the_record(
+    tmp_path: Path,
+) -> None:
+    """The observation surface can see a repository whose config was declined.
+
+    Seventeen refusal sentences reach exactly one surface, `--debug-config`,
+    which nothing on an agent's path runs. On the record — the file the soak
+    analyzers read and the only account of what this hook did — a checkout
+    whose `.memkit.json` was refused and a checkout with no file at all wrote
+    the same bytes, so a repository that asked for a corpus and did not get one
+    was indistinguishable from one that never asked.
+
+    A COUNT and not the sentence: every reason quotes a path or a key the
+    repository chose, and this file is read by collectors the repository is not
+    entitled to speak on. Three trees, because the key means nothing unless it
+    is absent from the other two.
+    """
+    env = _env(tmp_path)
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    trees = {
+        "refused": _project_checkout(
+            tmp_path,
+            name="refused",
+            blob={
+                hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA + 1,
+                "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+            },
+        ),
+        "valid": _project_checkout(tmp_path, name="valid", blob=_project_blob()),
+        "none": _project_checkout(tmp_path, name="none"),
+    }
+    records = {}
+    for name, repo in trees.items():
+        out = subprocess.run(
+            ["python3", HOOK],
+            input=json.dumps({"session_id": f"pr_{name}", "prompt": INJECT_PROMPT}),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+            cwd=str(repo),
+        )
+        assert out.returncode == 0, out.stderr[-400:]
+        # The refusal stays on the diagnostic: this path says nothing at all,
+        # and a reason that reached a prompt would be repository text in front
+        # of a model.
+        assert hook.PROJECT_CONFIG_NAME not in out.stdout, (name, out.stdout)
+        assert out.stderr == "", (name, out.stderr)
+        records[name] = json.loads(log.read_text().splitlines()[-1])
+
+    assert records["refused"]["lex_project_refused"] == 1, records["refused"]
+    # Non-vacuity in the direction that matters: a key on every line is a key
+    # nobody greps for, so the valid and absent cases must not carry it — and
+    # the valid one has to have reached the store, or "no counter" would only
+    # mean "no repository".
+    assert records["valid"]["injected"] == ["unionfs_perms.md"], records["valid"]
+    for name in ("valid", "none"):
+        assert "lex_project_refused" not in records[name], (name, records[name])
+
+
 def test_the_kill_switch_is_read_from_the_users_own_config(
     tmp_path: Path, monkeypatch
 ) -> None:

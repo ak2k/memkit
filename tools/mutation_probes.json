@@ -4806,6 +4806,17 @@
         "tests/test_memory_prompt_recall.py::test_the_briefs_provenance_sentence_is_said_exactly_when_a_mark_is_there"
       ],
       "why": "this reader is unattended, so a mark it has no rule for is a mark it cannot weigh — and the line it is on was chosen by whoever can land a commit in the checkout"
+    },
+    {
+      "name": "a-refused-project-file-leaves-no-trace-on-the-record",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        # After the assignment rather than inside the resolution, so a raise on\n        # the way through leaves the counter saying what `project_error` says.\n        if self.project_error:\n            _LEX_COUNTS[\"lex_project_refused\"] += 1\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_this_build_refused_leaves_a_mark_on_the_record"
+      ],
+      "why": "the counter is the only account of a declined `.memkit.json` that reaches the surface anybody reads, and it is raised before the stage that clears the rest of the family — a line whose effect is undone downstream looks exactly like one that works"
     }
   ]
 }

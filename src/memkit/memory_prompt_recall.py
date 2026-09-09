@@ -1111,6 +1111,10 @@ class Config:
         self._project, self.project_error = _project_store(
             root, {store.id for store in self.stores}
         )
+        # After the assignment rather than inside the resolution, so a raise on
+        # the way through leaves the counter saying what `project_error` says.
+        if self.project_error:
+            _LEX_COUNTS["lex_project_refused"] += 1
         return self._project
 
     def searched_stores(self) -> list:
@@ -2871,7 +2875,21 @@ _LEX_COUNTS: dict[str, int] = {
     # refused candidate loses its matched terms and the relevance floor then
     # drops it like any other weak hit.
     "lex_secret": 0,
+    # A `.memkit.json` this build found and declined. Every one of the reasons
+    # is a well-formed sentence and `--debug-config` is the only surface that
+    # says any of them, so on the record a refused checkout and a checkout with
+    # no file at all were the same run. A COUNT and never the reason: the
+    # sentences quote a path or a key the repository chose, and this file is
+    # read by collectors the repository is not entitled to speak on. What a
+    # reader may conclude from a nonzero value is that a repository asked for a
+    # corpus and did not get one — not which repository, and not why.
+    "lex_project_refused": 0,
 }
+
+# Counters set while the CONFIG was resolved, which every entry point does
+# before it reaches retrieval. Named because the stage zeroes what it owns on
+# the way in, and a fact established earlier than that is not its to clear.
+_CONFIG_TIME_COUNTS = ("lex_project_refused",)
 
 
 def _lex_fired() -> dict[str, int]:
@@ -5936,7 +5954,8 @@ def recall(
         return _interleave(ranked)
 
     for key in _LEX_COUNTS:
-        _LEX_COUNTS[key] = 0
+        if key not in _CONFIG_TIME_COUNTS:
+            _LEX_COUNTS[key] = 0
     _LEX_SECTIONS.clear()
     _LEX_MATCHED.clear()
     _LEX_SCORES.clear()
