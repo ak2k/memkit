@@ -6370,3 +6370,51 @@ def test_an_unreadable_error_log_is_restarted_rather_than_grown_forever(profile)
         log.chmod(0o600)
     assert len(lines) < 500, len(lines)
     assert lines[-1].startswith("memkit-hook: ")
+
+
+def test_the_configured_rows_verdict_survives_the_bound_and_the_value_is_cut(
+    profile, monkeypatch
+) -> None:
+    """The value is a clone's to choose and the verdict is memkit's, so the
+    verdict is not what a long value is allowed to spend.
+
+    `_bound` cuts from the end. With the key, the file, the placement and the
+    directory in one string at the end of the row, a 560-character value and
+    two disclosures cut the whole sentence away: what was left named a
+    problem, disclosed two more, and never said what the setting was or what
+    was wrong with it.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    long_dir = profile.joinpath(*["memories-a-clone-chose" for _ in range(24)])
+    _settings(profile, autoMemoryDirectory=str(long_dir))
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True, exist_ok=True)
+    # Not a bool, so the row owes the odd-value sentence as well: the parts
+    # between the disclosures and the value are what used to push it off.
+    (checkout / "settings.json").write_text(
+        json.dumps({"autoMemoryEnabled": 1}), encoding="utf-8"
+    )
+    monkeypatch.setenv(harness_memory.OVERRIDE_ENV[0], str(profile / "override"))
+    projects = profile / "claude-config" / "projects"
+    projects.mkdir(parents=True, exist_ok=True)
+    projects.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        projects.chmod(0o755)
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+    assert (
+        f"{harness_memory.DIRECTORY_KEY} in user settings names a directory "
+        "that is outside every store" in row.detail
+    )
+    # Both live disclosures, whole.
+    assert "an environment override is in effect" in row.detail
+    assert f"{doctor._shown(str(projects))} could not be read" in row.detail
+    # And the part the bound spent itself on is the one the value decides.
+    assert doctor._shown(str(long_dir)) not in row.detail
+    assert row.detail.endswith("...")

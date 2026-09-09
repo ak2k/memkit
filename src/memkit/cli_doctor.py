@@ -4159,10 +4159,17 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
         # and cut three verdict sentences off the end. What was left read as a
         # confident answer with no answer in it — a prose-shaped value could
         # render a forged one.
+        #
+        # TWO PARTS rather than one, because a string is as long as the value
+        # inside it: written as a single sentence the verdict sat wherever the
+        # value put it, and two ordinary disclosures were enough to push the
+        # whole of it past the cut. Split, the sentence goes with the fixed
+        # facts and the value goes last, where `_bound` is meant to reach.
         named = (
             f"{harness_memory.DIRECTORY_KEY} in {source} names a directory "
-            f"that {says}: {_shown(configured)}"
+            f"that {says}"
         )
+        named_value = f"{harness_memory.DIRECTORY_KEY} is {_shown(configured)}"
         # THE WALK GATES THIS PASS TOO. The configured directory being inside a
         # store says nothing about the projects the harness wrote before the
         # key was set, and this branch returned before the inventory was ever
@@ -4182,7 +4189,7 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                 Check(
                     "auto-memory",
                     INFO,
-                    _detail(named, recent, odd_enabled),
+                    _detail(named, recent, odd_enabled, named_value),
                 )
             ]
         # WHO DECIDES OUTRANKS WHERE IT POINTS, and the order matters for more
@@ -4222,12 +4229,13 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                 "auto-memory",
                 INFO,
                 _detail(
+                    named,
                     travels,
                     *disclosures,
                     switched_on,
                     recent,
                     odd_enabled,
-                    named,
+                    named_value,
                 ),
                 remedy,
                 actor=USER,
