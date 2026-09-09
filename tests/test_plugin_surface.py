@@ -17,6 +17,7 @@ what it decides is what it exports into the process it replaces itself with.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -3366,8 +3367,16 @@ _RECREATED_DIR_OUTCOMES = {
     "leaves the link inside `$dir` rather than in its place": "inside",
     "leaves the link where it belongs": "in-place",
 }
+_DIR_LINE_PURPOSES = {"the harness's memory directory for this repository": "harness-dir"}
+_RACE_END_CODES = {"rc 0": 0, "rc 1": 1}
+_RACED_DIR_ROUTES = {"move that link up into `$dir`'s own place": "move-link-up"}
+_PRINTED_MOVE_COMMANDS = {"prints no command for the move": "none"}
+_EARLY_STOP_STREAMS = {
+    "a status, and nothing to read": "silent",
+    "the shell's own message all the same": "loud",
+}
 _RACED_DIR_DETECTIONS = {
-    "a directory": "raced",
+    "a directory holding one link named for `$target`": "raced",
     "a symlink": "done",
 }
 _STOPPED_LINE_STREAMS = {
@@ -3614,6 +3623,23 @@ def _dir_shape(section: str) -> str:
     )
 
 
+def _dir_line_purpose(section: str) -> str:
+    """Whose directory the page says its `$dir` line names.
+
+    The line derives that path from `$key` two blocks up, so the sentence
+    introducing it is the only place the page says whose directory it is. A
+    page that starts calling it something else is describing a path other than
+    the one the cases below build.
+    """
+    return _stated(
+        section,
+        r"still set by the block above, this names ([^:]+) and shows what is "
+        r"there",
+        _DIR_LINE_PURPOSES,
+        "whose directory the `$dir` line names",
+    )
+
+
 def _named_variable_count(section: str) -> int:
     """How many variables the page tells the reader to set before the line."""
     return _stated(
@@ -3651,6 +3677,51 @@ def _raced_dir_detection(section: str) -> str:
         r"Where it shows ([^,]+), the harness recreated `\$dir`",
         _RACED_DIR_DETECTIONS,
         "what `ls -ld` shows once the harness recreated `$dir`",
+    )
+
+
+def _raced_line_rc(section: str) -> int:
+    """The status the page says the line ends at when the harness wins the race.
+
+    "all the same" is the whole of the warning: the reader gets the status of a
+    repoint that worked, and only `ls -ld` tells them otherwise.
+    """
+    return _stated(
+        section,
+        r"That race ends at (rc \d+) all the same",
+        _RACE_END_CODES,
+        "what the raced line ends at",
+    )
+
+
+def _raced_dir_route(section: str) -> str:
+    """The way out of the race the page gives, which is a move and not a command.
+
+    The page prints no command for it, so the cell that drives the state makes
+    the move itself — and this is what says the move it makes is the one the
+    reader is told to make.
+    """
+    return _stated(
+        section,
+        r"Quit the harness and ([^:]+): it already points where the line above "
+        r"was taking it",
+        _RACED_DIR_ROUTES,
+        "the way out of the race it gives the reader",
+    )
+
+
+def _printed_move_command(section: str) -> str:
+    """The page's claim about itself: that the move above has no command here.
+
+    A reader who is told to move a link by hand and then finds a line for it
+    pastes the line. So the promise is read where the section's blocks are, and
+    a block that removes or moves anything else fails there.
+    """
+    return _stated(
+        section,
+        r"This page ([^—]+?) — `ls -ld` prints one line about a directory",
+        _PRINTED_MOVE_COMMANDS,
+        "whether it prints a command for the move",
     )
 
 
@@ -3740,6 +3811,23 @@ def _nounset_streams(section: str) -> str:
     )
 
 
+def _nounset_early_stop(section: str) -> str:
+    """What the page says `set -u` costs a line that stops before the unset name.
+
+    The sentence above this one holds only where the line REACHES the name.
+    This is the other half — an earlier test fails, the later name is never
+    expanded, and the option changes nothing a reader can see — and it is the
+    half that had no table of its own.
+    """
+    return _stated(
+        section,
+        r"never expands the later name, so that line stops exactly as it does "
+        r"without the option: ([^.]+)\.",
+        _EARLY_STOP_STREAMS,
+        "what a line stopped before the unset name prints",
+    )
+
+
 def _settings_precedence(section: str) -> list:
     """The settings scopes the page lists, highest first."""
     # The scope names carry periods of their own, so the list is delimited by
@@ -3766,7 +3854,142 @@ def _not_a_link_outcome(section: str) -> str:
     # open with that test for the sentence to be about anything.
     line = _repoint_line(section)
     assert line.startswith('[ -L "$dir" ]'), line
+    # And it has to name one command: `_stated` reads the first match and never
+    # counts, so a second sentence using the phrase for another line would be
+    # read as this one.
+    said = re.findall(r"the first test", _prose(section), re.I)
+    assert len(said) == 1, said
     return outcome
+
+
+# What pins the page's prose is the regexes this file states: a claim no regex
+# reads is a claim the page can reverse with every case below still green. The
+# inventory is collected off this file's own source rather than listed a second
+# time, so an extractor added later brings its anchor with it, and one whose
+# regex is edited pins the sentence it now matches instead of the old one.
+_PAGE_READERS = ("_stated", "re.search", "re.findall", "re.finditer", "re.fullmatch")
+
+_CLAIM_VERBS = (
+    "does", "never", "always", "refuses", "refuse", "fails", "stops", "ends",
+    "removes", "writes", "reads", "ignores", "must",
+)
+
+
+def _suite_functions() -> list:
+    """This file's own top-level functions, as syntax."""
+    parsed = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    return [node for node in parsed.body if isinstance(node, ast.FunctionDef)]
+
+
+def _claim_anchors() -> tuple:
+    """Every page-reading regex in this file, as `(extractor, regex)` pairs.
+
+    A function whose first argument is the section is reading the page, and the
+    literal it hands `_stated` or `re` is what it pins. Only patterns carrying
+    prose are counted: one that matches any code span at all would anchor every
+    sentence that prints one, which is the reverse of what the lint is for.
+    """
+    rows = []
+    for node in _suite_functions():
+        if not node.args.args or node.args.args[0].arg != "section":
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            reader = ast.unparse(call.func)
+            if reader not in _PAGE_READERS:
+                continue
+            at = 1 if reader == "_stated" else 0
+            if len(call.args) <= at:
+                continue
+            pattern = call.args[at]
+            if not isinstance(pattern, ast.Constant) or not isinstance(pattern.value, str):
+                continue
+            if len(re.findall(r"[a-z]{3,}", pattern.value)) >= 3:
+                rows.append((node.name, pattern.value))
+    assert rows, "this file reads the page with no stated pattern at all"
+    return tuple(rows)
+
+
+def _stated_callers() -> set:
+    """Every extractor that looks a rule of the page's up in a table."""
+    return {
+        node.name
+        for node in _suite_functions()
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and ast.unparse(call.func) == "_stated"
+    }
+
+
+def _paragraphs(section: str) -> list:
+    """The section's prose: a list of sentences per paragraph.
+
+    Fences and headings go out, and every inline span is held aside while the
+    sentences are split — the page's spans carry `.` in paths and in settings
+    keys, and a split that reads those as sentence ends cuts claims in half. A
+    paragraph that is nothing but a span is a command rather than a claim.
+    """
+    body = re.sub(r"```.*?```", " ", section, flags=re.S)
+    body = re.sub(r"^#+ .*$", " ", body, flags=re.M)
+    out = []
+    for para in re.split(r"\n\s*\n", body):
+        held = re.findall(r"`[^`]+`", para)
+        masked = " ".join(re.sub(r"`[^`]+`", "\x00", para).split())
+        if not masked.replace("\x00", " ").strip(" :.-"):
+            continue
+        said = []
+        for one in re.split(r"(?<=[.?!])(?=\s|$)", masked):
+            one = one.strip()
+            if not one:
+                continue
+            while "\x00" in one:
+                one = one.replace("\x00", held.pop(0), 1)
+            said.append(one)
+        if said:
+            out.append(said)
+    return out
+
+
+def _makes_a_claim(sentence: str) -> bool:
+    """Whether a sentence states something a reader can act on and be wrong about.
+
+    A backticked span naming a command, a path, a variable or a settings key; a
+    number; or one of the verbs the page states outcomes with. Prose that has
+    none of the three is describing rather than promising.
+    """
+    if re.search(r"\d", re.sub(r"`[^`]+`", " ", sentence)):
+        return True
+    if any(re.search(rf"\b{verb}\b", sentence) for verb in _CLAIM_VERBS):
+        return True
+    return any(
+        re.search(r"[/$]|^[a-z]+ -|^[a-z]{2,}$", span)
+        for span in re.findall(r"`([^`]+)`", sentence)
+    )
+
+
+def _hand_repoint_prose(section: str) -> list:
+    """The prose of the one procedure the page leaves to the reader's hands.
+
+    Bounded by the names the section's own pasteable lines CREATE — `$root`,
+    `$key`, `$dir` — rather than by position: the prose that explains those
+    lines is the prose a reader acts on, and a paragraph that never names them
+    is about the harness instead. `$CLAUDE_CONFIG_DIR` and `$HOME` are not
+    among them; the lines read those two, they do not make them.
+    """
+    made = set()
+    for _label, body, pasted in _section_blocks(section):
+        if pasted:
+            made |= set(re.findall(r"(?:^|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=", body, re.M))
+    assert made, "the section's pasteable lines create no name of their own"
+    made_re = re.compile(r"\$\{?(?:" + "|".join(sorted(made)) + r")\b")
+    paragraphs = _paragraphs(section)
+    holds = [
+        at
+        for at, para in enumerate(paragraphs)
+        if any(made_re.search(span) for one in para for span in re.findall(r"`[^`]+`", one))
+    ]
+    assert holds, (sorted(made), "no paragraph names what the section's lines create")
+    return [one for para in paragraphs[holds[0] : holds[-1] + 1] for one in para]
 
 
 def _needs_zsh() -> str:
@@ -4208,7 +4431,7 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert shown[0].startswith("l"), (script, shown[0])
 
     if cell == "repoint-harness-recreated-dir":
-        assert out.returncode == 0, (script, out.stdout, out.stderr)
+        assert out.returncode == _raced_line_rc(section), (script, out.stdout, out.stderr)
         assert _recreated_dir_outcome(section) == "inside", "the page claims otherwise"
         assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` is still a link")
         assert os.path.islink(dir_ / target.name), (script, _file_map(dir_))
@@ -4219,6 +4442,7 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         # rather than described, since the cell has the state in hand.
         assert _raced_dir_detection(section) == "raced", "the page claims otherwise"
         assert [entry.name for entry in dir_.iterdir()] == [target.name], _file_map(dir_)
+        assert _raced_dir_route(section) == "move-link-up", "the page claims otherwise"
         # The move is the cell's own because the page prints no command for it.
         # What the page owes the reader is that the link already inside `$dir`
         # is the one they were after, so moving it up is the whole way out.
@@ -4346,6 +4570,9 @@ def test_no_shell_block_the_adoption_section_prints_removes_anything_but_the_lin
     blocks = _section_blocks(section)
     listed = [label for label, _body, _pasted in blocks]
     assert _rm_reach(section) == "link-only", "the page claims otherwise"
+    # The page says it prints no command for the move a reader makes by hand,
+    # which is a promise about the blocks below rather than about the prose.
+    _printed_move_command(section)
 
     # A command per fragment: the section's blocks are one-liners joined by
     # `&&`, and it is the fragment before a removal that gets to stop it.
@@ -4431,6 +4658,8 @@ def test_the_dir_the_page_derives_falls_back_to_home_where_the_variable_is_unset
     nothing ran — and the page could have lost it with all of them green.
     """
     section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    # `want` below is the directory the sentence above the line says it names.
+    _dir_line_purpose(section)
     home = Path(os.path.realpath(str(tmp_path))) / "home"
     home.mkdir()
     repo = _fixture_repo(home / "repo", home)
@@ -4485,7 +4714,10 @@ def test_an_unset_name_the_line_never_reaches_is_not_the_shells_message(
     ])
     out = _shell_out(shell, script, home, home)
     assert out.returncode != 0, (script, out.stdout, out.stderr)
-    assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
+    if _nounset_early_stop(section) == "silent":
+        assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
+    else:
+        assert out.stderr.strip(), (script, out.stdout, out.stderr)
     assert dir_.is_dir() and not dir_.is_symlink(), (script, "the directory became a link")
     assert _file_map(dir_) == before, (script, _file_map(dir_))
 
@@ -4576,6 +4808,49 @@ def test_a_zsh_case_fails_on_a_shell_free_path_rather_than_reporting_a_skip(
     ]
     assert not unexplained, (unexplained, reasons[:1])
     assert out.returncode != 0, out.stdout
+
+
+def test_every_checkable_claim_in_the_adoption_section_has_an_anchor() -> None:
+    """Every claim of the repoint procedure, and the extractor that pins it.
+
+    The cases above run the section's commands and read its rules out of it.
+    What none of them catches is a sentence NEITHER run NOR read: it can be
+    reversed, or contradict the command it sits under, with every case here
+    green. Four such sentences shipped on this page at once, so this reads the
+    procedure's prose sentence by sentence and asks which regex touches it.
+
+    The failure names the sentences, because the answer to one is a new
+    extractor and the answer to another is that the page should not say it.
+    Scoped to the procedure the page leaves to the reader's hands; the merge
+    round widens it to the page, whose measured-on claims about the harness
+    want anchors of a different kind.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    anchors = _claim_anchors()
+    # Every rule this file reads out of the page carries an anchor by
+    # construction: an extractor added with a pattern nothing collects would
+    # leave the sentence it reads looking unpinned.
+    missing = _stated_callers() - {name for name, _pattern in anchors}
+    assert not missing, sorted(missing)
+
+    said = _hand_repoint_prose(section)
+    # The extractors read the section as one line and a claim can run past a
+    # sentence end, so a match pins every sentence it touches.
+    flat = " ".join(said)
+    at, spans = 0, []
+    for one in said:
+        spans.append((at, at + len(one)))
+        at += len(one) + 1
+    pinned = set()
+    for _name, pattern in anchors:
+        for found in re.finditer(pattern, flat):
+            pinned |= {
+                at
+                for at, (opens, closes) in enumerate(spans)
+                if found.start() < closes and opens < found.end()
+            }
+    loose = [one for at, one in enumerate(said) if at not in pinned and _makes_a_claim(one)]
+    assert not loose, (f"{len(loose)} claims no extractor reads", loose)
 
 
 def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:

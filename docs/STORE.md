@@ -337,12 +337,12 @@ its place.
 `[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
 
 That race ends at rc 0 all the same, and `ls -ld "$dir"` then shows a directory
-where it showed a link. Where it shows a directory, the harness recreated
-`$dir` and the link landed one level down inside it, named for `$target`. Quit
-the harness and move that link up into `$dir`'s own place: it already points
-where the line above was taking it. This page prints no command for the move —
-`ls -ld` prints one line about a directory and never its contents, so what else
-is in there is yours to read first.
+where it showed a link. Where it shows a directory holding one link named for
+`$target`, the harness recreated `$dir` and the link landed one level down
+inside it. Quit the harness and move that link up into `$dir`'s own place: it
+already points where the line above was taking it. This page prints no command
+for the move — `ls -ld` prints one line about a directory and never its
+contents, so what else is in there is yours to read first.
 
 `$target` is the harness's directory under the corpus root:
 `$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
