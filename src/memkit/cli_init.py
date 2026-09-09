@@ -663,6 +663,53 @@ def _foreign_canary(store: str, nonce: str) -> str:
     return found.group(0)
 
 
+# The suffix `_write_atomically` gives its temporary. A pid rather than a
+# random token, so a leftover says which process died holding it — and so this
+# recognises one without having to guess at arbitrary names.
+_STRANDED_TEMPORARY = re.compile(r"\.\d+\.tmp$")
+
+
+def _stranded_temporaries(store: str) -> list:
+    """Every `<name>.<pid>.tmp` under the store, said out loud and left alone.
+
+    A kill between a write's temporary and its rename leaves a COMPLETE copy of
+    the content at that name, mode 0600, inside the store — and nothing names it
+    afterwards: no manifest line, no ledger row, and neither the integrity
+    checker nor doctor looks for anything that is not `.md`. "Bytes in the store
+    that no ledger row names" is what this command promises not to leave, so the
+    promise is kept by saying where they are.
+
+    SAYING, NOT SWEEPING. A removal is a write: it would have to enter the
+    manifest and the digest the adopter approves, and destroying inside somebody
+    else's store is the one thing adoption never does. Whoever reads the line
+    can see what the bytes are before deciding.
+    """
+    found = []
+    for here, dirs, names in os.walk(store):
+        dirs.sort()
+        for name in sorted(names):
+            if _STRANDED_TEMPORARY.search(name):
+                found.append(os.path.join(here, name))
+    if not found:
+        return []
+    shown = found[:3]
+    lines = [
+        f"{len(found)} stranded temporary "
+        f"{'file' if len(found) == 1 else 'files'} under "
+        f"{_display_path(store)}: a write interrupted between its temporary and "
+        "its rename leaves the content it was about to write at "
+        "`<name>.<pid>.tmp`, and nothing else names it — no manifest line, no "
+        "ledger row, and neither the integrity checker nor doctor looks past "
+        "`.md`. init leaves them where they are, because deleting inside your "
+        "store is not something a setup command does. Read them and remove "
+        "them yourself."
+    ]
+    lines += [f"  stranded: {_display_path(path)}" for path in shown]
+    if len(found) > len(shown):
+        lines.append(f"  stranded: and {len(found) - len(shown)} more.")
+    return lines
+
+
 def _stray_markdown(store: str) -> list:
     """Markdown at a store's root that a `search/` would strand."""
     out = []
@@ -2909,6 +2956,7 @@ def build_plan(
         _auto_memory_notes(membership, store_path, known)
         + adoption_notes
         + ledger_notes
+        + _stranded_temporaries(store_path)
     )
     if wire_claude_md:
         target = _claude_md(machine)

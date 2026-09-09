@@ -4963,6 +4963,28 @@
         "tests/test_init.py::test_a_journal_append_that_failed_is_not_reported_as_the_write_failing"
       ],
       "why": "collapsed into the handler around the write, a journal the process cannot append to is reported as the store file failing — while that file is on disk with the right bytes and the errno in the parenthesis names the journal."
+    },
+    {
+      "name": "init-says-nothing-about-a-temporary-stranded-in-the-store",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        + ledger_notes\n        + _stranded_temporaries(store_path)\n    )\n",
+      "new": "        + ledger_notes\n    )\n",
+      "tests": [
+        "tests/test_init.py::test_a_temporary_stranded_inside_the_store_is_named_and_left_alone"
+      ],
+      "why": "a kill between a write's temporary and its rename leaves a complete copy of a memory in the store that no manifest line and no ledger row names, and the checker and doctor both pass over it — undisclosed, it is bytes in the store nobody can account for."
+    },
+    {
+      "name": "init-calls-every-tmp-file-in-a-store-a-stranded-write",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "_STRANDED_TEMPORARY = re.compile(r\"\\.\\d+\\.tmp$\")\n",
+      "new": "_STRANDED_TEMPORARY = re.compile(r\"\\.tmp$\")\n",
+      "tests": [
+        "tests/test_init.py::test_a_store_with_no_stranded_temporaries_says_nothing_about_them"
+      ],
+      "why": "the leftover this names is the write's own `<name>.<pid>.tmp`; told to delete anything ending `.tmp`, an adopter is being pointed at their own files."
     }
   ]
 }

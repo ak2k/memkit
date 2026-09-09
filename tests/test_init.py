@@ -895,6 +895,54 @@ def test_a_store_that_already_has_search_is_not_a_flat_store(profile) -> None:
     assert plan.writes
 
 
+
+def test_a_temporary_stranded_inside_the_store_is_named_and_left_alone(
+    profile,
+) -> None:
+    """BYTES IN THE STORE THAT NO LEDGER ROW NAMES is what this unit promises
+    not to leave, and a SIGKILL between a write's temporary and its rename
+    leaves exactly that: a complete 0600 copy of a memory at
+    `<name>.<pid>.tmp`. Two clean recovery turns, the integrity checker and
+    doctor all pass over it without a word.
+
+    The disclosure is the whole fix. Deleting it would be a write inside
+    somebody's store — it would have to enter the manifest and the digest, and
+    destroying inside a store is the one thing adoption never does — so the
+    stray is named and left where it is.
+    """
+    store = profile / "notes"
+    landing = store / "search" / "projects" / "-home-u"
+    landing.mkdir(parents=True)
+    (landing / "alpha.md").write_text(TRAP, encoding="utf-8")
+    stranded = landing / "alpha.md.99999.tmp"
+    stranded.write_text(TRAP, encoding="utf-8")
+    manifest = _dry(profile, "--store", str(store))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "1 stranded temporary file" in manifest.stdout, manifest.stdout
+    assert f"stranded: {stranded}" in manifest.stdout, manifest.stdout
+    # A disclosure, not a refusal and not a write: no action in the manifest
+    # touches it, and it is still there afterwards.
+    out = _confirm(profile, _digest_of(manifest), "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert stranded.read_text(encoding="utf-8") == TRAP
+
+
+def test_a_store_with_no_stranded_temporaries_says_nothing_about_them(
+    profile,
+) -> None:
+    """The control. A store nobody was killed in the middle of writing carries
+    no such line, and the ordinary `.tmp` names a real memory could be called
+    are not it — the suffix a write leaves is a pid.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "search" / "notes.tmp").write_text("not a leftover\n", encoding="utf-8")
+    (store / "search" / "alpha.md").write_text(TRAP, encoding="utf-8")
+    manifest = _dry(profile, "--store", str(store))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "stranded temporary" not in manifest.stdout, manifest.stdout
+    assert "stranded: " not in manifest.stdout, manifest.stdout
+
 def test_a_config_no_journal_claims_is_never_overwritten(profile) -> None:
     """init converges on its own work. That file decides which directories the
     every-prompt hook reads, and a setup command that silently replaced a
