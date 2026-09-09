@@ -1299,8 +1299,8 @@
       "name": "retrieval-passes-the-deadline-into-each-dir",
       "module": "prompt_recall_gates",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "                ranked.append(search(query, d, deadline, read_only))",
-      "new": "                ranked.append(search(query, d, None, read_only))",
+      "old": "                ranked.append(search(query, d, deadline, read_only, marked))",
+      "new": "                ranked.append(search(query, d, None, read_only, marked))",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_dir_whose_query_ran_out_of_budget_is_an_error_not_an_absence"
       ],
