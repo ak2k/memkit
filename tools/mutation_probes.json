@@ -4967,6 +4967,17 @@
         "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
       ],
       "why": "The checker reads the text after the opening `---`, so `---name: x` declares a key to it. Starting the read at line 2 drops that key, and with it the difference between a fence enclosing something and a fence enclosing nothing."
+    },
+    {
+      "name": "harness-shape-a-row-target-the-kernel-never-sees-ends-the-capture",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n    except (OSError, ValueError):\n",
+      "new": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n    except OSError:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_target_holding_a_nul_byte_is_dangling_and_not_the_end_of_the_run"
+      ],
+      "why": "A NUL byte in a row target is valid UTF-8 that survives the read, and `os.stat` and `os.open` raise ValueError for it rather than OSError. Guarded on OSError alone, one such row in one project's index ends the capture of the whole machine with a traceback and an exit 1."
     }
   ]
 }

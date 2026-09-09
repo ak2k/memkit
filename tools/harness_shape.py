@@ -759,7 +759,14 @@ def _row_present(root: int, target: str) -> bool:
             os.close(current)
             current = below
         os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
-    except OSError:
+    except (OSError, ValueError):
+        # `ValueError` and not only `OSError`: a row target is adopter-authored
+        # text and a NUL byte in it is valid UTF-8 that survives the read, and
+        # `os.stat` and `os.open` refuse a path holding one before the kernel
+        # sees it. A row nothing can look up is a row pointing at nothing,
+        # which is what `lexists` — guarded the same way in the stdlib — used
+        # to answer here; narrower, one such row ended the capture of the whole
+        # machine.
         return False
     finally:
         os.close(current)
@@ -1565,11 +1572,19 @@ def _capture_and_write(args, landing) -> int:
             # under `sudo -n`, where the process's own default is root's.
             managed=args.managed or _is_own_config_dir(config_dir),
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         # A capture that could not read the projects directory reports no
         # shape rather than an empty one.
+        #
+        # `ValueError` alongside it because a config directory is somebody
+        # else's text: a NUL byte anywhere a path is built from it reaches the
+        # stdlib as a ValueError, and the sibling of that class this walk has
+        # not found yet is still a run over ssh that owes its wrapper an exit
+        # 2 and a line rather than a traceback.
         where = getattr(exc, "filename", None) or config_dir
-        sys.stderr.write(f"harness_shape: {where}: {exc.strerror or exc}\n")
+        sys.stderr.write(
+            f"harness_shape: {where}: {getattr(exc, 'strerror', None) or exc}\n"
+        )
         return 2
     text = json.dumps(shape, indent=2) + "\n"
     if not args.out:

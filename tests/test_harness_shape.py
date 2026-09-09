@@ -1048,6 +1048,37 @@ def test_a_row_is_not_reached_through_a_linked_component(
     assert "link-out" in [name for name, dir_fd in asked if dir_fd is not None]
 
 
+def test_a_row_target_holding_a_nul_byte_is_dangling_and_not_the_end_of_the_run(
+    tmp_path,
+) -> None:
+    """An index row is adopter-authored text and 0x00 is valid UTF-8.
+
+    It survives the decode untouched, the row pattern admits it, and then
+    `os.stat` and `os.open` raise `ValueError` rather than `OSError` for a
+    path holding one — so a walk guarded on `OSError` alone let one row in one
+    project's index end the capture of the WHOLE machine: a traceback, an exit
+    1 and no shape, with a second healthy project beside it reported not at
+    all.
+
+    A row nothing can look up is a row pointing at nothing, which is the
+    answer `os.path.lexists` gave here before the walk was hand-rolled — the
+    stdlib guards its own `lstat` with `(OSError, ValueError)` for this.
+    """
+    config = tmp_path / "config"
+    poisoned = _memory_dir(config, "-a")
+    _write(poisoned / "real.md", "x\n")
+    with open(poisoned / "MEMORY.md", "wb") as fh:
+        # Written as BYTES: the NUL is never typed into a path here.
+        fh.write(b"# Index\n\n- [a](real.md) - hook\n- [b](evil\x00name.md) - hook\n")
+    healthy = _memory_dir(config, "-b")
+    _write(healthy / "real.md", "x\n")
+    _write(healthy / "MEMORY.md", "# Index\n\n- [a](real.md) - hook\n")
+
+    shape = _by_key(_shape("--config-dir", str(config), "--raw"))
+    assert shape["-a"]["index"] == {"rows": 2, "dangling_rows": 1, "truncated": False}
+    assert shape["-b"]["index"] == {"rows": 1, "dangling_rows": 0, "truncated": False}
+
+
 def test_what_is_opened_is_decided_by_where_the_link_lands(tmp_path) -> None:
     """One rule for every `.md` in a memory directory, the index included.
 
