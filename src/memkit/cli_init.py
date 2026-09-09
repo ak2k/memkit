@@ -1864,9 +1864,20 @@ def _search_ledger_text(store: str, entries: list) -> str:
         old = held
     head, sep, _rest = old.partition(_INDEX_HEADING)
     preamble = (head + sep) if sep else old.rstrip("\n") + f"\n\n{_INDEX_HEADING}"
+    # LABEL, THEN THE PATH THE ROW POINTS AT. Both sides key on the label
+    # alone and Python's sort is stable, so two rows carrying the same label
+    # fall out in whatever order each side happened to build its list: the
+    # checker's is `_live()`, every memory path in order, and init's is the
+    # inventory's — most memories first. The store then fails LEDGER-DRIFT on
+    # a ledger init has just written. The link settles it, split into
+    # components because that is how the checker's own list is ordered: it
+    # sorts `Path` objects, which compare a directory name against a directory
+    # name and never against the separator after it.
     body = "\n".join(
         f"- [{label}]({link}) — {desc}"
-        for label, link, desc in sorted(entries, key=lambda row: row[0].lower())
+        for label, link, desc in sorted(
+            entries, key=lambda row: (row[0].lower(), row[1].split(os.sep))
+        )
     )
     return f"{preamble}\n\n{body}\n"
 

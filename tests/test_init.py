@@ -3387,6 +3387,30 @@ def test_the_ledger_init_writes_is_the_one_the_checker_would_generate(
         },
     )
     _harness(profile, "-home-u", {"note.md": BARE})
+    # A DUPLICATE LABEL, which is what makes the ORDER a claim. Two rows
+    # carrying one label are ordered by whatever each side built its list in,
+    # and the two lists are built differently: the checker walks every memory
+    # path in order, this module walks the inventory, which puts the directory
+    # holding the most memories first. So `-home-zz` is planned before
+    # `-home-aa` and the checker generates them the other way round.
+    dup = "---\nname: dup label\ndescription: two files, one label\n---\n\nb\n"
+    _harness(
+        profile,
+        "-home-zz",
+        {
+            "dup.md": dup,
+            "extra.md": (
+                "---\nname: zz extra\ndescription: the second memory\n---\n\nb\n"
+            ),
+        },
+    )
+    _harness(profile, "-home-aa", {"dup.md": dup})
+    # AND ONE PAIR WHOSE KEYS ORDER DIFFERENTLY AS STRINGS AND AS PATHS: `-`
+    # sorts after `/`, so `-home-a-b/pair.md` precedes `-home-a/pair.md` as a
+    # string and follows it as a path — and the checker sorts paths.
+    pair = "---\nname: pair label\ndescription: one label, two paths\n---\n\nb\n"
+    _harness(profile, "-home-a-b", {"pair.md": pair})
+    _harness(profile, "-home-a", {"pair.md": pair})
     store = profile / "home" / "notes"
     manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
     out = _confirm(
@@ -3404,7 +3428,17 @@ def test_the_ledger_init_writes_is_the_one_the_checker_would_generate(
         entries.append(
             (front.get("name") or path.stem, os.path.relpath(path, store), value)
         )
-    assert len(entries) == 4, entries
+    assert len(entries) == 9, entries
+    # Non-vacuity for the tie-break: the two rows really do share a label, and
+    # the one the ledger names first is not the one adoption planned first.
+    rows = [line for line in ledger.read_text(encoding="utf-8").splitlines()
+            if line.startswith("- [dup label]")]
+    assert len(rows) == 2, rows
+    assert "-home-aa" in rows[0] and "-home-zz" in rows[1], rows
+    pairs = [line for line in ledger.read_text(encoding="utf-8").splitlines()
+             if line.startswith("- [pair label]")]
+    assert len(pairs) == 2, pairs
+    assert "/-home-a/" in pairs[0] and "-home-a-b" in pairs[1], pairs
     # Non-vacuity: the labels really do sort differently under the two rules,
     # so the equality below is a claim about the ordering as well as the text.
     assert sorted(e[0] for e in entries) != sorted(

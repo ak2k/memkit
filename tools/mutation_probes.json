@@ -4896,6 +4896,28 @@
         "tests/test_init.py::test_every_escape_guard_call_uses_the_value_it_returns"
       ],
       "why": "`os.makedirs` re-traverses every component of the name it is handed, so a guard that judges `action.path` and then writes `action.path` has asked the question twice — a link swapped in between the two answers puts the directory, and every memory copied under it, outside the store the guard approved."
+    },
+    {
+      "name": "init-orders-its-ledger-by-label-alone",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            entries, key=lambda row: (row[0].lower(), row[1].split(os.sep))\n",
+      "new": "            entries, key=lambda row: row[0].lower()\n",
+      "tests": [
+        "tests/test_init.py::test_the_ledger_init_writes_is_the_one_the_checker_would_generate"
+      ],
+      "why": "with a duplicate label the two stable sorts fall out in whatever order each side built its list, and the orders are different — the confirm exits 6 with LEDGER-DRIFT on a store the same command has just built."
+    },
+    {
+      "name": "init-breaks-a-ledger-tie-on-the-string-instead-of-the-path",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "            entries, key=lambda row: (row[0].lower(), row[1].split(os.sep))\n",
+      "new": "            entries, key=lambda row: (row[0].lower(), row[1])\n",
+      "tests": [
+        "tests/test_init.py::test_the_ledger_init_writes_is_the_one_the_checker_would_generate"
+      ],
+      "why": "the checker orders its list by sorting `Path` objects, which compare component against component; `-` sorts after `/` as a string, so keys like `-home-a` and `-home-a-b` sharing a label come out in the opposite order and the store is red on LEDGER-DRIFT again."
     }
   ]
 }
