@@ -4912,6 +4912,17 @@
         "tests/test_harness_shape.py::test_a_landing_directory_that_will_not_open_is_a_refusal_and_not_a_no"
       ],
       "why": "A directory at mode 0333 takes a redirect and refuses O_RDONLY, so the walk cannot start. Reporting that as 'not a checkout' is the one answer that lets real names reach a checkout with exit 0 and an empty stderr."
+    },
+    {
+      "name": "harness-shape-out-reads-its-own-path-outside-the-exit-2-contract",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        try:\n            # INSIDE the handler, both of them: `realpath` is documented not to\n            # raise and does — its `os.readlink` is unguarded — and `abspath`\n            # calls `os.getcwd()`, which raises when the directory the process\n            # stands in has been removed. Either one outside here is a\n            # traceback and an exit 1 on the route whose whole contract is one\n            # line and an exit 2.\n            parent = os.path.dirname(os.path.abspath(args.out))\n            resolved = _landing_dir(args.out)\n",
+      "new": "        parent = os.path.dirname(os.path.abspath(args.out))\n        resolved = _landing_dir(args.out)\n        try:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_answers_with_an_exit_2_when_the_directory_it_runs_in_is_gone"
+      ],
+      "why": "`abspath` calls `os.getcwd()` and `realpath` calls `os.readlink`, and both raise. Read outside the handler they leave a traceback and an exit 1 on the one route that promises a wrapper reading the number a single line and an exit 2."
     }
   ]
 }

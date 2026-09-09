@@ -1453,23 +1453,31 @@ def main(argv=None) -> int:
                 f"that directory\n"
             )
             return 2
-        parent = os.path.dirname(os.path.abspath(args.out))
-        resolved = _landing_dir(args.out)
-        if resolved != parent:
-            # O_NOFOLLOW guards the LAST component only, so a link one level up
-            # chose the file that got truncated: `--out real/linkdir/shape.json`
-            # wrote through `linkdir` and overwrote whatever `target.json` behind
-            # it was. Refused rather than followed, and the resolved path is named
-            # so an operator whose home really is reached through a link — or who
-            # named /tmp on a mac — can pass that path instead.
-            sys.stderr.write(
-                f"harness_shape: {args.out}: a symlink stands in this path, which "
-                f"chooses what gets overwritten; it resolves to {resolved} — on "
-                f"macOS /var is itself a link, so a path under $TMPDIR lands here "
-                f"and the resolved one above is the path to pass\n"
-            )
-            return 2
         try:
+            # INSIDE the handler, both of them: `realpath` is documented not to
+            # raise and does — its `os.readlink` is unguarded — and `abspath`
+            # calls `os.getcwd()`, which raises when the directory the process
+            # stands in has been removed. Either one outside here is a
+            # traceback and an exit 1 on the route whose whole contract is one
+            # line and an exit 2.
+            parent = os.path.dirname(os.path.abspath(args.out))
+            resolved = _landing_dir(args.out)
+            if resolved != parent:
+                # O_NOFOLLOW guards the LAST component only, so a link one
+                # level up chose the file that got truncated: `--out
+                # real/linkdir/shape.json` wrote through `linkdir` and
+                # overwrote whatever `target.json` behind it was. Refused
+                # rather than followed, and the resolved path is named so an
+                # operator whose home really is reached through a link — or who
+                # named /tmp on a mac — can pass that path instead.
+                sys.stderr.write(
+                    f"harness_shape: {args.out}: a symlink stands in this path, "
+                    f"which chooses what gets overwritten; it resolves to "
+                    f"{resolved} — on macOS /var is itself a link, so a path "
+                    f"under $TMPDIR lands here and the resolved one above is "
+                    f"the path to pass\n"
+                )
+                return 2
             landing = _Landing(resolved, os.path.basename(args.out))
         except OSError as exc:
             sys.stderr.write(f"harness_shape: {args.out}: {exc.strerror or exc}\n")

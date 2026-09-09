@@ -32,6 +32,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1460,13 +1461,63 @@ def test_out_writes_into_the_directory_it_judged_however_the_name_moves(
     flipper.start()
     try:
         for _ in range(200):
-            _run("--config-dir", str(config), "--raw", "--out", str(dest / "leak.json"))
+            run = _run(
+                "--config-dir", str(config), "--raw", "--out", str(dest / "leak.json")
+            )
+            # The exit code and the stderr are half of what this route
+            # promises and were thrown away here: a contended run that crashes
+            # is a wrapper on the far end of an ssh pipe told the wrong thing,
+            # and 200 of these were reporting only where the bytes went.
+            assert run.returncode in (0, 2), run.stdout + run.stderr
+            assert "Traceback" not in run.stderr, run.stderr
             assert not (checkout / "leak.json").exists(), (
                 "real names landed in a checkout the run never named"
             )
     finally:
         stop.set()
         flipper.join()
+
+
+def test_out_answers_with_an_exit_2_when_the_directory_it_runs_in_is_gone(
+    tmp_path,
+) -> None:
+    """`--out` reads its own path before anything guards the reading.
+
+    `abspath` on a relative `--out` calls `os.getcwd()`, and a process whose
+    working directory has been removed gets `FileNotFoundError` from it — no
+    attacker, no race, and the one route that promises a wrapper on the far
+    end of an ssh pipe a number rather than a traceback gave it an exit 1.
+    `realpath` on the next line is documented not to raise and does, for the
+    same reason one level along.
+
+    The removal happens in a CHILD shell, because a test that removes its own
+    working directory takes the rest of the suite with it.
+    """
+    config = tmp_path / "config"
+    (config / "projects").mkdir(parents=True)
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    script = "; ".join(
+        [
+            f"cd {shlex.quote(str(gone))}",
+            f"rmdir {shlex.quote(str(gone))}",
+            " ".join(
+                shlex.quote(part)
+                for part in [
+                    "exec", sys.executable, str(TOOL),
+                    "--config-dir", str(config), "--out", "out/shape.json",
+                ]
+            ),
+        ]
+    )
+    refused = subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=300,
+    )
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "Traceback" not in refused.stderr, refused.stderr
+    assert refused.stderr.startswith("harness_shape: "), refused.stderr
+    assert len(refused.stderr.strip().splitlines()) == 1, refused.stderr
+    assert refused.stdout == "", "it failed and emitted a shape anyway"
 
 
 def _raw_capture_tree(tmp_path):
