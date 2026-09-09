@@ -2325,10 +2325,12 @@ def _named_dir_read_only(d: str) -> bool:
     from disagreeing. `_live_dirs` reads `store.read_only`; so does this, off
     the same `_project_store` over the same repository walk. What is left here
     is not a second classification but the question this door alone has to ask
-    — which store the named directory belongs to — and it is asked in BOTH
-    directions, because retrieval walks downward from what it was handed: a
-    directory ABOVE the corpus serves every byte of it. Over-marking is the
-    safe direction and under-marking is the leak.
+    — which store the named directory belongs to — and it is asked of the
+    CHECKOUT, not of the corpus. Retrieval walks downward from what it was
+    handed, so a directory ABOVE the corpus serves every byte of it; and a
+    directory BESIDE the corpus, inside the same checkout, is the repository's
+    own bytes too. Over-marking is the safe direction and under-marking is the
+    leak.
 
     Two states are not "a repository chose nothing here". A `.memkit.json` this
     hook REFUSED is still a repository asking for a corpus, and refusing it
@@ -2355,10 +2357,14 @@ def _named_dir_read_only(d: str) -> bool:
     store, refusal = _project_store(root, taken)
     if store is None:
         return refusal != ""
-    corpus = _search_root(store.resolved_dir)
-    return store.read_only and (
-        _same_tree(corpus, real) or _same_tree(real, corpus)
-    )
+    # Containment is asked of the checkout the walk already found. Asked of
+    # the corpus, this door was not monotone in depth: `--dir <repo>/docs`
+    # contains the corpus, so the whole subtree classified read-only and a
+    # planted file under `docs/adr/` was refused — while `--dir
+    # <repo>/docs/adr`, a directory no project file names, classified writable
+    # and printed the same file with its credential. Narrowing a search must
+    # not be the way to lose the scan.
+    return store.read_only and _same_tree(root, real)
 
 
 def _config_state() -> tuple:

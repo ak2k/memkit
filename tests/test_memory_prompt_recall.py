@@ -15099,6 +15099,22 @@ def _corpus_linked_inside(tmp_path: Path) -> tuple[Path, Path]:
     return repo, elsewhere
 
 
+def _beside_the_corpus(tmp_path: Path) -> tuple[Path, Path]:
+    """Memories in a directory of the checkout that no project file names.
+
+    The corpus keeps its own copies, so the hook column still says the store
+    resolved. What this row is for is the DEPTH question: `--dir <repo>/docs`
+    is above the corpus and classified read-only, so a spelling one level
+    NARROWER over the same file must not classify writable.
+    """
+    repo = _two_memories(tmp_path)
+    beside = repo / "docs" / "adr"
+    beside.mkdir(parents=True)
+    (beside / "unionfs_perms.md").write_text(PROJECT_MEMORY, encoding="utf-8")
+    (beside / "unionfs_planted.md").write_text(PLANTED_MEMORY, encoding="utf-8")
+    return repo, beside
+
+
 def _corpus_subdirectory(tmp_path: Path) -> tuple[Path, Path]:
     """The memories moved a level down, so the named dir is strictly BELOW the
     corpus — every byte it serves is still a byte the repository chose."""
@@ -15182,6 +15198,8 @@ NAMED_DIR_SPELLINGS = [
     ("the-corpus-under-another-case", _case_variant, None, (True, False), (True, False)),
     ("a-corpus-linked-inside-the-checkout", _corpus_linked_inside, None,
      (True, False), (True, False)),
+    ("a-directory-beside-the-corpus", _beside_the_corpus, None,
+     (True, False), (True, False)),
 ]
 
 
@@ -15193,7 +15211,7 @@ NAMED_DIR_SPELLINGS = [
 def test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does(
     tmp_path: Path, label: str, build, env_for, by_hook, by_dir
 ) -> None:
-    """One directory, spelled nine ways, through both doors.
+    """One directory, spelled ten ways, through both doors.
 
     The `--dir` door used to answer this with a second predicate — string
     containment, inside-only, over one spelling, with "there is no config" read
