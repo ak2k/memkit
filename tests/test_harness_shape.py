@@ -3250,3 +3250,143 @@ def test_the_field_set_gate_rejects_a_key_the_tool_does_not_emit(
     assert not _field_sets(shape)[kind] - emitted[kind], kind
     planted = _injected(shape, injection)
     assert _field_sets(planted)[kind] - emitted[kind], injection
+
+
+# The real entry point, reached in a child that first makes the machine
+# hostile. Two of the states below cannot be handed to a process from outside
+# it: an argument holding a NUL byte does not fit through `argv`, and a
+# descriptor table with one entry left cannot be inherited across an `exec`
+# that still has its own imports to finish — measured, at every limit from one
+# free descriptor upward, the interpreter either starts and the walk has room
+# or neither happens.
+_HOSTILE_DOOR = '''import importlib.util
+import os
+import sys
+
+tool, mode, tree = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("harness_shape_hostile", tool)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+argv = ["--config-dir", tree]
+if mode == "nul":
+    argv += ["--out", os.path.join(tree, "nul\\0dir", "shape.json")]
+elif mode == "squeeze":
+    # One whole capture first, so every import and every lazily read locale
+    # file this run needs is taken while there are descriptors to take them
+    # with: what is being measured is the walk under exhaustion, not the
+    # import system under it.
+    module.capture(tree)
+    held = []
+    while True:
+        try:
+            held.append(os.open(os.devnull, os.O_RDONLY))
+        except OSError:
+            break
+    os.close(held.pop())
+sys.exit(module.main(argv))
+'''
+
+# Every hostile tree, and the door it must leave by. The expected code is in
+# the id because a table that allowed either door for every case would pass
+# with the contract gone.
+_HOSTILE_TREES = {
+    "a NUL byte in the destination path -> exit 2": 2,
+    "a fifo where a memory file goes -> exit 0": 0,
+    "a symlink loop at a project and at a memory file -> exit 0": 0,
+    "an unreadable projects directory -> exit 2": 2,
+    "one free descriptor for the whole walk -> exit 2": 2,
+    "a projects directory that is a dangling link -> exit 2": 2,
+    "a memory file whose name is not UTF-8 -> exit 0": 0,
+    "an index row deeper than the recursion limit -> exit 0": 0,
+    "--raw with the shape going down a pipe -> exit 0": 0,
+    "--out into a directory that refuses the write -> exit 2": 2,
+}
+
+
+def _hostile_tree(kind, tmp_path):
+    """One hostile machine, and the command that reads it.
+
+    Returns the argv, and the modes to put back afterwards — a directory left
+    at 0o000 takes the rest of the session's temporary directory with it.
+    """
+    config = tmp_path / "config"
+    if kind.startswith("a projects directory that is a dangling link"):
+        config.mkdir()
+        os.symlink(str(tmp_path / "never-here"), str(config / "projects"))
+        return [sys.executable, str(TOOL), "--config-dir", str(config)], []
+    memory = _memory_dir(config, "-a")
+    _write(memory / "MEMORY.md", "- [a](hot/deep.md)\n")
+    _write(memory / "hot" / "deep.md", "---\nname: d\n---\nx\n")
+    plain = [sys.executable, str(TOOL), "--config-dir", str(config)]
+    if kind.startswith("a NUL byte") or kind.startswith("one free descriptor"):
+        door = _write(tmp_path / "door.py", _HOSTILE_DOOR)
+        mode = "nul" if kind.startswith("a NUL byte") else "squeeze"
+        return [sys.executable, str(door), str(TOOL), mode, str(config)], []
+    if kind.startswith("a fifo"):
+        os.mkfifo(str(memory / "note.md"))
+        return plain, []
+    if kind.startswith("a symlink loop"):
+        loop = config / "projects" / "-loop"
+        os.symlink(str(loop), str(loop))
+        ring = memory / "ring.md"
+        os.symlink(str(ring), str(ring))
+        return plain, []
+    if kind.startswith("an unreadable projects directory"):
+        projects = config / "projects"
+        projects.chmod(0o000)
+        return plain, [(projects, 0o755)]
+    if kind.startswith("a memory file whose name is not UTF-8"):
+        try:
+            with open(os.path.join(os.fsencode(str(memory)), b"\xff.md"), "wb") as h:
+                h.write(b"x\n")
+        except OSError as exc:
+            pytest.skip(f"this filesystem refuses the name: {exc.strerror}")
+        return plain, []
+    if kind.startswith("an index row deeper"):
+        rows = "a/" * 4000
+        _write(memory / "MEMORY.md", f"- [a]({rows}x.md)\n")
+        return plain, []
+    if kind.startswith("--raw"):
+        return plain + ["--raw"], []
+    refuses = tmp_path / "refuses"
+    refuses.mkdir()
+    refuses.chmod(0o500)
+    return plain + ["--out", str(refuses / "shape.json")], [(refuses, 0o755)]
+
+
+@pytest.mark.skipif(ROOT, reason="root reads and writes what nobody else can")
+@pytest.mark.parametrize("kind", sorted(_HOSTILE_TREES))
+def test_hostile_trees_exit_zero_or_two_with_no_traceback(kind, tmp_path) -> None:
+    """The exit contract, held against the machines nobody enumerated.
+
+    Every closure of this class so far guarded one member of the syscall
+    family at one site — a NUL byte reaching a stat, a descriptor taken above
+    the handler that releases it, an unguarded `..` open, an unguarded write
+    to a pipe — and the next site was open again. What a wrapper on the far
+    end of an ssh pipe is owed does not depend on which site: a shape and a 0,
+    or one line naming this tool and a 2, for anything a config directory and
+    the machine under it can be.
+
+    A traceback is the failure this is written against, because it means the
+    number the wrapper read was chosen by the interpreter rather than by this
+    tool.
+    """
+    doors = list(_HOSTILE_TREES.values())
+    # A table that allowed either door for every case would pass with no
+    # contract at all, so both doors are named and both are populated.
+    assert doors.count(2) >= 3 and doors.count(0) >= 2, doors
+    argv, restore = _hostile_tree(kind, tmp_path)
+    try:
+        run = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+    finally:
+        for path, mode in restore:
+            path.chmod(mode)
+    assert run.returncode == _HOSTILE_TREES[kind], run.stdout + run.stderr
+    assert "Traceback" not in run.stderr, run.stderr
+    if run.returncode == 2:
+        lines = run.stderr.strip().splitlines()
+        assert len(lines) == 1, run.stderr
+        assert lines[0].startswith("harness_shape:"), run.stderr
+        assert run.stdout == "", "it failed and emitted a shape anyway"
+    else:
+        assert json.loads(run.stdout)["schema"] >= 1, run.stdout

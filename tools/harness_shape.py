@@ -1437,7 +1437,64 @@ def _stdout_destination():
     return None
 
 
+def _drop_stdout() -> None:
+    """Fd 1 pointed at the null device, after a failure has been reported.
+
+    The interpreter flushes `sys.stdout` once more on its way out, and a
+    stream whose write or flush just failed fails there too — a second report,
+    after this run has already made its one, on the channel a wrapper reads as
+    this tool's.
+    """
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    try:
+        # The descriptor NUMBER and not `sys.stdout.fileno()`: the stream this
+        # stands in for may be too far gone to answer for itself.
+        os.dup2(null, 1)
+    except OSError:
+        pass
+    finally:
+        os.close(null)
+
+
 def main(argv=None) -> int:
+    """The whole run, and the one place its exit contract is decided.
+
+    ONE boundary for the whole family. Four separate closures each guarded one
+    member at one site — a NUL byte reaching `os.stat`, a descriptor taken
+    above the handler that releases it, an unguarded `..` open, an unguarded
+    write to a pipe — and what they had in common was an exception set
+    narrower than the syscall's, one site at a time, with the next site
+    unguarded. A capture is read by a wrapper on the far end of an ssh pipe
+    that reads the number: every way the machine underneath this run can fail
+    is one line and a 2 here.
+
+    `ValueError` and `UnicodeError` alongside `OSError` because a config
+    directory is somebody else's text — a NUL byte in a path reaches the
+    stdlib as a `ValueError` before the kernel sees it, a name that is not
+    UTF-8 reaches an encode as a `UnicodeError` — and `RecursionError`
+    because the depth of an index chain is theirs to choose too.
+
+    Interior code catches only to BOOK a measurement — a file it could not
+    read, a row it could not look at, an entry it skipped — or to carry a
+    decision this tool made for a reason of its own, which keeps its own line.
+    """
+    try:
+        return _run(argv)
+    except (OSError, ValueError, RecursionError, UnicodeError) as exc:
+        # Fd 1 before the report and not after it: the failure may BE the
+        # stdout write, whose bytes are still buffered.
+        _drop_stdout()
+        where = getattr(exc, "filename", None)
+        why = getattr(exc, "strerror", None) or exc
+        detail = f"{where}: {why}" if where else f"{why}"
+        sys.stderr.write(f"harness_shape: {detail}\n")
+        return 2
+
+
+def _run(argv) -> int:
     parser = argparse.ArgumentParser(
         prog="harness_shape.py",
         description="Capture the shape of a Claude Code config directory.",
@@ -1483,35 +1540,29 @@ def main(argv=None) -> int:
                 f"that directory\n"
             )
             return 2
-        try:
-            # INSIDE the handler, both of them: `realpath` is documented not to
-            # raise and does — its `os.readlink` is unguarded — and `abspath`
-            # calls `os.getcwd()`, which raises when the directory the process
-            # stands in has been removed. Either one outside here is a
-            # traceback and an exit 1 on the route whose whole contract is one
-            # line and an exit 2.
-            parent = os.path.dirname(os.path.abspath(args.out))
-            resolved = _landing_dir(args.out)
-            if resolved != parent:
-                # O_NOFOLLOW guards the LAST component only, so a link one
-                # level up chose the file that got truncated: `--out
-                # real/linkdir/shape.json` wrote through `linkdir` and
-                # overwrote whatever `target.json` behind it was. Refused
-                # rather than followed, and the resolved path is named so an
-                # operator whose home really is reached through a link — or who
-                # named /tmp on a mac — can pass that path instead.
-                sys.stderr.write(
-                    f"harness_shape: {args.out}: a symlink stands in this path, "
-                    f"which chooses what gets overwritten; it resolves to "
-                    f"{resolved} — on macOS /var is itself a link, so a path "
-                    f"under $TMPDIR lands here and the resolved one above is "
-                    f"the path to pass\n"
-                )
-                return 2
-            landing = _Landing(resolved, os.path.basename(args.out))
-        except OSError as exc:
-            sys.stderr.write(f"harness_shape: {args.out}: {exc.strerror or exc}\n")
+        # `abspath` calls `os.getcwd()` and `realpath`'s `os.readlink` is
+        # unguarded, so both of these raise for a working directory that has
+        # been removed. Nothing catches them here: the boundary in `main`
+        # answers for every failure of the machine underneath this run.
+        parent = os.path.dirname(os.path.abspath(args.out))
+        resolved = _landing_dir(args.out)
+        if resolved != parent:
+            # O_NOFOLLOW guards the LAST component only, so a link one
+            # level up chose the file that got truncated: `--out
+            # real/linkdir/shape.json` wrote through `linkdir` and
+            # overwrote whatever `target.json` behind it was. Refused
+            # rather than followed, and the resolved path is named so an
+            # operator whose home really is reached through a link — or who
+            # named /tmp on a mac — can pass that path instead.
+            sys.stderr.write(
+                f"harness_shape: {args.out}: a symlink stands in this path, "
+                f"which chooses what gets overwritten; it resolves to "
+                f"{resolved} — on macOS /var is itself a link, so a path "
+                f"under $TMPDIR lands here and the resolved one above is "
+                f"the path to pass\n"
+            )
             return 2
+        landing = _Landing(resolved, os.path.basename(args.out))
     try:
         return _capture_and_write(args, landing)
     finally:
@@ -1562,46 +1613,36 @@ def _capture_and_write(args, landing) -> int:
         sys.stderr.write(f"harness_shape: {config_dir} is not a directory\n")
         return 2
 
-    try:
-        shape = capture(
-            config_dir,
-            anonymise=not args.raw,
-            # The machine's policy file describes the tree being captured when
-            # the tree is one this machine's harness runs on. `--managed` is
-            # how the documented ssh flow says so for another user's home
-            # under `sudo -n`, where the process's own default is root's.
-            managed=args.managed or _is_own_config_dir(config_dir),
-        )
-    except (OSError, ValueError) as exc:
-        # A capture that could not read the projects directory reports no
-        # shape rather than an empty one.
-        #
-        # `ValueError` alongside it because a config directory is somebody
-        # else's text: a NUL byte anywhere a path is built from it reaches the
-        # stdlib as a ValueError, and the sibling of that class this walk has
-        # not found yet is still a run over ssh that owes its wrapper an exit
-        # 2 and a line rather than a traceback.
-        where = getattr(exc, "filename", None) or config_dir
-        sys.stderr.write(
-            f"harness_shape: {where}: {getattr(exc, 'strerror', None) or exc}\n"
-        )
-        return 2
+    # A capture that could not read the projects directory reports no shape
+    # rather than an empty one, and nothing here catches for that: leaving by
+    # the boundary is what makes an unread tree an exit 2 with no shape on
+    # stdout.
+    shape = capture(
+        config_dir,
+        anonymise=not args.raw,
+        # The machine's policy file describes the tree being captured when
+        # the tree is one this machine's harness runs on. `--managed` is
+        # how the documented ssh flow says so for another user's home
+        # under `sudo -n`, where the process's own default is root's.
+        managed=args.managed or _is_own_config_dir(config_dir),
+    )
     text = json.dumps(shape, indent=2) + "\n"
     if not args.out:
         sys.stdout.write(text)
+        # FLUSHED INSIDE the contract. The interpreter's own flush happens
+        # after this returns, where a reader that has gone away is an ignored
+        # exception, an exit nobody chose and no line naming this tool — and
+        # a shape of eight projects or more is already past the stream's
+        # buffer, so which door an operator leaves by depended on the size of
+        # the machine being captured.
+        sys.stdout.flush()
         return 0
     try:
         fd = landing.create(judge_worktree=args.raw)
-    except (OSError, _Refused) as exc:
-        # NOTHING on this route escapes as a traceback: a capture reached once
-        # over ssh has a wrapper reading the number, and every other
-        # destination failure here is one line and a 2.
-        why = (
-            exc.args[0]
-            if isinstance(exc, _Refused)
-            else (getattr(exc, "strerror", None) or str(exc))
-        )
-        sys.stderr.write(f"harness_shape: {args.out}: {why}\n")
+    except _Refused as exc:
+        # A refusal is a decision with a reason of its own, so it carries its
+        # own line; a destination that merely failed leaves by the boundary.
+        sys.stderr.write(f"harness_shape: {args.out}: {exc.args[0]}\n")
         return 2
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
