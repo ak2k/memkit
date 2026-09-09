@@ -1374,7 +1374,11 @@ def test_recall_isolates_a_failing_lex_dir(monkeypatch) -> None:
     )
 
     def fts(
-        query: str, d: str, deadline: float | None = None, read_only: bool = False
+        query: str,
+        d: str,
+        deadline: float | None = None,
+        read_only: bool = False,
+        marked: bool = False,
     ) -> list[str]:
         if d == "/project":
             raise sqlite3.DatabaseError("index would not rebuild")
@@ -5593,7 +5597,7 @@ def _stub_dirs(monkeypatch, dirs: list[str]) -> list[str]:
     """Stub retrieval over `dirs`; return the list of dirs actually searched."""
     searched: list[str] = []
 
-    def fake_fts(query, d, deadline=None, read_only=False):
+    def fake_fts(query, d, deadline=None, read_only=False, marked=False):
         searched.append(d)
         return [f"{d}/a.md"]
 
@@ -13044,7 +13048,7 @@ def test_the_deadline_reaches_every_stage_it_is_supposed_to_bound() -> None:
     assert forwarded("_fts_dir", "_fts_sync") == ["con", "d", "deadline"]
     assert forwarded("_fts_sync", "_fts_scan") == ["root", "deadline"]
     assert forwarded("_fts_dir", "_fts_search") == [
-        "con", "query", "deadline", "root_real", "read_only",
+        "con", "query", "deadline", "root_real", "read_only", "marked",
     ]
     assert forwarded("_fts_search", "_record_matched") == [
         "con", "terms", "ranked", "deadline",
@@ -13090,7 +13094,7 @@ def test_the_prompt_path_tells_an_unanswerable_index_from_an_empty_corpus(
     assert record["errs"] == 1, record
 
     # And a corpus that really answers with nothing still says so.
-    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False: [])
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False, marked=False: [])
     hook._prompt_main(
         {"session_id": "qt2", "prompt": "sprocket backlash gearbox rebuild"},
         time.monotonic(),
@@ -13302,7 +13306,7 @@ def test_an_index_that_could_not_answer_is_not_reported_as_no_match(
     assert record["errs"] == 1, record
 
     # And a corpus that really answers with nothing still says so.
-    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False: [])
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False, marked=False: [])
     hook._task_main(
         {
             "session_id": "tsk8",
@@ -13552,7 +13556,7 @@ def test_task_records_carry_both_population_discriminators(
     # A prompt record carries neither, so absent means the per-prompt
     # population and nothing written before these fields existed changes shape.
     monkeypatch.setattr(hook, "_search_dirs", lambda: [("/corpus", False)])
-    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False: [])
+    monkeypatch.setattr(hook, "_fts_dir", lambda q, d, deadline=None, read_only=False, marked=False: [])
     monkeypatch.setattr(
         hook.sys, "stdin",
         io.StringIO(json.dumps({"session_id": "tsk5", "prompt": "the unionfs mount is stale"})),
@@ -15907,7 +15911,7 @@ def test_a_project_hit_still_knows_it_came_from_a_repository_after_recall(
         assert hits, "the fixture retrieved nothing, so the claim is vacuous"
         # AFTER recall() returned, which is where `_eligible` reads it.
         assert all(
-            hook._LEX_ROOT[h] == (expected, True) for h in hits
+            hook._LEX_ROOT[h] == (expected, True, True) for h in hits
         ), hook._LEX_ROOT
     finally:
         # `_config` is monkeypatched here and restored with the patch; this one
@@ -16091,7 +16095,7 @@ def test_a_memory_cannot_spell_its_way_into_the_repository_mark(
             "type: reference\n---\n\nunionfs mount permissions.\n",
             encoding="utf-8",
         )
-        monkeypatch.setitem(hook._LEX_ROOT, path, (real, read_only))
+        monkeypatch.setitem(hook._LEX_ROOT, path, (real, read_only, read_only))
         if section is not None:
             monkeypatch.setitem(hook._LEX_SECTIONS, path, section)
         return hook._pointer_line(path, ["unionfs"], 1)
@@ -16168,7 +16172,9 @@ def test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file
         "type: reference\n---\n\nunionfs mount permissions.\n",
         encoding="utf-8",
     )
-    monkeypatch.setitem(hook._LEX_ROOT, path, (os.path.realpath(str(root)), read_only))
+    monkeypatch.setitem(
+        hook._LEX_ROOT, path, (os.path.realpath(str(root)), read_only, read_only)
+    )
     if section is not None:
         monkeypatch.setitem(hook._LEX_SECTIONS, path, spell(section))
     terms = [spell(t) for t in matched] if matched else ["unionfs"]

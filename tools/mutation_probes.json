@@ -4490,7 +4490,7 @@
       "name": "a-repository-chosen-pointer-is-marked-as-one",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        + (f\"{PROJECT_MARK} \" if _lex_read_only(path) else \"\")\n",
+      "old": "        + (f\"{PROJECT_MARK} \" if _lex_marked(path) else \"\")\n",
       "new": "",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not"
@@ -4501,8 +4501,8 @@
       "name": "the-repository-mark-is-a-suffix",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "    return (\n        \"- \"\n        + (f\"{PROJECT_MARK} \" if _lex_read_only(path) else \"\")\n        + _display_path(path)\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n    )\n",
-      "new": "    return (\n        f\"- {_display_path(path)}\"\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n        + (f\" {PROJECT_MARK}\" if _lex_read_only(path) else \"\")\n    )\n",
+      "old": "    return (\n        \"- \"\n        + (f\"{PROJECT_MARK} \" if _lex_marked(path) else \"\")\n        + _display_path(path)\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n    )\n",
+      "new": "    return (\n        f\"- {_display_path(path)}\"\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n        + (f\" {PROJECT_MARK}\" if _lex_marked(path) else \"\")\n    )\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file"
       ],
