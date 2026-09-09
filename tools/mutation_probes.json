@@ -4265,8 +4265,8 @@
       "name": "init-adoption-reads-one-link-flag-of-the-three",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    return not (\n        project.linked and _store_relation(machine, project.path)[2] == \"inside\"\n    )\n",
-      "new": "    return not (\n        project.is_symlink and _store_relation(machine, project.path)[2] == \"inside\"\n    )\n",
+      "old": "    return not (\n        project.linked\n        and (\n            _within(project.path, store)\n            or _store_relation(machine, project.path)[2]\n        )\n    )\n",
+      "new": "    return not (\n        project.is_symlink\n        and (\n            _within(project.path, store)\n            or _store_relation(machine, project.path)[2]\n        )\n    )\n",
       "tests": [
         "tests/test_init.py::test_only_a_memory_directory_wired_into_a_store_is_already_redirected"
       ],
@@ -4276,7 +4276,7 @@
       "name": "init-adoption-calls-any-linked-memory-directory-already-redirected",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    return not (\n        project.linked and _store_relation(machine, project.path)[2] == \"inside\"\n    )\n",
+      "old": "    return not (\n        project.linked\n        and (\n            _within(project.path, store)\n            or _store_relation(machine, project.path)[2]\n        )\n    )\n",
       "new": "    return not project.linked\n",
       "tests": [
         "tests/test_init.py::test_only_a_memory_directory_wired_into_a_store_is_already_redirected"
@@ -4569,9 +4569,9 @@
       "old": "    membership = (\n        machine\n        if machine.resolved_config == config_path\n        else Machine(config_path)\n    )\n",
       "new": "    membership = machine\n",
       "tests": [
-        "tests/test_init.py::test_store_membership_is_asked_of_the_config_being_written"
+        "tests/test_init.py::test_a_memory_directory_landing_in_another_store_is_not_copied_into_this_one"
       ],
-      "why": "`--config`, an install option and the plugin's second rung each name a config the environment does not, and the predicate that keeps adoption off a memory directory already pointed INTO a store reads whichever config it is asked about. Asked of the session's, it answers `outside every store` about a directory inside the store this run is writing: the link is followed, a second copy of every memory lands under a second project key, and the store fails its own check with LEDGER-DRIFT out of the command that made it. The same input with the environment aligned was always answered correctly, which is what makes this the config being wrong rather than the predicate."
+      "why": "`--config`, an install option and the plugin's second rung each name a config the environment does not, and the predicate that keeps adoption off a memory directory already pointed into a store reads whichever config it is asked about. Asked of the session's, it answers `outside every store` about a directory inside a store that config names — the link is followed and a second copy of that store's whole corpus lands under a project key. The store this run writes is asked about by its root and needs no config to be seen, so the case that still turns on this is the machine's OTHER store: only the config being written knows it is there."
     },
     {
       "name": "init-adoption-plans-a-name-the-write-cannot-create",
@@ -4762,6 +4762,29 @@
         "tests/test_init.py::test_the_stores_own_writes_answer_to_the_stores_containment_root"
       ],
       "why": "adoption's copies were bounded by the store and the store's own writes were not, so `search/` swapped for a link between the two turns sent init's first memory to a path no manifest line named. The swap is invisible to the digest — a directory and a link to a directory are both `dir` — so the write is the only place it can be caught."
+    },
+    {
+      "name": "init-adoption-asks-containment-only-of-the-configured-relation",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    return not (\n        project.linked\n        and (\n            _within(project.path, store)\n            or _store_relation(machine, project.path)[2]\n        )\n    )\n",
+      "new": "    return not (\n        project.linked\n        and bool(_store_relation(machine, project.path)[2])\n    )\n",
+      "tests": [
+        "tests/test_init.py::test_the_store_this_run_creates_is_a_store_the_membership_guard_can_see",
+        "tests/test_init.py::test_a_memory_directory_linked_under_a_store_but_outside_search_is_skipped"
+      ],
+      "why": "the relation is read out of the config, which on the run that creates one does not name this store yet, and it is only ever measured against the corpus root. Without the store root asked directly, a memory directory the adopter had already pointed into the store was called outside every store and copied back into it — green, silent, and one row per duplicate."
+    },
+    {
+      "name": "init-adoption-reads-only-one-of-the-relations-a-store-can-hold",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    return not (\n        project.linked\n        and (\n            _within(project.path, store)\n            or _store_relation(machine, project.path)[2]\n        )\n    )\n",
+      "new": "    return not (\n        project.linked\n        and (\n            _within(project.path, store)\n            or _store_relation(machine, project.path)[2] == \"inside\"\n        )\n    )\n",
+      "tests": [
+        "tests/test_init.py::test_a_memory_directory_landing_in_another_store_is_not_copied_into_this_one"
+      ],
+      "why": "`_store_relation` answers four overlaps and `at` — the wiring docs/STORE.md prescribes — is one of them. Reading only `inside` leaves a memory directory wired into ANOTHER configured store adoptable, so that store's whole corpus is duplicated into this one under a project key."
     }
   ]
 }

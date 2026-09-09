@@ -61,6 +61,7 @@ from memkit.cli_doctor import (
     Machine,
     _checker_route,
     _store_relation,
+    _within,
     authored_configs,
     canary_query,
 )
@@ -1869,15 +1870,28 @@ def _search_ledger_text(store: str, entries: list) -> str:
     return f"{preamble}\n\n{body}\n"
 
 
-def _adoptable(machine: Machine, project) -> bool:
+def _adoptable(machine: Machine, store: str, project) -> bool:
     """Whether adoption will copy out of this project directory at all.
 
     A LINK IS SOMEBODY'S ANSWER ONLY WHERE IT LANDS IN A STORE. A memory
-    directory wired into a corpus root — which is what docs/STORE.md tells an
-    adopter to do — holds memories the store already has, and copying through
+    directory wired into a store — which is what docs/STORE.md tells an
+    adopter to do — holds memories that store already has, and copying through
     it would duplicate every one of them. A link that lands anywhere else has
     answered nothing: those memories are outside every store exactly as an
     unlinked directory's are.
+
+    EVERY ANSWER `_store_relation` HAS, not the one spelling of it. That
+    function distinguishes four overlaps, and `docs/STORE.md` prescribes `at`
+    — a link to the corpus root itself — so a test for `inside` alone walked
+    back in through the documented wiring and copied the store's whole corpus,
+    canary included, under a project key.
+
+    AND THE STORE THIS RUN IS WRITING, ASKED OF THE STORE ROOT. `_store_relation`
+    reads the config, which on the run that creates one does not name this store
+    yet, and it only ever measures against the corpus root, so a tier beside it
+    is no relation at all. Both gaps land the same way — a directory the adopter
+    already pointed into the store, reported as outside every store and copied
+    back into it — and neither test closes the other.
 
     DOCTOR'S OWN PREDICATE, term for term, because the claim that the two
     commands report one number is only worth making if one function decides
@@ -1886,7 +1900,11 @@ def _adoptable(machine: Machine, project) -> bool:
     skipped" — reported as handled, so never adopted and never chased.
     """
     return not (
-        project.linked and _store_relation(machine, project.path)[2] == "inside"
+        project.linked
+        and (
+            _within(project.path, store)
+            or _store_relation(machine, project.path)[2]
+        )
     )
 
 
@@ -1902,7 +1920,7 @@ def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
     see: two memory systems on one machine, one of them writing where nothing
     retrieves. A flag they never heard of is not an answer to that.
     """
-    mine = [project for project in known if _adoptable(machine, project)]
+    mine = [project for project in known if _adoptable(machine, store, project)]
     memories = sum(project.memories for project in mine)
     out = []
     if mine:
@@ -1922,7 +1940,7 @@ def _auto_memory_notes(machine: Machine, store: str, known: list) -> list:
         f"{_findable(project.key)}: already redirected, skipped "
         f"({_display_path(project.path)})"
         for project in known
-        if not _adoptable(machine, project)
+        if not _adoptable(machine, store, project)
     )
     # THE LIMIT IS ON DERIVING A KEY, NOT ON READING ONE. `KEY_MAX` refuses
     # inside `project_key`, which adoption never calls: adoption reads names
@@ -2063,7 +2081,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     payload = 0
     directories = 0
     for project in known:
-        if not _adoptable(machine, project):
+        if not _adoptable(machine, store, project):
             continue
         # THE KEY IS THE OTHER HALF OF THE PATH THE ROW POINTS AT, and it
         # gets the test the file name gets one screen below, for the same

@@ -2919,7 +2919,7 @@ def test_only_a_memory_directory_wired_into_a_store_is_already_redirected(
     # And doctor, over the same machine, counts the same one.
     machine = doctor.Machine()
     known = harness_memory.inventory(init._harness_config_dir())
-    outside = [p for p in known if init._adoptable(machine, p)]
+    outside = [p for p in known if init._adoptable(machine, str(store), p)]
     assert [p.key for p in outside] == ["-linked-outside"]
     (row,) = [
         check for check in doctor.collect(machine) if check.id == "auto-memory"
@@ -4214,6 +4214,228 @@ def test_store_membership_is_asked_of_the_config_being_written(profile) -> None:
         capture_output=True, text=True, timeout=300, env=base,
     )
     assert checked.returncode == 0, checked.stdout + checked.stderr
+
+def _green(profile, store, config=None) -> subprocess.CompletedProcess:
+    """The real integrity checker over `store`, through the config init wrote."""
+    if config is None:
+        config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    return subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+
+
+def _canaries(store) -> list:
+    return sorted(
+        str(p.relative_to(store))
+        for p in store.rglob(doctor.CANARY_NAME)
+    )
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_directory_linked_at_a_corpus_root_is_already_redirected(
+    profile, monkeypatch
+) -> None:
+    """THE WIRING THE DOCS PRESCRIBE IS AN ANSWER TOO. `docs/STORE.md` tells an
+    adopter to move their memories into the store's `search/` and link the
+    harness directory AT it — which makes the relation "at", not "inside", so a
+    predicate that skipped only "inside" walked back in through the link and
+    copied the store's whole corpus, canary included, under a project key. The
+    manifest invited it: the same run called a directory that IS the corpus
+    root "outside every store".
+
+    Asserted against the disk and the checker rather than the sentence: no
+    project directory, one canary, and a store still green.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+    for name in ("wired1.md", "wired2.md"):
+        (store / "search" / name).write_text(
+            f"---\nname: {name[:-3]}\ndescription: one the store already holds\n"
+            "---\n# w\nbody\n",
+            encoding="utf-8",
+        )
+    rowed = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--write",
+         "--config", str(profile / "home" / ".config" / "memkit" / "memkit.json")],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert rowed.returncode == 0, rowed.stdout + rowed.stderr
+    # The control: the store is green BEFORE adoption, so any red below is
+    # adoption's own.
+    base = _green(profile, store)
+    assert base.returncode == 0, base.stdout + base.stderr
+
+    wired = profile / "claude-config" / "projects" / "-home-wired"
+    wired.mkdir(parents=True)
+    (wired / "memory").symlink_to(store / "search")
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-wired': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-wired").exists()
+    assert _canaries(store) == [f"search/{doctor.CANARY_NAME}"], _canaries(store)
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_store_this_run_creates_is_a_store_the_membership_guard_can_see(
+    profile,
+) -> None:
+    """MEMBERSHIP IS ABOUT THE STORE, NOT ABOUT THE CONFIG THAT NAMES IT. On the
+    run that CREATES the config, no configured store contains anything yet, so a
+    memory directory already linked into the store being written answered
+    "outside every store" and every memory landed a second time — green, silent,
+    and doubled, one row each for two copies of one file.
+
+    The store root, not the corpus root, because a directory under the store but
+    outside `search/` is somebody's answer as well.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    for name in ("alpha.md", "beta.md", "gamma.md"):
+        (store / "search" / name).write_text(
+            f"---\nname: {name[:-3]}\ndescription: already where it lands\n"
+            "---\n# a\nbody\n",
+            encoding="utf-8",
+        )
+    linked = profile / "claude-config" / "projects" / "-home-first"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(store / "search")
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-first': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-first").exists()
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    for name in ("alpha.md", "beta.md", "gamma.md"):
+        assert ledger.count(f"(search/{name})") == 1, ledger
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_directory_linked_under_a_store_but_outside_search_is_skipped(
+    profile, monkeypatch
+) -> None:
+    """A TIER IS NOT THE CORPUS ROOT AND IS STILL THE STORE. `_store_relation`
+    only ever measures against `search/`, so it answers "" — no relation at all
+    — about `<store>/hot`, and the manifest said a directory inside the store
+    held memories outside every store.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+    tier = store / "hot"
+    tier.mkdir(parents=True, exist_ok=True)
+    (tier / "note.md").write_text(TRAP, encoding="utf-8")
+    linked = profile / "claude-config" / "projects" / "-home-hot"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(tier)
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-hot': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    # The dry run carries the whole assertion here. A memory under a tier with
+    # no row for it leaves the store red before adoption runs, so a confirm's
+    # exit code would be the fixture's verdict rather than this rule's.
+    assert str(store / "search" / init.ADOPT_DIRNAME / "-home-hot") not in (
+        manifest.stdout
+    ), manifest.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_directory_landing_in_another_store_is_not_copied_into_this_one(
+    profile,
+) -> None:
+    """ANY STORE'S ANSWER IS AN ANSWER, AND THE CONFIG BEING WRITTEN IS WHO IS
+    ASKED. Containment in the store this run writes is not the whole question: a
+    machine can have two, and a memory directory the adopter already wired into
+    the other one is somewhere retrieval already reaches. Copying it here would
+    duplicate that store's corpus into this one, under a project key, with a row
+    for each copy and nothing saying so.
+
+    Through `--config`, because the second store is only in the config this run
+    is writing: asked of the session's instead, the answer is "outside every
+    store" about a directory that is inside one.
+    """
+    config = profile / "named-by-the-flag.json"
+    kept = profile / "archive"
+    store = profile / "notes"
+    env = dict(
+        os.environ,
+        HOME=str(profile / "home"),
+        XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+        CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+    )
+    env.pop("MEMKIT_CONFIG", None)
+    for path in (kept, store):
+        named = ("--config", str(config), "--store", str(path))
+        seed = _run("--dry-run", *named, env=env)
+        assert seed.returncode == init.EXIT_OK, seed.stdout + seed.stderr
+        out = _run("--confirm", _digest_of(seed), *named, env=env)
+        assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    (kept / "search" / "kept.md").write_text(TRAP, encoding="utf-8")
+    rowed = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--write",
+         "--config", str(config)],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert rowed.returncode == 0, rowed.stdout + rowed.stderr
+    elsewhere = profile / "claude-config" / "projects" / "-home-elsewhere"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "memory").symlink_to(kept / "search")
+
+    named = ("--config", str(config), "--store", str(store), "--adopt-auto-memory")
+    manifest = _run("--dry-run", *named, env=env)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-elsewhere': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    applied = _run("--confirm", _digest_of(manifest), *named, env=env)
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-elsewhere").exists()
+    assert sorted(p.name for p in (kept / "search").iterdir()) == sorted(
+        [doctor.CANARY_NAME, "kept.md"]
+    )
 
 
 def test_an_adopted_copy_is_never_more_readable_than_its_original(
