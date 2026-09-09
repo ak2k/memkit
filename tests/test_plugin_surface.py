@@ -3388,6 +3388,15 @@ _LINK_REACHES = {
     "is the route left: the harness still writes to the directory the key "
     "names": "reachable",
 }
+# The case the link is offered for and what the paragraph then says the link
+# reaches are one claim in two sentences, so they are read as a pair: a page
+# that offers the link for every carrying scope while its own reason sentence
+# says a carrying scope leaves the link reaching nothing contradicts itself,
+# and each sentence apart is still a spelling the tables above know.
+_LINK_OFFERS = {
+    ("outranked", "unreachable"),
+    ("any-scope", "reachable"),
+}
 
 
 def _prose(section: str) -> str:
@@ -3659,7 +3668,7 @@ def _link_case(section: str) -> str:
     """
     return _stated(
         section,
-        r"A symlink does the same job where ([^.]+)\.",
+        r"(?:^|\. )A symlink does the same job where ([^.]+)\.",
         _LINK_CASES,
         "which case the symlink is the route for",
     )
@@ -3670,15 +3679,31 @@ def _blocked_link_reach(section: str) -> str:
 
     Read rather than skipped over: the sentence sat between two anchors of the
     precedence case's regex, so the paragraph could be returned to offering the
-    link as the route out of the one state the link cannot reach.
+    link as the route out of the one state the link cannot reach. The match
+    starts at the sentence boundary because `_stated` searches the section as
+    one line: anchored on the clause alone, a false clause inserted anywhere
+    earlier in the same sentence sits inside the span and is never read.
     """
     return _stated(
         section,
-        r"the flag below refuses \(`auto-memory-redirected`\) and this link "
-        r"([^.]+)\.",
+        r"(?:^|\. )Where a checkout's checked-in `\.claude/settings\.json` "
+        r"declares `autoMemoryDirectory` already, the flag below refuses "
+        r"\(`auto-memory-redirected`\) and this link ([^.]+)\.",
         _LINK_REACHES,
         "what the link reaches where a checked-in setting declares the value",
     )
+
+
+def _link_offer(section: str) -> tuple:
+    """The case the link is offered for, with what the page says it reaches.
+
+    Either sentence alone can be reworded into the other spelling the tables
+    know and stay green on its own lookup, so the two are read together and
+    the pair has to be one the page can mean.
+    """
+    offer = (_link_case(section), _blocked_link_reach(section))
+    assert offer in _LINK_OFFERS, (offer, sorted(_LINK_OFFERS))
+    return offer
 
 
 def _nounset_streams(section: str) -> str:
@@ -4535,15 +4560,13 @@ def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
     # touches.
     # The link is offered for one case, and it is the one this paragraph's own
     # two exclusions leave: a scope above the reader's carries the setting and
-    # nothing they can write outranks it.
-    assert _link_case(section) == "outranked", (
+    # nothing they can write outranks it. What the link reaches there is the
+    # reason the reader is routed at all, so it is read rather than spanned:
+    # the clause used to sit inside a `.*?` and could be inverted back to
+    # offering the link with every case green. The two are one claim, and a
+    # pair the page cannot mean is the failure, not either half's vocabulary.
+    assert _link_offer(section) == ("outranked", "unreachable"), (
         "the page offers the link for cases its own next sentences rule out"
-    )
-    # What the link reaches there is the reason the reader is routed at all,
-    # so it is read rather than spanned: the clause used to sit inside a `.*?`
-    # and could be inverted back to offering the link with every case green.
-    assert _blocked_link_reach(section) == "unreachable", (
-        "the page offers the link where the file it names sends the harness elsewhere"
     )
     found = re.search(
         r"Where a checkout's checked-in (`[^`]+`) declares `autoMemoryDirectory` "

@@ -4280,6 +4280,28 @@
         "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
       ],
       "why": "a flag that deselects the suite leaves the required context green with none of these cases run, which is the same silent state as deleting the step"
+    },
+    {
+      "name": "store-doc-a-false-clause-slipped-in-ahead-of-the-read-one",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "declares `autoMemoryDirectory` already, the flag below\nrefuses",
+      "new": "declares `autoMemoryDirectory` already, this link still reaches the directory\nthe key names and the flag below refuses",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
+      ],
+      "why": "the clause read is true and the sentence carrying it now says the opposite first, which is the one edit a claim anchored mid-sentence cannot see"
+    },
+    {
+      "name": "store-doc-the-link-is-offered-for-the-case-it-cannot-serve",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "A symlink does the same job where the setting is not yours to set and no\nsettings file of yours outranks the one that carries it.",
+      "new": "A symlink does the same job where that setting is not yours to set.",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
+      ],
+      "why": "each sentence stays a spelling the tables know while the paragraph now offers the link for the state its own reason sentence says the link reaches nothing in"
     }
   ]
 }
