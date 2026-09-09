@@ -6035,11 +6035,12 @@ def _pointer_line(
     )
     section = _LEX_SECTIONS.get(path)
     return (
-        f"- {_display_path(path)}"
+        "- "
+        + (f"{PROJECT_MARK} " if _lex_read_only(path) else "")
+        + _display_path(path)
         + (f" — {desc}" if desc else "")
         + f" [{evidence}: {shown}]"
         + (f" [section: {section}]" if section else "")
-        + (f" {PROJECT_MARK}" if _lex_read_only(path) else "")
     )
 
 
@@ -6047,13 +6048,19 @@ def _pointer_line(
 # anyone with commit access to the checkout contributed is not byte-identical
 # to one out of the operator's own store.
 #
-# A SUFFIX, and the position is what makes it memkit's rather than a store's.
-# The sanitizer already guarantees no retrieved text can begin a line; on this
-# line every span that came out of a file — the path, the description, the
-# section label — is followed by a bracket memkit closes after it, so retrieved
-# text can never be the line's last characters. A store that spells this string
-# in a description gets it rendered inside the description, where it reads as
-# part of it.
+# A PREFIX, immediately after the `- `, and the position is what makes it
+# memkit's rather than a store's. It rests on the one property the sanitizer
+# already guarantees and `NOTICE_PREFIX` already relies on: no retrieved text
+# can BEGIN a line, so nothing out of a file can occupy this position however
+# it is spelled. A suffix cannot rest on anything that small — it needs every
+# span read out of a file to be followed by a byte memkit wrote, which is a
+# claim about every component of the line and has to be re-made each time one
+# is appended. It was false: a section heading ending in this string minus its
+# final `]` supplies the unbalanced `[` that memkit's own `]` then closes, and
+# a user's own memory rendered a line ending in the mark byte for byte.
+#
+# A store that spells this string in a description gets it rendered inside the
+# description, where it reads as part of it.
 PROJECT_MARK = "[from this repository's checked-in store]"
 
 # The prefix that marks the one line in a block which is memkit's own, and the
@@ -6169,10 +6176,10 @@ def _framed(lines: list[str]) -> str:
     # nothing repository-chosen in it should read exactly as it always did.
     provenance = (
         (
-            f" A line ending `{PROJECT_MARK}` was chosen by the repository you "
-            "are working in rather than by you."
+            f" A line beginning `- {PROJECT_MARK}` was chosen by the "
+            "repository you are working in rather than by you."
         )
-        if any(line.endswith(PROJECT_MARK) for line in body)
+        if any(line.startswith(f"- {PROJECT_MARK}") for line in body)
         else ""
     )
     return _framed_region(
@@ -6803,10 +6810,10 @@ def _task_framed(lines: list[str], truncated: int = 0) -> str:
     # is unattended, so a mark it has no rule for is a mark it cannot use.
     provenance = (
         (
-            f" A line ending `{PROJECT_MARK}` was chosen by the repository the "
-            "spawn was made from rather than by the user."
+            f" A line beginning `- {PROJECT_MARK}` was chosen by the "
+            "repository the spawn was made from rather than by the user."
         )
-        if any(line.endswith(PROJECT_MARK) for line in body)
+        if any(line.startswith(f"- {PROJECT_MARK}") for line in body)
         else ""
     )
     return _framed_region(

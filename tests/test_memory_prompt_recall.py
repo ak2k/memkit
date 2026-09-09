@@ -15978,7 +15978,7 @@ def test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not(
     ours = [ln for ln in lines if "my_unionfs.md" in ln]
     assert len(theirs) == 1 and len(ours) == 1, out.stdout
 
-    assert theirs[0].endswith(hook.PROJECT_MARK), theirs[0]
+    assert theirs[0].startswith(f"- {hook.PROJECT_MARK} "), theirs[0]
     assert hook.PROJECT_MARK not in ours[0], ours[0]
     assert hook.PROJECT_MARK in out.stdout.split("\n- ", 1)[0], "the preamble is silent"
 
@@ -15986,40 +15986,124 @@ def test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not(
 def test_a_memory_cannot_spell_its_way_into_the_repository_mark(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Forgery, by POSITION rather than by convention.
+    """Forgery, by POSITION — and the position is the START of the line.
 
-    The sanitizer already means no retrieved text can begin a line. What keeps
-    the end of the line memkit's too is that every span read out of a file —
-    the path, the description, the section label — is rendered before a bracket
-    memkit closes after it, so a store that writes the mark into its own
-    description gets it back inside the description, and the line's last
-    characters are still memkit's own answer about who chose the file.
+    The mark used to be a suffix, resting on the claim that every span read out
+    of a file is followed by a byte memkit wrote. It was not: a section heading
+    ending in the mark minus its final `]` hands the line an unbalanced `[`,
+    memkit's own `]` closes THAT one, and a user's own memory renders a line
+    ending in the mark byte for byte. The prefix rests instead on the one
+    property the sanitizer guarantees — no retrieved text can begin a line —
+    which the truncation notice already stands on.
+
+    All THREE components a store controls, each in the spellings that reach the
+    end of a line. The docstring here quantified over three and the case drove
+    the description alone, which is the one of the three that cannot be last.
     """
+    mark = hook.PROJECT_MARK
+    prefix = f"- {mark} "
     root = tmp_path / "corpus"
     root.mkdir()
-    path = str(root / "forged.md")
+    real = os.path.realpath(str(root))
+
+    def rendered(name: str, desc: str, section, read_only: bool) -> str:
+        path = str(root / name)
+        Path(path).write_text(
+            f"---\nname: forged\ndescription: {desc}\n"
+            "type: reference\n---\n\nunionfs mount permissions.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setitem(hook._LEX_ROOT, path, (real, read_only))
+        if section is not None:
+            monkeypatch.setitem(hook._LEX_SECTIONS, path, section)
+        return hook._pointer_line(path, ["unionfs"], 1)
+
+    # The whole mark closes its own bracket and was never the attack; the other
+    # two leave one open for memkit to close.
+    for i, spelling in enumerate((mark, mark[:-1], f"Foo] {mark[:-1]}")):
+        for j, row in enumerate(
+            (
+                (f"d{i}.md", f"unionfs notes {spelling}", None),
+                (f"s{i}.md", "unionfs notes", spelling),
+                (f"x] {spelling} {i}.md", "unionfs notes", None),
+            )
+        ):
+            mine = rendered(*row, read_only=False)
+            # Non-vacuity: the spelling reached the line at all.
+            assert mark[:-1] in mine, (i, j, mine)
+            assert not mine.startswith(f"- {mark}"), (i, j, mine)
+            theirs = rendered(*row, read_only=True)
+            assert theirs.startswith(prefix), (i, j, theirs)
+
+    # And it is REACHABLE: a heading short enough to survive the display cap
+    # renders as exactly the label that forged the suffix.
+    assert hook._section_label(f"## {mark[:-1]}") == mark[:-1]
+
+
+# Every shape that was measured against the old suffix, kept as a table so the
+# question stays a BICONDITIONAL: a line carries the mark exactly when the file
+# behind it came out of a store a repository chose. The forging shapes are the
+# two that leave a bracket open for memkit to close; the rest are here so a
+# rule that marked everything, or nothing, cannot pass this.
+#
+# label, description, section, filename, matched terms
+MARK_FORGERIES = [
+    ("a-section-that-is-the-mark-less-its-closer", "notes", "OPEN", "a.md", None),
+    ("a-section-that-closes-a-bracket-first", "notes", "Foo] OPEN", "b.md", None),
+    ("a-section-that-is-the-whole-mark", "notes", "MARK", "c.md", None),
+    ("no-section-at-all", "notes", None, "d.md", None),
+    ("a-description-less-the-closer", "notes OPEN", None, "e.md", None),
+    ("a-description-that-is-the-whole-mark", "notes MARK", None, "f.md", None),
+    ("a-filename-carrying-the-mark", "notes", None, "x] OPEN.md", None),
+    ("matched-terms-carrying-the-mark", "notes", None, "h.md", ["OPEN"]),
+    ("a-section-with-a-trailing-space", "notes", "heading ", "i.md", None),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "desc", "section", "name", "matched"),
+    MARK_FORGERIES,
+    ids=[row[0] for row in MARK_FORGERIES],
+)
+@pytest.mark.parametrize("read_only", [False, True], ids=["user", "repository"])
+def test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file(
+    tmp_path: Path, monkeypatch, label: str, desc: str, section, name: str,
+    matched, read_only: bool
+) -> None:
+    """Over-marking AND under-marking, on one table.
+
+    Read down the `user` column and it is the forgery: no shape a store
+    controls may put the mark where memkit puts it. Read down the `repository`
+    column and it is the other direction, the one that would be a leak the
+    other way: no shape may take it off a line that has earned it.
+    """
+    mark = hook.PROJECT_MARK
+
+    def spell(text):
+        return None if text is None else text.replace("OPEN", mark[:-1]).replace(
+            "MARK", mark
+        )
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    path = str(root / spell(name))
     Path(path).write_text(
-        f"---\nname: forged\ndescription: unionfs notes {hook.PROJECT_MARK}\n"
+        f"---\nname: forged\ndescription: {spell(desc)}\n"
         "type: reference\n---\n\nunionfs mount permissions.\n",
         encoding="utf-8",
     )
-    real = os.path.realpath(str(root))
+    monkeypatch.setitem(hook._LEX_ROOT, path, (os.path.realpath(str(root)), read_only))
+    if section is not None:
+        monkeypatch.setitem(hook._LEX_SECTIONS, path, spell(section))
+    terms = [spell(t) for t in matched] if matched else ["unionfs"]
 
-    monkeypatch.setitem(hook._LEX_ROOT, path, (real, False))
-    mine = hook._pointer_line(path, ["unionfs"], 1)
-    assert hook.PROJECT_MARK in mine, mine
-    assert not mine.endswith(hook.PROJECT_MARK), mine
-
-    monkeypatch.setitem(hook._LEX_ROOT, path, (real, True))
-    theirs = hook._pointer_line(path, ["unionfs"], 1)
-    assert theirs.endswith(hook.PROJECT_MARK), theirs
-    # The store's copy is where the store put it, and the suffix is memkit's:
-    # one mark ends this line, and stripping it leaves a line that does not.
-    assert theirs.count(hook.PROJECT_MARK) == 2, theirs
-    assert not theirs[: -len(hook.PROJECT_MARK)].rstrip().endswith(
-        hook.PROJECT_MARK
-    ), theirs
-    assert theirs[: -len(hook.PROJECT_MARK)].rstrip().endswith("]"), theirs
+    line = hook._pointer_line(path, terms, 1)
+    assert line.startswith(f"- {mark} ") is read_only, (label, line)
+    # The gates the frames read are this same question, so a row that agrees
+    # here and disagrees there would still put the sentence in front of a
+    # model.
+    for framed in (hook._framed([line]), hook._task_framed([line])):
+        assert ("was chosen by the repository" in framed) is read_only, (label, framed)
 
 
 def test_the_search_clis_record_says_a_credential_was_floored_too(

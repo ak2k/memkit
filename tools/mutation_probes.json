@@ -4490,12 +4490,35 @@
       "name": "a-repository-chosen-pointer-is-marked-as-one",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        + (f\" {PROJECT_MARK}\" if _lex_read_only(path) else \"\")\n",
+      "old": "        + (f\"{PROJECT_MARK} \" if _lex_read_only(path) else \"\")\n",
       "new": "",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not"
       ],
       "why": "without the mark a line a repository chose is byte-identical to one out of the operator's own store"
+    },
+    {
+      "name": "the-repository-mark-is-a-suffix",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    return (\n        \"- \"\n        + (f\"{PROJECT_MARK} \" if _lex_read_only(path) else \"\")\n        + _display_path(path)\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n    )\n",
+      "new": "    return (\n        f\"- {_display_path(path)}\"\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n        + (f\" {PROJECT_MARK}\" if _lex_read_only(path) else \"\")\n    )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file"
+      ],
+      "why": "at the end of the line the mark is forgeable — a section heading spelling it without its final `]` leaves memkit's own bracket to close it — so the position is the whole guarantee, and only the start of a line is a place no retrieved text can reach"
+    },
+    {
+      "name": "the-provenance-sentence-reads-the-mark-off-the-end",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if any(line.startswith(f\"- {PROJECT_MARK}\") for line in body)\n",
+      "new": "        if any(line.endswith(PROJECT_MARK) for line in body)\n",
+      "occurrences": 2,
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file"
+      ],
+      "why": "both frames assert repository provenance off this gate, so a gate asking where the mark ENDS puts the sentence in front of a model for a line a user's own store forged — in a session with no repository store in it at all"
     },
     {
       "name": "the-eval-scores-a-candidate-the-hook-would-floor",
