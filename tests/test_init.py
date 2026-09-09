@@ -2104,6 +2104,60 @@ def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
     assert body.rstrip().endswith(init._import_line(str(profile / "notes")))
 
 
+
+def test_a_journal_append_that_failed_is_not_reported_as_the_write_failing(
+    profile, capsys
+) -> None:
+    """ONE HANDLER SPOKE FOR TWO FAILURES AND NAMED THE WRONG ONE.
+
+    The write and the record of it sit under one `except OSError`, so a journal
+    the process cannot append to was reported as the store file failing — with
+    the store file on disk holding the right bytes, and the journal's own errno
+    in the parenthesis to prove the sentence contradicts itself. An adopter
+    reading it goes looking for a write that happened.
+    """
+    machine = doctor.Machine()
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    # A directory where the append expects a file: the record cannot be
+    # written and the write ahead of it is untouched.
+    os.mkdir(os.path.join(machine.state_dir, init.INIT_JOURNAL_NAME))
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    target = store / "search" / "m1.md"
+    body = "---\nname: m1\ndescription: the one that landed\n---\n\nbody\n"
+    action = init.Action(
+        init.CREATE_FILE, str(target), content=body, confine=str(store)
+    )
+    code = init.apply_plan(
+        machine, init.Plan([action], []), init._resolve_config(machine, None)
+    )
+    assert code == init.EXIT_INCOMPLETE
+    err = capsys.readouterr().err
+    # The journal is named as the thing that failed...
+    assert init.INIT_JOURNAL_NAME in err, err
+    assert "the journal record of it was not written" in err, err
+    # ...and the store write is not, because it succeeded.
+    assert f"{init.CREATE_FILE} {init._display_path(str(target))} failed" not in (
+        err
+    ), err
+    assert target.read_text(encoding="utf-8") == body
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    # And the recovery it offers is sound: the next manifest re-plans a write
+    # that is already done, and performing it again changes nothing.
+    os.rmdir(os.path.join(machine.state_dir, init.INIT_JOURNAL_NAME))
+    again = init.Action(
+        init.CREATE_FILE, str(target), content=body, confine=str(store)
+    )
+    assert again.redundant
+    assert (
+        init.apply_plan(
+            machine, init.Plan([again], []), init._resolve_config(machine, None)
+        )
+        == init.EXIT_OK
+    )
+    assert target.read_text(encoding="utf-8") == body
+
 def test_a_refusal_raised_after_a_write_is_never_reported_as_refused(
     profile, monkeypatch
 ) -> None:

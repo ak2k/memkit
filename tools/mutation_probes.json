@@ -4952,6 +4952,17 @@
         "tests/test_init.py::test_a_harness_projects_directory_that_cannot_be_listed_is_named"
       ],
       "why": "the reconciliation is the only thing that can tell an unreadable `projects/` from a machine without one — the walk returns the same empty inventory for both."
+    },
+    {
+      "name": "init-reports-an-unwritable-journal-as-the-write-failing",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        try:\n            append_record(self.path, line, fsync=True)\n        except OSError as exc:\n            raise _RecordNotWritten(exc) from exc\n",
+      "new": "        append_record(self.path, line, fsync=True)\n",
+      "tests": [
+        "tests/test_init.py::test_a_journal_append_that_failed_is_not_reported_as_the_write_failing"
+      ],
+      "why": "collapsed into the handler around the write, a journal the process cannot append to is reported as the store file failing — while that file is on disk with the right bytes and the errno in the parenthesis names the journal."
     }
   ]
 }

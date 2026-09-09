@@ -230,6 +230,20 @@ class Refusal(Exception):
         self.message = message
 
 
+class _RecordNotWritten(Exception):
+    """The mutation happened and the record of it did not.
+
+    Its own type, and deliberately not an `OSError`: one handler around the
+    write and the record after it named the write as the thing that failed
+    while carrying the journal's errno in the parenthesis, about a file already
+    on disk with the right bytes. The two failures have different recoveries
+    and cannot share a sentence.
+    """
+
+    def __init__(self, exc: OSError) -> None:
+        super().__init__(f"{type(exc).__name__}: {exc}")
+
+
 class Plan:
     """Everything init would do, in the order it would do it."""
 
@@ -3429,7 +3443,10 @@ class Journal:
         # this record: the corruption is the absence of a separator before a
         # new one, not the atomicity of the torn write, so it closes at this
         # level rather than needing a short `write()` to be atomic.
-        append_record(self.path, line, fsync=True)
+        try:
+            append_record(self.path, line, fsync=True)
+        except OSError as exc:
+            raise _RecordNotWritten(exc) from exc
         self.landed[action.path] = after
 
 
@@ -3806,6 +3823,20 @@ def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
                 f"{_display_path(journal.path)}. Fix what the message names, "
                 "then re-run `init --dry-run` for a fresh digest and confirm "
                 "that.",
+                file=sys.stderr,
+            )
+            return EXIT_INCOMPLETE
+        except _RecordNotWritten as unrecorded:
+            print(
+                f"memkit init: {action.op} {_display_path(action.path)} was "
+                "performed and the journal record of it was not written "
+                f"({unrecorded}). The write itself succeeded, so what is on "
+                "disk is what the manifest describes; what is missing is the "
+                f"line in {_display_path(journal.path)} saying so. Fix what "
+                "that errno names, then re-run `init --dry-run` for a fresh "
+                "digest and confirm that. The new manifest may re-plan this "
+                "write, which costs nothing: a destination already holding "
+                "these bytes is left alone, and a differing one is refused.",
                 file=sys.stderr,
             )
             return EXIT_INCOMPLETE
