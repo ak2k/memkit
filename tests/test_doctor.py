@@ -6535,3 +6535,42 @@ def test_the_row_is_steered_only_by_a_variable_this_process_carries(
     monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(inside))
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
     assert "$CLAUDE_CONFIG_DIR points inside" in row.detail
+
+
+def test_a_scope_with_no_file_is_not_a_scope_that_failed(
+    profile, monkeypatch
+) -> None:
+    """An empty scope path is an ORDINARY state, not a read that went wrong.
+
+    It is what a session whose own directory was removed leaves behind, and
+    what the project scopes hold once one file is read once as the scope it
+    is. Recorded as a failure it would put "could not be read", and the remedy
+    that goes with it, under every row of a report about a machine with
+    nothing wrong.
+    """
+    home = profile / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(home / ".claude"))
+    monkeypatch.chdir(home)
+    scopes = doctor.settings_scopes()
+    fileless = [scope for scope in scopes if not scope.path]
+    assert fileless, [scope.scope for scope in scopes]
+    assert not [scope.scope for scope in fileless if scope.failure]
+
+    path = _store_config(profile, stores=["personal"])
+    rows = doctor.collect(_machine(profile, monkeypatch, path))
+    said = [row.id for row in rows if "could not be read" in f"{row.detail}{row.remedy}"]
+    assert not said, said
+
+
+def test_a_path_that_will_not_resolve_is_inside_nothing(profile) -> None:
+    """A settings file may legally carry an embedded NUL, and `realpath`
+    raises `ValueError` rather than `OSError` on one.
+
+    The safe answer here is the one that claims no retrieval — this predicate
+    decides whether a directory is reported as reached by a store, and a path
+    nothing could resolve is one no store was compared with.
+    """
+    store = str(profile / "stores" / "personal" / "search")
+    assert doctor._within(f"{store}/no\x00where", store) is False
+    assert doctor._within(store, f"{store}/no\x00where") is False

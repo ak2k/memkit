@@ -4641,6 +4641,50 @@
         "tests/test_doctor.py::test_a_retrieved_directory_does_not_pass_over_an_inventory_it_could_not_read"
       ],
       "why": "off in a settings file is not the whole answer while something this run could not read decided part of the row: dropped, the branch returns the plain sentence with no disclosure, no remedy and nobody to act on it"
+    },
+    {
+      "name": "auto-memory-reads-a-scope-with-no-file-as-one-that-failed",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        if not path:\n            return\n",
+      "new": "        if not path:\n            self.failure = UNREADABLE\n            return\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_scope_with_no_file_is_not_a_scope_that_failed"
+      ],
+      "why": "a scope with no file is an ordinary state — a session whose own directory was removed, and the project scopes once one file is read once as the scope it is. Recorded as a read that failed it puts \"could not be read\" and the remedy that goes with it under every row of a report about a machine with nothing wrong."
+    },
+    {
+      "name": "auto-memory-calls-a-path-it-cannot-resolve-inside-the-store",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    except (OSError, ValueError):\n        return False\n",
+      "new": "    except (OSError, ValueError):\n        return True\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_path_that_will_not_resolve_is_inside_nothing"
+      ],
+      "why": "realpath raises on the embedded NUL a settings file may legally carry. Answered the other way, a path this process could not resolve is reported as retrieved by a store nothing ever compared it with."
+    },
+    {
+      "name": "auto-memory-notes-an-override-only-when-there-is-none",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if not names:\n        return \"\"\n",
+      "new": "    if names:\n        return \"\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_inventory_row_names_no_variable_this_process_does_not_carry"
+      ],
+      "why": "the note is the whole of what stops this row passing while an environment variable decides where the harness writes. Inverted, the variables that are set produce no note and the row goes on saying memkit is the only memory system here."
+    },
+    {
+      "name": "auto-memory-lets-the-settings-answer-for-a-variable-that-outranks-them",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        if forced is not None:\n            # NOT A PASS, and not the settings' answer either: the variable\n",
+      "new": "        if forced is None:\n            # NOT A PASS, and not the settings' answer either: the variable\n",
+      "tests": [
+        "tests/test_doctor.py::test_an_environment_variable_that_forces_the_feature_on_is_never_a_pass"
+      ],
+      "why": "the variable is read before any settings file and returns before them, so a row handing the settings' answer back answers a question the harness never asked. Inverted, the branch fires for the runs the variable decided nothing in."
     }
   ]
 }

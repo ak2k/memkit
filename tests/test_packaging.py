@@ -538,9 +538,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("cli_doctor.py", "_managed_dir", "if->exit", 1): (
         "on darwin the managed settings directory is the Library one"
     ),
-    ("cli_doctor.py", "Settings.__init__", "if->exit", 1): (
-        "an empty path is a scope with no file: nothing is read, nothing fails"
-    ),
     ("cli_doctor.py", "Settings.__init__", "except", 1): (
         "a settings file that is not there leaves the scope empty, not failed"
     ),
@@ -567,9 +564,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ),
     ("cli_doctor.py", "Machine.config", "except", 2): (
         "anything else out of the loader is kept as text, so doctor survives it"
-    ),
-    ("cli_doctor.py", "_within", "except", 1): (
-        "a path that will not resolve is inside nothing"
     ),
     ("cli_doctor.py", "_store_relation", "if->exit", 2): (
         "the first store root holding the directory decides at versus over"
@@ -607,9 +601,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ("cli_doctor.py", "_env_switch_remedy", "if->exit", 1): (
         "a forced-on value's remedy is to unset the variable, not edit settings"
     ),
-    ("cli_doctor.py", "_override_note", "if->exit", 1): (
-        "no override variable is set, so there is no note"
-    ),
     ("cli_doctor.py", "_adopter_owns", "if->exit", 1): (
         "the named scope's own flag answers; no other scope stands in for it"
     ),
@@ -630,9 +621,6 @@ _UNPROBED: dict[tuple[str, str, str, int], str] = {
     ),
     ("cli_doctor.py", "_left_behind", "if->exit", 1): (
         "nothing outside the configured directory is nothing left behind"
-    ),
-    ("cli_doctor.py", "_auto_memory_rows", "if->exit", 2): (
-        "the environment variable outranks every scope: INFO, and not a pass"
     ),
     ("cli_doctor.py", "_auto_memory_rows", "if->exit", 3): (
         "an off switch this checkout carries gets the checkout remedy"
@@ -914,4 +902,4 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 94, checked
+    assert checked == 98, checked
