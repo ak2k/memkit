@@ -2704,6 +2704,14 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(
     )
     refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
     assert "local settings" in refusal.message
+    # AND THE FILE THE BOOLEAN IS IN. "Turn it back on" is an instruction to
+    # open something, and the value is not in the directory the memories are
+    # under — it is in one of several settings files, and which one is the
+    # whole content of the answer.
+    assert str(checkout / "settings.local.json") in refusal.message, refusal.message
+    assert init._display_path(init._harness_config_dir()) not in refusal.message, (
+        refusal.message
+    )
     # Neither refusal is evaluated for the other flag, and neither is
     # evaluated for a plain init.
     assert _plan(profile, auto_memory_off=True).actions
@@ -2720,6 +2728,9 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(
     )
     refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
     assert "managed settings" in refusal.message
+    assert str(managed / doctor.MANAGED_SETTINGS_NAME) in refusal.message, (
+        refusal.message
+    )
 
 
 @pytest.mark.skipif(

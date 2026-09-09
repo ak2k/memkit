@@ -831,13 +831,13 @@ def check_refusals(
             raise Refusal(
                 "auto-memory-off",
                 f'"{harness_memory.ENABLED_KEY}": false is set in {name} '
-                "settings, so the harness writes no auto-memory at all — and "
-                "--adopt-auto-memory would copy what is there and then point a "
-                "switched-off feature at your store. Turn it back on first if "
-                "you want new memories to land there, or drop the flag: "
-                "nothing under "
-                + _display_path(_harness_config_dir())
-                + " is going to grow while that is false.",
+                f"settings ({_display_path(scope.path)}), so the harness "
+                "writes no auto-memory at all — and --adopt-auto-memory would "
+                "copy what is there and then point a switched-off feature at "
+                "your store. Turn it back on in that file if you want new "
+                "memories to land there, or drop the flag: nothing new is "
+                "going to be written for any project while that value is "
+                "false.",
             )
         planned = _redirect_dir(store_path)
         for name in harness_memory.SCOPE_ORDER:

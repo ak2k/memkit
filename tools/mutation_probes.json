@@ -4918,6 +4918,17 @@
         "tests/test_init.py::test_the_ledger_init_writes_is_the_one_the_checker_would_generate"
       ],
       "why": "the checker orders its list by sorting `Path` objects, which compare component against component; `-` sorts after `/` as a string, so keys like `-home-a` and `-home-a-b` sharing a label come out in the opposite order and the store is red on LEDGER-DRIFT again."
+    },
+    {
+      "name": "init-points-the-off-state-refusal-at-a-directory",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "                f\"settings ({_display_path(scope.path)}), so the harness \"\n",
+      "new": "                \"settings, so the harness \"\n",
+      "tests": [
+        "tests/test_init.py::test_adoption_refuses_while_the_harness_feature_is_switched_off"
+      ],
+      "why": "\"turn it back on\" is an instruction to open something, and the boolean lives in one of several settings files — managed, local, project — not in the config directory the memories sit under. Naming the scope without the file leaves the adopter to guess which file to edit."
     }
   ]
 }
