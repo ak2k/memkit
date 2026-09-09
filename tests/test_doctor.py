@@ -6418,3 +6418,44 @@ def test_the_configured_rows_verdict_survives_the_bound_and_the_value_is_cut(
     # And the part the bound spent itself on is the one the value decides.
     assert doctor._shown(str(long_dir)) not in row.detail
     assert row.detail.endswith("...")
+
+
+# One directory, two spellings. `harness_dir` normalises what it reads out of
+# a settings file to NFC; nothing normalises what `memkit.json` spells.
+_NFD_STORE = "cafe\u0301-notes"
+_NFC_STORE = "caf\u00e9-notes"
+
+
+def test_a_store_root_and_a_configured_directory_are_normalised_alike(
+    profile, monkeypatch
+) -> None:
+    """A composed character is two strings and one directory.
+
+    The configured value arrives NFC because the harness normalises it, and a
+    corpus root out of `memkit.json` arrives however that file spells it. With
+    the normalisation on one side of the containment test, a directory sitting
+    inside a store was reported as outside every store on the machine — the
+    row's most alarming sentence, produced by an encoding.
+    """
+    assert _NFD_STORE != _NFC_STORE
+    path = _store_config(
+        profile, stores=["personal"], dirs={"personal": f"stores/{_NFD_STORE}"}
+    )
+    corpus = profile / "stores" / _NFD_STORE / "search"
+    _memory(corpus, "kept.md", "the gearbox oil interval")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "is inside personal's corpus root" in row.detail
+    assert "outside every store" not in row.detail
+
+    # THE SPELLINGS THE FUNCTION IS PASSED, whatever the volume does with them:
+    # APFS answers a lookup for either, so an assertion about a directory on
+    # disk would measure the filesystem rather than the comparison.
+    nfd_root = str(profile / "stores" / _NFD_STORE)
+    nfc_child = str(profile / "stores" / _NFC_STORE / "search")
+    assert doctor._within(nfc_child, nfd_root) is True

@@ -55,6 +55,7 @@ import secrets
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Callable
 
 from memkit import harness_memory
@@ -3244,6 +3245,23 @@ def _shown(path: str) -> str:
     return _display_cap(_display_path(path), PATH_SHOWN)
 
 
+def _resolved(path: str) -> str:
+    """One path in the spelling both sides of a containment test are compared in.
+
+    NORMALISED AT THE COMPARISON AND NEVER AT A SOURCE. `harness_dir` hands
+    back NFC because that is what the harness writes to, and a corpus root out
+    of `memkit.json` is spelled however that file spells it — so a composed
+    character made two strings out of one directory and the comparison below
+    answered about the encoding. Applied to whatever each side happens to
+    carry, rather than to one of them on the way in, because the pair that
+    reaches here comes by two routes and only one of them has a normaliser.
+
+    No guard of its own: a path that will not resolve is `realpath`'s to raise
+    on, and the callers' own `except` is where that answer belongs.
+    """
+    return unicodedata.normalize("NFC", os.path.realpath(path))
+
+
 def _within(child: str, parent: str) -> bool:
     """Whether `child` is `parent` or sits under it, symlinks resolved.
 
@@ -3262,8 +3280,8 @@ def _within(child: str, parent: str) -> bool:
     may legally carry.
     """
     try:
-        child = os.path.realpath(child)
-        parent = os.path.realpath(parent)
+        child = _resolved(child)
+        parent = _resolved(parent)
     except (OSError, ValueError):
         return False
     return child == parent or child.startswith(parent + os.sep)
@@ -3290,7 +3308,7 @@ def _pruned(directory: str, root: str) -> bool:
     own spelling says nothing about that.
     """
     try:
-        relative = os.path.relpath(os.path.realpath(directory), os.path.realpath(root))
+        relative = os.path.relpath(_resolved(directory), _resolved(root))
     except (OSError, ValueError):
         # Only reachable if the pair stopped resolving since `_within` said
         # they did; the answer that claims no retrieval is the one to give.

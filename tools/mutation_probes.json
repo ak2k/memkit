@@ -2040,7 +2040,7 @@
       "name": "auto-memory-prunes-on-the-spelling-rather-than-the-target",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        relative = os.path.relpath(os.path.realpath(directory), os.path.realpath(root))\n",
+      "old": "        relative = os.path.relpath(_resolved(directory), _resolved(root))\n",
       "new": "        relative = os.path.relpath(directory, root)\n",
       "tests": [
         "tests/test_doctor.py::test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved"
