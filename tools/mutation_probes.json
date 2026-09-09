@@ -4243,8 +4243,8 @@
       "name": "a-dir-named-on-the-command-line-is-never-a-project-corpus",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "            (d, _named_dir_read_only(d))\n",
-      "new": "            (d, False)\n",
+      "old": "            (d, *_named_dir_flags(d))\n",
+      "new": "            (d, False, False)\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_search_cli_scans_a_project_corpus_it_was_pointed_at_by_hand"
       ],
@@ -4679,8 +4679,8 @@
       "name": "a-named-dir-above-the-corpus-is-not-the-corpus",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        if store.read_only:\n            return True\n    return False\n",
-      "new": "        if store.read_only and _inside(\n            os.path.realpath(_search_root(store.resolved_dir)), os.path.realpath(d)\n        ):\n            return True\n    return False\n",
+      "old": "        if store.read_only:\n            return (True, True)\n    return (False, False)\n",
+      "new": "        if store.read_only and _inside(\n            os.path.realpath(_search_root(store.resolved_dir)), os.path.realpath(d)\n        ):\n            return (True, True)\n    return (False, False)\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
@@ -4690,8 +4690,8 @@
       "name": "a-named-dir-below-the-corpus-is-not-the-corpus",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        if store.read_only:\n            return True\n    return False\n",
-      "new": "        if store.read_only and _inside(\n            os.path.realpath(d), os.path.realpath(_search_root(store.resolved_dir))\n        ):\n            return True\n    return False\n",
+      "old": "        if store.read_only:\n            return (True, True)\n    return (False, False)\n",
+      "new": "        if store.read_only and _inside(\n            os.path.realpath(d), os.path.realpath(_search_root(store.resolved_dir))\n        ):\n            return (True, True)\n    return (False, False)\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
@@ -4701,8 +4701,8 @@
       "name": "the-named-dir-door-is-monotone-in-depth",
       "module": "project_config",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "        if store.read_only:\n            return True\n    return False\n",
-      "new": "        corpus = os.path.realpath(_search_root(store.resolved_dir))\n        here = os.path.realpath(d)\n        if store.read_only and (\n            _inside(corpus, here) or _inside(here, corpus)\n        ):\n            return True\n    return False\n",
+      "old": "        if store.read_only:\n            return (True, True)\n    return (False, False)\n",
+      "new": "        corpus = os.path.realpath(_search_root(store.resolved_dir))\n        here = os.path.realpath(d)\n        if store.read_only and (\n            _inside(corpus, here) or _inside(here, corpus)\n        ):\n            return (True, True)\n    return (False, False)\n",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
@@ -4718,6 +4718,17 @@
         "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
       ],
       "why": "a checkout that commits its corpus as a link out of itself resolves to nobody's repository, so asked only of the resolved path the door runs no scan and marks no line — while the pointer it prints spells the path inside the checkout the bytes never came from"
+    },
+    {
+      "name": "a-refused-project-file-marks-what-it-makes-the-door-scan",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                return (True, False)\n",
+      "new": "                return (True, True)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_this_build_refused_is_scanned_and_not_marked"
+      ],
+      "why": "the scan and the mark have opposite safe directions: a `.memkit.json` this build cannot read must still cost the checkout's bytes a scan, and must not spend the repository mark on notes the operator wrote themselves and keeps inside a checkout — one schema bump marks every one of them"
     },
     {
       "name": "the-project-corpus-line-is-spelled-its-own-way",

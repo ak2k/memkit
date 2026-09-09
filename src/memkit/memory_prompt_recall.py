@@ -2291,8 +2291,18 @@ def _search_dirs() -> list[tuple[str, bool]]:
     return _live_dirs(cfg) if cfg is not None else []
 
 
-def _named_dir_read_only(d: str) -> bool:
-    """Whether a directory a CALLER named is one a repository chose.
+def _named_dir_flags(d: str) -> tuple[bool, bool]:
+    """(scan this directory, mark the pointers it yields) for a dir a CALLER
+    named.
+
+    ONE boolean answered both, and their safe directions are opposite. The
+    SCAN must reach a checkout whose `.memkit.json` this build refused —
+    refusing must not be the cheap way to get a checkout's bytes in front of a
+    model unscanned. The MARK says a repository chose the line, and a file this
+    build could not read chose nothing: `PROJECT_SCHEMA` is a version number
+    meant to grow, and the day it does, every checkout still carrying the old
+    number would mark the operator's own notes, kept inside it, as
+    repository-chosen.
 
     `--search --dir` hands retrieval a path with no store behind it, and the
     credential scan has to reach those bytes for the same reason it reaches
@@ -2330,19 +2340,19 @@ def _named_dir_read_only(d: str) -> bool:
     """
     cfg = _config()
     if cfg is not None and not cfg.project_config:
-        return False
+        return (False, False)
     taken = {s.id for s in cfg.stores} if cfg is not None else set()
     for resolve in (True, False):
         try:
             root = _repo_root(d, resolve=resolve)
         except (_RootUnknown, OSError, ValueError):
-            return False
+            return (False, False)
         if root is None:
             continue
         store, refusal = _project_store(root, taken)
         if store is None:
             if refusal != "":
-                return True
+                return (True, False)
             continue
         # No second containment question: the walk that found the checkout
         # answered it. Asked of the CORPUS this door was not monotone in
@@ -2352,8 +2362,8 @@ def _named_dir_read_only(d: str) -> bool:
         # file names, classified writable and printed the same file with its
         # credential. Narrowing a search must not be the way to lose the scan.
         if store.read_only:
-            return True
-    return False
+            return (True, True)
+    return (False, False)
 
 
 def _config_state() -> tuple:
@@ -2906,7 +2916,7 @@ _LEX_MATCHED: dict[str, list[str]] = {}
 # module global holding it is a fact that whichever entry point last filled it
 # decides, and the entry points that never fill it read the absence as "no
 # repository chose this".
-_LEX_ROOT: dict[str, tuple[str, bool]] = {}
+_LEX_ROOT: dict[str, tuple[str, bool, bool]] = {}
 
 
 def _lex_root(path: str) -> str:
@@ -2918,15 +2928,23 @@ def _lex_root(path: str) -> str:
     untyped handle, so no checker sees it — and every reader that wants only
     the root is then indifferent to what else rides in the value.
     """
-    return _LEX_ROOT.get(path, ("", False))[0]
+    return _LEX_ROOT.get(path, ("", False, False))[0]
 
 
 def _lex_read_only(path: str) -> bool:
-    """Whether a REPOSITORY chose `path`, False for a path no entry point
-    filed. `_lex_root`'s sibling, and for the same reason: the pair is the one
-    place the tuple's shape is known, so a reader outside this module gets the
-    field by name instead of by index."""
-    return _LEX_ROOT.get(path, ("", False))[1]
+    """Whether `path` is to be SCANNED before it is shown, False for a path no
+    entry point filed. `_lex_root`'s sibling, and for the same reason: these
+    accessors are the one place the tuple's shape is known, so a reader outside
+    this module gets the field by name instead of by index."""
+    return _LEX_ROOT.get(path, ("", False, False))[1]
+
+
+def _lex_marked(path: str) -> bool:
+    """Whether a repository store `path`'s pointer may name itself as. Not
+    `_lex_read_only`: a checkout whose project file this build refused is
+    scanned, because refusing must not buy a caller the unscanned bytes, and is
+    NOT marked, because a file this build could not read chose nothing."""
+    return _LEX_ROOT.get(path, ("", False, False))[2]
 
 
 # What the ranker actually scored each hit: path -> rank/best_rank, the same
@@ -3658,13 +3676,15 @@ def _fts_search(
     deadline: float | None = None,
     root_real: str = "",
     read_only: bool = False,
+    marked: bool = False,
 ) -> list[str]:
     """Query one index; return file paths best-first.
 
-    `read_only` says a repository chose this corpus, and it is recorded against
-    every returned path for the same reason `root_real` is: the read that
-    renders a pointer is the last place that can decline the file, and it has
-    to be able to ask.
+    `read_only` says this corpus is scanned before it is shown and `marked`
+    says its pointers may name a repository; both are recorded against every
+    returned path for the same reason `root_real` is: the read that renders a
+    pointer is the last place that can decline the file, and it has to be able
+    to ask.
 
     `root_real` is the resolved store root these rows belong to. It is what
     every returned path is recorded against, so the reads that render a
@@ -3742,7 +3762,7 @@ def _fts_search(
             continue
         if not os.path.exists(path):
             continue
-        _LEX_ROOT[path] = (root_real, read_only)
+        _LEX_ROOT[path] = (root_real, read_only, marked)
         _LEX_SCORES[path] = score
         label = _section_label(text)
         if label:
@@ -3867,12 +3887,18 @@ def _fts_busy(exc: BaseException) -> bool:
 
 
 def _fts_dir(
-    query: str, d: str, deadline: float | None = None, read_only: bool = False
+    query: str,
+    d: str,
+    deadline: float | None = None,
+    read_only: bool = False,
+    marked: bool = False,
 ) -> list[str]:
     """The lexical stage over ONE dir; return file paths best-first.
 
-    `read_only` is the caller's answer to "did a repository choose this
-    directory", carried through to the side channel the pointer reads.
+    `read_only` and `marked` are the caller's answers to "must this be scanned
+    before it is shown" and "may its pointers name a repository", carried
+    through to the side channel the scan and the pointer read. They differ on
+    exactly one tree — a checkout whose project file this build refused.
 
     Sync then query, every invocation: a memory written a minute ago is
     exactly the one the next prompt needs, and nothing else in this hook's
@@ -3962,7 +3988,9 @@ def _fts_dir(
             # got there.
             _fts_note_build(db, outcome, files)
             noted = True
-            return _fts_search(con, query, deadline, root_real, read_only)
+            return _fts_search(
+                con, query, deadline, root_real, read_only, marked
+            )
         finally:
             con.close()
 
@@ -5851,16 +5879,19 @@ def recall(
     query = build_query(prompt.strip()) if query is None else query
     if not query:
         return []
-    # (directory, did a repository choose it), so the fact that decides the
-    # credential scan travels with the corpus it is a fact about.
+    # (directory, scan it, mark it), so the two facts travel with the corpus
+    # they are facts about.
     corpora = (
         [
-            (d, _named_dir_read_only(d))
+            (d, *_named_dir_flags(d))
             for d in dirs
             if os.path.isdir(d)
         ]
         if dirs
-        else _search_dirs()
+        # A store the hook's own config resolved is scanned and marked by the
+        # same fact; only the `--dir` door can be handed a checkout whose
+        # project file was refused.
+        else [(d, read_only, read_only) for d, read_only in _search_dirs()]
     )
     if not corpora:
         return []
@@ -5881,12 +5912,12 @@ def recall(
         # converges across runs.
         ranked = []
         skipped = 0
-        for d, read_only in corpora:
+        for d, read_only, marked in corpora:
             if deadline is not None and time.monotonic() >= deadline:
                 skipped += 1
                 continue
             with contextlib.suppress(Exception):
-                ranked.append(search(query, d, deadline, read_only))
+                ranked.append(search(query, d, deadline, read_only, marked))
         rec[f"errs_{name}"] = len(corpora) - len(ranked) - skipped
         if skipped:
             rec[f"skipped_{name}"] = skipped
@@ -5948,7 +5979,7 @@ def _eligible(
     kept: list[tuple[str, list[str], int]] = []
     floored: list[str] = []
     for path in paths:
-        root, read_only = _LEX_ROOT.get(path, ("", False))
+        root, read_only = _lex_root(path), _lex_read_only(path)
         matched, total, mtype = _relevance(terms, path, root, read_only)
         if _passes_floor(
             matched,
@@ -6031,7 +6062,7 @@ def _pointer_line(
     section = _LEX_SECTIONS.get(path)
     return (
         "- "
-        + (f"{PROJECT_MARK} " if _lex_read_only(path) else "")
+        + (f"{PROJECT_MARK} " if _lex_marked(path) else "")
         + _display_path(path)
         + (f" — {desc}" if desc else "")
         + f" [{evidence}: {shown}]"

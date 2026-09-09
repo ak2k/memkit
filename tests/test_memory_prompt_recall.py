@@ -15251,6 +15251,47 @@ def test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does(
                         env=env, cwd=str(tmp_path))) == by_dir, label
 
 
+def test_a_project_file_this_build_refused_is_scanned_and_not_marked(
+    tmp_path: Path,
+) -> None:
+    """The two halves of the `--dir` door's one classification, whose safe
+    directions are opposite.
+
+    `PROJECT_SCHEMA` is a version number meant to grow, and the day it does
+    every checkout still carrying the old number is refused. A refusal must not
+    buy a caller the checkout's bytes unscanned — nor spend the mark on notes
+    the operator wrote themselves and happens to keep inside a git checkout,
+    which is what `--search --dir` did with the two questions answered by one
+    boolean.
+    """
+    repo = _project_checkout(
+        tmp_path,
+        blob={
+            hook.PROJECT_SCHEMA_KEY: hook.PROJECT_SCHEMA + 1,
+            "store": {"id": PROJECT_STORE_ID, "dir": PROJECT_STORE_DIR},
+        },
+    )
+    notes = repo / "notes" / "search"
+    notes.mkdir(parents=True)
+    (notes / "my_unionfs.md").write_text(PROJECT_MEMORY, encoding="utf-8")
+    (notes / "my_planted.md").write_text(PLANTED_MEMORY, encoding="utf-8")
+    mine = _cli(tmp_path, "--search", INJECT_PROMPT, "--dir", str(notes),
+                cwd=str(tmp_path))
+    assert "my_unionfs.md" in mine.stdout, mine.stdout
+    # The scan half is unchanged: the refused file is not the cheap way past it.
+    assert "my_planted.md" not in mine.stdout, mine.stdout
+    # The mark half: a file this build could not read chose nothing.
+    assert hook.PROJECT_MARK not in mine.stdout, mine.stdout
+
+    # The positive, so the assertion above cannot pass by marking nothing.
+    declared = tmp_path / "declared"
+    declared.mkdir()
+    corpus = _two_memories(declared) / PROJECT_STORE_DIR / "search"
+    theirs = _cli(tmp_path, "--search", INJECT_PROMPT, "--dir", str(corpus),
+                  cwd=str(tmp_path))
+    assert hook.PROJECT_MARK in theirs.stdout, theirs.stdout
+
+
 def test_a_project_file_that_only_annotates_itself_is_admitted(
     tmp_path: Path, monkeypatch
 ) -> None:
