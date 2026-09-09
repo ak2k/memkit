@@ -3368,6 +3368,10 @@ _UNSET_TARGET_STREAMS = {
     "does say so on stderr": "loud",
     "says nothing on stderr": "silent",
 }
+# What a shell under `set -u` says when it reaches a name nothing set: the
+# wording is the shell's, and it is the half a message that merely mentions
+# the variable does not have. bash says the first, zsh the second.
+_NOUNSET_MESSAGE = r"\b{name}: (?:unbound variable|parameter not set)\b"
 _NOUNSET_STREAMS = {
     "the shell's own message instead where the line reaches that name, and it "
     "stops there rather than on a test": "shell",
@@ -4257,8 +4261,20 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         # names the variable itself and the line stops before its first test,
         # whichever of the three is missing.
         assert _nounset_streams(section) == "shell", "the page claims otherwise"
-        assert cell[len("guard-"):-len("-unset")] in out.stderr, (script, out.stderr)
-        assert not out.stdout, (script, out.stdout)
+        # The shell's own wording, not the name loose in any message: a
+        # `mkdir:` failure names the same path and would satisfy a bare
+        # substring while saying nothing about `set -u`. And it names the
+        # variable THIS cell unset and neither of the other two, which is
+        # what tells the three of them apart.
+        unset = cell[len("guard-"):-len("-unset")]
+        assert re.search(_NOUNSET_MESSAGE.format(name=unset), out.stderr), (
+            script, out.stderr
+        )
+        named = [
+            one for one in ("store", "dir", "target")
+            if one != unset and re.search(_NOUNSET_MESSAGE.format(name=one), out.stderr)
+        ]
+        assert not named, (script, named, out.stderr)
     elif cell in ("guard-store-unset", "guard-dir-unset"):
         # Which streams the stopped line uses is the page's claim, and it is
         # the only explanation a reader is offered for the status.
@@ -4517,6 +4533,22 @@ def test_a_zsh_case_fails_on_a_shell_free_path_rather_than_reporting_a_skip(
     assert ran, (out.stdout, out.stderr)
     assert int(counts["skipped"]) == 0, (counts, out.stdout)
     assert failed == ran, (counts, out.stdout)
+    # Counting says every case failed; it does not say they failed for the
+    # missing shell. A shim PATH short any binary the fixtures need fails them
+    # all just as completely and satisfies the count, so the reason the guard
+    # writes is read out of each case.
+    reasons = [
+        (case.attrib.get("name"), (node.get("message") or "") + "".join(node.itertext()))
+        for case in suite.iter("testcase")
+        for node in case
+        if node.tag in ("failure", "error")
+    ]
+    assert len(reasons) == failed, (len(reasons), counts)
+    unexplained = [
+        name for name, text in reasons
+        if "did not declare itself without one" not in text
+    ]
+    assert not unexplained, (unexplained, reasons[:1])
     assert out.returncode != 0, out.stdout
 
 
