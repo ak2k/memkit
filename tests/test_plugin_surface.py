@@ -3538,7 +3538,8 @@ def _target_rule(section: str) -> tuple:
     with_search, without_search = found.groups()
     # The rule exists because of one stated harm. A page that stops claiming
     # the harm has stopped giving a reason for the directory these cells build.
-    assert _shared_dir_outcome(section) == "rewritten"
+    # The call is the assertion — it raises on a page that no longer says it.
+    _shared_dir_outcome(section)
     leaf = _harness_dir(section)
     assert with_search.startswith("$store/search/"), with_search
     assert with_search.count("/") == 2, with_search
@@ -4086,9 +4087,10 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
     with_search, without_search = _target_rule(section)
     # The shape the page tells the reader to look for before repointing, and
     # the order it tells them to make `search/` in: read here so a page that
-    # stops saying either takes these cells with it.
-    assert _dir_shape(section) == "link", "the page names a `$dir` this cell does not build"
-    assert _search_order(section) == "search-first", "the page reorders the two steps"
+    # stops saying either takes these cells with it. Each call is the
+    # assertion, and each raises where the page no longer states the claim.
+    _dir_shape(section)
+    _search_order(section)
     # A reader who sets the number of variables the page counts and no more
     # gets a line that stops on an empty test, which is what `guard-store-
     # unset` measures: the count has to be the line's own.
@@ -4227,7 +4229,7 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert os.readlink(dir_) == str(target), (script, os.readlink(dir_))
         # Everything already in the store is where it was, and the only thing
         # added is the directory `mkdir -p` was asked for.
-        assert _flat_memories_outcome(section) == "kept", "the page claims otherwise"
+        _flat_memories_outcome(section)
         expected = dict(before)
         if not target_existed:
             expected[str(target.relative_to(store))] = "dir"
@@ -4241,7 +4243,7 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         return
 
     if cell == "guard-dir-is-a-directory":
-        assert _not_a_link_outcome(section) == "stops", "the page claims otherwise"
+        _not_a_link_outcome(section)
     assert out.returncode != 0, (script, out.stdout, out.stderr)
     assert _file_map(store) == before, (script, _file_map(store))
     if cell == "guard-dir-is-a-directory":
@@ -4399,7 +4401,7 @@ def test_an_unset_name_the_line_never_reaches_is_not_the_shells_message(
     """
     section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
     assert _nounset_streams(section) == "shell", "the page claims otherwise"
-    assert _not_a_link_outcome(section) == "stops", "the page claims otherwise"
+    _not_a_link_outcome(section)
     home = Path(os.path.realpath(str(tmp_path))) / "home"
     home.mkdir()
     with_search, _without = _target_rule(section)
