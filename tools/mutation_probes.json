@@ -2560,8 +2560,8 @@
       "name": "init-a-config-that-cannot-be-read-is-refused-not-stubbed",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    except FileNotFoundError:\n        return \"\"\n    except (OSError, ValueError) as exc:",
-      "new": "    except FileNotFoundError:\n        return \"\"\n    except ValueError as exc:",
+      "old": "    except (OSError, ValueError) as exc:\n        raise Refusal(\n            \"unreadable-config\",\n",
+      "new": "    except ValueError as exc:\n        raise Refusal(\n            \"unreadable-config\",\n",
       "tests": [
         "tests/test_init.py::test_a_config_this_process_cannot_read_is_refused_not_replaced"
       ],
