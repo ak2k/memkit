@@ -4313,6 +4313,17 @@
         "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
       ],
       "why": "nix drops the element and the flake stays valid, so this is deleting the shell in the one spelling a scanner that knows only `#` reads as still present"
+    },
+    {
+      "name": "zsh-gate-the-skip-marker-is-armed-in-the-workflow",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      DISABLE_AUTOUPDATER: \"1\"",
+      "new": "      DISABLE_AUTOUPDATER: \"1\"\n      MEMKIT_NO_ZSH: \"1\"",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "an `env:` map on the job is how a failing shell-dependent case gets silenced, and this is the half of the arming that turns the context branch protection requires green"
     }
   ]
 }
