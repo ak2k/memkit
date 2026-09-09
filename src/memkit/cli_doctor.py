@@ -479,10 +479,6 @@ class Settings:
             return
         self.data = blob
 
-    @property
-    def present(self) -> bool:
-        return os.path.isfile(self.path)
-
 
 def _option_in(scope: Settings) -> str:
     """The literal `memkitConfig` one settings scope records, or ""."""

@@ -822,3 +822,37 @@ def test_a_project_that_will_not_answer_does_not_empty_the_inventory_walk(
     assert [project.key for project in found] == ["-p-one"]
     assert read_ok is False
     assert unreadable == str(config_dir / "projects" / "-p-two")
+
+
+def test_a_key_of_exactly_the_stated_length_is_returned_and_one_over_is_not(
+    tmp_path,
+) -> None:
+    """`KEY_MAX` is the longest key this module will name, not the shortest it
+    refuses.
+
+    The limit exists because the harness truncates past it and appends a hash
+    nobody here measured, so the boundary decides between a directory memkit
+    can name and one it can only guess at — and `>` against `>=` is one
+    character of that guess, unmeasured until now.
+
+    The length is READ FROM THE SPELLING rather than from the path: the
+    sanitiser substitutes one character for one, and a test that assumed so
+    would keep passing if it ever stopped.
+    """
+    base = pathlib.Path(os.path.realpath(str(tmp_path)))
+    name = "k"
+    while len(harness_memory.key_spelling(str(base / name))) < harness_memory.KEY_MAX:
+        name += "k"
+    exact = base / name
+    assert len(harness_memory.key_spelling(str(exact))) == harness_memory.KEY_MAX
+    exact.mkdir()
+    assert harness_memory.project_key(str(exact)) == harness_memory.key_spelling(
+        str(exact)
+    )
+
+    over = base / (name + "k")
+    assert len(harness_memory.key_spelling(str(over))) == harness_memory.KEY_MAX + 1
+    over.mkdir()
+    with pytest.raises(ValueError) as caught:
+        harness_memory.project_key(str(over))
+    assert str(harness_memory.KEY_MAX + 1) in str(caught.value)
