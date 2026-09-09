@@ -3279,16 +3279,36 @@ def _key_derivation_block(section: str) -> str:
     return blocks[0]
 
 
-def _inline_command(section: str, opens: str) -> str:
-    """One of the two commands the section prints as inline code, not a fence.
+def _section_blocks(section: str) -> list:
+    """Every block of the section, in the order a reader meets them.
 
-    Both carry `ln -sn` — the repoint and the way back out of the race the
-    paragraph above it warns about — so each is found by what it opens with,
-    and the count of lines carrying `ln -sn` is asserted: a THIRD is a worked
-    example the cells would run in place of the instruction.
+    Two spellings: a fence, and a paragraph that is one inline code span. The
+    third element says whether a reader pastes it into a shell; a fence in
+    another language is listed all the same, so a block cannot slip past the
+    reading below by carrying an info string this file does not know.
+    """
+    blocks = []
+    for found in re.finditer(
+        r"^\s*```(\S*)\n(.*?)^\s*```|^(`[^`]+`)\s*$", section, re.S | re.M
+    ):
+        info, fence, span = found.groups()
+        if span is None:
+            blocks.append((f"the ```{info} fence", fence, info == "bash"))
+        else:
+            blocks.append((span, span.strip("`"), True))
+    assert blocks, "the section prints nothing to paste"
+    return blocks
+
+
+def _inline_command(section: str, opens: str) -> str:
+    """The command the section prints as inline code, not a fence.
+
+    Found by what it opens with, and the count of lines carrying `ln -sn` is
+    asserted: a SECOND is either a worked example the cells would run in place
+    of the instruction, or a link command with no cell behind it.
     """
     carriers = [ln for ln in section.splitlines() if "ln -sn" in ln]
-    assert len(carriers) == 2, f"{len(carriers)} lines carry `ln -sn`"
+    assert len(carriers) == 1, f"{len(carriers)} lines carry `ln -sn`"
     lines = [ln for ln in carriers if ln.startswith(f"`{opens}")]
     assert len(lines) == 1, f"{len(lines)} lines open with `{opens}`"
     spans = re.findall(r"`([^`]+)`", lines[0])
@@ -3299,16 +3319,6 @@ def _inline_command(section: str, opens: str) -> str:
 def _repoint_line(section: str) -> str:
     """The repoint command, which the page prints as inline code, not a fence."""
     return _inline_command(section, '[ -L "$dir" ]')
-
-
-def _recovery_line(section: str) -> str:
-    """The command the page gives for a `$dir` the harness recreated mid-repoint.
-
-    Found by the test it opens with rather than by its `rm`: the command has to
-    carry its own guard, because the state it is for is one `ls -ld` cannot
-    tell from a `$dir` the harness has since written memories into.
-    """
-    return _inline_command(section, '[ -d "$target" ]')
 
 
 def _dir_line(section: str) -> str:
@@ -4209,12 +4219,23 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         # rather than described, since the cell has the state in hand.
         assert _raced_dir_detection(section) == "raced", "the page claims otherwise"
         assert [entry.name for entry in dir_.iterdir()] == [target.name], _file_map(dir_)
-        back = _shell_out(
-            shell, "\n".join([*assignments, _recovery_line(section)]),
+        # The move is the cell's own because the page prints no command for it.
+        # What the page owes the reader is that the link already inside `$dir`
+        # is the one they were after, so moving it up is the whole way out.
+        aside = home / "aside"
+        (dir_ / target.name).rename(aside)
+        dir_.rmdir()
+        aside.rename(dir_)
+        assert os.path.islink(dir_), _file_map(dir_.parent)
+        assert os.readlink(dir_) == str(target), os.readlink(dir_)
+        # And the reader is back in the state the page's own line is for, which
+        # is run rather than described — under the same options the first half
+        # ran under, so a case id that names an option cannot lie about it.
+        again = _shell_out(
+            shell, "\n".join([*([opts] if opts else []), *assignments, _repoint_line(section)]),
             repo, home, config_dir=config_dir,
         )
-        assert back.returncode == 0, (back.stdout, back.stderr)
-        assert os.path.islink(dir_), (back.stdout, _file_map(dir_.parent))
+        assert again.returncode == 0, (again.stdout, again.stderr)
         assert os.readlink(dir_) == str(target), os.readlink(dir_)
         # And it costs the store nothing: everything is where it was, plus the
         # directory `mkdir -p` was asked for.
@@ -4296,79 +4317,107 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
 @pytest.mark.parametrize("shell", ("bash", "zsh"))
 @pytest.mark.parametrize(
     "state",
-    ("harness-wrote-into-it", "dir-with-a-trailing-slash", "target-not-there"),
+    (
+        "dir-links-the-corpus-root",
+        "dir-links-a-target-holding-the-colliding-name",
+        "dir-is-the-directory-the-race-left",
+    ),
 )
-def test_the_recovery_for_a_recreated_dir_refuses_what_ls_ld_cannot_show(
+def test_no_shell_block_the_adoption_section_prints_removes_anything_but_the_link_it_judges(
     tmp_path, state, shell
 ) -> None:
-    """The recovery line, driven into the states the page's diagnostic hides.
+    """Every block the section prints, read for removals and then run.
 
-    `ls -ld` prints one line about `$dir` and never its contents, so the three
-    states here are indistinguishable to the reader from the one state the
-    line is for. A harness left running recreates `$dir` AND writes memories
-    into it; shell directory-completion appends a `/` that makes `rm -r` follow
-    the link and empty the corpus while leaving the link itself healthy-looking;
-    and a `$target` that is not there ends with `$dir` pointing at nothing.
-    Each must stop at a non-zero status with every file where it was — the
-    precondition belongs in the command, not in an assertion here.
+    The reading half is the cheap one: one command in the whole section removes
+    anything, it names one operand, and a test earlier in that same command
+    judges that operand. So a removal cannot arrive under a sentence still
+    promising the store is untouched, and the one that is there cannot grow a
+    flag.
+
+    The running half is what no reading does. A removal's reach comes from its
+    operand and not from its flags: a path INTO a `$dir` that is a link
+    resolves through the link into the store. The states are the two shapes
+    that makes reachable — `$dir` linking the corpus root, and `$dir` linking a
+    `$target` that already holds an entry named for it — plus the directory the
+    race leaves. The blocks run in the order the page prints them, which is the
+    order a reader pastes them in.
     """
     section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    blocks = _section_blocks(section)
+    listed = [label for label, _body, _pasted in blocks]
+    assert _rm_reach(section) == "link-only", "the page claims otherwise"
+
+    # A command per fragment: the section's blocks are one-liners joined by
+    # `&&`, and it is the fragment before a removal that gets to stop it.
+    read = [
+        (label, [one.strip() for one in re.split(r"&&|\|\||[;|\n]", body)])
+        for label, body, _pasted in blocks
+    ]
+    removals = [
+        (label, fragments, at)
+        for label, fragments in read
+        for at, fragment in enumerate(fragments)
+        if re.search(r"\b(?:rm|rmdir|mv)\b", fragment)
+    ]
+    assert len(removals) == 1, ([(one[0], one[1][one[2]]) for one in removals], listed)
+    _label, fragments, at = removals[0]
+    # `shlex` so a quoted operand holding a space stays one word: an `rm` with a
+    # second word is an `rm` carrying a flag, in whichever order it is written.
+    words = shlex.split(fragments[at])
+    assert words[0] == "rm" and len(words) == 2, (fragments[at], listed)
+    judged = [one for one in fragments[:at] if one.startswith("[ ") and words[1] in one]
+    assert judged, (fragments[at], fragments, listed)
+    # A redirection writes as surely as a removal deletes, and the one
+    # destination that keeps nothing is the only one the section may name.
+    written = [
+        (label, found.group(1))
+        for label, body, _pasted in blocks
+        for found in re.finditer(r"\d?>>?\s*([^\s;&|)]+)", body)
+        if found.group(1) != "/dev/null"
+    ]
+    assert not written, (written, listed)
+
     home = Path(os.path.realpath(str(tmp_path))) / "home"
     home.mkdir()
+    repo = _fixture_repo(home / "repo", home)
     store = home / "notes"
     with_search, _without = _target_rule(section)
     target = Path(with_search.replace("$store", str(store)))
-    (store / "search").mkdir(parents=True)
-    if state != "target-not-there":
-        target.mkdir()
-        (target / "MEMORY.md").write_text("---\nname: m\n---\nm\n", encoding="utf-8")
-        (target / "note.md").write_text("---\nname: n\n---\nn\n", encoding="utf-8")
+    target.mkdir(parents=True)
+    (target / "MEMORY.md").write_text("---\nname: m\n---\nm\n", encoding="utf-8")
+    # A memory lying flat in the corpus root, which is what `$dir` links in the
+    # state the page is written for.
+    (target.parent / "top.md").write_text("---\nname: t\n---\nt\n", encoding="utf-8")
+    if state == "dir-links-a-target-holding-the-colliding-name":
+        # The name a removal reaching THROUGH `$dir` lands on, as a file rather
+        # than as the directory an `rm` without `-r` refuses.
+        (target / target.name).write_text("---\nname: c\n---\nc\n", encoding="utf-8")
 
-    dir_ = home / ".claude" / "projects" / "a-repo" / "memory"
+    config_dir = home / ".claude"
+    dir_ = config_dir / "projects" / _harness_key(repo, _key_rule(section)) / "memory"
     dir_.parent.mkdir(parents=True)
-    named_dir = str(dir_)
-    if state == "dir-with-a-trailing-slash":
-        # The healthy state, named the way a shell completes a directory.
-        os.symlink(target, dir_)
-        named_dir += "/"
-    else:
-        # What the race leaves: `$dir` recreated, the link one level down.
+    if state == "dir-is-the-directory-the-race-left":
         dir_.mkdir()
         os.symlink(target, dir_ / target.name)
-        if state == "harness-wrote-into-it":
-            (dir_ / "session-note.md").write_text(
-                "---\nname: s\n---\ns\n", encoding="utf-8"
-            )
+        (dir_ / "session-note.md").write_text("---\nname: s\n---\ns\n", encoding="utf-8")
+    elif state == "dir-links-the-corpus-root":
+        os.symlink(target.parent, dir_)
+    else:
+        os.symlink(target, dir_)
 
     before = _file_map(store)
-    dir_before = None if dir_.is_symlink() else _file_map(dir_)
+    # Only the two variables the page tells the reader to set: `$dir` comes off
+    # the page, so a block that stops defining it takes these states with it.
     script = "\n".join([
         f"store={shlex.quote(str(store))}",
-        f"dir={shlex.quote(named_dir)}",
         f"target={shlex.quote(str(target))}",
-        _recovery_line(section),
+        *[body for _label, body, pasted in blocks if pasted],
     ])
-    out = _shell_out(shell, script, home, home)
-
-    assert out.returncode != 0, (script, out.stdout, out.stderr)
-    assert _file_map(store) == before, (script, _file_map(store))
-    if dir_before is None:
-        assert os.path.islink(dir_), (script, _file_map(dir_.parent))
-        assert os.readlink(dir_) == str(target), (script, os.readlink(dir_))
-    elif state == "harness-wrote-into-it":
-        # The line gets as far as the link the race left — which points at
-        # `$target`, still there — and `rmdir` refuses the rest. What the
-        # harness wrote is what had to survive, and it does.
-        assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` became a link")
-        assert _file_map(dir_) == {
-            name: what
-            for name, what in dir_before.items()
-            if not what.startswith("link:")
-        }, (script, _file_map(dir_))
-    else:
-        # `$target` is not there, so the first test fails and nothing runs.
-        assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` became a link")
-        assert _file_map(dir_) == dir_before, (script, _file_map(dir_))
+    out = _shell_out(shell, script, repo, home, config_dir=config_dir)
+    assert _file_map(store) == before, (script, out.stdout, out.stderr, _file_map(store))
+    # `$target` is under `$store` and the map above covers it; asserted on its
+    # own so a failure names the directory the whole section turns on.
+    assert target.is_dir() and not target.is_symlink(), (script, _file_map(store))
 
 
 @pytest.mark.parametrize("shell", ("bash", "zsh"))
@@ -4439,29 +4488,6 @@ def test_an_unset_name_the_line_never_reaches_is_not_the_shells_message(
     assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
     assert dir_.is_dir() and not dir_.is_symlink(), (script, "the directory became a link")
     assert _file_map(dir_) == before, (script, _file_map(dir_))
-
-
-def test_no_rm_the_page_prints_reaches_past_the_link_it_removes() -> None:
-    """The safety sentence, read against the flags the page's own `rm`s carry.
-
-    The sentence is what tells a reader their memories survive the repoint, and
-    it is a claim about flags: `rm -rf` on a `$dir` a shell completed with a
-    trailing `/` follows the link and empties the corpus root, leaving the link
-    itself healthy-looking. Both commands the page prints are read, so neither
-    can be edited into a recursive force-delete under a sentence still promising
-    it removes nothing but the link.
-    """
-    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
-    assert _rm_reach(section) == "link-only", "the page claims otherwise"
-    flagged = [
-        found.split()
-        for line in (_repoint_line(section), _recovery_line(section))
-        for found in re.findall(r"\brm\b((?:\s+-\S+)*)", line)
-    ]
-    # Two invocations, one per command: an `rm` that went missing is a page
-    # whose sentence is about a command it no longer prints.
-    assert len(flagged) == 2, flagged
-    assert flagged == [[], []], flagged
 
 
 def test_a_zsh_case_fails_rather_than_skips_where_no_context_declares_it(

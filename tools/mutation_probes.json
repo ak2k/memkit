@@ -4266,9 +4266,9 @@
       "old": "&& rm \"$dir\" &&",
       "new": "&& rm -rf \"$dir\" &&",
       "tests": [
-        "tests/test_plugin_surface.py::test_no_rm_the_page_prints_reaches_past_the_link_it_removes"
+        "tests/test_plugin_surface.py::test_no_shell_block_the_adoption_section_prints_removes_anything_but_the_link_it_judges[dir-links-the-corpus-root-bash]"
       ],
-      "why": "the page promises this `rm` removes the link and never what it points at, and with `-rf` a `$dir` a shell completed with a trailing slash empties the corpus root while the link survives looking healthy"
+      "why": "the page promises this `rm` removes the link and never what it points at, and a flag on it is a flag on the one removal the section prints"
     },
     {
       "name": "zsh-gate-the-whole-suite-step-ignores-the-file-it-gates",

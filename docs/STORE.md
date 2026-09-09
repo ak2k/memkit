@@ -338,15 +338,11 @@ its place.
 
 That race ends at rc 0 all the same, and `ls -ld "$dir"` then shows a directory
 where it showed a link. Where it shows a directory, the harness recreated
-`$dir`, and with the harness quit this puts the link back:
-
-`[ -d "$target" ] && rm "$dir/$(basename "$target")" && rmdir "$dir" && ln -sn "$target" "$dir"`
-
-`rmdir` refuses a `$dir` with anything else in it, and the first test refuses a
-`$target` that is not there, so a `$dir` that is not the race's own leftover
-ends at rc 1 with every file where it was. That is the reason the line carries
-its own check rather than asking you for one: `ls -ld` prints one line about
-the directory and never its contents.
+`$dir` and the link landed one level down inside it, named for `$target`. Quit
+the harness and move that link up into `$dir`'s own place: it already points
+where the line above was taking it. This page prints no command for the move —
+`ls -ld` prints one line about a directory and never its contents, so what else
+is in there is yours to read first.
 
 `$target` is the harness's directory under the corpus root:
 `$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
