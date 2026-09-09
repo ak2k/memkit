@@ -4790,7 +4790,7 @@
       "name": "init-adoption-reads-the-links-in-a-memory-it-does-not-index",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    unresolved = _rows_pointing_nowhere(text, dest, store, landing)\n    if unresolved:\n        return (\n            f\"{', '.join(unresolved)} \"\n            f\"{'points' if len(unresolved) == 1 else 'point'} at no file this \"\n            \"store is getting\"\n        )\n    return \"\"\n",
+      "old": "    unresolved = _rows_pointing_nowhere(\n        \"\\n\".join(masked), dest, store, landing\n    )\n    if unresolved:\n        return (\n            f\"{', '.join(unresolved)} \"\n            f\"{'points' if len(unresolved) == 1 else 'point'} at no file this \"\n            \"store is getting\"\n        )\n    return \"\"\n",
       "new": "    return \"\"\n",
       "tests": [
         "tests/test_init.py::test_a_body_link_pointing_at_no_adopted_file_is_skipped"
@@ -4807,6 +4807,28 @@
         "tests/test_init.py::test_a_description_linking_a_sibling_that_is_adopted_is_still_skipped"
       ],
       "why": "a description is lifted verbatim into a row in SEARCH.md at the store ROOT, three directories above the memory it describes, so the checker resolves its links from there. Answered from the destination instead, a description linking a sibling that IS adopted alongside reads as fine and the store still goes red — the one case no other reading of this defect reaches."
+    },
+    {
+      "name": "init-adoption-copies-a-memory-that-ends-mid-example",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    masked, opened = _fenced(text)\n    if opened:\n        return (\n            f\"it opens a code fence on line {opened} that is never closed, so \"\n            \"every line below it is masked out of the link and citation checks \"\n            \"the store is read by\"\n        )\n",
+      "new": "    masked = _fenced(text)[0]\n",
+      "tests": [
+        "tests/test_init.py::test_a_memory_that_ends_mid_example_is_skipped_before_the_confirm"
+      ],
+      "why": "an unterminated code fence is an ERROR to the checker init runs over its own work, and it is the one door into that failure that needs no link anywhere in the memory — a note about shell commands that ends mid-example. Copied, the confirm exits 6 on a store the same command has just built and no re-run clears it."
+    },
+    {
+      "name": "init-adoption-reads-a-link-the-checker-never-looks-at",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    unresolved = _rows_pointing_nowhere(\n        \"\\n\".join(masked), dest, store, landing\n    )\n",
+      "new": "    unresolved = _rows_pointing_nowhere(text, dest, store, landing)\n",
+      "tests": [
+        "tests/test_init.py::test_a_closed_fence_is_adopted_and_so_is_the_example_link_inside_it"
+      ],
+      "why": "the checker blanks every line inside a closed fence before it reads links, so a memory quoting `[the plan](plan.md)` in an example has no dead link in it. Read raw, the adopter loses a real memory to a skip line for a store that would have been green — the rule refusing more than the check it restates."
     }
   ]
 }

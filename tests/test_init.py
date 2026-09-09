@@ -4582,6 +4582,88 @@ def test_wiki_links_in_a_description_and_a_body_are_still_adopted(profile) -> No
     checked = _green(profile, store)
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
+FENCE_OPEN = (
+    "---\nname: fenced\ndescription: a note about shell commands\n---\n# f\n\n"
+    "run this:\n\n```bash\nmemkit doctor\n"
+)
+FENCE_CLOSED = (
+    "---\nname: fenced\ndescription: a note about shell commands\n---\n# f\n\n"
+    "run this:\n\n```bash\nmemkit doctor\nsee [the plan](plan.md)\n```\n\ndone.\n"
+)
+FENCE_LONGER = (
+    "---\nname: fenced\ndescription: a note quoting a fence\n---\n# f\n\n"
+    "````\n```\nnot a close\n````\n\ndone.\n"
+)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_that_ends_mid_example_is_skipped_before_the_confirm(
+    profile,
+) -> None:
+    """A CODE FENCE OPENED AND NOT CLOSED IS AN ERROR TO THE CHECKER, and it
+    needs no link anywhere in the memory: a note about shell commands that ends
+    mid-example was copied, the confirm exited 6 on the store it had just built,
+    and every re-run said there was nothing to write and exited 6 again.
+
+    The skip chain had the text in hand and asked it about `tier:` lines, name
+    length and link syntax — this is the same question, asked where those are.
+    """
+    _harness(profile, "-home-f", {"note.md": FENCE_OPEN})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-f/note.md: it opens a code fence on line 9" in manifest.stdout, (
+        manifest.stdout
+    )
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-f").exists()
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_closed_fence_is_adopted_and_so_is_the_example_link_inside_it(
+    profile,
+) -> None:
+    """WHAT THE CHECKER MASKS, ADOPTION MAY NOT REFUSE A MEMORY FOR. A closed
+    fence is ordinary prose, and the checker blanks every line inside one before
+    it reads links — so a memory quoting `[the plan](plan.md)` in an example is
+    a memory with no dead link in it, whatever a rule reading the raw bytes
+    would say.
+
+    Beside it, a fence closed by a LONGER run of the same character: a close is
+    at least as long as its opening, so the shorter run inside this one opens
+    nothing and closes nothing.
+    """
+    _harness(profile, "-home-c", {"note.md": FENCE_CLOSED})
+    _harness(profile, "-home-l", {"note.md": FENCE_LONGER})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "0 skipped" in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    for key in ("-home-c", "-home-l"):
+        adopted = store / "search" / init.ADOPT_DIRNAME / key
+        assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
 
 def test_an_adopted_copy_is_never_more_readable_than_its_original(
     profile,

@@ -1283,6 +1283,7 @@ _LINK_RE = re.compile(r"\(([^)]+\.md)\)")
 # that check, so an index rowing a `.png` that is not coming wedges the store
 # exactly as a `.md` row does.
 _MD_LINK_RE = re.compile(r"!?\[[^\[\]\n]*\]\(([^)\n]*)\)")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 # The checker's own list. A destination with no slash in it is a path only if
 # it ends in one of these; anything else is an anchor or a word and is left
@@ -1870,6 +1871,46 @@ def _search_ledger_text(store: str, entries: list) -> str:
     return f"{preamble}\n\n{body}\n"
 
 
+def _fenced(text: str) -> tuple:
+    """`text`'s lines with fenced code blanked, and the line a fence opens on
+    and is never closed — 0 when every one of them is closed.
+
+    RESTATED RATHER THAN IMPORTED, for the reason `_rows_pointing_nowhere` is
+    restated: `memory_integrity` exits at import below 3.12 and this module
+    answers to the 3.9 floor the dispatcher runs on. Two rules carry it — a
+    fence opens on three or more backticks or tildes indented at most three
+    columns, and closes only on the same character, at least as long, and
+    carrying no info string — and a 3.12 case runs the real checker over a
+    store this rule passed, so a restatement that drifts fails there.
+
+    BLANKED AND NOT DROPPED, because a link the checker never reads is a link
+    adoption may not refuse a memory for. An unterminated fence is an error the
+    checker raises; a link inside a closed one is a quoted example it masks, and
+    a note about shell commands is where both of them live.
+    """
+    out: list = []
+    fence = ""
+    opened = 0
+    for lineno, line in enumerate(text.splitlines(), 1):
+        match = _FENCE_RE.match(line)
+        if fence:
+            out.append("")
+            if (
+                match
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= len(fence)
+                and not line.strip().strip(fence[0])
+            ):
+                fence = ""
+            continue
+        if match:
+            fence, opened = match.group(1), lineno
+            out.append("")
+            continue
+        out.append(line)
+    return out, (opened if fence else 0)
+
+
 def _would_wedge_the_store(
     text: str, dest: str, desc: str, store: str, landing: set
 ) -> str:
@@ -1888,10 +1929,21 @@ def _would_wedge_the_store(
     a sibling that IS adopted alongside still leaves the store red. Asked first
     because it is the specific answer whenever both are true.
 
+    A FENCE IS NOT A LINK QUESTION AT ALL, and it is the cheapest door of the
+    three: a memory that ends mid-example — an ordinary shape for a note about
+    shell commands — needs no link anywhere in it to wedge the store.
+
     A REASON, NOT A BOOLEAN, because the answer is a line the adopter reads
     before consenting: what is skipped and why is the whole difference between
     this and the exit 6 it replaces.
     """
+    masked, opened = _fenced(text)
+    if opened:
+        return (
+            f"it opens a code fence on line {opened} that is never closed, so "
+            "every line below it is masked out of the link and citation checks "
+            "the store is read by"
+        )
     if desc:
         nowhere = _rows_pointing_nowhere(
             desc, os.path.join(store, "SEARCH.md"), store, landing
@@ -1902,7 +1954,9 @@ def _would_wedge_the_store(
                 "the ledger row generated from it is read from the store root, "
                 "where that resolves to no file"
             )
-    unresolved = _rows_pointing_nowhere(text, dest, store, landing)
+    unresolved = _rows_pointing_nowhere(
+        "\n".join(masked), dest, store, landing
+    )
     if unresolved:
         return (
             f"{', '.join(unresolved)} "
@@ -2303,8 +2357,11 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             # carries for a file this store is not getting arrives pointing at
             # nothing — and the integrity check init runs over its own work
             # goes red on adoption's own skip rules, on a store the adopter
-            # can only clear by hand-editing a file memkit copied. Whatever
-            # adoption lands passes that check.
+            # can only clear by hand-editing a file memkit copied. What the
+            # check reads of a memory is asked of every copy below, once the
+            # plan is whole; an index is asked here as well, because what an
+            # index promises is answered against what the rest of this loop
+            # leaves behind.
             #
             # ASKED OF THE ROWS AND OF THE INVENTORY BOTH. The rows are the
             # claim, and they name files the walk never saw; the inventory's
