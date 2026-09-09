@@ -495,7 +495,7 @@ def _top_level_key(line: str):
     return key
 
 
-def _frontmatter(text: str) -> dict:
+def _frontmatter(text: str, truncated: bool = False) -> dict:
     """Which of the four frontmatter facts a memory file carries.
 
     No YAML parser, because there is none in the standard library and this runs
@@ -505,12 +505,20 @@ def _frontmatter(text: str) -> dict:
     is the answer the checker would give about the same file. A BOM, a fence
     below line 1 and an empty document are not frontmatter to either.
 
-    THE ONE SPELLING THE TWO DISAGREE ON is a fence that never closes, which
-    the checker reads as frontmatter running to the end of the file and this
-    does not. The close is what the cap is measured against: a fence closing
-    past `FRONTMATTER_BYTES` would otherwise read as a frontmatter block that
-    happens to end where the read stopped, which is a set of keys nobody has
-    and cannot be told from a file whose fence closes inside the cap.
+    THE ONE SPELLING THE TWO DISAGREE ON is a fence that never closes in a
+    read the CAP CUT SHORT, and `truncated` is how this hears that: the
+    checker reads an unclosed fence as frontmatter running to the end of the
+    file, and a read that stopped at `FRONTMATTER_BYTES` cannot tell a file
+    whose fence closes just past the cap from one whose fence never closes at
+    all. Reporting the keys that happen to sit above the cut is a set of keys
+    nobody has. An unclosed fence in a read that reached the end of the file
+    is not that case — nothing was cut, so it is read the checker's way, to
+    the end.
+
+    AND A FENCE PAIR ENCLOSING NO TOP-LEVEL KEY is not frontmatter to either.
+    The checker returns its keys and has none to return; reporting the fence
+    as present with all four facts false is a shape that disagrees with the
+    rule a consumer would run over the rebuilt file.
     """
     absent = {
         "has_frontmatter": False,
@@ -528,8 +536,16 @@ def _frontmatter(text: str) -> dict:
             end = index
             break
     if end is None:
+        if truncated:
+            return absent
+        end = len(lines)
+    # What the checker reads is the TEXT after the opening `---`, so the
+    # remainder of line 1 is a frontmatter line to it and `---name: x`
+    # declares `name`. A line-based read that started at line 2 dropped it,
+    # which showed up only once the enclosed keys had to be counted.
+    fence = [lines[0][len(_FENCE):]] + lines[1:end]
+    if not any(_top_level_key(line) is not None for line in fence):
         return absent
-    fence = lines[1:end]
     has_name = has_type = has_description = False
     description_len = None
     in_metadata = False
@@ -894,7 +910,7 @@ def _memory_dir(
             record.update(dict.fromkeys(_frontmatter(""), None))
             record["frontmatter_truncated"] = None
         else:
-            record.update(_frontmatter(head))
+            record.update(_frontmatter(head, truncated))
             record["frontmatter_truncated"] = truncated
         files.append(record)
         if failed:

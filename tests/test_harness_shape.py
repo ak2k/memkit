@@ -1810,11 +1810,19 @@ def test_the_fence_is_read_the_way_the_checker_reads_it(tmp_path) -> None:
     something; a table both are run over is that something. `----` opened
     frontmatter to the checker and not to the tool.
 
-    A FENCE THAT NEVER CLOSES is the one spelling they disagree on, and the
-    disagreement is deliberate: the checker reads it as frontmatter running to
-    the end of the file, and the tool's read stops at `FRONTMATTER_BYTES`, so
-    doing the same would report the keys that happen to sit above the cap as
-    a whole frontmatter block.
+    A FENCE THAT NEVER CLOSES IN A READ THE CAP CUT SHORT is the one spelling
+    they disagree on, and the disagreement is deliberate: the checker reads an
+    unclosed fence as frontmatter running to the end of the file, and a read
+    that stopped at `FRONTMATTER_BYTES` cannot tell that from a fence closing
+    one byte past the cut, so doing the same would report the keys that happen
+    to sit above the cap as a whole frontmatter block. An unclosed fence in a
+    read that reached the end of the file is not that case, and is read the
+    checker's way.
+
+    A FENCE PAIR ENCLOSING NO TOP-LEVEL KEY is not frontmatter to either. The
+    checker has no keys to return there, and a shape that recorded the fence
+    as present with all four facts false would disagree with the rule a
+    consumer runs over the rebuilt file.
     """
     table = {
         "a bare fence": ("---\nname: x\n---\nbody\n", True),
@@ -1824,6 +1832,11 @@ def test_the_fence_is_read_the_way_the_checker_reads_it(tmp_path) -> None:
         "four dashes": ("----\nname: x\n---\nbody\n", True),
         "a fence below line 1": ("\n---\nname: x\n---\nbody\n", False),
         "an empty document": ("", False),
+        "a close on the very next line": ("---\n---\nbody\n", False),
+        "a fence enclosing only whitespace": ("---\n   \n---\n", False),
+        "an unclosed fence inside the cap": ("---\nname: x\nbody\n", True),
+        "the key on the fence line": ("---name: x\n---\nbody\n", True),
+        "the key on the fence line, unclosed": ("---name: x\nbody\n", True),
     }
     config = tmp_path / "config"
     memory = _memory_dir(config, "-a")
@@ -1838,14 +1851,19 @@ def test_the_fence_is_read_the_way_the_checker_reads_it(tmp_path) -> None:
         checker = bool(memory_integrity._frontmatter(memory / f"m{number}.md"))
         assert checker is opens, label
         assert files[f"m{number}.md"]["has_frontmatter"] is opens, label
-    # And the one they part company on, named rather than left to be found.
+    # And the one they part company on, named rather than left to be found: a
+    # fence that never closes in a read the cap cut short. The keys above the
+    # cut are not a frontmatter block anybody has, so the tool declines to
+    # report one and the checker, which read the whole file, reports the keys.
+    cap = _tool_module().FRONTMATTER_BYTES
     with open(memory / "open.md", "w", encoding="utf-8", newline="") as fh:
-        fh.write("---\nname: x\nbody\n")
+        fh.write("---\nname: x\n" + "filler line\n" * (cap // 12 + 1))
+    assert (memory / "open.md").stat().st_size > cap
     unclosed = _by_key(_shape("--config-dir", str(config), "--raw"))["-a"]["files"]
     assert memory_integrity._frontmatter(memory / "open.md") == {"name": "x"}
-    assert next(
-        item for item in unclosed if item["name"] == "open.md"
-    )["has_frontmatter"] is False
+    cut = next(item for item in unclosed if item["name"] == "open.md")
+    assert cut["has_frontmatter"] is False
+    assert cut["frontmatter_truncated"] is True
 
 
 def test_memkit_is_kept_by_name_whichever_way_the_key_is_spelled(tmp_path) -> None:

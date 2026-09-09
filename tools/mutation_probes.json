@@ -4653,8 +4653,8 @@
       "name": "harness-shape-a-file-nobody-could-read-reads-as-having-no-frontmatter",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "        if unreadable:\n            record.update(dict.fromkeys(_frontmatter(\"\"), None))\n            record[\"frontmatter_truncated\"] = None\n        else:\n            record.update(_frontmatter(head))\n            record[\"frontmatter_truncated\"] = truncated\n",
-      "new": "        record.update(_frontmatter(head))\n        record[\"frontmatter_truncated\"] = truncated\n",
+      "old": "        if unreadable:\n            record.update(dict.fromkeys(_frontmatter(\"\"), None))\n            record[\"frontmatter_truncated\"] = None\n        else:\n            record.update(_frontmatter(head, truncated))\n            record[\"frontmatter_truncated\"] = truncated\n",
+      "new": "        record.update(_frontmatter(head, truncated))\n        record[\"frontmatter_truncated\"] = truncated\n",
       "tests": [
         "tests/test_harness_shape.py::test_a_file_nobody_could_read_is_not_a_file_with_no_frontmatter"
       ],
@@ -4686,8 +4686,8 @@
       "name": "harness-shape-a-fence-that-never-closes-runs-to-the-end-of-the-file",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    if end is None:\n        return absent\n    fence = lines[1:end]\n",
-      "new": "    if end is None:\n        end = len(lines)\n    fence = lines[1:end]\n",
+      "old": "        if truncated:\n            return absent\n        end = len(lines)\n",
+      "new": "        end = len(lines)\n",
       "tests": [
         "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
       ],
@@ -4934,6 +4934,39 @@
         "tests/test_harness_shape.py::test_a_projects_directory_that_goes_away_under_the_walk_is_not_an_empty_machine"
       ],
       "why": "The name is asked about after the raise, so a `projects/` that went away under the walk is a name nobody can find by then: the re-raise is skipped and every project already collected is discarded as a machine with nothing written yet, at exit 0. An iteration that has already served an entry is not that machine, and that fact cannot change while the question is put."
+    },
+    {
+      "name": "harness-shape-an-unclosed-fence-inside-the-cap-is-called-no-frontmatter",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if truncated:\n            return absent\n        end = len(lines)\n",
+      "new": "        return absent\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "The exception is for a read the cap CUT SHORT, where the keys above the cut are not a block anybody has. A file whose fence never closes and which was read entire has nothing being guessed about it, and the checker returns its keys: refusing there is a shape that contradicts the rule a consumer runs over the rebuilt file."
+    },
+    {
+      "name": "harness-shape-a-fence-enclosing-no-key-is-recorded-as-frontmatter",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if not any(_top_level_key(line) is not None for line in fence):\n        return absent\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "A fence pair with no top-level key between it is `{}` to the checker and no frontmatter at all. Recording it as present with the four facts false is the same record a file with a plain first line produces, and it disagrees with the rule that judges the rebuilt file."
+    },
+    {
+      "name": "harness-shape-the-key-on-the-fence-line-is-dropped",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    fence = [lines[0][len(_FENCE):]] + lines[1:end]\n",
+      "new": "    fence = lines[1:end]\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "The checker reads the text after the opening `---`, so `---name: x` declares a key to it. Starting the read at line 2 drops that key, and with it the difference between a fence enclosing something and a fence enclosing nothing."
     }
   ]
 }
