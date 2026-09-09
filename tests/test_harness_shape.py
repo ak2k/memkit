@@ -32,6 +32,7 @@ import io
 import json
 import os
 import re
+import resource
 import shlex
 import shutil
 import stat
@@ -1839,6 +1840,116 @@ def test_an_ancestor_that_will_not_open_is_a_refusal_on_both_raw_routes(
     assert "worktree cannot be answered" in lines[0], lines[0]
     assert "Permission denied" in lines[0], lines[0]
 
+
+
+# Fd 1 cannot be closed by the parent of a `subprocess.run` — it is what the
+# harness reads — so the state is made in a child of our own that closes it and
+# then execs the tool.
+_CLOSED_STDOUT_DOOR = '''import os
+import subprocess
+import sys
+
+os.close(1)
+sys.exit(subprocess.run(
+    [sys.argv[1], sys.argv[2], "--config-dir", sys.argv[3]]
+).returncode)
+'''
+
+# Every way stdout can refuse the shape. The documented deployment pipes this
+# tool's stdout — `ssh host 'sudo -n python3 - ...' < tools/harness_shape.py` —
+# so a reader that goes away is the ordinary case rather than the strange one.
+_STDOUT_DOORS = (
+    "a pipe nobody reads, under the stream's own buffer",
+    "a pipe nobody reads, past the stream's own buffer",
+    "fd 1 closed before the interpreter started",
+    "a file this process may not grow",
+)
+
+
+@pytest.mark.parametrize("door", _STDOUT_DOORS)
+def test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2(
+    tmp_path, door,
+) -> None:
+    """The route with no destination to name, held to the same contract.
+
+    A wrapper on the far end of an ssh pipe reads the number, and every door
+    here gave it one the interpreter chose: a reader gone before the buffer
+    filled was an ignored exception and a 120 with two lines that name a
+    `TextIOWrapper` and not this tool; a shape past the buffer was a traceback
+    and a 1; a file the process may not grow was a traceback and a truncated
+    document; and fd 1 closed outright is a stream that is `None` rather than a
+    stream that fails, so the write is an `AttributeError` and not one of the
+    four failures the boundary maps.
+
+    UNDER AND PAST THE BUFFER BOTH, because they are two doors and not one: an
+    8 KiB `BufferedWriter` decides whether the failure arrives at the write or
+    at the flush after it, so which door an operator leaves by depended on the
+    size of the machine being captured. The sizes are asserted rather than
+    assumed.
+    """
+    projects = 2 if "under" in door else 12
+    config = tmp_path / "config"
+    for index in range(projects):
+        memory = _memory_dir(config, f"-p{index}")
+        _write(memory / "top.md", f"---\nname: t{index}\n---\nbody\n")
+        _write(memory / "hot" / "deep.md", f"---\nname: d{index}\n---\nbody\n")
+        _write(memory / "MEMORY.md", "- [a](top.md)\n- [b](hot/deep.md)\n")
+    argv = [sys.executable, str(TOOL), "--config-dir", str(config)]
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    whole = subprocess.run(
+        argv, capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert whole.returncode == 0, whole.stderr
+    if door.startswith("a pipe"):
+        # The parametrisation is worth nothing unless the two shapes really
+        # land on opposite sides of the stream's buffer.
+        assert (len(whole.stdout) < io.DEFAULT_BUFFER_SIZE) == ("under" in door), (
+            len(whole.stdout)
+        )
+        read_fd, write_fd = os.pipe()
+        running = subprocess.Popen(
+            argv, stdout=write_fd, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        os.close(write_fd)
+        os.close(read_fd)
+        try:
+            stderr = running.stderr.read() if running.stderr else ""
+        finally:
+            if running.stderr is not None:
+                running.stderr.close()
+            running.wait(timeout=300)
+        code = running.returncode
+    elif door.startswith("fd 1 closed"):
+        child = _write(tmp_path / "closed.py", _CLOSED_STDOUT_DOOR)
+        run = subprocess.run(
+            [sys.executable, str(child), sys.executable, str(TOOL), str(config)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            timeout=300, env=env,
+        )
+        code, stderr = run.returncode, run.stderr
+    else:
+        capped = tmp_path / "capped.json"
+        cap = len(whole.stdout) // 2
+
+        def refuse_to_grow():
+            resource.setrlimit(resource.RLIMIT_FSIZE, (cap, cap))
+
+        with capped.open("w") as handle:
+            run = subprocess.run(
+                argv, stdout=handle, stderr=subprocess.PIPE, text=True,
+                timeout=300, env=env, preexec_fn=refuse_to_grow,
+            )
+        code, stderr = run.returncode, run.stderr
+        # The bytes the redirect took before the limit are the operator's file
+        # at the operator's name, and this tool never had a descriptor of its
+        # own to unlink; what it owes them is the number and the line.
+        assert capped.stat().st_size == cap
+
+    assert code == 2, stderr
+    assert "Traceback" not in stderr, stderr
+    lines = stderr.strip().splitlines()
+    assert len(lines) == 1, stderr
+    assert lines[0].startswith("harness_shape:"), stderr
 
 
 def test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine(

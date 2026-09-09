@@ -5027,6 +5027,28 @@
         "tests/test_harness_shape.py::test_an_ancestor_that_will_not_open_is_a_refusal_on_both_raw_routes[redirect]"
       ],
       "why": "The landing directory opens and the level above it does not, which mode 0111 on any ancestor produces: unguarded, that step is a PermissionError out of the middle of the walk on both `--raw` routes. Guarded only by the exit-2 boundary the number is right and the line names `..`, so the refusal has to carry its own reason and the destination it is about."
+    },
+    {
+      "name": "harness-shape-the-stdout-write-is-never-flushed-inside-the-contract",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        sys.stdout.write(text)\n        # FLUSHED INSIDE the contract. The interpreter's own flush happens\n",
+      "new": "        sys.stdout.write(text)\n        return 0\n        # FLUSHED INSIDE the contract. The interpreter's own flush happens\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2[a pipe nobody reads, under the stream's own buffer]"
+      ],
+      "why": "A shape smaller than the stream's 8 KiB buffer never reaches the kernel inside this function, so the reader that has gone away is discovered by the interpreter's own flush on the way out: an ignored exception, an exit 120 nobody chose, and two stderr lines naming a TextIOWrapper rather than this tool. The flush is where the contract can still see the failure."
+    },
+    {
+      "name": "harness-shape-a-stdout-that-is-not-there-is-not-a-failed-write",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if not args.out:\n        if sys.stdout is None:\n            # FD 1 CLOSED BEFORE THE INTERPRETER STARTED leaves no stream to\n            # fail: CPython sets `sys.stdout` to None, the write is an\n            # `AttributeError`, and that is not one of the ways a machine\n            # fails, so the boundary does not map it. What failed is the\n            # destination, and it failed the way a missing descriptor does.\n            raise OSError(errno.EBADF, os.strerror(errno.EBADF), \"stdout\")\n        sys.stdout.write(text)\n",
+      "new": "    if not args.out:\n        sys.stdout.write(text)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2[fd 1 closed before the interpreter started]"
+      ],
+      "why": "Fd 1 closed before the interpreter starts leaves `sys.stdout` at None, so the write raises AttributeError — not one of the four failures the boundary maps, and the route whose whole contract is one line and a 2 answers with a traceback and a 1 instead."
     }
   ]
 }

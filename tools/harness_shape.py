@@ -1677,6 +1677,13 @@ def _capture_and_write(args, landing) -> int:
     )
     text = json.dumps(shape, indent=2) + "\n"
     if not args.out:
+        if sys.stdout is None:
+            # FD 1 CLOSED BEFORE THE INTERPRETER STARTED leaves no stream to
+            # fail: CPython sets `sys.stdout` to None, the write is an
+            # `AttributeError`, and that is not one of the ways a machine
+            # fails, so the boundary does not map it. What failed is the
+            # destination, and it failed the way a missing descriptor does.
+            raise OSError(errno.EBADF, os.strerror(errno.EBADF), "stdout")
         sys.stdout.write(text)
         # FLUSHED INSIDE the contract. The interpreter's own flush happens
         # after this returns, where a reader that has gone away is an ignored
