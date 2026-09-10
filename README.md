@@ -1171,7 +1171,7 @@ before it is emitted. And the opening delimiter DECLARES how many lines the
 region holds, counted off the finished block, so nothing inside it can move the
 end. Both frames state all three in the prose the model reads, and say what to
 do if the closing line never arrives. The block is the frame plus one line
-per pointer: **1041 bytes fixed** on any prompt that fires, plus the pointer
+per pointer: **1063 bytes fixed** on any prompt that fires, plus the pointer
 lines themselves, which are as long as your descriptions. The subagent block is
 the same shape and **1636 bytes fixed**, appended to the brief rather than
 printed;

@@ -37,9 +37,9 @@ frontmatter to be retrievable.
   any files stranded outside it:
 
   ```
-  store notes: /home/you/notes [project; always; searched]
-    corpus:  /home/you/notes/search — 1 file
-    ! 2 markdown files under /home/you/notes are outside the corpus root and
+  store notes: ~/notes [project; always; searched]
+    corpus:  ~/notes/search — 1 file
+    ! 2 markdown files under ~/notes are outside the corpus root and
       will not be retrieved — move them into search/
   ```
 - **What is skipped.** `archive/` and `hot/` are pruned while walking —

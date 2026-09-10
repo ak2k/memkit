@@ -129,6 +129,48 @@ check("no doctor check raised", [c["id"] for c in broke], [])
 check("every check ran", len({c["id"] for c in report["checks"]}),
       len(cli_doctor.CHECK_IDS))
 
+# --- the repository's own file is read, on a checkout built here -------------
+#
+# EXECUTED rather than type-checked: pyright had the whole of this code and a
+# 3.9 configuration, and what it cannot see is the class this file exists for —
+# a name that is present in the version it was told about and absent in the one
+# the harness runs. The guard is a walk, an open, an fstat and a realpath, so
+# it is exactly the shape that breaks that way.
+
+# Realpath'd here, because the walk realpaths what it is handed and `$TMPDIR`
+# is behind a symlink on macOS — the shape this file exists to run on.
+checkout = os.path.realpath(os.path.join(home, "checkout"))
+os.makedirs(os.path.join(checkout, ".git"))
+os.makedirs(os.path.join(checkout, "docs", "memories", "search"))
+memkit_json = os.path.join(checkout, ".memkit.json")
+
+
+def write_project(spec):
+    with open(memkit_json, "w") as f:
+        json.dump({"memkit_project": 1, "store": spec}, f)
+
+
+write_project({"id": "app", "dir": os.path.join("docs", "memories")})
+check("the checkout is found from inside it",
+      hook._repo_root(os.path.join(checkout, "docs")), checkout)
+project, why = hook._project_store(checkout, {"notes"})
+check("the project file is accepted", why, "")
+check("the project store is read-only",
+      project is not None and project.read_only, True)
+check("the project corpus is the directory the file named",
+      project is not None and project.resolved_dir,
+      os.path.realpath(os.path.join(checkout, "docs", "memories")))
+
+# And the refusal path, which is most of the guard: a `dir` outside the
+# checkout is the one every other rejection is shaped like.
+write_project({"id": "app", "dir": "/etc"})
+refused, why = hook._project_store(checkout, {"notes"})
+check("an absolute dir is refused", refused, None)
+check("the refusal says which key", "'dir'" in why and "is absolute" in why, True)
+os.remove(memkit_json)
+check("no file at all is not a refusal", hook._project_store(checkout, set()),
+      (None, ""))
+
 # --- and the hook SERVES a pointer, run as the harness runs it ---------------
 
 store = os.path.join(home, "notes", "search")
@@ -151,6 +193,124 @@ out = subprocess.run(
 )
 check("the hook exits 0", out.returncode, 0)
 check("the hook emitted a pointer", "pooling.md" in out.stdout, True)
+
+# --- a nested project file is one file refused, not one prompt lost ----------
+#
+# The depth is run rather than asserted, because the exception TYPE is what
+# differs between interpreters: this scanner answers a document nested past its
+# budget with `RecursionError`, a `RuntimeError` the suite's own 3.12 never
+# produces within the 4096-byte cap. Half that cap buys 1024 levels, so the
+# shape is committable, and uncaught it does not cost the checkout its own
+# corpus — it costs every prompt there every store, the user's included.
+
+levels = hook.PROJECT_CONFIG_MAX_BYTES // 4
+with open(memkit_json, "w") as f:
+    f.write("[" * levels + "]" * levels)
+nested, why = hook._project_store(checkout, {"notes"})
+check("a nested project file is refused", nested, None)
+check("the refusal names the file and the parse",
+      why.startswith(hook.PROJECT_CONFIG_NAME + " is not valid JSON:"), True)
+out = subprocess.run(
+    [sys.executable, os.path.join(REPO, "src", "memkit", "memory_prompt_recall.py")],
+    input=json.dumps({"session_id": "floor39n", "prompt":
+                      "why does pgbouncer transaction pooling break prepared statements"}),
+    capture_output=True, text=True, timeout=300, cwd=checkout,
+    env=dict(os.environ, MEMKIT_CONFIG=config),
+)
+check("the hook exits 0 in that checkout", out.returncode, 0)
+check("the user's own store is still served there", "pooling.md" in out.stdout, True)
+os.remove(memkit_json)
+
+# --- a `dir` behind a chain of symlinks is one file refused too --------------
+#
+# The guard's other `RuntimeError`, and the chain itself is the evidence:
+# `realpath` recurses once per link, so a `dir` a repository committed behind
+# a thousand of them is neither an `OSError` nor a `ValueError`. This one is
+# not staged on any interpreter — the recursion limit is what it is here.
+
+links = sys.getrecursionlimit() + 100
+os.symlink(os.path.join("docs", "memories"), os.path.join(checkout, f"l{links - 1}"))
+for i in range(links - 2, -1, -1):
+    os.symlink(f"l{i + 1}", os.path.join(checkout, f"l{i}"))
+try:
+    os.path.realpath(os.path.join(checkout, "l0"))
+    deep = False
+except RecursionError:
+    deep = True
+check("the chain is deep enough to recurse past the limit", deep, True)
+write_project({"id": "app", "dir": "l0"})
+chained, why = hook._project_store(checkout, {"notes"})
+check("a dir behind a symlink chain is refused", chained, None)
+check("the refusal names the key and the resolution",
+      why, f"{hook.PROJECT_CONFIG_NAME}: 'dir' does not resolve: RecursionError")
+out = subprocess.run(
+    [sys.executable, os.path.join(REPO, "src", "memkit", "memory_prompt_recall.py")],
+    input=json.dumps({"session_id": "floor39s", "prompt":
+                      "why does pgbouncer transaction pooling break prepared statements"}),
+    capture_output=True, text=True, timeout=300, cwd=checkout,
+    env=dict(os.environ, MEMKIT_CONFIG=config),
+)
+check("the hook exits 0 behind that chain", out.returncode, 0)
+check("the user's own store survives the chain", "pooling.md" in out.stdout, True)
+os.remove(memkit_json)
+for i in range(links):
+    os.remove(os.path.join(checkout, f"l{i}"))
+
+# --- the guarded open, the credential scan, and the read-only branch ---------
+#
+# The guard above reaches `_project_store` and no line of the trio underneath
+# it, and all three are the shape this file exists for: an O_NONBLOCK open, an
+# fstat, a lazily compiled alternation, and the one branch that reads a file a
+# REPOSITORY chose. A break in any of them at this floor is an every-prompt
+# hook that hangs, or one that puts a committed credential in front of a model.
+
+fifo = os.path.join(home, "fifo")
+os.mkfifo(fifo)
+try:
+    hook._regular_fd(fifo)
+    check("a fifo is refused as not a regular file", "returned a descriptor",
+          "_NotRegular")
+except hook._NotRegular:
+    pass
+except OSError as exc:  # pragma: no cover - a floor break is what this reports
+    check("a fifo is refused as not a regular file", type(exc).__name__,
+          "_NotRegular")
+
+plain = os.path.join(home, "plain.txt")
+with open(plain, "w") as f:
+    f.write("x" * 17)
+regular_fd, regular_st = hook._regular_fd(plain)
+os.close(regular_fd)
+check("the guarded open reports the file's own size", regular_st.st_size, 17)
+
+planted_key = "aws_secret_access_key = " + "A" * 40
+check("the scan sees a committed key",
+      hook._secret_re().search(planted_key) is not None, True)
+# The SHAPE is what the scan is about: the same word in prose, with no
+# assignment behind it, is a memory somebody wrote about credentials.
+check("the scan leaves prose about one alone",
+      hook._secret_re().search(
+          "the aws_secret_access_key is the field name, and it is not here"
+      ) is not None, False)
+
+corpus = os.path.join(checkout, "docs", "memories", "search")
+planted = os.path.join(corpus, "creds.md")
+with open(planted, "w") as f:
+    f.write("---\nname: creds\ndescription: pgbouncer transaction pooling notes\n"
+            "type: reference\n---\n\n"
+            "pgbouncer transaction pooling breaks prepared statements\n"
+            + planted_key + "\n")
+terms = ["pgbouncer", "transaction", "pooling"]
+corpus_real = os.path.realpath(corpus)
+# The evidence the index would have produced, so the two branches below differ
+# only in whether a repository chose the corpus.
+hook._LEX_MATCHED[planted] = list(terms)
+check("a repository's file carrying a key earns no evidence",
+      hook._relevance(terms, planted, corpus_real, True), ([], len(terms), "?"))
+check("and the same file in a store the user configured earns its own",
+      hook._relevance(terms, planted, corpus_real, False),
+      (terms, len(terms), "reference"))
+os.remove(planted)
 
 if failures:
     for line in failures:

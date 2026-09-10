@@ -371,6 +371,11 @@ class Profile:
             os.environ,
             CLAUDE_CONFIG_DIR=str(self.config_dir),
             HOME=str(self.home),
+            # Pinned under the profile's HOME rather than inherited: the hook
+            # honours it over `$HOME/.cache` for its state directory, so a
+            # scenario that reads a record back out of the profile was reading
+            # the developer's own cache wherever one is exported.
+            XDG_CACHE_HOME=str(self.home / ".cache"),
             ANTHROPIC_BASE_URL=self.proxy,
             ANTHROPIC_API_KEY=self._api_key,
             # The pin cannot drift mid-scenario, and an autoupdate would also

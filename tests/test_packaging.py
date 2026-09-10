@@ -48,12 +48,20 @@ def built(tmp_path_factory) -> dict[str, Path]:
     if shutil.which("uv") is None:
         pytest.skip("no uv to build with — the plain-python CI leg is where this runs")
     out = tmp_path_factory.mktemp("dist")
+    # `XDG_CACHE_HOME` dropped for the same reason the floor case below drops
+    # it: the build frontend keeps its own cache there, and a runner pointing
+    # the variable somewhere it cannot write turns this into a build failure
+    # that says nothing about the artifact. Dropped rather than redirected, so
+    # the build still hits a warm cache.
+    env = dict(os.environ)
+    env.pop("XDG_CACHE_HOME", None)
     built = subprocess.run(
         ["uv", "build", "--out-dir", str(out)],
         cwd=REPO,
         capture_output=True,
         text=True,
         timeout=600,
+        env=env,
     )
     assert built.returncode == 0, built.stderr
     wheels = list(out.glob("*.whl"))

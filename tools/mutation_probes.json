@@ -1277,8 +1277,8 @@
       "name": "index-file-cap-is-enforced-in-bytes",
       "module": "prompt_recall_gates",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "    with open(target, \"rb\") as f:\n        raw = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(raw) > INDEX_FILE_MAX_BYTES:\n        return None\n    text = raw.decode(\"utf-8\", errors=\"replace\")\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
-      "new": "    with open(target, encoding=\"utf-8\", errors=\"replace\") as f:\n        text = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(text) > INDEX_FILE_MAX_BYTES:\n        return None\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
+      "old": "    with _open_regular_bytes(target) as f:\n        raw = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(raw) > INDEX_FILE_MAX_BYTES:\n        return None\n    text = raw.decode(\"utf-8\", errors=\"replace\")\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
+      "new": "    with _open_regular(target) as f:\n        text = f.read(INDEX_FILE_MAX_BYTES + 1)\n    if len(text) > INDEX_FILE_MAX_BYTES:\n        return None\n    return text.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_the_file_cap_is_enforced_in_the_unit_it_is_declared_in"
       ],
@@ -1299,8 +1299,8 @@
       "name": "retrieval-passes-the-deadline-into-each-dir",
       "module": "prompt_recall_gates",
       "file": "src/memkit/memory_prompt_recall.py",
-      "old": "                ranked.append(search(query, d, deadline))",
-      "new": "                ranked.append(search(query, d))",
+      "old": "                ranked.append(search(query, d, deadline, read_only, marked))",
+      "new": "                ranked.append(search(query, d, None, read_only, marked))",
       "tests": [
         "tests/test_memory_prompt_recall.py::test_a_dir_whose_query_ran_out_of_budget_is_an_error_not_an_absence"
       ],
@@ -4063,8 +4063,8 @@
       "name": "readme-prompt-frame-size-stale",
       "module": "docs",
       "file": "README.md",
-      "old": "**1041 bytes fixed**",
-      "new": "**1141 bytes fixed**",
+      "old": "**1063 bytes fixed**",
+      "new": "**1163 bytes fixed**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_docs_state_the_frame_sizes_the_frames_actually_are"
       ],
@@ -4421,7 +4421,7 @@
       "name": "admission-file-count-is-last-releases",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**108 files, about 4.0 MiB**",
+      "old": "**108 files, about 4.2 MiB**",
       "new": "**101 files, about 3.0 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
@@ -6343,6 +6343,607 @@
         "tests/test_harness_shape.py::test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal"
       ],
       "why": "A write that fails after some bytes are out leaves a truncated JSON document at the operator's own name with mode 0600, and the O_EXCL create then refuses their retry: a destination that is neither written nor retryable, on a host an unattended capture may not get a second run at. Unlinking it is what makes the retry possible, and the one line has to say which way it went."
+    },
+    {
+      "name": "the-store-id-is-matched-with-a-trailing-newline-allowed",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if not isinstance(store_id, str) or not re.fullmatch(\n        PROJECT_ID_PATTERN, store_id\n    ):\n",
+      "new": "    if not isinstance(store_id, str) or not re.match(\n        PROJECT_ID_PATTERN, store_id\n    ):\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[an-id-ending-in-a-newline]"
+      ],
+      "why": "Python's `$` matches before a final newline, so `re.match` accepts an id carrying one — and the id is rendered on a diagnostic line an agent reads, where a repository choosing a line break chooses a forged line."
+    },
+    {
+      "name": "the-store-id-reaches-the-diagnostic-unsanitised",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            f\"project {_project_value(project.id)}: \"\n",
+      "new": "            f\"project {project.id}: \"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_store_id_is_rendered_like_every_other_repository_chosen_value"
+      ],
+      "why": "The pattern keeps a line break out of the id and the render keeps it out if the pattern is ever widened; they are two claims, and the surface used to sanitise the path beside the id while printing the id raw."
+    },
+    {
+      "name": "a-dir-named-on-the-command-line-is-never-a-project-corpus",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            (d, *_named_dir_flags(d))\n",
+      "new": "            (d, False, False)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_search_cli_scans_a_project_corpus_it_was_pointed_at_by_hand"
+      ],
+      "why": "`--search --dir` is the other door into retrieval and `search_cli` is what the config tells an agent to run. Unclassified, a checked-in corpus named by hand is served with the scan never firing, and from outside the repository nothing else notices."
+    },
+    {
+      "name": "project-corpus-root-may-climb-out-of-the-repository",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if not _inside(root_real, corpus_real):\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: the corpus under 'dir' resolves outside \"\n            \"the repository\"\n        )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_corpus_root_that_leaves_the_checkout_serves_nothing",
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-corpus-root-linked-out-by-a-relative-path]"
+      ],
+      "why": "`dir` being inside the checkout says nothing about `<dir>/search`, which is what retrieval walks. Without this a committed link there indexes any tree on the machine and serves its files as pointers under in-repo paths."
+    },
+    {
+      "name": "the-corpus-root-may-be-the-repository-itself",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if corpus_real == root_real:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: the corpus under 'dir' must be a directory \"\n            \"inside the repository, not the repository itself\"\n        )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-corpus-root-symlinked-onto-the-checkout]"
+      ],
+      "why": "Containment admits equality, so the check above passes a `<dir>/search` that points back at the checkout. Without this the whole repository is the corpus — the outcome the `dir` check refuses one level up."
+    },
+    {
+      "name": "project-store-candidates-forget-the-repository-chose-them",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        dirs.append((live, store.read_only))\n",
+      "new": "        dirs.append((live, False))\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_hit_still_knows_it_came_from_a_repository_after_recall",
+        "tests/test_memory_prompt_recall.py::test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log"
+      ],
+      "why": "This flag is the only thing that tells `_relevance` a candidate came out of a checked-in store. Dropped, the credential scan and the size floor are dead code that still reads right, and every file a repository commits ranks like one the operator wrote."
+    },
+    {
+      "name": "project-scan-reads-a-file-it-has-already-refused",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            if os.stat(target).st_size > SECRET_SCAN_MAX_BYTES:\n",
+      "new": "            if os.stat(target).st_size > INDEX_FILE_MAX_BYTES:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_candidate_over_the_scan_cap_is_never_opened_at_all"
+      ],
+      "why": "The floor decides UNREAD, and the length check after the read refuses the same file — so the returned tuple cannot tell the two apart. Raised to the index's own four megabytes, an every-prompt hook reads whatever a repository committed before declining it."
+    },
+    {
+      "name": "project-scan-clears-a-file-it-only-read-the-head-of",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    len(body) > SECRET_SCAN_MAX_BYTES\n                    or _secret_re().search(body) is not None\n",
+      "new": "                    _secret_re().search(body) is not None\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_candidate_that_grew_after_the_stat_is_refused_on_the_read"
+      ],
+      "why": "A file inside the cap when it was stat'd and past it when it was read comes back one byte over, and this is the only check that sees it. Without it a scan that saw 64 KiB of a larger file reports the rest clear."
+    },
+    {
+      "name": "project-config-guard-drops-the-regular-file-check",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    except _NotRegular:\n        return None, f\"{PROJECT_CONFIG_NAME} is not a regular file\"\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-character-device-behind-a-symlink]",
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-FIFO-with-no-writer]",
+        "tests/test_memory_prompt_recall.py::test_a_device_symlink_a_checkout_carries_is_refused_without_hanging"
+      ],
+      "why": "A checkout can commit `.memkit.json -> /dev/zero`, and an fstat is the only thing standing between that shape and a read on the prompt path. The size an fstat reports for a device is zero, so the byte cap below waves it through."
+    },
+    {
+      "name": "project-config-is-opened-blocking",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)\n",
+      "new": "    fd = os.open(path, os.O_RDONLY)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-FIFO-with-no-writer]"
+      ],
+      "why": "The fstat cannot refuse a shape the open never returns from. A FIFO with no writer blocks in `open` itself, which in a hook that runs on every prompt is a session that stops answering rather than a refusal."
+    },
+    {
+      "name": "project-config-dir-may-climb-out-of-the-repository",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if os.pardir in os.path.normpath(rel).replace(os.sep, \"/\").split(\"/\"):\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' must stay inside the repository, \"\n            f\"and '{_project_value(rel)}' climbs out of it\"\n        )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why[a-dir-that-climbs-out]"
+      ],
+      "why": "The containment check below catches the path either way, and the reason is the difference: `..` refused for climbing out names what the repository wrote, while a realpath verdict on a directory that does not exist yet reads as a broken checkout."
+    },
+    {
+      "name": "project-store-is-added-to-the-config-list-as-well",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            out.append(project)\n",
+      "new": "            self.stores.append(project)\n            out.append(project)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_adds_a_store_to_the_search_and_not_to_the_config"
+      ],
+      "why": "`stores` is what init, adoption, the integrity checker, the uninstall story, every doctor row and the eval iterate. One append and a directory a repository named becomes a write target — the whole read-only claim rests on this list never holding it."
+    },
+    {
+      "name": "project-config-kill-switch-is-not-consulted",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if not self.project_config:\n            return None\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_kill_switch_is_read_from_the_users_own_config"
+      ],
+      "why": "`\"project_config\": false` is the operator's only off switch for this feature, and off has to mean the file is never opened — not opened and then ignored, which still lets a checkout choose what an every-prompt hook reads."
+    },
+    {
+      "name": "project-store-candidates-skip-the-credential-scan",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    or _secret_re().search(body) is not None\n",
+      "new": "                    or False\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_store_candidate_carrying_a_credential_yields_no_evidence",
+        "tests/test_memory_prompt_recall.py::test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log"
+      ],
+      "why": "The scan is the whole of what makes a checked-in store safe to put in front of a model: without it a committed key is a pointer the agent is told to open, and nothing in the record says so."
+    },
+    {
+      "name": "project-candidate-open-drops-the-regular-file-check",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if not statmod.S_ISREG(st.st_mode):\n            raise _NotRegular(f\"not a regular file: {path}\")\n",
+      "new": "        pass\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_candidate_that_is_not_a_regular_file_is_refused_not_awaited"
+      ],
+      "why": "a pipe named like a memory stops the every-prompt hook for the session"
+    },
+    {
+      "name": "project-dir-resolution-catches-only-oserror",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    except (OSError, ValueError, RecursionError) as exc:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: \"\n            f\"{_project_value(getattr(exc, 'strerror', None) or type(exc).__name__)}\"\n        )\n",
+      "new": "    except OSError as exc:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: \"\n            f\"{_project_value(exc.strerror or type(exc).__name__)}\"\n        )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_nul_byte_in_dir_is_refused_rather_than_taking_a_surface_down"
+      ],
+      "why": "a NUL byte raises ValueError, and an uncaught one exits --debug-config"
+    },
+    {
+      "name": "search-cli-record-drops-the-side-channel-fold",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    # The fourth emitter, folding for the same reason the other three do:\n    # `_eligible` above is where the credential scan increments, and it ran\n    # after recall() had already folded what it knew.\n    rec.update(_lex_fired())\n    _soak_log(rec)\n",
+      "new": "    _soak_log(rec)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_search_clis_record_says_a_credential_was_floored_too"
+      ],
+      "why": "a credential floored under --search is invisible in the soak log"
+    },
+    {
+      "name": "project-schema-admits-a-value-that-merely-compares-equal",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if type(raw.get(PROJECT_SCHEMA_KEY)) is not int or (\n        raw.get(PROJECT_SCHEMA_KEY) != PROJECT_SCHEMA\n    ):\n",
+      "new": "    if raw.get(PROJECT_SCHEMA_KEY) != PROJECT_SCHEMA:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "`True == 1` and `1.0 == 1`, so the schema gate stops separating two files"
+    },
+    {
+      "name": "project-dir-may-be-the-whole-checkout",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if resolved == root_real:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' must name a directory inside the \"\n            \"repository, not the repository itself\"\n        )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "`dir: \".\"` makes every *.md in a monorepo a candidate on every prompt"
+    },
+    {
+      "name": "repository-marker-file-is-opened-blocking",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        with _open_regular(entry) as f:\n",
+      "new": "        with open(entry, encoding=\"utf-8\", errors=\"replace\") as f:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_pipe_where_the_marker_file_should_be_leaves_the_prompt_answerable"
+      ],
+      "why": "a FIFO at <root>/.git answers a blocking open never, before every prompt"
+    },
+    {
+      "name": "shared-repository-name-is-opened-blocking",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        with _open_regular(os.path.join(gitdir, \"commondir\")) as f:\n",
+      "new": "        with open(\n            os.path.join(gitdir, \"commondir\"), encoding=\"utf-8\",\n            errors=\"replace\",\n        ) as f:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_pipe_where_the_shared_repository_is_named_leaves_the_gate_shut"
+      ],
+      "why": "commondir is named by the checkout's own .git file and nothing vouches for it"
+    },
+    {
+      "name": "project-refusal-reasons-are-rendered-unsanitised",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    return _display_cap(sanitize(str(value)), PROJECT_VALUE_MAX_CHARS)\n",
+      "new": "    return _display_cap(str(value), PROJECT_VALUE_MAX_CHARS)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "a reason quotes text the repository wrote onto a line-oriented surface"
+    },
+    {
+      "name": "prompt-record-drops-the-side-channel-fold",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            rec.update(_lex_fired())\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_planted_credential_never_becomes_a_pointer_and_says_so_in_the_log"
+      ],
+      "why": "a credential floored on the prompt path is floored silently"
+    },
+    {
+      "name": "task-record-drops-the-side-channel-fold",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        nonlocal logged\n        rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)\n        rec.update(_lex_fired())\n",
+      "new": "        nonlocal logged\n        rec.update(outcome=outcome, ms=int((time.monotonic() - t0) * 1000), **kw)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_spawn_inside_a_repository_is_never_handed_a_credential"
+      ],
+      "why": "a credential floored for a subagent is floored silently, on the surface with the least oversight"
+    },
+    {
+      "name": "a-repository-chosen-pointer-is-marked-as-one",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        + (f\"{PROJECT_MARK} \" if _lex_marked(path) else \"\")\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_repository_chosen_pointer_says_so_and_a_users_own_does_not"
+      ],
+      "why": "without the mark a line a repository chose is byte-identical to one out of the operator's own store"
+    },
+    {
+      "name": "the-repository-mark-is-a-suffix",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    return (\n        \"- \"\n        + (f\"{PROJECT_MARK} \" if _lex_marked(path) else \"\")\n        + _display_path(path)\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n    )\n",
+      "new": "    return (\n        f\"- {_display_path(path)}\"\n        + (f\" — {desc}\" if desc else \"\")\n        + f\" [{evidence}: {shown}]\"\n        + (f\" [section: {section}]\" if section else \"\")\n        + (f\" {PROJECT_MARK}\" if _lex_marked(path) else \"\")\n    )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file"
+      ],
+      "why": "at the end of the line the mark is forgeable — a section heading spelling it without its final `]` leaves memkit's own bracket to close it — so the position is the whole guarantee, and only the start of a line is a place no retrieved text can reach"
+    },
+    {
+      "name": "the-provenance-sentence-reads-the-mark-off-the-end",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if any(line.startswith(f\"- {PROJECT_MARK}\") for line in body)\n",
+      "new": "        if any(line.endswith(PROJECT_MARK) for line in body)\n",
+      "occurrences": 2,
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_repository_mark_is_carried_exactly_when_a_repository_chose_the_file"
+      ],
+      "why": "both frames assert repository provenance off this gate, so a gate asking where the mark ENDS puts the sentence in front of a model for a line a user's own store forged — in a session with no repository store in it at all"
+    },
+    {
+      "name": "the-eval-scores-a-candidate-the-hook-would-floor",
+      "module": "project_config",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "hook._lex_root(h), hook._lex_read_only(h)",
+      "new": "hook._lex_root(h)",
+      "tests": [
+        "tests/test_eval.py::test_the_eval_floors_a_repository_chosen_credential_the_way_the_hook_does"
+      ],
+      "why": "the gate must score a candidate with the arguments the hook passes, or a case passes on a hit production refuses"
+    },
+    {
+      "name": "project-config-opens-around-the-one-guard",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        fd, st = _regular_fd(path)\n",
+      "new": "        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)\n        st = os.fstat(fd)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why",
+        "tests/test_memory_prompt_recall.py::test_a_device_symlink_a_checkout_carries_is_refused_without_hanging"
+      ],
+      "why": "a second hand-rolled copy of the regular-file rule is a copy that can be weakened alone; the guard has one spelling and this reader calls it"
+    },
+    {
+      "name": "credential-scan-flags-are-not-scoped-to-their-branch",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"(?i:authorization:\\s*bearer\\s+[A-Za-z0-9._~+/-]{20,})\",\n",
+      "new": "                    r\"(?i)authorization:\\s*bearer\\s+[A-Za-z0-9._~+/-]{20,}\",\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_credential_scan_matches_the_shapes_it_names"
+      ],
+      "why": "a bare (?i) in the middle of an alternation is a re.error on 3.11+"
+    },
+    {
+      "name": "project-config-size-cap-is-not-consulted",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if st.st_size > PROJECT_CONFIG_MAX_BYTES:\n            return None, (\n                f\"{PROJECT_CONFIG_NAME} is {st.st_size} bytes; the limit is \"\n                f\"{PROJECT_CONFIG_MAX_BYTES}\"\n            )\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_is_refused_whole_and_the_reason_names_why"
+      ],
+      "why": "the fstat is what refuses an oversize file before a byte is read"
+    },
+    {
+      "name": "project-config-read-is-not-one-past-the-cap",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            text = f.read(PROJECT_CONFIG_MAX_BYTES + 1)\n",
+      "new": "            text = f.read(PROJECT_CONFIG_MAX_BYTES)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_that_grew_after_the_fstat_is_refused_on_the_read"
+      ],
+      "why": "a file that grew after the fstat is otherwise parsed from its head"
+    },
+    {
+      "name": "project-store-dir-is-resolved-through-the-user-roots",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if store.resolved_dir:\n            return store.resolved_dir\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_adds_a_store_to_the_search_and_not_to_the_config"
+      ],
+      "why": "a project store has no name in roots, so nothing else can answer for it"
+    },
+    {
+      "name": "project-store-scan-knows-the-key-keywords",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "(?:password|passwd|secret|token|api_?key|private_key)",
+      "new": "(?:password|passwd|secret|token)",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_each_added_credential_shape_costs_the_candidate_its_pointer"
+      ],
+      "why": "an api key and a private key are assignments like any other, and the branch that reads them is the only thing standing between one and a served pointer"
+    },
+    {
+      "name": "project-store-scan-requires-the-separator-to-touch-the-keyword",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "[\"'`]?\\s*[:=]\\s*\\S{8,}",
+      "new": "\\s*[:=]\\s*\\S{8,}",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_each_added_credential_shape_costs_the_candidate_its_pointer"
+      ],
+      "why": "a fenced JSON block spells the key quoted and markdown spells it in inline code, so without the optional closing quote or backtick every such credential in a committed memory reads as prose"
+    },
+    {
+      "name": "project-store-scan-knows-the-vendor-prefixes",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"[rs]k_live_[A-Za-z0-9]{10,}\",\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_each_added_credential_shape_costs_the_candidate_its_pointer"
+      ],
+      "why": "a live vendor key carries no keyword to anchor an assignment on, so its prefix is the whole recogniser"
+    },
+    {
+      "name": "the-eval-reads-the-per-hit-root-as-a-bare-string",
+      "module": "project_config",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            *hook._relevance(terms, h, hook._lex_root(h), hook._lex_read_only(h))\n",
+      "new": "            *hook._relevance(terms, h, hook._LEX_ROOT.get(h, \"\"), hook._lex_read_only(h))\n",
+      "tests": [
+        "tests/test_eval.py::test_the_eval_scores_a_corpus_holding_a_symlinked_memory"
+      ],
+      "why": "the per-hit root is only consulted for a candidate that is a link, so a reader out of step with the writer's value shape scores every ordinary corpus and aborts the project's own gate on the first store that commits one"
+    },
+    {
+      "name": "a-nested-project-file-parses-outside-the-guard",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    except (ValueError, RecursionError) as exc:\n        return None, f\"{PROJECT_CONFIG_NAME} is not valid JSON: {_project_value(exc)}\"\n",
+      "new": "    except ValueError as exc:\n        return None, f\"{PROJECT_CONFIG_NAME} is not valid JSON: {_project_value(exc)}\"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_nested_past_the_parsers_budget_refuses_rather_than_raises"
+      ],
+      "why": "`RecursionError` is a `RuntimeError`, and a document nested past the parser's budget fits in half this file's byte cap — escaping the whole-or-nothing guard it costs the checkout not one refused file but every prompt's whole retrieval"
+    },
+    {
+      "name": "a-chained-dir-resolves-outside-the-guard",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    except (OSError, ValueError, RecursionError) as exc:\n",
+      "new": "    except (OSError, ValueError) as exc:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_dir_behind_a_chain_of_symlinks_refuses_rather_than_raises"
+      ],
+      "why": "`realpath` recurses once per link, so a `dir` behind a committed chain of them raises the one exception class this clause does not name — and outside the guard it is the prompt that is lost, silently and with the user's own stores in it, not the file"
+    },
+    {
+      "name": "the-scan-has-a-run-in-front-of-the-keyword",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"(?i:(?:password|passwd|secret|token|api_?key|private_key)\"\n",
+      "new": "                    r\"(?i:[A-Za-z0-9_]{0,64}(?:password|passwd|secret|token|api_?key|private_key)\"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_credential_scan_costs_no_more_than_the_bytes_it_reads"
+      ],
+      "why": "any run in front of an alternation is retried at every split at every offset, and the input is a committed file scanned after recall()'s deadline — bounded at 64 it costs 1.3 s on the 64 KiB the scan reads to, past the whole budget the prompt path has; unbounded it never answered, so the bounded revert is the cheap witness that the cap-sized row kills"
+    },
+    {
+      "name": "the-scan-run-behind-the-keyword-is-unbounded",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                    r\"[A-Za-z0-9_]{0,64})\"\n",
+      "new": "                    r\"[A-Za-z0-9_]*)\"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_credential_scan_costs_no_more_than_the_bytes_it_reads"
+      ],
+      "why": "the run behind the keyword is reached only where the alternation matches, so a body made of the keyword is what measures it — and unbounded it backtracks the same way, which is why the bound is on both runs and not just the one the timing curve was taken on"
+    },
+    {
+      "name": "a-named-dir-above-the-corpus-is-not-the-corpus",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if store.read_only:\n            return (True, True)\n    return (False, False)\n",
+      "new": "        if store.read_only and _inside(\n            os.path.realpath(_search_root(store.resolved_dir)), os.path.realpath(d)\n        ):\n            return (True, True)\n    return (False, False)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
+      ],
+      "why": "retrieval walks DOWNWARD from the directory it was handed, so `--dir <repo>` and `--dir <repo>/docs` serve every byte of the corpus underneath — asked inside-only, the classification misses exactly the spellings that serve the most"
+    },
+    {
+      "name": "a-named-dir-below-the-corpus-is-not-the-corpus",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if store.read_only:\n            return (True, True)\n    return (False, False)\n",
+      "new": "        if store.read_only and _inside(\n            os.path.realpath(d), os.path.realpath(_search_root(store.resolved_dir))\n        ):\n            return (True, True)\n    return (False, False)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
+      ],
+      "why": "the other half of the same question: a subdirectory of the corpus is repository bytes too, and asked at-or-above only, `--dir <corpus>/sub` prints a checked-in memory carrying a credential with the scan never having fired"
+    },
+    {
+      "name": "the-named-dir-door-is-monotone-in-depth",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if store.read_only:\n            return (True, True)\n    return (False, False)\n",
+      "new": "        corpus = os.path.realpath(_search_root(store.resolved_dir))\n        here = os.path.realpath(d)\n        if store.read_only and (\n            _inside(corpus, here) or _inside(here, corpus)\n        ):\n            return (True, True)\n    return (False, False)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
+      ],
+      "why": "asked of the corpus instead of the checkout, the door is not monotone in depth: a directory beside the corpus classifies writable while a shallower one containing both classifies read-only, so narrowing `--dir` prints a checked-in file with its credential"
+    },
+    {
+      "name": "the-named-dir-door-resolves-before-it-asks-which-repository",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            root = _repo_root(d, resolve=resolve)\n",
+      "new": "            root = _repo_root(d)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_named_dir_door_classifies_a_corpus_the_way_the_hook_does"
+      ],
+      "why": "a checkout that commits its corpus as a link out of itself resolves to nobody's repository, so asked only of the resolved path the door runs no scan and marks no line — while the pointer it prints spells the path inside the checkout the bytes never came from"
+    },
+    {
+      "name": "a-refused-project-file-marks-what-it-makes-the-door-scan",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "                return (True, False)\n",
+      "new": "                return (True, True)\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_this_build_refused_is_scanned_and_not_marked"
+      ],
+      "why": "the scan and the mark have opposite safe directions: a `.memkit.json` this build cannot read must still cost the checkout's bytes a scan, and must not spend the repository mark on notes the operator wrote themselves and keeps inside a checkout — one schema bump marks every one of them"
+    },
+    {
+      "name": "the-project-corpus-line-is-spelled-its-own-way",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        print(\n            f\"  corpus:  {_display_path(corpus)} — \"\n            f\"{count} file{'' if count == 1 else 's'}\"\n        )\n",
+      "new": "        print(\n            f\"  corpus:  {corpus} — \"\n            f\"{count} file{'' if count == 1 else 's'}\"\n        )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_diagnostic_spells_every_corpus_the_same_way"
+      ],
+      "why": "the one surface an operator reads to tell a configured store from a repository's would print the same field two ways, and the difference in form reads as a difference in kind"
+    },
+    {
+      "name": "a-store-a-repository-named-is-not-read-only",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        return bool(self.resolved_dir)\n",
+      "new": "        return False\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_read_only_is_the_resolved_directory_and_nothing_else"
+      ],
+      "why": "read-only is what keeps a directory the repository chose out of every write path and what fires the credential scan over the files under it"
+    },
+    {
+      "name": "the-read-only-size-gate-opens-the-file-to-measure-it",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "            if os.stat(target).st_size > SECRET_SCAN_MAX_BYTES:\n",
+      "new": "            _fd, _st = _regular_fd(target)\n            os.close(_fd)\n            if _st.st_size > SECRET_SCAN_MAX_BYTES:\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_candidate_a_repository_published_costs_one_stat_and_one_open"
+      ],
+      "why": "at most one open and one fstat per candidate is the budget this branch is admitted under, and it is paid on every prompt served from a checked-in store"
+    },
+    {
+      "name": "the-two-containment-refusals-answer-in-either-order",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    if os.pardir in os.path.normpath(rel).replace(os.sep, \"/\").split(\"/\"):\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' must stay inside the repository, \"\n            f\"and '{_project_value(rel)}' climbs out of it\"\n        )\n    # The first of TWO containment decisions, made against resolved paths on\n    # both sides. The `..` refusal above is for the message; a `dir` that is a\n    # SYMLINK out of the tree spells no `..` at all, and only realpath sees\n    # that one.\n    try:\n        root_real = os.path.realpath(root)\n        resolved = os.path.realpath(os.path.join(root, rel))\n    # ValueError as well as OSError: a NUL byte in a path is not a failed\n    # syscall but a string the syscall cannot be spelled with, and it left an\n    # exception nothing caught — which took `--debug-config` down with exit 2\n    # in the one checkout whose config an operator was trying to read. The\n    # exception type is the reason where there is no `strerror`.\n    #\n    # RecursionError with them, because realpath recurses once per link and a\n    # `RuntimeError` is neither of the other two: a committed chain of about a\n    # thousand symlinks is a `dir` that resolves nowhere, and uncaught it takes\n    # the prompt's whole retrieval with it — the user's own stores included,\n    # silently, since the hook must not speak on the prompt path.\n    except (OSError, ValueError, RecursionError) as exc:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: \"\n            f\"{_project_value(getattr(exc, 'strerror', None) or type(exc).__name__)}\"\n        )\n    if not _inside(root_real, resolved):\n        return None, f\"{PROJECT_CONFIG_NAME}: 'dir' resolves outside the repository\"\n",
+      "new": "    # The first of TWO containment decisions, made against resolved paths on\n    # both sides. The `..` refusal above is for the message; a `dir` that is a\n    # SYMLINK out of the tree spells no `..` at all, and only realpath sees\n    # that one.\n    try:\n        root_real = os.path.realpath(root)\n        resolved = os.path.realpath(os.path.join(root, rel))\n    # ValueError as well as OSError: a NUL byte in a path is not a failed\n    # syscall but a string the syscall cannot be spelled with, and it left an\n    # exception nothing caught — which took `--debug-config` down with exit 2\n    # in the one checkout whose config an operator was trying to read. The\n    # exception type is the reason where there is no `strerror`.\n    #\n    # RecursionError with them, because realpath recurses once per link and a\n    # `RuntimeError` is neither of the other two: a committed chain of about a\n    # thousand symlinks is a `dir` that resolves nowhere, and uncaught it takes\n    # the prompt's whole retrieval with it — the user's own stores included,\n    # silently, since the hook must not speak on the prompt path.\n    except (OSError, ValueError, RecursionError) as exc:\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' does not resolve: \"\n            f\"{_project_value(getattr(exc, 'strerror', None) or type(exc).__name__)}\"\n        )\n    if not _inside(root_real, resolved):\n        return None, f\"{PROJECT_CONFIG_NAME}: 'dir' resolves outside the repository\"\n    if os.pardir in os.path.normpath(rel).replace(os.sep, \"/\").split(\"/\"):\n        return None, (\n            f\"{PROJECT_CONFIG_NAME}: 'dir' must stay inside the repository, \"\n            f\"and '{_project_value(rel)}' climbs out of it\"\n        )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_order_the_refusals_are_made_in_is_the_order_they_answer_in"
+      ],
+      "why": "the `..` refusal stands in front of the realpath containment for the SENTENCE, so a spelling that climbs out is told so in the words its author can act on; reordered, every existing refusal row stays green because each matches one check alone"
+    },
+    {
+      "name": "a-path-guard-is-called-for-its-effect-and-its-answer-dropped",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    desc = _description(path, _lex_root(path))\n    shown = \", \".join(matched[:6]) + (\", …\" if len(matched) > 6 else \"\")\n",
+      "new": "    desc = _description(path, _lex_root(path))\n    _lex_marked(path)\n    shown = \", \".join(matched[:6]) + (\", …\" if len(matched) > 6 else \"\")\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_every_path_guard_call_uses_the_value_it_returns"
+      ],
+      "why": "a guard that judges a path returns the resolution it judged, and a call made for its effect leaves the caller free to act on a path nothing looked at — this module has shipped that twice, in the spelling `_repo_root` was asked about and the one the scan then used"
+    },
+    {
+      "name": "the-prompt-frames-provenance-sentence-is-said-unconditionally",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    provenance = (\n        (\n            f\" A line beginning `- {PROJECT_MARK}` was chosen by the \"\n            \"repository you are working in rather than by you.\"\n        )\n        if any(line.startswith(f\"- {PROJECT_MARK}\") for line in body)\n        else \"\"\n    )\n",
+      "new": "    provenance = (\n        (\n            f\" A line beginning `- {PROJECT_MARK}` was chosen by the \"\n            \"repository you are working in rather than by you.\"\n        )\n        if True\n        else \"\"\n    )\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_provenance_sentence_is_not_said_when_no_repository_chose_a_line"
+      ],
+      "why": "the sentence is the block's only rule for the mark, so said in a session no repository reached it teaches a rule for a mark that is not there"
+    },
+    {
+      "name": "the-briefs-provenance-sentence-is-dropped",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    provenance = (\n        (\n            f\" A line beginning `- {PROJECT_MARK}` was chosen by the \"\n            \"repository the spawn was made from rather than by the user.\"\n        )\n        if any(line.startswith(f\"- {PROJECT_MARK}\") for line in body)\n        else \"\"\n    )\n",
+      "new": "    provenance = \"\"\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_the_briefs_provenance_sentence_is_said_exactly_when_a_mark_is_there"
+      ],
+      "why": "this reader is unattended, so a mark it has no rule for is a mark it cannot weigh — and the line it is on was chosen by whoever can land a commit in the checkout"
+    },
+    {
+      "name": "a-refused-project-file-leaves-no-trace-on-the-record",
+      "module": "project_config",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        # After the assignment rather than inside the resolution, so a raise on\n        # the way through leaves the counter saying what `project_error` says.\n        if self.project_error:\n            _LEX_COUNTS[\"lex_project_refused\"] += 1\n",
+      "new": "",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_project_file_this_build_refused_leaves_a_mark_on_the_record"
+      ],
+      "why": "the counter is the only account of a declined `.memkit.json` that reaches the surface anybody reads, and it is raised before the stage that clears the rest of the family — a line whose effect is undone downstream looks exactly like one that works"
     }
   ]
 }
