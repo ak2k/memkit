@@ -1894,7 +1894,7 @@ def _probe_budget() -> tuple:
 HOOK_WRAPPER = "bin/memkit-hook"
 
 
-def _init_command(machine: Machine) -> str:
+def _init_command(machine: Machine, flags: str = "") -> str:
     """How to reach init ON THIS CHANNEL.
 
     Skills ship only in the plugin payload, so `/memkit:init` is a command a
@@ -1902,10 +1902,19 @@ def _init_command(machine: Machine) -> str:
     rollout runbook sends to doctor first. A remedy that guessed would send
     them to a command they cannot run, which is exactly the failure the channel
     check exists one screen earlier to prevent.
+
+    `flags` goes on BOTH turns of the binary form, not just the first: the
+    digest binds the request as well as the tree, so a confirm carrying
+    different flags from the dry-run that produced it is refused as stale. A
+    remedy that showed the flag once would send the adopter into that refusal.
     """
+    tail = f" {flags}" if flags else ""
     if machine.plugin:
-        return "/memkit:init"
-    return "`memkit init --dry-run`, then `memkit init --confirm <digest>`"
+        return f"/memkit:init{tail}"
+    return (
+        f"`memkit init --dry-run{tail}`, then "
+        f"`memkit init --confirm <digest>{tail}`"
+    )
 
 
 NO_HOOK_REMEDY = (
@@ -4377,14 +4386,28 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
             # where the harness writes is not the question while somebody else
             # decides whether it writes, and the two paragraphs together do not
             # fit inside this string's own bound.
+            #
+            # A COMMAND FIRST, AND THE BY-HAND ROUTE BESIDE IT. This is the row
+            # an adopter with two memory systems reaches, and until init grew
+            # `--adopt-auto-memory` the only thing to do about it was a settings
+            # edit and a file move. `_init_command` decides the channel, because
+            # skills ship only in the plugin payload and it puts the flag on
+            # both turns of the binary form.
+            #
+            # ALL THREE ROUTES INSIDE ONE BOUND: adopt, redirect by hand, and
+            # switch off. `_bound` cuts from the end, so a fourth sentence here
+            # costs the switch-off paragraph rather than announcing itself; the
+            # longest branch of this string is measured by a test.
             _checkout_remedy("switch", enabled_scope)
             if switch_theirs
             else "Two memory systems on one project is a choice rather than a "
-            'fault. To put what the harness writes inside the store, set "'
+            "fault. To put what the harness writes inside the store, run "
+            + _init_command(machine, "--adopt-auto-memory")
+            + ' — it copies, never moves — or set "'
             + _NAMED["directory_key"] + '" to an ' + _NAMED["safe_subdir"]
-            + ' directory under a corpus root — "Where your agent\'s own '
-            'memories land" in the STORE guide has the value and the trap. '
-            + switch_off,
+            + " directory under a corpus root by hand. The STORE guide's "
+            '"Where your agent\'s own memories land" has the value and the '
+            "trap. " + switch_off,
             actor=USER,
         )
     ]

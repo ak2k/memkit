@@ -2973,6 +2973,43 @@ def test_a_memory_directory_linked_into_a_store_is_already_wired(
     assert "2 project directories" not in row.detail
 
 
+def test_the_adoption_offer_is_a_command_this_channel_can_actually_run(
+    profile, monkeypatch
+) -> None:
+    """The row that meets an adopter with two memory systems now has something
+    to run, and the command has to be one their channel ships: skills live in
+    the plugin payload, so `/memkit:init` is a command a nix or pip install's
+    harness does not have.
+
+    The flag rides BOTH turns of the binary form. The digest binds the request
+    as well as the tree, so a confirm carrying different flags from the dry-run
+    that produced it is refused as stale — a remedy that showed the flag once
+    would send the adopter into that refusal.
+    """
+    path = _store_config(profile, stores=["personal"])
+    stray = profile / "claude-config" / "projects" / "-home-u-other" / "memory"
+    stray.mkdir(parents=True)
+    (stray / "one.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "outside every store" in row.detail
+    assert "memkit init --dry-run --adopt-auto-memory" in row.remedy
+    assert "memkit init --confirm <digest> --adopt-auto-memory" in row.remedy
+    assert "/memkit:" not in row.remedy
+    # And the by-hand route survives beside it: the flag is an offer, not the
+    # only way to reach the state.
+    assert harness_memory.DIRECTORY_KEY in row.remedy
+    assert "STORE guide" in row.remedy
+
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "/memkit:init --adopt-auto-memory" in row.remedy
+    assert "memkit init --dry-run" not in row.remedy
+
+
 def test_only_false_turns_the_switches_off(profile, monkeypatch) -> None:
     """JSON `null`, `0`, `""`, `[]` and `{}` are every one of them a value the
     harness goes on writing under, and every one of them is falsy in Python. A
