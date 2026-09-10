@@ -5279,6 +5279,92 @@ def test_the_whole_suite_gate_survives_a_benign_rewrite_of_the_step() -> None:
             raise AssertionError(f"the gate reds on {name}: {why}") from why
 
 
+def _sweep_steps(job: str) -> list:
+    """Every step of `job` that runs the mutation sweep, by index."""
+    return [
+        i
+        for i, step in enumerate(_workflow_steps(job))
+        if re.search(r"\bmutation_sweep\.py\b", step)
+    ]
+
+
+def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome() -> None:
+    """The corpus is one list; a step that names modules is a second one.
+
+    Two `--module` runs covered 114 probes of 661 and twelve modules ran in CI
+    at all, so an anchor that had slipped off the code it was written for sat
+    dead for twenty-three commits with every gate green. An enumeration is
+    what rots — this asserts there is none.
+
+    And it asserts the OUTCOME the step gates on rather than the argv it is
+    spelled with. `mutation_sweep.py` already exits non-zero for every verdict
+    but CAUGHT, so the one hole is the selection that runs nothing and exits
+    0; the step closes it by reading back how many probes ran and that all of
+    them were caught. A gate that instead listed the verdict words it accepts
+    would go green the day a new verdict is added, which is the class this
+    replaces.
+    """
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    live = _uncommented(workflow)
+    jobs = {
+        name: _workflow_job(live, name)
+        for name in _job_names(live)
+        if f"\n  {name}:\n" in f"\n{live}\n"
+    }
+    running = {
+        name: _sweep_steps(job) for name, job in jobs.items() if _sweep_steps(job)
+    }
+    assert running, "no job in check.yml runs the mutation sweep at all"
+    assert sum(len(steps) for steps in running.values()) == 1, (
+        f"the sweep runs in {running}; one step over the whole corpus is the "
+        "shape, because a second is a list of what the first leaves out"
+    )
+    (job_name,) = running
+    step = _workflow_steps(jobs[job_name])[running[job_name][0]]
+
+    assert "--module" not in step, (
+        f"the sweep step in `{job_name}` names modules, so the corpus it runs "
+        "is a hand-kept list that nothing re-derives"
+    )
+    assert not re.search(r"mutation_sweep\.py[^\n]*\s-k\b", step), (
+        f"the sweep step in `{job_name}` narrows the corpus with -k"
+    )
+    # The outcome, read back out of the step: how many probes ran, and that
+    # every one was caught. Both numbers, because either alone is satisfied by
+    # `CAUGHT 0/0` — the verdict a mistyped filter produces, which the sweep
+    # exits 0 on.
+    assert "probes" in step and "CAUGHT" in step, (
+        f"the sweep step in `{job_name}` reads nothing back out of the run, so "
+        "an empty selection exits 0 and gates nothing"
+    )
+    floor = re.search(r"done < (\d+)", step)
+    assert floor, f"the sweep step in `{job_name}` asserts no probe-count floor"
+    corpus = json.loads(
+        (REPO / "tools" / "mutation_probes.json").read_text(encoding="utf-8")
+    )["probes"]
+    # A floor is only a floor while it is close under the corpus. Above it the
+    # step is red on arrival; far below it — at 0, or at the 114 the two
+    # `--module` runs used to cover — a narrowed selection walks under it and
+    # the step reports a number it did not earn.
+    assert 0.9 * len(corpus) <= int(floor.group(1)) <= len(corpus), (
+        f"the step's floor is {floor.group(1)} against a corpus of "
+        f"{len(corpus)} probes"
+    )
+
+    # A job is a context, and a context nothing waits for is a gate that does
+    # not gate. `automerge.yml` is where the list of names lives.
+    automerge = (WORKFLOWS / "automerge.yml").read_text(encoding="utf-8")
+    listed = re.search(r"const requiredChecks = \[(.*?)\];", automerge, re.S)
+    assert listed, "automerge.yml no longer declares requiredChecks"
+    required = set(re.findall(r'"([^"]+)"', listed.group(1)))
+    declared = re.search(r"^    name:\s*(.+)$", jobs[job_name], re.MULTILINE)
+    context = declared.group(1).strip() if declared else job_name
+    assert context in required, (
+        f"`{context}` runs the sweep and is not in automerge.yml's "
+        f"requiredChecks {sorted(required)}, so a red sweep merges"
+    )
+
+
 def test_no_page_names_a_setting_the_harness_does_not_have() -> None:
     """`memoryDir` is a key nothing reads.
 

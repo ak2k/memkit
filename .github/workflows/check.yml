@@ -48,6 +48,14 @@ permissions:
 # The cost is that a slow step serialises behind the ones before it. That is the
 # trade, and it is the right way round while every job here is single-digit
 # minutes.
+#
+# `mutation-sweep` is the one thing that is not, and it is a job for exactly
+# that reason: the whole corpus is three quarters of an hour on a hosted
+# runner, which inside `python` would put the context branch protection waits
+# for behind a wait nothing else here needs. The price is the one this comment
+# names, so it is paid explicitly — the job's name is in `automerge.yml`'s
+# required list, and a branch protection rule that does not also name it
+# leaves this advisory.
 
 env:
   # renovate: datasource=pypi depName=ruff
@@ -142,15 +150,6 @@ jobs:
 
       - name: Test suites (hook pytest + integrity unittest)
         run: .venv/bin/python -m pytest -q
-
-      # A green suite says the tests pass; this says they would have failed had
-      # the code been wrong. The corpus grew all milestone with nothing running
-      # it in CI, so a probe whose anchor had drifted cost nothing until
-      # somebody ran the sweep by hand.
-      - name: Mutation sweep (doctor + harness_memory)
-        run: |
-          .venv/bin/python tools/mutation_sweep.py --module doctor
-          .venv/bin/python tools/mutation_sweep.py --module harness_memory
 
       # The retrieval gate, over the invented corpus. KTD4: the real-corpus
       # eval stays with the consumer, because its cases pair prompts with
@@ -285,6 +284,74 @@ jobs:
         run: |
           claude plugin validate . --strict
           claude plugin validate .claude-plugin/plugin.json --strict
+
+  # A green suite says the tests pass; this says they would have failed had the
+  # code been wrong. The corpus grew all milestone with nothing running it in
+  # CI, so a probe whose anchor had drifted cost nothing until somebody ran the
+  # sweep by hand — and the two `--module` runs that first closed that were an
+  # enumeration of 114 probes out of 661, which is the same failure one level
+  # up: twelve modules went on unrun, and the list nobody re-derived is what
+  # let an anchor slip sit dead for twenty-three commits. So the whole corpus,
+  # with no `--module` to keep in step with anything.
+  mutation-sweep:
+    name: mutation-sweep
+    runs-on: ubuntu-latest
+    # 879 seconds for the whole corpus, measured on the author's machine in one
+    # run. Times three for a hosted runner and rounded up.
+    timeout-minutes: 45
+    steps:
+      # fetch-depth 0, and not only for the reason the `python` job gives.
+      # The corpus selects cases that read the COMMIT GRAPH — the marketplace
+      # pin is asserted to be an ancestor of HEAD — and `_needs_checkout` in
+      # tests/test_plugin_surface.py fails rather than skips where the history
+      # is not there. Under the default depth of 1 those selections are red
+      # before any mutation, which the sweep reports as BASELINE for every
+      # probe that names one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # No zsh and no `claude` here, measured rather than assumed: every
+      # store-guidance probe selects a bash cell, and no probe in the corpus
+      # names a case from tests/rig.
+      - name: Environment
+        run: |
+          uv venv --python 3.12
+          uv pip install --python .venv -e . pytest
+
+      # THE OUTCOME, NEVER A LIST OF ACCEPTED SPELLINGS. The sweep exits
+      # non-zero for every verdict but CAUGHT, and the one state that exits 0
+      # having proved nothing is an EMPTY selection — `CAUGHT 0/0`, which a
+      # mistyped filter or a corpus that stopped loading produces. So what is
+      # asserted is the number of probes that ran and that every one of them
+      # was caught. A step that instead listed the verdict words it would
+      # accept would go green the day a new one is added.
+      - name: Mutation sweep (the whole corpus)
+        run: |
+          .venv/bin/python tools/mutation_sweep.py > sweep.log 2>&1 && swept=0 || swept=$?
+          cat sweep.log
+          test "$swept" -eq 0
+          .venv/bin/python - sweep.log <<'ASSERT'
+          import re, sys
+
+          log = open(sys.argv[1], encoding="utf-8").read()
+          ran = re.search(r"^probes +: (\d+)$", log, re.M)
+          caught = re.search(r"^CAUGHT (\d+)/(\d+) ", log, re.M)
+          if not (ran and caught):
+              sys.exit("the sweep printed no count this step can read")
+          probes, done, total = int(ran.group(1)), int(caught.group(1)), int(caught.group(2))
+          if not probes == total == done:
+              sys.exit(f"{probes} probes selected, {done} of {total} caught")
+          # The floor is what a narrowed selection cannot get under. 661 at the
+          # commit that set it, with room for a probe or two to be retired.
+          if done < 640:
+              sys.exit(f"only {done} probes ran; the corpus held 661 when this floor was set")
+          print(f"{done} probes, every one caught")
+          ASSERT
 
   wordlist:
     name: wordlist

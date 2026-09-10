@@ -57,6 +57,11 @@ jobs:
             // above its `env:` block — one home for it.
             const requiredChecks = [
               "python",
+              // The whole mutation corpus, and the one job here that is not
+              // single-digit minutes — which is why it is a job. Required
+              // through this list whether or not branch protection's own list
+              // names it, so a sweep that goes red still stops an automerge.
+              "mutation-sweep",
               "wordlist",
               "nix (ubuntu-latest)",
               "nix (ubuntu-24.04-arm)",
