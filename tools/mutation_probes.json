@@ -1728,7 +1728,7 @@
         "tests/test_doctor.py::test_doctor_never_runs_a_hook_a_repository_registered"
       ],
       "why": "`.claude/settings.json` is the checkout's file: trusting it lets a cloned repository choose a program doctor runs as the user with the session's whole environment",
-      "occurrences": 2
+      "occurrences": 1
     },
     {
       "name": "two-registrations-serving-one-prompt-is-a-fail",
@@ -1984,8 +1984,8 @@
       "name": "auto-memory-asks-only-the-stores-this-session-may-search",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    for store in cfg.stores:\n        # A store naming a root the config does not define raises here, and",
-      "new": "    for store in cfg.searched_stores():\n        # A store naming a root the config does not define raises here, and",
+      "old": "    compared = True\n    for store in cfg.stores:\n",
+      "new": "    compared = True\n    for store in cfg.searched_stores():\n",
       "tests": [
         "tests/test_doctor.py::test_a_gated_store_still_holds_what_the_harness_writes_into_it"
       ],
@@ -2040,8 +2040,8 @@
       "name": "auto-memory-prunes-on-the-spelling-rather-than-the-target",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        relative = os.path.relpath(_resolved(directory), _resolved(root))\n",
-      "new": "        relative = os.path.relpath(directory, root)\n",
+      "old": "        inside = _resolved(directory)\n        above = _resolved(root)\n",
+      "new": "        inside = directory\n        above = root\n",
       "tests": [
         "tests/test_doctor.py::test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved"
       ],
@@ -2073,8 +2073,8 @@
       "name": "auto-memory-calls-a-store-that-is-not-on-disk-retrieval",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    if not os.path.isdir(root):\n",
-      "new": "    if False:\n",
+      "old": "    present = _present(root)\n    if present is not True:\n",
+      "new": "    present = _present(root)\n    if False:\n",
       "tests": [
         "tests/test_doctor.py::test_a_store_configured_and_not_on_disk_retrieves_nothing"
       ],
@@ -2112,6 +2112,30 @@
         "tests/test_doctor.py::test_only_false_turns_the_switches_off"
       ],
       "why": "JSON null, 0, the empty string, [] and {} are all falsy in Python and none of them stops the harness writing. Read as off, each one produces this row's single most confident sentence — memkit is the only memory system here — on a machine that has two."
+    },
+    {
+      "name": "auto-memory-reports-the-feature-running-over-a-switch-that-is-off",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if enabled is False:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_doctor.py::test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone",
+        "tests/test_doctor.py::test_only_false_turns_the_switches_off"
+      ],
+      "why": "A machine whose switch is off is then described as one the harness is still writing on, and the adopter is sent to turn off a feature already off. The other probes in this branch mutate one clause each, so none of them answers for the hundred lines as a whole."
+    },
+    {
+      "name": "auto-memory-reports-a-derived-directory-over-a-key-that-names-one",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if configured is not None:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_directory_inside_a_store_is_retrieved_and_settles_the_row",
+        "tests/test_doctor.py::test_the_corpus_root_itself_is_named_as_a_rewrite_rather_than_a_pass"
+      ],
+      "why": "The directory the settings key names is then reported as the one derived from the git root, so the row answers \"where does the harness write\" about a directory nothing configured. The other probes in this branch mutate one clause each, so none of them answers for the whole of it."
     },
     {
       "name": "inventory-counts-a-directory-whose-name-ends-in-md",
@@ -2285,8 +2309,8 @@
       "name": "auto-memory-asks-the-store-relation-of-linked-directories-only",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        how = _store_relation(machine, project.path)[2]\n",
-      "new": "        how = _store_relation(machine, project.path)[2] if project.linked else \"\"\n",
+      "old": "        reached, how = _placed(machine, project.path)\n",
+      "new": "        reached, how = (\n            _placed(machine, project.path)\n            if project.linked\n            else (False, \"outside\")\n        )\n",
       "tests": [
         "tests/test_doctor.py::test_a_project_directory_inside_a_corpus_root_is_not_outside_every_store"
       ],
@@ -2296,8 +2320,8 @@
       "name": "auto-memory-calls-a-directory-no-store-retrieves-outside-every-store",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "        bucket = retrieved if how == \"inside\" else outside if not how else held\n",
-      "new": "        bucket = retrieved if how == \"inside\" else outside\n",
+      "old": "        bucket = (\n            retrieved\n            if reached\n            else unplaced\n            if how == \"unknown\"\n            else outside\n            if how == \"outside\"\n            else in_store\n        )\n",
+      "new": "        bucket = retrieved if reached else outside\n",
       "tests": [
         "tests/test_doctor.py::test_a_project_directory_a_store_holds_and_never_retrieves_is_neither"
       ],
@@ -4421,7 +4445,7 @@
       "name": "admission-file-count-is-last-releases",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**108 files, about 4.3 MiB**",
+      "old": "**108 files, about 4.4 MiB**",
       "new": "**101 files, about 3.0 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
@@ -4955,8 +4979,8 @@
       "name": "auto-memory-calls-a-path-it-cannot-resolve-inside-the-store",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    except (OSError, ValueError):\n        return False\n",
-      "new": "    except (OSError, ValueError):\n        return True\n",
+      "old": "        parent = _resolved(parent)\n    except (OSError, ValueError):\n        return False\n",
+      "new": "        parent = _resolved(parent)\n    except (OSError, ValueError):\n        return True\n",
       "tests": [
         "tests/test_doctor.py::test_a_path_that_will_not_resolve_is_inside_nothing"
       ],
@@ -5774,6 +5798,116 @@
         "tests/test_init.py::test_a_store_with_no_stranded_temporaries_says_nothing_about_them"
       ],
       "why": "the leftover this names is the write's own `<name>.<pid>.tmp`; told to delete anything ending `.tmp`, an adopter is being pointed at their own files."
+    },
+    {
+      "name": "scope-resolution-distrusts-the-user-scope-no-variable-moved",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    user_owned = not config_value or not _under_cwd(\n",
+      "new": "    user_owned = not _under_cwd(\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_user_scope_is_untrusted_only_where_a_variable_moved_it"
+      ],
+      "why": "`~/.claude` is under the cwd for every session standing in home, so containment alone reports an adopter's own settings file as one somebody else's checkout chose and answers it with a repair addressed to that checkout"
+    },
+    {
+      "name": "scope-resolution-reads-one-settings-file-as-two-scopes",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    project_dir = \"\" if not here or _resolved(here) == _resolved(user) else here\n",
+      "new": "    project_dir = here\n",
+      "tests": [
+        "tests/test_doctor.py::test_one_settings_file_is_one_scope_however_many_scopes_name_it"
+      ],
+      "why": "run from the directory holding the config directory, the adopter's own settings file is read a second time as the checked-in scope and reported as travelling with every clone"
+    },
+    {
+      "name": "scope-resolution-gives-the-checked-in-scope-a-file-no-checkout-has",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            os.path.join(project_dir, SETTINGS_NAME) if project_dir else \"\",\n",
+      "new": "            os.path.join(project_dir, SETTINGS_NAME),\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_scope_with_no_file_is_not_a_scope_that_failed"
+      ],
+      "why": "a scope with no directory to model has no file, and joining an empty directory names a relative one that resolves from wherever the session stands"
+    },
+    {
+      "name": "scope-resolution-empties-the-local-file-with-the-checked-in-one",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            os.path.join(here, LOCAL_SETTINGS_NAME) if here else \"\",\n",
+      "new": "            os.path.join(project_dir, LOCAL_SETTINGS_NAME) if project_dir else \"\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_local_settings_file_of_this_checkout_is_a_scope_of_its_own"
+      ],
+      "why": "the local settings file outranks every scope an adopter can edit, so emptied alongside the checked-in one a switch written only there is a switch no scope in the list read"
+    },
+    {
+      "name": "auto-memory-counts-a-store-that-would-not-resolve-as-compared",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            compared = False\n",
+      "new": "            pass\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_store_that_would_not_resolve_is_not_a_directory_outside_every_store"
+      ],
+      "why": "a store naming a root the config does not define raises before it is compared with anything, and the loop falls out with the same empty tuple a completed comparison returns — so the row tells an adopter to move a directory out of the store it is already in"
+    },
+    {
+      "name": "auto-memory-compares-two-spellings-of-one-directory-raw",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    try:\n        return directory != directory.swapcase() and os.path.samestat(\n            os.stat(directory), os.stat(directory.swapcase())\n        )\n    except (OSError, ValueError):\n        return False\n",
+      "new": "    return False\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_corpus_root_spelled_in_another_case_is_the_same_directory"
+      ],
+      "why": "realpath answers in the spelling it was handed, so on a folding filesystem a corpus root reached through a differently-cased ancestor is reported as outside every store"
+    },
+    {
+      "name": "auto-memory-reads-a-directory-it-cannot-stat-as-one-that-is-not-there",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    except (OSError, ValueError):\n        return None\n",
+      "new": "    except (OSError, ValueError):\n        return False\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_derived_directory_this_run_cannot_stat_is_not_reported_as_not_there_yet"
+      ],
+      "why": "a directory this process may not stat is one nothing read, and 'not there yet' sends an adopter away from memories this run never counted"
+    },
+    {
+      "name": "auto-memory-reads-a-directory-that-is-not-there-as-one-it-could-not-read",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    except (FileNotFoundError, NotADirectoryError):\n        return False\n",
+      "new": "    except (FileNotFoundError, NotADirectoryError):\n        return None\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_derived_directory_this_run_cannot_stat_is_not_reported_as_not_there_yet"
+      ],
+      "why": "the third value is for a read that failed, and spent on a directory that is simply absent it costs the row the one sentence an adopter with no memories yet needs"
+    },
+    {
+      "name": "auto-memory-discloses-a-comparison-it-did-make",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if compared and not unplaced:\n        return \"\"\n",
+      "new": "",
+      "tests": [
+        "tests/test_doctor.py::test_a_gated_store_still_holds_what_the_harness_writes_into_it"
+      ],
+      "why": "every row would carry the sentence that voids its own answer, and a disclosure that fires on a run that read everything is one no reader believes on the run that did not"
+    },
+    {
+      "name": "auto-memory-drops-the-count-from-the-branch-that-could-not-settle",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                    _left_behind(outside),\n",
+      "new": "",
+      "tests": [
+        "tests/test_doctor.py::test_the_branch_that_could_not_settle_names_how_many_and_never_which"
+      ],
+      "why": "the remedy for a directory outside every store arrives over a count its reader was never shown, which is how many memories are where nothing retrieves them"
     },
     {
       "name": "packaging-a-floor-interpreter-is-taken-on-its-name",

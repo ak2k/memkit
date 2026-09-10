@@ -365,9 +365,13 @@ honours and reports which file declares it — by the role that file plays, neve
 by its path — and how the directory it names stands to a corpus root: inside one,
 so what the harness writes there is retrieved, or in one of the placements that
 keeps it out of retrieval, from a name retrieval prunes to outside every store.
-Where the key is unset it says the harness writes to the directory it derives
-from the git root, under its own config directory, and counts the memories
-already outside every store. It renders no path on any branch.
+Could not look is a third answer and not a quieter version of the second: where
+a store this run had to read would not resolve, the row places the directory
+against nothing and sends you to that store rather than to the directory. Where
+the key is unset it says the harness writes to the directory it derives from the
+git root, under its own config directory, and counts the memories already
+outside every store — or, where a store would not resolve, the memories nothing
+was compared with. It renders no path on any branch.
 
 ### Before you wire it up
 
