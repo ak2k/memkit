@@ -2114,6 +2114,30 @@
       "why": "JSON null, 0, the empty string, [] and {} are all falsy in Python and none of them stops the harness writing. Read as off, each one produces this row's single most confident sentence — memkit is the only memory system here — on a machine that has two."
     },
     {
+      "name": "auto-memory-reports-the-feature-running-over-a-switch-that-is-off",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if enabled is False:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_doctor.py::test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone",
+        "tests/test_doctor.py::test_only_false_turns_the_switches_off"
+      ],
+      "why": "A machine whose switch is off is then described as one the harness is still writing on, and the adopter is sent to turn off a feature already off. The other probes in this branch mutate one clause each, so none of them answers for the hundred lines as a whole."
+    },
+    {
+      "name": "auto-memory-reports-a-derived-directory-over-a-key-that-names-one",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    if configured is not None:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_directory_inside_a_store_is_retrieved_and_settles_the_row",
+        "tests/test_doctor.py::test_the_corpus_root_itself_is_named_as_a_rewrite_rather_than_a_pass"
+      ],
+      "why": "The directory the settings key names is then reported as the one derived from the git root, so the row answers \"where does the harness write\" about a directory nothing configured. The other probes in this branch mutate one clause each, so none of them answers for the whole of it."
+    },
+    {
       "name": "inventory-counts-a-directory-whose-name-ends-in-md",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",

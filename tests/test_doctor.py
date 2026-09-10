@@ -3795,7 +3795,6 @@ def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
     path = _store_config(profile, stores=["personal"])
     refused = under_home / doctor.SETTINGS_NAME
     refused.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
-    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
     refused.chmod(0o000)
     try:
         (row,) = _only(
@@ -3938,7 +3937,6 @@ def test_a_directory_beside_home_keeps_the_name_it_has(profile, monkeypatch) -> 
     an adopter chose the name of, through the re-speller, in a report they paste
     somewhere.
     """
-    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
     for tail in ("_old", "-old", "old"):
         beside = profile / f"home{tail}"
         corpus = beside / "stores" / "personal" / "search"

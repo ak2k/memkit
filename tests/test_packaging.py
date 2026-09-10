@@ -798,6 +798,52 @@ def _guard_table() -> list:
     return table
 
 
+# A guard longer than this is one no reader holds in their head, and the
+# pairing below accepts a probe that lands anywhere inside it. Every guard in
+# this closure but the two the auto-memory row's own branches open fits inside
+# a quarter of it.
+_WIDE_GUARD = 40
+
+
+def _empties(
+    text: str, module: str, qualified: str, kind: str, ordinal: int, probe: dict
+) -> bool:
+    """True when this probe leaves that guard's condition a false constant.
+
+    Nothing reaches the body then, so one verdict answers for every line of
+    it — which is exactly what a probe mutating one clause a hundred lines in
+    cannot do.
+    """
+    if kind != "if->exit" or text.count(probe["old"]) != 1:
+        return False
+    try:
+        tree = ast.parse(text.replace(probe["old"], probe["new"], 1))
+    except SyntaxError:
+        return False
+    functions = _qualified_functions(tree, module)
+    if qualified not in functions:
+        return False
+    blocked = {
+        id(node)
+        for name, (_module, node) in functions.items()
+        if name != qualified
+    }
+    found = sorted(
+        (
+            guard
+            for found_kind, guard in _guards_owned_by(
+                functions[qualified][1], blocked
+            )
+            if found_kind == kind
+        ),
+        key=lambda guard: (guard.lineno, guard.end_lineno),
+    )
+    if len(found) < ordinal:
+        return False
+    condition = found[ordinal - 1].test
+    return isinstance(condition, ast.Constant) and not condition.value
+
+
 def _printed(table: list) -> str:
     lines = []
     for name, qualified, kind, ordinal, lineno, end_lineno, covering in table:
@@ -863,6 +909,50 @@ def test_every_guard_in_the_auto_memory_closure_has_a_probe() -> None:
     )
 
 
+def test_a_guard_too_wide_for_one_probe_has_one_that_empties_it() -> None:
+    """A mutation a hundred lines inside a body is not coverage of the body.
+
+    The pairing above asks only that some probe land inside the guard, which
+    is the whole answer for a guard of five lines and almost none of it for
+    the two the auto-memory row's branches open: four probes sat inside the
+    off-switch branch, and the branch could have gone whole with three of them
+    still green.
+
+    A probe that leaves the condition a false constant answers for every line
+    at once, because nothing reaches any of them. Splitting the body closes
+    this the other way, and either is the fix — the budget is a reading limit
+    rather than a shape.
+    """
+    table = _guard_table()
+    assert len(table) > 60, "the walk found almost no guards — it is broken"
+    probes = json.loads(
+        (REPO / "tools" / "mutation_probes.json").read_text(encoding="utf-8")
+    )["probes"]
+    by_name = {probe["name"]: probe for probe in probes}
+
+    unspanned = []
+    for module in _CLOSURE_MODULES:
+        text = (REPO / module).read_text(encoding="utf-8")
+        spans = _probe_spans(text, probes, module)
+        for name, qualified, kind, ordinal, lineno, end_lineno, _covering in table:
+            if name != Path(module).name:
+                continue
+            width = end_lineno - lineno + 1
+            if width <= _WIDE_GUARD:
+                continue
+            if not any(
+                _empties(text, module, qualified, kind, ordinal, by_name[probe])
+                for probe, first, last in spans
+                if first <= lineno <= last
+            ):
+                unspanned.append((name, qualified, kind, ordinal, width))
+    assert not unspanned, (
+        f"guards over {_WIDE_GUARD} lines that no probe empties: {unspanned}\n"
+        "write one that leaves the condition false — the corpus spells that "
+        "`if False:` — or split the body so no guard runs this wide."
+    )
+
+
 def test_every_probe_on_these_two_files_still_anchors() -> None:
     """A moved anchor is red here, not only in the sweep.
 
@@ -893,4 +983,4 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 111, checked
+    assert checked == 113, checked
