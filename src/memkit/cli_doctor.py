@@ -530,29 +530,29 @@ def _config_dir() -> tuple:
 
 def settings_scopes(cwd: str | None = None) -> list[Settings]:
     """Every scope, most authoritative first."""
-    user = _config_dir()[1]
+    config_value, user = _config_dir()
     if cwd is None:
         cwd = _session_cwd()
-    # THE TRUSTED SCOPE'S LOCATION IS AN ENVIRONMENT VARIABLE. Whatever can set
-    # `$CLAUDE_CONFIG_DIR` — direnv in a checkout, a wrapper script — decides
-    # where the `user` scope is read from, so pointed inside the session's own
-    # directory it is the project scope under another name. The `project` and
-    # `local` entries below are already untrusted by their paths; this is the
-    # same rule for the one whose path is somebody's to choose.
-    user_owned = not _under_cwd(os.path.join(user, SETTINGS_NAME))
-    # ONE FILE IS ONE SCOPE. Run from the directory that holds the config
-    # directory — an adopter's own home, which is where a first `memkit doctor`
-    # is most often typed — `.claude/` under the cwd IS the user scope, and
-    # read a second time as `project` the adopter's own settings file was
-    # reported as checked into a repository and travelling with every clone.
-    # Both scopes go, not just `project`: what these two entries model is a
-    # directory somebody else's checkout decides, and here there is no such
-    # directory to model.
-    project_dir = (
-        ""
-        if not cwd or _resolved(os.path.join(cwd, ".claude")) == _resolved(user)
-        else os.path.join(cwd, ".claude")
+    here = os.path.join(cwd, ".claude") if cwd else ""
+    # THE TRUSTED SCOPE'S LOCATION IS AN ENVIRONMENT VARIABLE, and what is
+    # asked is what was SET rather than where the default lands. Whatever can
+    # set `$CLAUDE_CONFIG_DIR` — direnv in a checkout, a wrapper script —
+    # decides where the `user` scope is read from, so pointed inside the
+    # session's own directory it is the project scope under another name. With
+    # the variable unset there is no such chooser: `~/.claude` is under the cwd
+    # for every session standing anywhere in home, and the containment test
+    # alone reported an adopter's own settings file as one their machine had
+    # not placed.
+    user_owned = not config_value or not _under_cwd(
+        os.path.join(user, SETTINGS_NAME)
     )
+    # ONE FILE IS ONE SCOPE, and it is the CHECKED-IN entry that models a file
+    # somebody else's checkout carries. Run from the directory that holds the
+    # config directory — an adopter's own home, which is where a first `memkit
+    # doctor` is most often typed — `.claude/` under the cwd IS the user scope,
+    # and read a second time as `project` the adopter's own settings file was
+    # reported as checked into a repository and travelling with every clone.
+    project_dir = "" if not here or _resolved(here) == _resolved(user) else here
     return [
         Settings("managed", os.path.join(_managed_dir(), MANAGED_SETTINGS_NAME)),
         Settings("user", os.path.join(user, SETTINGS_NAME),
@@ -562,10 +562,17 @@ def settings_scopes(cwd: str | None = None) -> list[Settings]:
             os.path.join(project_dir, SETTINGS_NAME) if project_dir else "",
             adopter_owned=False,
         ),
+        # AND THE LOCAL FILE IS A SCOPE OF ITS OWN WHEREVER THIS IS. It is a
+        # different file from the user scope's in any directory, it outranks
+        # every scope an adopter can edit, and emptied alongside `project` a
+        # switch written only there was one no scope in this list had read.
+        # Owned by the adopter exactly where nothing else chose the directory:
+        # somebody else's checkout, or a variable pointing at one, makes it
+        # theirs.
         Settings(
             "local",
-            os.path.join(project_dir, LOCAL_SETTINGS_NAME) if project_dir else "",
-            adopter_owned=False,
+            os.path.join(here, LOCAL_SETTINGS_NAME) if here else "",
+            adopter_owned=not project_dir and not config_value,
         ),
     ]
 
@@ -729,7 +736,7 @@ def _with_unparsed(rows: list, scopes: list) -> list:
         return rows
     fix = _unparsed_remedy(scopes)
     # EVERY SPELLING A REMEDY USES. The one this rule most needs to drop is
-    # `_CHECKOUT_REMEDY`, and it names the file the way an adopter standing in
+    # `_TAKE["project"]`, and it names the file the way an adopter standing in
     # that directory would — relatively; matched on the absolute form alone it
     # walked straight through, and one remedy then said both "make
     # settings.local.json parse" and "set a key in settings.local.json".
@@ -3466,19 +3473,6 @@ _TRAVELS = {
     "": "",
 }
 
-# The second half of that remedy, which is a different fact per scope. Nothing
-# is asserted beyond what is measured: which directory the scopes were read
-# from is config-route's answer rather than this row's, and nothing here runs
-# git inside the session's checkout to learn whether the untracked file is.
-_CONVENTION = {
-    "local": " — and check that file is untracked, because a bare `git add` "
-    "tracks it and then a clone carries it too",
-    "user": " — config-route names the directory this run read its scopes from",
-    "managed": "",
-    "project": "",
-    "": "",
-}
-
 # What the row is deciding, where a remedy has to say so. A closed set rather
 # than a phrase passed in, so no caller can put a value of its own in the
 # sentence.
@@ -3571,19 +3565,38 @@ _CHECKOUT_COST = (
     "once you trust the folder"
 )
 
-# And what to do about it. NOT "set it in your user settings", which is the
+# WHAT TO DO ABOUT EACH SCOPE'S FILE, whole, in one table keyed by the scope
+# that decided. What this replaced was a shared sentence with a per-scope tail
+# on it, and the shared half is what went wrong: it told every scope but one to
+# take the key out of its file, which is advice a `managed` file's reader
+# cannot act on and should not be given — an administrator's policy outranks
+# everything an adopter can write, so there is no edit that would win.
+#
+# The `project` entry is NOT "set it in your user settings", which is the
 # obvious advice and does nothing: `user` ranks BELOW the checked-in file in
 # the measured order, so a value there is masked for as long as that file sets
 # the key. `.claude/settings.local.json` outranks it, which is the one edit
 # that does not require touching the repository — and being untracked is a
 # CONVENTION rather than something git enforces, so the instruction says to
 # keep it that way instead of asserting that it already is.
-_CHECKOUT_REMEDY = (
-    "either take the key out of that file or set it in the local settings file "
-    "of this checkout, which outranks it — and keep that file untracked, which "
-    "nothing but convention makes it. Your own settings rank below both and "
-    "change nothing while it is set"
-)
+#
+# Nothing is asserted beyond what is measured: which directory the scopes were
+# read from is config-route's answer rather than this row's, and nothing here
+# runs git inside the session's checkout to learn whether the untracked file is.
+_TAKE = {
+    "managed": "there is no file of yours that would win: an administrator "
+    "administers that one for this machine and every scope you can write "
+    "ranks below it",
+    "project": "either take the key out of that file or set it in the local "
+    "settings file of this checkout, which outranks it — and keep that file "
+    "untracked, which nothing but convention makes it. Your own settings rank "
+    "below both and change nothing while it is set",
+    "local": "take the key out of that file — and check it is untracked, "
+    "because a bare `git add` tracks it and then a clone carries it too",
+    "user": "take the key out of that file — config-route names the directory "
+    "this run read its scopes from",
+    "": "take the key out of the file that set it",
+}
 
 
 def _checkout_remedy(decides: str, scope: str) -> str:
@@ -3600,16 +3613,21 @@ def _checkout_remedy(decides: str, scope: str) -> str:
     inside the session's directory moves the trusted scope into this tree
     without the local settings file being involved at all, so the convention to
     check is about a file the adopter would find the key absent from.
+
+    AND THE INSTRUCTION IS READ OUT OF `_TAKE` RATHER THAN ASSEMBLED. What was
+    shared between the scopes was the half that had to differ: "rather than in
+    a file your own machine placed for you" is a claim about who placed a file,
+    which this run reads for the `user` scope and never learns for the others,
+    and "take the key out of it" is an edit a policy file's reader cannot make.
     """
     if scope == harness_memory.CHECKOUT_SCOPE:
         return (
             _CHECKOUT_COST + ". To decide " + _DECIDE[decides] + ", "
-            + _CHECKOUT_REMEDY + "."
+            + _TAKE[scope] + "."
         )
     return (
-        "That value is in " + _ROLE[scope] + " rather than in a file your own "
-        "machine placed for you. To decide " + _DECIDE[decides] + ", take the "
-        "key out of it" + _CONVENTION[scope] + "."
+        "That value is in " + _ROLE[scope] + ". To decide " + _DECIDE[decides]
+        + ", " + _TAKE[scope] + "."
     )
 
 
@@ -3655,13 +3673,19 @@ def _env_switch_note(forced) -> str:
 
 
 def _env_switch_remedy(forced) -> str:
-    """The remedy for a switch an environment variable decided."""
+    """The remedy for a switch an environment variable decided.
+
+    THE FORCED-ON HALF NAMES NO SETTINGS VALUE, and that is the whole of it:
+    the harness reads this variable before it opens a settings file, so a
+    remedy spelling the key and the value to write is a repair whose own row
+    said two clauses earlier that it changes nothing. Nor does it repeat WHY —
+    `_env_switch_note` is in the same envelope, and this string closes a
+    remedy that already carries two other routes inside one bound.
+    """
     if forced:
         return (
             "Unset $" + _NAMED["disable_env"] + " wherever it is exported — a "
-            "shell profile, a direnv file in this checkout, a wrapper script — "
-            'or set it to 1. While it holds that value, "'
-            + _NAMED["enabled_key"] + '": false changes nothing.'
+            "shell profile, a direnv file, a wrapper script — or set it to 1."
         )
     return (
         "That switch is off only for processes that inherit $"
@@ -4099,7 +4123,12 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # two of them, the detail four, and the row went on making its most
     # reassuring claim while an environment variable decided where the harness
     # writes and a checked-in path decided what was counted.
-    disclosures = (environed, redirected, unrooted, unread, store_unknown)
+    #
+    # THE TWO THAT OWN A REMEDY COME FIRST. `_bound` cuts a detail from the
+    # end, so a disclosure ordered behind the others is the one a long row
+    # drops — and dropping it leaves the repair for it standing over a detail
+    # that never said anything was unread.
+    disclosures = (unread, unrooted, environed, redirected, store_unknown)
     unsure = _detail(*disclosures)
     # ONE REMEDY PER DISCLOSURE, because the gate is wider than the two it was
     # written for. A disclosure with no repair of its own gets none rather than
@@ -4310,6 +4339,14 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
                     travels,
                     *disclosures,
                     switched_on,
+                    # THE INVENTORY THAT KEPT THIS BRANCH FROM SETTLING, in the
+                    # branch it falls to. The gate above reads the walk — a
+                    # project directory in a store and not retrieved, or
+                    # outside every store, stops the settled answer — and this
+                    # detail listed neither, so the remedy arrived over counts
+                    # its reader was never shown.
+                    _already_placed(in_store, held),
+                    _left_behind(outside),
                     recent,
                     odd_enabled,
                 ),
@@ -4339,7 +4376,15 @@ def _auto_memory_rows(machine: Machine) -> list[Check]:
     # A remedy NEVER SENDS THE ADOPTER INTO THE CHECKOUT — and "set it in your
     # user settings" is worse than nothing while a scope above them sets the
     # key, which is the whole of what `_checkout_remedy` exists to say.
-    if steered:
+    #
+    # NOR DOES IT NAME A SETTINGS VALUE THE ENVIRONMENT OUTRANKS. A variable
+    # the harness reads before it opens a settings file at all is the state
+    # this branch is reached in most often, and the switch-off sentence was
+    # rendered from the config directory alone: it closed with the one edit
+    # its own detail had just called moot.
+    if forced:
+        switch_off = _env_switch_remedy(forced)
+    elif steered:
         switch_off = (
             'To run memkit alone, set "' + _NAMED["enabled_key"] + '": false '
             "in your own settings file under your home config directory, and "

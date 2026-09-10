@@ -1728,7 +1728,7 @@
         "tests/test_doctor.py::test_doctor_never_runs_a_hook_a_repository_registered"
       ],
       "why": "`.claude/settings.json` is the checkout's file: trusting it lets a cloned repository choose a program doctor runs as the user with the session's whole environment",
-      "occurrences": 2
+      "occurrences": 1
     },
     {
       "name": "two-registrations-serving-one-prompt-is-a-fail",
@@ -5488,6 +5488,50 @@
         "tests/test_init.py::test_a_store_with_no_stranded_temporaries_says_nothing_about_them"
       ],
       "why": "the leftover this names is the write's own `<name>.<pid>.tmp`; told to delete anything ending `.tmp`, an adopter is being pointed at their own files."
+    },
+    {
+      "name": "scope-resolution-distrusts-the-user-scope-no-variable-moved",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    user_owned = not config_value or not _under_cwd(\n",
+      "new": "    user_owned = not _under_cwd(\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_user_scope_is_untrusted_only_where_a_variable_moved_it"
+      ],
+      "why": "`~/.claude` is under the cwd for every session standing in home, so containment alone reports an adopter's own settings file as one somebody else's checkout chose and answers it with a repair addressed to that checkout"
+    },
+    {
+      "name": "scope-resolution-reads-one-settings-file-as-two-scopes",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    project_dir = \"\" if not here or _resolved(here) == _resolved(user) else here\n",
+      "new": "    project_dir = here\n",
+      "tests": [
+        "tests/test_doctor.py::test_one_settings_file_is_one_scope_however_many_scopes_name_it"
+      ],
+      "why": "run from the directory holding the config directory, the adopter's own settings file is read a second time as the checked-in scope and reported as travelling with every clone"
+    },
+    {
+      "name": "scope-resolution-gives-the-checked-in-scope-a-file-no-checkout-has",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            os.path.join(project_dir, SETTINGS_NAME) if project_dir else \"\",\n",
+      "new": "            os.path.join(project_dir, SETTINGS_NAME),\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_scope_with_no_file_is_not_a_scope_that_failed"
+      ],
+      "why": "a scope with no directory to model has no file, and joining an empty directory names a relative one that resolves from wherever the session stands"
+    },
+    {
+      "name": "scope-resolution-empties-the-local-file-with-the-checked-in-one",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            os.path.join(here, LOCAL_SETTINGS_NAME) if here else \"\",\n",
+      "new": "            os.path.join(project_dir, LOCAL_SETTINGS_NAME) if project_dir else \"\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_the_local_settings_file_of_this_checkout_is_a_scope_of_its_own"
+      ],
+      "why": "the local settings file outranks every scope an adopter can edit, so emptied alongside the checked-in one a switch written only there is a switch no scope in the list read"
     }
   ]
 }
