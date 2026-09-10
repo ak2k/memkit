@@ -2015,36 +2015,6 @@ def test_a_confined_directory_is_made_where_the_guard_judged_it(
     assert (plain / "search").is_dir()
 
 
-def test_every_escape_guard_call_uses_the_value_it_returns(profile) -> None:
-    """The guard returns the ONE resolution it judged, and a call that drops it
-    has judged one path and written another. Grep-able as a lint, so it is one:
-    no call to it may stand alone as a statement.
-    """
-    import ast
-
-    tree = ast.parse(
-        pathlib.Path(init.__file__).read_text(encoding="utf-8"), init.__file__
-    )
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_refuse_escape"
-    ]
-    assert len(calls) >= 2, len(calls)
-    dropped = [
-        node.value.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "_refuse_escape"
-    ]
-    assert dropped == [], dropped
-
-
-
 def test_no_oserror_handler_swallows_silently(profile) -> None:
     """A READ THAT COULD NOT LOOK NEVER ANSWERS WITH THE EMPTY COLLECTION.
 

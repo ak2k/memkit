@@ -762,6 +762,197 @@ def test_every_test_file_is_in_the_flake_suite_map() -> None:
     assert len(set(mapped.values())) == len(mapped), sorted(mapped.items())
 
 
+# --- a judgment made and then dropped, over every path-judging module --------
+
+
+# Every name here JUDGES — a path, a descriptor, a repository, the filesystem
+# under one — and its answer IS the value. A call made for its side effect has
+# asked the question and then acted on something else: the path re-derived
+# from a string, the directory reopened by name, the descriptor taken twice.
+# Each module was carrying its own copy of this lint over its own table, so a
+# module that grew a fifth table grew no lint; one test over `(module, table)`
+# is the whole class in one place.
+#
+# Each entry is `(module, guards, uncalled, floor)`. `uncalled` names the
+# guards deliberately at zero call sites, so the non-vacuity half below can
+# still demand that every OTHER name is reached. `floor` is the module's call
+# count measured when the entry was written: the lint cannot silently empty,
+# and it cannot silently shrink either.
+_PATH_GUARD_MODULES = (
+    (
+        "src/memkit/cli_init.py",
+        (
+            (
+                "_refuse_escape",
+                "the ONE resolution it judged; a dropped call judged one path"
+                " and wrote another",
+            ),
+        ),
+        (),
+        2,
+    ),
+    (
+        "src/memkit/cli_doctor.py",
+        (
+            ("_within", "containment over two resolved paths, one spelling of one rule"),
+            ("_pruned", "whether the indexing walk descends to it at all"),
+            ("_folds", "whether the filesystem holding it reads two cases as one"),
+            ("_present", "directory, not a directory, or this run could not look"),
+            ("_placed", "whether anything retrieves what lands there, and how"),
+            ("_store_relation", "which store the directory overlaps, and how"),
+        ),
+        (),
+        13,
+    ),
+    (
+        "src/memkit/memory_prompt_recall.py",
+        (
+            ("_named_dir_flags", "the --dir door; dropping (scan, mark) drops both"),
+            ("_repo_root", "which checkout, and which spelling of it; None is an answer"),
+            ("_project_store", "(store or None, reason) — the refusal sentence IS the value"),
+            ("_store_path", "the containment decision, and the only one"),
+            ("_store_live_dir", "the one predicate for 'is this store searchable'"),
+            ("_inside", "containment over two resolved paths, one spelling of one rule"),
+            ("_cwd_in_root", "whether the session cwd is inside a gated root"),
+            ("_regular_fd", "the judged descriptor and its stat ARE the value"),
+            ("_lex_root", "the root a path was filed under"),
+            ("_lex_read_only", "the scan half, read through an untyped handle"),
+            ("_lex_marked", "the mark half; the pointer's only provenance claim"),
+            ("path_refusal", "why a path may not be acted on, or the empty string"),
+            ("_trust_gate", "what an uninitialized install refuses with, or None"),
+        ),
+        # The module's public path judgment, in the set at zero call sites so
+        # that the first call site someone adds arrives under the rule.
+        ("path_refusal",),
+        26,
+    ),
+    (
+        "tools/harness_shape.py",
+        (
+            ("_regular_fd", "the descriptor IS the answer: an fstat judged what was opened"),
+            ("_resolves_inside", "whether a link reaches bytes this capture is reading"),
+            ("_outside", "whether a row target escapes the directory being walked"),
+            ("_row_present", "whether the row names something in the directory"),
+            ("_open_dir", "a descriptor for the level, refusing a link or a file at it"),
+            ("_landing_dir", "where a write actually lands, which is not its name"),
+            ("_occupant", "which way a destination name is already taken"),
+            ("_git_says_worktree", "git's own answer about a directory"),
+            ("_worktree_above", "whether a checkout stands above the descriptor"),
+            ("_inside_worktree", "the same question asked about a directory name"),
+            ("_stdout_is_a_file", "whether fd 1 is a file rather than a pipe"),
+            ("_stdout_destination", "the path fd 1 writes to, or no answer"),
+            ("_is_own_config_dir", "whether the tree named is this machine's own"),
+            ("create", "_Landing: the descriptor of the destination it just made"),
+            ("discard", "_Landing: whether what it created is gone from the name"),
+            ("inside_worktree", "_Landing: the checkout question asked of the descriptor"),
+        ),
+        (),
+        27,
+    ),
+)
+
+
+def _defined_functions(tree: ast.AST) -> set:
+    """Every `def` in one module, at module level or on a class.
+
+    Not module level alone: three of the shape tool's guards are `_Landing`
+    methods, and a table that could not name them would have to leave the
+    class's own judgments out of the lint.
+    """
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _discarded(target: ast.expr) -> bool:
+    """Whether an assignment target means "the answer is not read".
+
+    `_ = guard(...)` and `*_, = guard(...)` are spellings of standing alone
+    with a comment's worth of ceremony and nothing else.
+    """
+    if isinstance(target, ast.Starred):
+        return _discarded(target.value)
+    if isinstance(target, ast.Name):
+        return target.id == "_"
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return bool(target.elts) and all(
+            _discarded(element) for element in target.elts
+        )
+    return False
+
+
+@pytest.mark.parametrize(
+    "entry", _PATH_GUARD_MODULES, ids=[entry[0] for entry in _PATH_GUARD_MODULES]
+)
+def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
+    """A judgment nobody reads is a judgment that decided nothing.
+
+    Each name in the module's table answers a question and the caller acts on
+    the answer; a call standing alone as a statement has asked it and then
+    gone on to act on something else. Every instance of that class in these
+    four modules was a real defect, so the cheap catch for the next one is
+    that no call to any of them may be an expression statement or be assigned
+    to a name that means "not read".
+
+    Two non-vacuity halves, because a lint that silently empties is worse than
+    none: every name must still resolve to a `def` in its module, so a rename
+    fails here rather than quietly clearing the set, and the module's call
+    sites must still meet the floor measured beside it.
+
+    The modules are read as TEXT and never imported. The hook has to be —
+    importing it would run its module body in this process — and the other
+    three follow the same rule so that the walk is the same walk.
+    """
+    module, guards, uncalled, floor = entry
+    source = (REPO / module).read_text(encoding="utf-8")
+    tree = ast.parse(source, module)
+    named = frozenset(name for name, _reason in guards)
+
+    missing = sorted(named - _defined_functions(tree))
+    assert not missing, (
+        f"{module}: {missing} is in the guard table and is not defined there — "
+        "a rename that empties this lint is what this half catches"
+    )
+
+    def called(node) -> str | None:
+        if not isinstance(node, ast.Call):
+            return None
+        if isinstance(node.func, ast.Name) and node.func.id in named:
+            return node.func.id
+        if isinstance(node.func, ast.Attribute) and node.func.attr in named:
+            return node.func.attr
+        return None
+
+    calls = [answer for answer in map(called, ast.walk(tree)) if answer is not None]
+    assert len(calls) >= floor, f"{module}: {len(calls)} call sites, floor {floor}"
+    unreached = sorted(named - set(calls) - set(uncalled))
+    assert not unreached, (
+        f"{module}: {unreached} is named and never called — the lint would "
+        "pass over a module that judges nothing"
+    )
+
+    def throws_away(node) -> bool:
+        """Whether the statement drops whatever its value expression answers."""
+        if isinstance(node, ast.Expr):
+            return True
+        if isinstance(node, ast.Assign):
+            return all(_discarded(target) for target in node.targets)
+        if isinstance(node, ast.AnnAssign):
+            return _discarded(node.target)
+        return False
+
+    dropped = []
+    for node in ast.walk(tree):
+        if not throws_away(node):
+            continue
+        answer = called(node.value)
+        if answer is not None:
+            dropped.append(f"{module}:{node.lineno}  {answer}")
+    assert dropped == [], dropped
+
+
 # --- every guard in the auto-memory closure, and the probe that pins it ------
 
 

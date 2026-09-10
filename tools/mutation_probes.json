@@ -5706,7 +5706,7 @@
       "new": "        _refuse_escape(action.path, action.confine)\n        os.makedirs(action.path, mode=mode, exist_ok=True)\n",
       "tests": [
         "tests/test_init.py::test_a_confined_directory_is_made_where_the_guard_judged_it",
-        "tests/test_init.py::test_every_escape_guard_call_uses_the_value_it_returns"
+        "tests/test_packaging.py::test_every_guard_call_uses_the_value_it_returns[src/memkit/cli_init.py]"
       ],
       "why": "`os.makedirs` re-traverses every component of the name it is handed, so a guard that judges `action.path` and then writes `action.path` has asked the question twice — a link swapped in between the two answers puts the directory, and every memory copied under it, outside the store the guard approved."
     },
@@ -6680,7 +6680,7 @@
       "old": "    config_dir = os.path.expanduser(args.config_dir)\n",
       "new": "    config_dir = os.path.expanduser(args.config_dir)\n    _outside(config_dir)\n",
       "tests": [
-        "tests/test_harness_shape.py::test_every_guard_call_uses_the_value_it_returns"
+        "tests/test_packaging.py::test_every_guard_call_uses_the_value_it_returns[tools/harness_shape.py]"
       ],
       "why": "A guard call whose answer is dropped judged one thing and let the caller act on another, which is every instance of that class this file has closed: the path re-derived from a string, the directory reopened by name, the descriptor taken twice. The lint is the cheap catch for the next call site, and a bare call is what it has to see."
     },
@@ -7328,7 +7328,7 @@
       "old": "    desc = _description(path, _lex_root(path))\n    shown = \", \".join(matched[:6]) + (\", …\" if len(matched) > 6 else \"\")\n",
       "new": "    desc = _description(path, _lex_root(path))\n    _lex_marked(path)\n    shown = \", \".join(matched[:6]) + (\", …\" if len(matched) > 6 else \"\")\n",
       "tests": [
-        "tests/test_memory_prompt_recall.py::test_every_path_guard_call_uses_the_value_it_returns"
+        "tests/test_packaging.py::test_every_guard_call_uses_the_value_it_returns[src/memkit/memory_prompt_recall.py]"
       ],
       "why": "a guard that judges a path returns the resolution it judged, and a call made for its effect leaves the caller free to act on a path nothing looked at — this module has shipped that twice, in the spelling `_repo_root` was asked about and the one the scan then used"
     },
