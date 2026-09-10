@@ -4421,7 +4421,7 @@
       "name": "admission-file-count-is-last-releases",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**103 files, about 3.6 MiB**",
+      "old": "**108 files, about 4.0 MiB**",
       "new": "**101 files, about 3.0 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
@@ -5488,6 +5488,861 @@
         "tests/test_init.py::test_a_store_with_no_stranded_temporaries_says_nothing_about_them"
       ],
       "why": "the leftover this names is the write's own `<name>.<pid>.tmp`; told to delete anything ending `.tmp`, an adopter is being pointed at their own files."
+    },
+    {
+      "name": "packaging-a-floor-interpreter-is-taken-on-its-name",
+      "module": "packaging",
+      "file": "tests/test_packaging.py",
+      "old": "    return interpreter if out.stdout.strip() == version else None\n",
+      "new": "    return interpreter\n",
+      "tests": [
+        "tests/test_packaging.py::test_of_version_believes_the_answer_and_not_the_name"
+      ],
+      "why": "a pyenv or Nix shim called python3.8 forwards to whatever it wraps, so a floor case that trusts the name runs 3.12 and reports the floor green"
+    },
+    {
+      "name": "harness-shape-file-keeps-a-long-stem",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if name == INDEX_NAME:\n            return name\n",
+      "new": "        if name == INDEX_NAME or len(os.path.splitext(name)[0]) >= 20:\n            return name\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "A memory file is named after what it is about, so the long ones are where identity lives: `worktree_discipline_shared_checkouts.md` names a practice and a person's habits. A threshold that waves long names through is the passthrough the whole suite survived until the sentinel was made 28 characters."
+    },
+    {
+      "name": "harness-shape-key-keeps-a-long-segment",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            \"\" if not segment else self._assign(self._segments, segment, \"s\")\n",
+      "new": "            \"\" if not segment else (segment if len(segment) >= 20 else self._assign(self._segments, segment, \"s\"))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "A project key is a sanitised absolute path, so its long segments are the repository name and the home directory it sits in. Kept, a shape carries the one string that identifies whose machine it came from."
+    },
+    {
+      "name": "harness-shape-key-passes-a-single-segment-through",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    def key(self, key: str) -> str:\n",
+      "new": "    def key(self, key: str) -> str:\n        if \"-\" not in key:\n            return key\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "Every key the harness writes is a sanitised absolute path and contains a separator, so a rule that only anonymises multi-segment keys reads as inert against a real capture — and is not, because a config directory holds whatever anybody put under projects/."
+    },
+    {
+      "name": "harness-shape-keeps-the-auto-memory-directory-it-does-not-recognise",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            memory_keys[key] = PATH_PLACEHOLDER if anonymise else value\n",
+      "new": "            memory_keys[key] = PATH_PLACEHOLDER if anonymise and str(value).startswith(\"/home/\") else value\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "The placeholder is unconditional because the value is a path on somebody's machine whatever it looks like. Narrowed to one platform's home, a darwin capture carries `/Users/<name>/…` verbatim — and neither committed fixture sets this key, so the artifact gate's assertion on it is vacuous and cannot stand in."
+    },
+    {
+      "name": "harness-shape-version-hint-is-prefix-matched",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if hint is not None and not _VERSION_FULL_RE.fullmatch(hint):\n",
+      "new": "        if hint is not None and not _VERSION_FULL_RE.match(hint):\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape",
+        "tests/test_harness_shape.py::test_a_version_that_is_not_one_never_travels"
+      ],
+      "why": "`match` is a PREFIX test, so `2.1.263-alice-patched` — a hand-built versions/ directory, which is what the hint is read from — passes the check entire and travels with the name still on it. The distinction between the two spellings is invisible in review and total in effect."
+    },
+    {
+      "name": "harness-shape-hook-key-travels-unrecognised",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if event in HOOK_EVENTS:\n            return event\n",
+      "new": "        return event\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "A settings file can carry any key under `hooks`, and the ones that are not harness events are gates somebody named after their employer. The comment beside this code reasoned about the hook VALUES for two rounds while the keys went out verbatim."
+    },
+    {
+      "name": "harness-shape-hook-allowlist-widened-to-any-alphabetic-key",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if event in HOOK_EVENTS:\n",
+      "new": "        if event in HOOK_EVENTS or event.isalpha():\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "The rule this restores is the one the row shipped with, and it is why an allowlist replaced it: an organisation's own gate is letters too, so `AcmeComplianceGate` passed the check and travelled whole. The corpus owned the DELETION of this guard and not its widening, and a widening is what the defect was."
+    },
+    {
+      "name": "harness-shape-install-method-travels-unrecognised",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if install is not None and install not in INSTALL_METHODS:\n            install = INSTALL_OTHER\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "`installMethod` has been seen holding an absolute path to the binary, which is a username. An allowlist that is not applied is a list of the values somebody expected rather than a statement about what leaves the machine."
+    },
+    {
+      "name": "harness-shape-a-settings-switch-that-is-not-a-boolean-travels",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        elif anonymise and not isinstance(value, bool):\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_in_the_tree_never_reaches_an_anonymised_shape"
+      ],
+      "why": "The harness reads any non-null as on, so an adopter who typed a path into autoMemoryEnabled has a working switch and a string this tool would otherwise carry. What a rebuilt tree needs is that the key was set, which the null says."
+    },
+    {
+      "name": "harness-shape-raw-redirect-is-judged-by-the-working-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        destination = args.out or _stdout_destination()\n",
+      "new": "        destination = args.out\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_redirect_is_judged_by_where_it_lands_not_where_it_started"
+      ],
+      "why": "Without fd 1's own name the refusal falls back to the working directory, which is the wrong question in both directions: a --raw capture redirected into the repository from one step outside it lands with real keys, real file names and a real install path, exit 0 and nothing on stderr."
+    },
+    {
+      "name": "harness-shape-out-follows-a-symlinked-destination-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        resolved = _landing_dir(args.out)\n",
+      "new": "        resolved = parent\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+      ],
+      "why": "O_NOFOLLOW guards the final component only. Unresolved, the destination directory is followed and the file behind it truncated — the same write primitive the last-component refusal exists to close, one level up, on a host this runs as a guest on."
+    },
+    {
+      "name": "harness-shape-a-switch-that-was-set-is-recorded-as-a-null",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            memory_keys[key] = SET_PLACEHOLDER\n",
+      "new": "            memory_keys[key] = None\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_switch_the_harness_reads_as_on_is_recorded_as_on"
+      ],
+      "why": "`harness_memory.switch` reads an explicit null as absence, because the harness's own `!= null` test makes it one. So the null recorded for a switch somebody had set describes a machine with the feature off, which is the opposite of the machine that was captured — the privacy half right and the fact inverted."
+    },
+    {
+      "name": "harness-shape-index-cap-drops-a-whole-row-at-a-line-boundary",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if truncated and lines and not head.endswith((\"\\n\", \"\\r\")):\n",
+      "new": "    if truncated and lines:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_pathological_index_is_read_to_the_cap_and_says_so"
+      ],
+      "why": "The last line read is dropped because the cap cut it in half. When the cap lands on a newline that line is whole, and dropping it reports one row fewer than the file has — a count a rebuilt corpus cannot reproduce, off by exactly the amount that looks like nothing."
+    },
+    {
+      "name": "harness-shape-one-patched-versions-directory-nulls-the-hint",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            usable = [name for name in installed if _VERSION_FULL_RE.fullmatch(name)]\n            hint = max(usable, key=_version_sort_key) if usable else None\n",
+      "new": "            hint = None\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_version_that_is_not_one_never_travels"
+      ],
+      "why": "The highest entry under versions/ is the hand-built one, so rejecting it whole throws away the releases installed beside it. A beta or a patched build next to 2.1.258 is an ordinary machine, and the shape then says the machine had no version at all."
+    },
+    {
+      "name": "harness-shape-the-machines-policy-file-follows-every-capture",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        managed=args.managed or _is_own_config_dir(config_dir),\n",
+      "new": "        managed=True,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_machines_policy_file_travels_only_with_its_own_machines_tree"
+      ],
+      "why": "managed-settings.json is the one file read off the machine rather than out of --config-dir, and on a corporate laptop it is where an employer's hook keys and plugin names live. Read for every capture, it files them under a key that reads as the captured tree's — and the tree a fixture is built from is a copied or temporary one."
+    },
+    {
+      "name": "harness-shape-one-unmeasurable-entry-discards-its-whole-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                    except OSError:\n                        read_errors += 1\n                        continue\n",
+      "new": "                    except OSError:\n                        raise\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_one_entry_that_cannot_be_measured_does_not_take_its_siblings"
+      ],
+      "why": "Letting the error out puts the directory-level handler back in charge, and one name that cannot be measured then deletes every memory beside it from the capture — a self-referential link anyone who can write in the tree can leave, or a file `sudo -n` cannot stat over an NFS home. It is booked as a directory that could not be listed, which is not what happened."
+    },
+    {
+      "name": "harness-shape-out-is-judged-on-the-lexically-collapsed-path",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        resolved = _landing_dir(args.out)\n",
+      "new": "        resolved = os.path.realpath(os.path.dirname(os.path.abspath(args.out)))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+      ],
+      "why": "`abspath` collapses `<link>/..` textually and the kernel takes `..` from the link's TARGET, so every refusal is answered about a directory the write never touches. That one difference put a shape carrying real names inside a git checkout with exit 0 — past the destination refusal and past the --raw refusal at once."
+    },
+    {
+      "name": "harness-shape-a-checkout-is-whatever-has-a-dot-git-name-in-it",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    return _git_says_worktree(directory)\n",
+      "new": "    return False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_raw_refuses_a_work_tree_that_holds_no_dot_git_at_all"
+      ],
+      "why": "Deciding what is a checkout by looking for a `.git` name is a heuristic: a work tree attached to a bare repository — the dotfiles pattern, and a GIT_DIR exported over ssh — has none at any level, and a --raw shape written there is listed untracked in a real work tree, one `git add -A` from being committed."
+    },
+    {
+      "name": "harness-shape-out-writes-over-whatever-is-already-at-the-name",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n",
+      "new": "                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about",
+        "tests/test_harness_shape.py::test_an_ordinary_destination_is_created_and_never_written_over"
+      ],
+      "why": "O_EXCL is the whole rule: a name already taken is somebody else's choice about what this capture destroys, and the four spellings that reached it before — a link at the name, a dangling link, a second hard name, a device — are one refusal rather than four. This runs under `sudo -n` on hosts it is a guest on, where whoever can create a name in the destination directory picks the victim."
+    },
+    {
+      "name": "harness-shape-out-opens-by-name-the-directory-it-judged-by-descriptor",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                    self.leaf,\n                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n                    0o600,\n                    dir_fd=current,\n",
+      "new": "                    os.path.join(self.directory, self.leaf),\n                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n                    0o600,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_into_the_directory_it_judged_however_the_name_moves"
+      ],
+      "why": "Judging a descriptor and then opening a name is the defect four rounds of spellings kept re-opening: the destination's parent can be replaced between the two, and with --raw the shape carrying real names landed in a git checkout at exit 0. Relative to the descriptor there is nothing to come between them."
+    },
+    {
+      "name": "harness-shape-artifact-gate-enumerates-the-top-level-only",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "    return sorted(path for path in directory.rglob(\"*\") if path.is_file())\n",
+      "new": "    return sorted(directory.glob(\"*.json\"))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_finds_a_fixture_wherever_it_was_put"
+      ],
+      "why": "One subdirectory per host is how a second machine's captures get organised, and a flat glob gates none of them: an un-anonymised shape at harness_shapes/hosts/prod-laptop.json passed all 28 cases, and so did one at the top level under any other suffix. The gate that decides whether a real name reaches the repository is the enumeration, not the assertions under it."
+    },
+    {
+      "name": "harness-shape-artifact-gate-reads-scope-values-and-not-scope-names",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        assert scope_name in SCOPE_OK, (where, scope_name)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "A dict key is a string a fixture carries as surely as any value: a scope keyed `AcmeCorp-Internal-Policy`, holding the exact field set the tool emits, passed both gates while the same string as a hook value was caught. Every other rule in the gate reads what hangs off the names."
+    },
+    {
+      "name": "harness-shape-artifact-gate-reads-switch-values-and-not-switch-names",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "            assert key in MEMORY_KEY_OK, (where, key)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "`memory_keys` is the one map in a shape whose keys come from an adopter's settings file, and the gate checked only that each value was a boolean or the placeholder — so a key named after an employer's policy gate travelled under a value the gate approved of."
+    },
+    {
+      "name": "harness-shape-artifact-gate-takes-any-value-for-a-number",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        assert isinstance(value, kinds), (where, field, value)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "The leak rules only ever look at the strings they expect to find, so a `/Users` path in `files[].size` and a hostname in `lock_age_s` are numbers as far as the gate can tell. A field whose type is never asserted is a field anything can be written into."
+    },
+    {
+      "name": "harness-shape-artifact-gate-counts-a-flag-as-a-number",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        if int in kinds:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "`isinstance(True, int)` is true in Python, so a plain int check admits a flag where a measurement belongs — a key length of `true` is a record no rebuilt tree can reproduce, and it passes every rule that reads the field as a number."
+    },
+    {
+      "name": "harness-shape-a-settings-read-waits-on-whatever-the-name-is",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    fd = os.open(path, os.O_RDONLY | getattr(os, \"O_NONBLOCK\", 0))\n",
+      "new": "    fd = os.open(path, os.O_RDONLY)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_name_that_is_not_a_file_is_answered_rather_than_waited_on"
+      ],
+      "why": "Opening a FIFO waits for somebody to write to the other end, and this runs unattended over ssh on a host the operator may get one run at: the capture hangs with nothing on stdout, indistinguishable from a slow NFS walk, and every other guard in the file is about a shape that is wrong rather than one that never arrives."
+    },
+    {
+      "name": "harness-shape-a-settings-read-runs-until-the-machine-gives-out",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if not stat.S_ISREG(os.fstat(fd).st_mode):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_device_that_never_ends_is_refused_rather_than_read_forever"
+      ],
+      "why": "O_NONBLOCK makes the open return and this is what makes the read END. A character device at a settings path never reaches EOF, so without it the capture reads until the host gives out — 23 GiB in five seconds — on a machine this tool is a guest on and gets one unattended run at. A FIFO and /dev/null both answer an empty read, which is why the case that names the rule could only ever test the other half of it."
+    },
+    {
+      "name": "harness-shape-a-declared-null-switch-is-recorded-as-set",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if value is None:\n            memory_keys[key] = None\n        elif key == DIRECTORY_KEY:\n",
+      "new": "        if key == DIRECTORY_KEY:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_switch_the_harness_reads_as_on_is_recorded_as_on"
+      ],
+      "why": "`isinstance(None, bool)` is False, so a key an adopter declared null falls into the branch for a value that was set — and the harness reads a null as absent. The shape then says the feature was on where the captured machine had it off, which is the inversion this row was rewritten to stop, in the other direction."
+    },
+    {
+      "name": "harness-shape-the-managed-row-claims-a-read-that-did-not-happen",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        \"settings_managed_read\": managed,\n",
+      "new": "        \"settings_managed_read\": True,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_missing_policy_file_and_a_capture_that_did_not_look_are_told_apart"
+      ],
+      "why": "A row that always says the machine's policy file was looked for is worse than no row: an omitted scope then reads as proof the machine has no policy, which is exactly the inference the artifact could not support before it was recorded."
+    },
+    {
+      "name": "harness-shape-the-index-is-read-through-a-link-out",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if os.path.islink(path) and not _resolves_inside(path, memory_dir):\n        return None, 0\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_what_is_opened_is_decided_by_where_the_link_lands"
+      ],
+      "why": "The index is the one `.md` the per-file rule most obviously covers, and it is read by a second function that could open it anyway: the rows are then counted off somebody else's file, under a `sudo -n` that was given this directory and not the target."
+    },
+    {
+      "name": "harness-shape-a-link-is-judged-by-its-name-not-by-where-it-lands",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    root = os.path.realpath(directory)\n    return os.path.realpath(path).startswith(root + os.sep)\n",
+      "new": "    root = os.path.abspath(directory)\n    return os.path.abspath(path).startswith(root + os.sep)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_what_is_opened_is_decided_by_where_the_link_lands"
+      ],
+      "why": "Every link in a memory directory has a name inside it, so a test that resolves nothing answers yes for all of them — which is the rule inverted: what decides whether the bytes belong to this capture is where the name lands, never where it sits."
+    },
+    {
+      "name": "harness-shape-a-frontmatter-read-cut-at-the-cap-says-nothing",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    return head, len(raw) > FRONTMATTER_BYTES, size\n",
+      "new": "    return head, False, size\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_frontmatter_cut_at_the_cap_says_so_rather_than_reading_as_none"
+      ],
+      "why": "A fence that closes past the cap gives four false flags and a null length, which is exactly what a file with no frontmatter gives — so the flag is the only thing standing between a wrong number and a silent one, and a rebuilt corpus reproduces the wrong one."
+    },
+    {
+      "name": "harness-memory-one-unanswerable-name-drops-its-whole-directory",
+      "module": "harness_memory",
+      "file": "src/memkit/harness_memory.py",
+      "old": "                    try:\n                        if not entry.is_file():\n                            continue\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        continue\n",
+      "new": "                    if not entry.is_file():\n                        continue\n                    listed.append((entry.name, entry.is_symlink()))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_two_walks_answer_the_same_way_about_a_hostile_tree",
+        "tests/test_harness_memory.py::test_the_inventory_skips_what_it_cannot_read_rather_than_raising"
+      ],
+      "why": "`DirEntry.is_file` swallows FileNotFoundError and lets every other OSError out, so a single `ln -s loop.md loop.md` drops the directory it sits in and every real memory beside it — and it drops it from only one of the two walks that are supposed to name the same directories, which is the agreement the capture tool's whole duplication strategy rests on."
+    },
+    {
+      "name": "harness-shape-out-writes-real-names-world-readable",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                    0o600,\n",
+      "new": "                    0o666,\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_an_ordinary_destination_is_created_and_never_written_over"
+      ],
+      "why": "`--raw --out` is the one output carrying real usernames, org names and repository paths, and it is written on a host this tool is a guest on: the mode a plain `open(path, \"w\")` would create leaves it readable by everybody else logged into that machine."
+    },
+    {
+      "name": "harness-shape-a-dead-projects-link-reads-as-an-empty-machine",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if projects_total or os.path.lexists(projects_root):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_projects_directory_that_is_a_dead_link_is_not_an_empty_machine"
+      ],
+      "why": "`os.scandir` raises FileNotFoundError for a name that is absent and for one present as a broken link, and only the first is a machine with nothing written yet: the second is a machine WITH projects that this run could not see, reported as zeros at exit 0 on a host the operator may not get a second run at."
+    },
+    {
+      "name": "harness-shape-a-frontmatter-key-is-matched-as-a-literal-prefix",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    key, sep, _ = line.partition(\":\")\n    key = key.strip()\n    if not sep or not key or \" \" in key:\n        return None\n    return key\n",
+      "new": "    for known in (\"name\", \"type\", \"description\", \"metadata\"):\n        if line.startswith(known + \":\"):\n            return known\n    return None\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_frontmatter_key_is_matched_the_way_the_checker_matches_it"
+      ],
+      "why": "YAML accepts `description : text` and so does the checker, which is what decides whether a description exists and how long it is — read as a literal prefix the tool answers four false flags and a null length for a file the checker measures, and the shape is only worth carrying if it is the checker's answer."
+    },
+    {
+      "name": "harness-shape-an-unreadable-index-counts-as-an-index-with-no-rows",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    head, truncated, _ = _read_head(path)\n    if head is None:\n        return None, 0\n",
+      "new": "    head, truncated, _ = _read_head(path)\n    if head is None:\n        return {\"rows\": 0, \"dangling_rows\": 0, \"truncated\": False}, 0\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_an_index_that_cannot_be_read_is_not_an_index_with_no_rows"
+      ],
+      "why": "An index whose bytes this capture cannot reach — a mode it has no rights to, a name that is not a plain file, root-squash on the NFS home it was piped into — measures as an index with no rows and nothing dangling, which is exactly what an index that genuinely has no rows records, and a corpus rebuilt from the shape reproduces a number nobody took."
+    },
+    {
+      "name": "harness-shape-a-file-nobody-could-read-reads-as-having-no-frontmatter",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if unreadable:\n            record.update(dict.fromkeys(_frontmatter(\"\"), None))\n            record[\"frontmatter_truncated\"] = None\n        else:\n            record.update(_frontmatter(head, truncated))\n            record[\"frontmatter_truncated\"] = truncated\n",
+      "new": "        record.update(_frontmatter(head, truncated))\n        record[\"frontmatter_truncated\"] = truncated\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_file_nobody_could_read_is_not_a_file_with_no_frontmatter"
+      ],
+      "why": "A memory file whose bytes this capture cannot reach recorded four false flags, a null length and `frontmatter_truncated: false` — byte-identical to a readable file with a plain first line, and a statement about a read that never happened. The only trace was the whole-capture read_errors total, which cannot be attributed to a file."
+    },
+    {
+      "name": "harness-shape-any-separator-in-a-row-target-is-an-escape",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    collapsed = os.path.normpath(target)\n    return (\n        os.path.isabs(collapsed)\n        or collapsed == os.pardir\n        or collapsed.startswith(os.pardir + os.sep)\n    )\n",
+      "new": "    return \"/\" in target or \"\\\\\" in target or os.sep in target\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_one_directory_down_is_looked_at_rather_than_written_off"
+      ],
+      "why": "The no-filesystem rule is for targets that leave the directory being walked, and read as \"holds a separator\" it also covers every tiered index: `hot/beads.md` is booked dangling without being looked at, and the darwin capture recorded twelve of twelve rows pointing at nothing for a directory whose rows all resolve. `dangling_rows` is the number a materialiser rebuilds the corpus from."
+    },
+    {
+      "name": "harness-shape-the-fence-is-a-line-equal-to-three-dashes",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if not lines or not lines[0].startswith(_FENCE):\n        return absent\n    end = None\n    for index in range(1, len(lines)):\n        if lines[index].startswith(_FENCE):\n",
+      "new": "    if not lines or lines[0].rstrip() != _FENCE:\n        return absent\n    end = None\n    for index in range(1, len(lines)):\n        if lines[index].rstrip() == _FENCE:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "The four frontmatter facts are only worth carrying if they are the answer memkit's checker would give about the same file, and the checker opens frontmatter on any line 1 starting `---`. A `----` file is frontmatter with a description there and no frontmatter at all here, which is a memory the shape says the wrong thing about."
+    },
+    {
+      "name": "harness-shape-a-fence-that-never-closes-runs-to-the-end-of-the-file",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if truncated:\n            return absent\n        end = len(lines)\n",
+      "new": "        end = len(lines)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "This read stops at FRONTMATTER_BYTES, so a fence with no close is a block ending wherever the cap fell: the keys that happen to sit above it get reported as a whole frontmatter block, which is the one place the tool deliberately answers something other than the checker does."
+    },
+    {
+      "name": "harness-shape-the-byte-cap-is-counted-in-characters",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    try:\n        with _open_regular_bytes(path) as handle:\n            raw = handle.read(FRONTMATTER_BYTES + 1)\n            # AFTER the read, not at the open: a file that grows past the cap\n            # while it is being read would otherwise be recorded as truncated\n            # beside a size at or below the cap.\n            size = os.fstat(handle.fileno()).st_size\n    except OSError:\n        return None, False, None\n    head = raw[:FRONTMATTER_BYTES].decode(\"utf-8\", \"replace\")\n    return head, len(raw) > FRONTMATTER_BYTES, size\n",
+      "new": "    try:\n        with _open_regular(path, errors=\"replace\") as handle:\n            text = handle.read(FRONTMATTER_BYTES + 1)\n            size = os.fstat(handle.fileno()).st_size\n    except OSError:\n        return None, False, None\n    return text[:FRONTMATTER_BYTES], len(text) > FRONTMATTER_BYTES, size\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_cap_named_in_bytes_is_counted_in_bytes"
+      ],
+      "why": "The cap is what keeps one pathological file from turning a capture into a read of somebody's whole disk, and a text stream's read(n) counts characters: a head of CJK text read three times the cap off the machine and reported nothing cut, so both halves of the cap — the bound and the flag saying it was reached — were wrong for the same file."
+    },
+    {
+      "name": "harness-shape-the-harness-record-is-gated-by-its-values-only",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "        \"harness\": {frozenset(shape[\"harness\"])},\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_field_set_gate_rejects_a_key_the_tool_does_not_emit"
+      ],
+      "why": "The gate read `harness.version_hint` and `harness.install` by name and built no field set for the record holding them, so a third key there — `captured_from`, holding a real absolute path — passed both gates on a committed fixture, while the same planting one level up was caught. A record addressed by key is a record whose keys nobody is reading."
+    },
+    {
+      "name": "harness-shape-the-harness-record-takes-any-kind-of-value",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "    _typed(shape[\"harness\"], HARNESS_TYPES, where)\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_artifact_gate_rejects_a_name_it_was_not_looking_at"
+      ],
+      "why": "`VERSION_RE.fullmatch` on a non-string raises a TypeError out of the gate rather than refusing the fixture, so the one record whose values are adopter-controlled strings was the one record whose values were never typed."
+    },
+    {
+      "name": "harness-shape-a-destination-naming-no-file-falls-through-to-the-symlink-refusal",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if os.path.basename(args.out) in (\"\", os.curdir, os.pardir):\n            # Before the symlink check below, which these spellings fail for a\n            # reason it does not have: `abspath` drops the trailing separator\n            # and `realpath` keeps it, so the two disagree with no link\n            # anywhere, and the operator is told to look for one.\n            sys.stderr.write(\n                f\"harness_shape: {args.out}: this names a directory and not a \"\n                f\"file to create; --out writes one file, so name it inside \"\n                f\"that directory\\n\"\n            )\n            return 2\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_writes_only_where_its_refusals_were_answered_about"
+      ],
+      "why": "`abspath` drops a trailing separator and `realpath` keeps it, so `--out dir/`, `--out dir/.` and `--out dir/..` made the two spellings of the parent disagree and were refused as “a symlink stands in this path” with no link anywhere — an operator sent hunting for a staged attack by a typo. A refusal names the reason it found."
+    },
+    {
+      "name": "harness-shape-one-unclassifiable-project-entry-ends-the-capture",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            for entry in entries:\n                projects_total += 1\n                try:\n                    keys.append((entry.name, entry.is_symlink()))\n                except OSError:\n                    # A per-entry failure is a fact about that ENTRY. `scandir`\n                    # answers `is_symlink` from the readdir record where the\n                    # filesystem supplies one and stats the name where it does\n                    # not, so on the filesystems that do not the one project a\n                    # capture cannot reach used to end the run for all of them.\n                    # It is counted here and still counted in `projects_total`.\n                    skipped += 1\n",
+      "new": "            for entry in entries:\n                projects_total += 1\n                keys.append((entry.name, entry.is_symlink()))\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_one_unclassifiable_project_entry_does_not_end_the_capture"
+      ],
+      "why": "`projects/` was listed by one comprehension, so an entry whose type could not be established — a stat on a filesystem carrying no `d_type`, which is where `sudo -n` into an NFS home lands — took the whole capture out with it. Only a failure to list the directory at all ends the run; a per-entry failure is a fact about that entry."
+    },
+    {
+      "name": "harness-shape-a-project-that-is-a-file-is-booked-as-a-failure",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        except (FileNotFoundError, NotADirectoryError):\n",
+      "new": "        except FileNotFoundError:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_project_that_holds_no_memory_directory_is_passed_over"
+      ],
+      "why": "A plain file where a project directory should be makes the `memory` lookup a `NotADirectoryError`, not a missing name. Without that arm it falls to the unreadable handler and is counted as a project this run could not read, which is a claim about the machine that is not true."
+    },
+    {
+      "name": "harness-shape-a-file-named-memory-is-read-as-a-memory-directory",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if not is_dir:\n            continue\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_project_that_holds_no_memory_directory_is_passed_over"
+      ],
+      "why": "`os.stat` answers for a FILE named `memory` as readily as for a directory. Without the type check the project is counted as one holding memories and then fails to be listed, so a name anyone who can write in `projects/` may leave behind reports as a read failure."
+    },
+    {
+      "name": "harness-shape-the-cwd-fallback-for-an-unnameable-fd-one-never-fires",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        elif _stdout_is_a_file() and _inside_worktree(os.getcwd()):\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fallback_for_a_kernel_that_will_not_name_fd_one_still_refuses"
+      ],
+      "why": "`_stdout_destination` answers on darwin and on linux whenever stdout is a regular file, so the branch that decides where real names may land when it cannot was executed by nothing on any platform this is piped to — it could have been deleted with the suite green."
+    },
+    {
+      "name": "packaging-the-39-floor-step-selects-two-clauses-with-one-or",
+      "module": "harness_shape",
+      "file": ".github/workflows/check.yml",
+      "old": "          .venv/bin/python -m pytest -q tests/test_packaging.py \\\n            -k \"the_hook_and_both_subcommands_run_on_a_real_39\"\n          .venv/bin/python -m pytest -q tests/test_packaging.py \\\n            -k \"harness_shape_runs_on_a_real_floor_interpreter and py39\"\n",
+      "new": "          .venv/bin/python -m pytest -q tests/test_packaging.py \\\n            -k \"the_hook_and_both_subcommands_run_on_a_real_39 or \\\n                (harness_shape_runs_on_a_real_floor_interpreter and py39)\"\n",
+      "tests": [
+        "tests/test_packaging.py::test_the_floor_steps_select_the_tests_they_name"
+      ],
+      "why": "pytest exits 5 for a selection that matches nothing and 0 whenever any half of an `or` still does, so the clause naming the capture tool could stop matching and leave the step green on the hook clause alone — the 3.9 floor executed nowhere else, silently not executed."
+    },
+    {
+      "name": "packaging-a-floor-step-names-a-test-that-is-not-there",
+      "module": "harness_shape",
+      "file": ".github/workflows/check.yml",
+      "old": "            -k \"harness_shape_runs_on_a_real_floor_interpreter and py39\"\n",
+      "new": "            -k \"harness_shape_runs_on_the_floor_interpreter and py39\"\n",
+      "tests": [
+        "tests/test_packaging.py::test_the_floor_steps_select_the_tests_they_name"
+      ],
+      "why": "A `-k` is a test name written down a second time, in a file no rename touches. A token that matches nothing selects nothing, and nothing compared the two copies."
+    },
+    {
+      "name": "harness-shape-a-fixture-nobody-committed-passes-the-artifact-gate",
+      "module": "harness_shape",
+      "file": "tests/test_harness_shape.py",
+      "old": "    assert _fixture_files(directory) == tracked, (\n        \"a file under the fixtures directory nobody committed\"\n    )\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_fixture_nobody_committed_is_a_failure_of_the_gate"
+      ],
+      "why": "The artifact gate has two halves: every file present is checked for names, and the files present are the ones somebody reviewed. The second was watched by nothing, so a shape that arrived some other way — a capture aimed at the wrong directory, a copy left behind while debugging — was one deleted line from being admitted."
+    },
+    {
+      "name": "harness-shape-a-declared-work-tree-is-never-marked",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            marks.add((named.st_dev, named.st_ino))\n",
+      "new": "            pass\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_declared_work_tree_is_matched_by_inode_when_git_cannot_answer"
+      ],
+      "why": "A work tree attached to a bare repository is named only in the environment, and `GIT_WORK_TREE` unrecorded leaves the walk with nothing to match: on a host with no git to ask, real names land in a checkout the operator declared."
+    },
+    {
+      "name": "harness-shape-the-declared-work-tree-is-compared-against-nothing",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            if (here.st_dev, here.st_ino) in marks:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_declared_work_tree_is_matched_by_inode_when_git_cannot_answer"
+      ],
+      "why": "The comparison is by inode at every level of the walk, which is what answers for a destination one level inside the declared tree and for that tree named through a different path. Nothing else in the function asks the environment's question."
+    },
+    {
+      "name": "harness-shape-a-file-nobody-opened-records-a-read",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            unreadable = True\n",
+      "new": "            unreadable = False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_file_the_rule_declined_to_open_states_no_read"
+      ],
+      "why": "A memory file that is a link out of the directory is never opened, and `false` here puts four `false` frontmatter flags and a null length in its record — the record of a file that was read and carries none. A rebuilt corpus would reproduce the flags and not the file."
+    },
+    {
+      "name": "harness-shape-an-index-row-is-looked-up-by-its-whole-name",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            try:\n                found = _row_present(root, target)\n            except _Unlooked:\n",
+      "new": "            try:\n                found = os.path.lexists(\n                    os.path.join(memory_dir, target)\n                )\n            except _Unlooked:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_is_not_reached_through_a_linked_component"
+      ],
+      "why": "The escape rule reads the string only, so `link-out/x.md` passes it; a lookup by whole name then follows every component but the last and stats a file outside the directory being captured, and scores the row satisfied on the strength of somebody else's file existing."
+    },
+    {
+      "name": "harness-shape-an-index-walk-follows-an-intermediate-component",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            below = _open_dir(part, dir_fd=current)\n",
+      "new": "            below = os.open(\n                part, os.O_RDONLY | getattr(os, \"O_DIRECTORY\", 0), dir_fd=current\n            )\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_is_not_reached_through_a_linked_component"
+      ],
+      "why": "`O_NOFOLLOW` on each intermediate component is the whole of what keeps the walk inside the directory: without it a link planted at a middle component is descended, which is the lookup by whole name again with the descriptors doing the following."
+    },
+    {
+      "name": "harness-shape-an-index-row-naming-a-dead-link-is-booked-dangling",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n",
+      "new": "        os.stat(parts[-1], dir_fd=current)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_is_not_reached_through_a_linked_component"
+      ],
+      "why": "A row pointing at a dead symlink counts as present: the file is there to be moved, which is what the row is about. Following the last component books it dangling, and also follows a live one out of the directory."
+    },
+    {
+      "name": "harness-shape-the-judged-directory-is-not-re-judged-at-the-write",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                    inside = _worktree_above(current, self.directory)\n",
+      "new": "                    inside = False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_judged_directory_is_re_judged_when_the_file_is_created"
+      ],
+      "why": "The pre-flight answers before the capture and the file is made after it, so a whole capture is window enough to rename the judged directory into a checkout: the descriptor stays the one that was judged and stops being outside a worktree. Without the re-ask a --raw shape with real names lands in a checkout at exit 0."
+    },
+    {
+      "name": "harness-shape-a-destination-level-that-already-exists-is-adopted",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "                if not made:\n                    raise _Refused(\n                        f\"{name} already stands under this path, and --out \"\n                        f\"makes the levels it writes below\"\n                    )\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_destination_level_that_appears_during_the_capture_is_not_adopted"
+      ],
+      "why": "Every level below the judged one is safe only because this run made it empty. Suppressing EEXIST adopts a directory somebody else made during the capture, which nothing has judged and which may be a checkout."
+    },
+    {
+      "name": "harness-shape-a-landing-directory-that-will-not-open-is-called-safe",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    except OSError as exc:\n        raise _Refused(\n            f\"this directory will not open, so whether it is inside a git \"\n            f\"worktree cannot be answered: {exc.strerror or exc}\"\n        ) from None\n",
+      "new": "    except OSError:\n        return False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_landing_directory_that_will_not_open_is_a_refusal_and_not_a_no"
+      ],
+      "why": "A directory at mode 0333 takes a redirect and refuses O_RDONLY, so the walk cannot start. Reporting that as 'not a checkout' is the one answer that lets real names reach a checkout with exit 0 and an empty stderr."
+    },
+    {
+      "name": "harness-shape-a-projects-directory-that-drops-mid-walk-reads-as-empty",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if projects_total or os.path.lexists(projects_root):\n",
+      "new": "        if os.path.lexists(projects_root):\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_projects_directory_that_goes_away_under_the_walk_is_not_an_empty_machine"
+      ],
+      "why": "The name is asked about after the raise, so a `projects/` that went away under the walk is a name nobody can find by then: the re-raise is skipped and every project already collected is discarded as a machine with nothing written yet, at exit 0. An iteration that has already served an entry is not that machine, and that fact cannot change while the question is put."
+    },
+    {
+      "name": "harness-shape-an-unclosed-fence-inside-the-cap-is-called-no-frontmatter",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        if truncated:\n            return absent\n        end = len(lines)\n",
+      "new": "        return absent\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "The exception is for a read the cap CUT SHORT, where the keys above the cut are not a block anybody has. A file whose fence never closes and which was read entire has nothing being guessed about it, and the checker returns its keys: refusing there is a shape that contradicts the rule a consumer runs over the rebuilt file."
+    },
+    {
+      "name": "harness-shape-a-fence-enclosing-no-key-is-recorded-as-frontmatter",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if not any(_top_level_key(line) is not None for line in fence):\n        return absent\n",
+      "new": "",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "A fence pair with no top-level key between it is `{}` to the checker and no frontmatter at all. Recording it as present with the four facts false is the same record a file with a plain first line produces, and it disagrees with the rule that judges the rebuilt file."
+    },
+    {
+      "name": "harness-shape-the-key-on-the-fence-line-is-dropped",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    fence = [lines[0][len(_FENCE):]] + lines[1:end]\n",
+      "new": "    fence = lines[1:end]\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_fence_is_read_the_way_the_checker_reads_it"
+      ],
+      "why": "The checker reads the text after the opening `---`, so `---name: x` declares a key to it. Starting the read at line 2 drops that key, and with it the difference between a fence enclosing something and a fence enclosing nothing."
+    },
+    {
+      "name": "harness-shape-a-row-target-the-kernel-never-sees-ends-the-capture",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n    except ValueError:\n",
+      "new": "        os.stat(parts[-1], dir_fd=current, follow_symlinks=False)\n    except OSError:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_row_target_holding_a_nul_byte_is_dangling_and_not_the_end_of_the_run"
+      ],
+      "why": "A NUL byte in a row target is valid UTF-8 that survives the read, and `os.stat` and `os.open` raise ValueError for it rather than OSError. Guarded on OSError alone, one such row in one project's index ends the capture of the whole machine with a traceback and an exit 1."
+    },
+    {
+      "name": "harness-shape-the-contract-boundary-lets-a-nul-byte-past-it",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    except (OSError, ValueError, RecursionError, UnicodeError) as exc:\n",
+      "new": "    except (OSError, RecursionError, UnicodeError) as exc:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_hostile_trees_exit_zero_or_two_with_no_traceback[a NUL byte in the destination path -> exit 2]"
+      ],
+      "why": "A config directory is somebody else's text, and a NUL byte in a path reaches the stdlib as a ValueError before the kernel sees it — a type that travels past `except OSError` entirely. Narrowed to the errors the kernel raises, the boundary leaves a traceback and an exit 1 on the route whose whole contract is one line and a 2."
+    },
+    {
+      "name": "harness-shape-the-contract-boundary-lets-a-syscall-failure-past-it",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    except (OSError, ValueError, RecursionError, UnicodeError) as exc:\n        # Fd 1 before the report and not after it: the failure may BE the\n",
+      "new": "    except (ValueError, RecursionError, UnicodeError) as exc:\n        # Fd 1 before the report and not after it: the failure may BE the\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_out_refuses_a_destination_it_cannot_make_rather_than_crashing",
+        "tests/test_harness_shape.py::test_out_answers_with_an_exit_2_when_the_directory_it_runs_in_is_gone",
+        "tests/test_harness_shape.py::test_hostile_trees_exit_zero_or_two_with_no_traceback[an unreadable projects directory -> exit 2]"
+      ],
+      "why": "Every way the machine underneath a capture fails arrives as an OSError, and no site enumerates them: a `.git` that is a file where a directory was named, a working directory removed under the process, a projects directory the run may not read. Without them at the boundary the wrapper on the far end of an ssh pipe reads a number the interpreter chose."
+    },
+    {
+      "name": "harness-shape-a-judgement-is-made-and-dropped",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    config_dir = os.path.expanduser(args.config_dir)\n",
+      "new": "    config_dir = os.path.expanduser(args.config_dir)\n    _outside(config_dir)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_every_guard_call_uses_the_value_it_returns"
+      ],
+      "why": "A guard call whose answer is dropped judged one thing and let the caller act on another, which is every instance of that class this file has closed: the path re-derived from a string, the directory reopened by name, the descriptor taken twice. The lint is the cheap catch for the next call site, and a bare call is what it has to see."
+    },
+    {
+      "name": "harness-shape-the-row-walks-descriptor-is-taken-outside-its-handler",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    current = None\n    try:\n        # ACQUIRED INSIDE the handler that releases it. Taken one line above,\n        # an exhausted descriptor table escaped every handler in the walk and\n        # ended the capture of the whole machine, where the row that asked for\n        # the descriptor is the only thing that could not be measured.\n        current = os.dup(root)\n        for part in parts[:-1]:\n",
+      "new": "    current = os.dup(root)\n    try:\n        for part in parts[:-1]:\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_one_row_short_of_a_descriptor_degrades_the_row_and_not_the_capture",
+        "tests/test_harness_shape.py::test_hostile_trees_exit_zero_or_two_with_no_traceback[one free descriptor for the whole walk -> exit 0]"
+      ],
+      "why": "A descriptor taken one line above the `try` reaches no handler in the walk: one EMFILE on it leaves by the exit-2 boundary and a machine whose every project was read gets no shape at all, where the row that wanted the descriptor is the only thing that could not be measured. The window is exactly one free descriptor wide, and a capture down an ssh pipe is where it is reached."
+    },
+    {
+      "name": "harness-shape-a-row-nobody-could-look-at-counts-as-a-dead-row",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        # as the expected failure — booked every row beneath it as dangling\n        # with `skipped` and `read_errors` both left at zero.\n        raise _Unlooked(target) from None\n",
+      "new": "        # as the expected failure — booked every row beneath it as dangling\n        # with `skipped` and `read_errors` both left at zero.\n        return False\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_tier_this_run_may_not_enter_is_not_a_tier_full_of_dead_rows",
+        "tests/test_harness_shape.py::test_one_row_short_of_a_descriptor_degrades_the_row_and_not_the_capture"
+      ],
+      "why": "Every errno answering the same `False` scores a row on a lookup that never ran: a tier this capture may not enter — `sudo -n` into an NFS home under root-squash — reads as a tier of dead rows, and the document exits 0 with `skipped` and `read_errors` at zero and no field that says a lookup was refused."
+    },
+    {
+      "name": "harness-shape-a-level-above-the-landing-that-will-not-open-is-unguarded",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            try:\n                above = os.open(\n                    \"..\", os.O_RDONLY | getattr(os, \"O_DIRECTORY\", 0), dir_fd=current\n                )\n            except OSError as exc:\n                # A level this cannot open is a level this cannot clear, and\n                # the walk stopping early would report the checkout it never\n                # reached as no checkout at all.\n                raise _Refused(\n                    f\"a directory above this one will not open, so whether \"\n                    f\"the destination is inside a git worktree cannot be \"\n                    f\"answered: {exc.strerror or exc}\"\n                ) from None\n",
+      "new": "            above = os.open(\n                \"..\", os.O_RDONLY | getattr(os, \"O_DIRECTORY\", 0), dir_fd=current\n            )\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_an_ancestor_that_will_not_open_is_a_refusal_on_both_raw_routes[--out]",
+        "tests/test_harness_shape.py::test_an_ancestor_that_will_not_open_is_a_refusal_on_both_raw_routes[redirect]"
+      ],
+      "why": "The landing directory opens and the level above it does not, which mode 0111 on any ancestor produces: unguarded, that step is a PermissionError out of the middle of the walk on both `--raw` routes. Guarded only by the exit-2 boundary the number is right and the line names `..`, so the refusal has to carry its own reason and the destination it is about."
+    },
+    {
+      "name": "harness-shape-the-stdout-write-is-never-flushed-inside-the-contract",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "        sys.stdout.write(text)\n        # FLUSHED INSIDE the contract. The interpreter's own flush happens\n",
+      "new": "        sys.stdout.write(text)\n        return 0\n        # FLUSHED INSIDE the contract. The interpreter's own flush happens\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2[a pipe nobody reads, under the stream's own buffer]"
+      ],
+      "why": "A shape smaller than the stream's 8 KiB buffer never reaches the kernel inside this function, so the reader that has gone away is discovered by the interpreter's own flush on the way out: an ignored exception, an exit 120 nobody chose, and two stderr lines naming a TextIOWrapper rather than this tool. The flush is where the contract can still see the failure."
+    },
+    {
+      "name": "harness-shape-a-stdout-that-is-not-there-is-not-a-failed-write",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    if not args.out:\n        if sys.stdout is None:\n            # FD 1 CLOSED BEFORE THE INTERPRETER STARTED leaves no stream to\n            # fail: CPython sets `sys.stdout` to None, the write is an\n            # `AttributeError`, and that is not one of the ways a machine\n            # fails, so the boundary does not map it. What failed is the\n            # destination, and it failed the way a missing descriptor does.\n            raise OSError(errno.EBADF, os.strerror(errno.EBADF), \"stdout\")\n        sys.stdout.write(text)\n",
+      "new": "    if not args.out:\n        sys.stdout.write(text)\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2[fd 1 closed before the interpreter started]"
+      ],
+      "why": "Fd 1 closed before the interpreter starts leaves `sys.stdout` at None, so the write raises AttributeError — not one of the four failures the boundary maps, and the route whose whole contract is one line and a 2 answers with a traceback and a 1 instead."
+    },
+    {
+      "name": "harness-shape-a-records-size-is-taken-back-off-the-name",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "            head, truncated, size = _read_head(path)\n",
+      "new": "            head, truncated, _ = _read_head(path)\n            size = os.lstat(path).st_size\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_the_size_and_the_frontmatter_in_one_record_come_from_one_file"
+      ],
+      "why": "The size asked of the name after the read is a measurement of whatever the name means by then. A memory file that is a link back into the directory is opened and read, and an `lstat` does not follow it, so the record states a nine-byte file carrying its target's 120-character description — a record no rebuilt corpus can reproduce and no consumer can tell from a real one."
+    },
+    {
+      "name": "harness-shape-a-failed-write-leaves-what-it-created",
+      "module": "harness_shape",
+      "file": "tools/harness_shape.py",
+      "old": "    except OSError as exc:\n        # WHAT THIS RUN CREATED GOES WITH THE FAILURE, and the line says which\n        # way it went: the bytes that did land are a truncated document at the\n        # operator's name, and the create would refuse their next run over it.\n        note = (\n            \"nothing was left at this name\"\n            if landing.discard()\n            else \"the partial file it wrote is still there\"\n        )\n        sys.stderr.write(\n            f\"harness_shape: {args.out}: {exc.strerror or exc}; {note}\\n\"\n        )\n        return 2\n",
+      "new": "    except OSError as exc:\n        sys.stderr.write(f\"harness_shape: {args.out}: {exc.strerror or exc}\\n\")\n        return 2\n",
+      "tests": [
+        "tests/test_harness_shape.py::test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal"
+      ],
+      "why": "A write that fails after some bytes are out leaves a truncated JSON document at the operator's own name with mode 0600, and the O_EXCL create then refuses their retry: a destination that is neither written nor retryable, on a host an unattended capture may not get a second run at. Unlinking it is what makes the retry possible, and the one line has to say which way it went."
     }
   ]
 }

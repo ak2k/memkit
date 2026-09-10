@@ -348,24 +348,108 @@ def test_the_package_config_covers_new_files_without_being_edited() -> None:
     assert (REPO / "src" / "memkit" / "cli.py").is_file()
 
 
+def test_the_38_config_names_the_one_file_and_the_floor_it_checks_it_at() -> None:
+    """A CI step whose whole value lives in a config file needs one assertion
+    pinning that file, or it passes checking something else.
+
+    Nothing here read `pyrightconfig-shape38.json`, so a `pythonVersion`
+    edited to 3.12 or an `include` emptied left a green third pyright step
+    that duplicated the first: the file it exists for is also covered by
+    `pyrightconfig.json` at 3.12, so nothing else would turn red. The two
+    configs above are pinned this way already; this one arrived without it.
+    """
+    config = json.loads((REPO / "pyrightconfig-shape38.json").read_text())
+    assert config["include"] == ["tools/harness_shape.py"]
+    assert config["pythonVersion"] == SHAPE_FLOOR_VERSION
+    assert (REPO / "tools" / "harness_shape.py").is_file()
+
+
 FLOOR_REQUIRED_ENV = "MEMKIT_FLOOR_REQUIRED"
 
 
-def _floor_interpreter() -> str | None:
-    """A real 3.9, or None.
+# The two versions below this repository's own floor that something here has
+# to run on. The hook is dispatched by whatever `python3` the harness resolves,
+# which on a stock macOS is 3.9.6; `tools/harness_shape.py` is piped over ssh
+# into somebody else's host, and the first one it went to ran 3.8.18.
+FLOOR_VERSION = "3.9"
+SHAPE_FLOOR_VERSION = "3.8"
+
+
+def _floor_interpreter(version: str = FLOOR_VERSION) -> str | None:
+    """A real interpreter of `version`, or None.
 
     `uv python find` first, because `uv python install 3.9` provisions one in
     well under a second and that is what makes this affordable as a gate; a
     `python3.9` on PATH answers too, for a machine that has one already.
+
+    AND THE CHILD IS ASKED WHAT IT IS. A name is not a version: a pyenv, asdf,
+    conda or Nix shim called `python3.8` is ordinary on a developer's machine
+    and answers this gate with whatever it forwards to, so the whole floor
+    case goes green having executed 3.12. An interpreter that will not say, or
+    says something else, is no interpreter of this version.
     """
-    for probe in (["uv", "python", "find", "3.9"],):
+    for probe in (["uv", "python", "find", version],):
         try:
             out = subprocess.run(probe, capture_output=True, text=True, timeout=120)
         except (OSError, subprocess.SubprocessError):
             continue
         if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
-    return shutil.which("python3.9")
+            return _of_version(out.stdout.strip(), version)
+    named = shutil.which(f"python{version}")
+    return None if named is None else _of_version(named, version)
+
+
+def _of_version(interpreter: str, version: str) -> str | None:
+    """`interpreter` if it really is `version`, and None otherwise."""
+    try:
+        out = subprocess.run(
+            [interpreter, "-c", 'import sys;print("%d.%d" % sys.version_info[:2])'],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return interpreter if out.stdout.strip() == version else None
+
+
+def _require_floor_interpreter(version: str = FLOOR_VERSION) -> str:
+    """A real interpreter of `version`, or a verdict — never a quiet pass.
+
+    One implementation for every floor case, because this switch is what
+    `test_the_floor_gate_fails_rather_than_skips_when_it_is_required` watches,
+    and a second copy of it is a copy nothing watches.
+    """
+    interpreter = _floor_interpreter(version)
+    if interpreter is None:
+        if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
+            raise AssertionError(
+                f"{FLOOR_REQUIRED_ENV}=1 and no {version} interpreter was found — "
+                f"`uv python install {version}` provisions one"
+            )
+        pytest.skip(
+            f"no python{version} available; MEMKIT_FLOOR_REQUIRED=1 makes this fail"
+        )
+    assert interpreter is not None
+    return interpreter
+
+
+def test_of_version_believes_the_answer_and_not_the_name(tmp_path) -> None:
+    """The guard against a lying `python3.8`, checked without needing a liar.
+
+    Every floor case rests on this one comparison, and on a machine whose
+    `python3.8` really is 3.8 the whole gate stays green with the comparison
+    deleted — the failure it exists for is invisible exactly where it is run.
+    So ask it here instead, of an interpreter that is present and is not the
+    version asked for: the running one answers for itself, refuses to answer
+    for its predecessor, and a path that cannot be executed at all is no
+    interpreter of any version rather than an exception out of the gate.
+    """
+    running = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    mismatch = f"{sys.version_info[0]}.{sys.version_info[1] - 1}"
+    assert _of_version(sys.executable, running) == sys.executable
+    assert _of_version(sys.executable, mismatch) is None
+    unrunnable = tmp_path / f"python{mismatch}"
+    unrunnable.write_text("", encoding="utf-8")
+    assert _of_version(str(unrunnable), mismatch) is None
 
 
 def test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path) -> None:
@@ -385,15 +469,7 @@ def test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path) -> None:
     rather than skipping it, because a gate that quietly stops gating is the
     shape of the failure it exists to catch.
     """
-    interpreter = _floor_interpreter()
-    if interpreter is None:
-        if os.environ.get(FLOOR_REQUIRED_ENV) == "1":
-            raise AssertionError(
-                f"{FLOOR_REQUIRED_ENV}=1 and no 3.9 interpreter was found — "
-                "`uv python install 3.9` provisions one"
-            )
-        pytest.skip("no python3.9 available; MEMKIT_FLOOR_REQUIRED=1 makes this fail")
-    assert interpreter is not None
+    interpreter = _require_floor_interpreter()
     # A HOME OF ITS OWN, WITH SOMETHING TO LOSE IN IT. The floor script is not
     # a pytest module, so no fixture isolates it and the runner passes the
     # whole environment through — and it called `_sweep()` fifteen lines before
@@ -428,7 +504,7 @@ def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(
     exists to catch, so the skip has to be switchable off and the switch has to
     be tested — otherwise the one thing CI relies on is the one thing nobody
     has watched work."""
-    monkeypatch.setattr(sys.modules[__name__], "_floor_interpreter", lambda: None)
+    monkeypatch.setattr(sys.modules[__name__], "_floor_interpreter", lambda *_: None)
     monkeypatch.setenv(FLOOR_REQUIRED_ENV, "1")
     # BaseException and then a type check, not `pytest.raises(AssertionError)`:
     # a `Skipped` raised inside a `raises(AssertionError)` block propagates and
@@ -443,6 +519,172 @@ def test_the_floor_gate_fails_rather_than_skips_when_it_is_required(
     with pytest.raises(BaseException) as caught:  # noqa: B017, PT011
         test_the_hook_and_both_subcommands_run_on_a_real_39(tmp_path)
     assert caught.typename == "Skipped", caught.typename
+
+
+@pytest.mark.parametrize(
+    "version", [FLOOR_VERSION, SHAPE_FLOOR_VERSION], ids=["py39", "py38"]
+)
+def test_harness_shape_runs_on_a_real_floor_interpreter(tmp_path, version) -> None:
+    """The capture tool at both floors, both ways it is actually invoked.
+
+    `tools/harness_shape.py` is the one file here that runs on machines this
+    project has no other claim on: it is piped over ssh into whatever `python3`
+    a colleague's host resolves, which on a stock macOS is 3.9.6 and on an
+    older Linux is older still — 3.8.18 on the first host it went to, which is
+    why the file's own floor is a version below this repository's. Nothing else
+    would notice a 3.10 idiom in it — the suite runs it under 3.12, and the
+    failure lands as a syntax error in somebody else's terminal.
+
+    3.8 IS EXECUTED HERE AND NOWHERE ELSE. `pyrightconfig-shape38.json` catches
+    the typing half; typeshed no longer carries the 3.8 guards, so a 3.9-only
+    stdlib call is invisible to it and visible to this.
+
+    BY PATH AND ON STDIN, because those are two different executions: `python3
+    -` gives the module no `__file__` and an `argv[0]` of `-`, so a tool that
+    reads either one works from the repository and dies over the pipe.
+
+    AND THE SAME BYTES AS 3.12, because a shape captured over ssh is compared
+    against shapes captured here: an interpreter that runs the tool and answers
+    a different document is a fixture nobody can reproduce.
+
+    AND THE DESTINATION HALF, which no other gate here executes at all: `--out`
+    is `os.open`, `os.mkdir` and `os.stat` called with `dir_fd=`, and which of
+    those the floor's `os.supports_dir_fd` actually holds is stated by a
+    comment in the tool rather than by a run. ONE ROUTE IS EXEMPT and named so
+    rather than silently absent — `--raw` redirected at a file, which reaches
+    `_stdout_destination`'s `F_GETPATH` and needs a redirect this harness would
+    have to build around the interpreter it is testing.
+    """
+    interpreter = _require_floor_interpreter(version)
+    memory = tmp_path / "config" / "projects" / "-h-u-git-app" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "one.md").write_text(
+        "---\nname: one\ndescription: a fact\n---\n\nbody\n", encoding="utf-8"
+    )
+    tool = REPO / "tools" / "harness_shape.py"
+    args = ["--config-dir", str(tmp_path / "config")]
+    by_path = subprocess.run(
+        [interpreter, str(tool), *args],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert by_path.returncode == 0, by_path.stdout + by_path.stderr
+    on_stdin = subprocess.run(
+        [interpreter, "-", *args],
+        input=tool.read_text(encoding="utf-8"),
+        capture_output=True, text=True, timeout=600,
+    )
+    assert on_stdin.returncode == 0, on_stdin.stdout + on_stdin.stderr
+    assert by_path.stdout == on_stdin.stdout, "two invocations, two answers"
+    here = subprocess.run(
+        [sys.executable, str(tool), *args],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert here.returncode == 0, here.stdout + here.stderr
+    assert by_path.stdout == here.stdout, "two interpreters, two answers"
+    shape = json.loads(by_path.stdout)
+    assert shape["anonymised"] is True
+    assert len(shape["memory_dirs"]) == 1, shape
+
+    landing = tmp_path / "shape.json"
+    wrote = subprocess.run(
+        [interpreter, str(tool), *args, "--out", str(landing)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert wrote.returncode == 0, wrote.stdout + wrote.stderr
+    assert json.loads(landing.read_text(encoding="utf-8")) == shape
+    # The exit code alone is not the assertion, on any of these: an exit 2 for
+    # the wrong reason is the failure this whole file is written against, and
+    # every refusal below has a sibling that answers 2 for something else.
+    taken = subprocess.run(
+        [interpreter, str(tool), *args, "--out", str(landing)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert taken.returncode == 2, taken.stdout + taken.stderr
+    assert "already at this name" in taken.stderr.splitlines()[0], taken.stderr
+    below = tmp_path / "made" / "here" / "shape.json"
+    made = subprocess.run(
+        [interpreter, str(tool), *args, "--out", str(below)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert made.returncode == 0, made.stdout + made.stderr
+    assert json.loads(below.read_text(encoding="utf-8")) == shape
+    checkout = tmp_path / "co"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(checkout), check=True, timeout=60)
+    leak = checkout / "raw.json"
+    refused = subprocess.run(
+        [interpreter, str(tool), *args, "--raw", "--out", str(leak)],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "inside a git worktree" in refused.stderr.splitlines()[0], refused.stderr
+    assert not leak.exists(), "refused and written anyway"
+
+
+def _floor_step_selectors() -> list:
+    """Every `-k` expression CI runs with the floor gate switched on."""
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(
+        encoding="utf-8"
+    )
+    steps = re.split(r"^      - (?=name:)", workflow, flags=re.MULTILINE)
+    required = [step for step in steps if f'{FLOOR_REQUIRED_ENV}: "1"' in step]
+    assert required, FLOOR_REQUIRED_ENV
+    selectors = []
+    for step in required:
+        found = re.findall(r'-k "((?:[^"\\]|\\\s)*)"', step)
+        assert found, step
+        selectors.extend(" ".join(item.split()) for item in found)
+    return selectors
+
+
+def _names_this_file_defines() -> set:
+    """The test names and parametrize ids a `-k` token could be naming."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            names.add(node.name)
+        if isinstance(node, ast.keyword) and node.arg == "ids":
+            names.update(
+                item.value
+                for item in getattr(node.value, "elts", [])
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            )
+    return names
+
+
+def test_the_floor_steps_select_the_tests_they_name() -> None:
+    """A `-k` is a name written down twice, and only one copy is checked by
+    anything.
+
+    The 3.9 step used to select `a or (b and py39)`: pytest exits 5 for a
+    selection that matches nothing but 0 whenever any half of an `or` still
+    does, so renaming the capture-tool case would have taken it out of CI and
+    left the step green on the hook case alone — the floor that is executed
+    nowhere else, silently not executed. One clause per invocation is what
+    turns a name that stopped matching red, and this is what says the names
+    still match.
+    """
+    known = _names_this_file_defines()
+    assert "test_harness_shape_runs_on_a_real_floor_interpreter" in known
+    for selector in _floor_step_selectors():
+        depth = 0
+        for token in re.findall(r"[()]|[^\s()]+", selector):
+            if token == "(":
+                depth += 1
+                continue
+            if token == ")":
+                depth -= 1
+                continue
+            if token == "or":
+                assert depth > 0, (
+                    f"{selector!r}: a top-level `or` keeps the step green on "
+                    f"one clause alone; give each clause its own invocation"
+                )
+                continue
+            if token in ("and", "not"):
+                continue
+            assert any(token in name for name in known), (selector, token)
 
 
 def test_the_wrapper_guards_exactly_the_files_it_will_import() -> None:
@@ -893,4 +1135,4 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 101, checked
+    assert checked == 102, checked

@@ -1,0 +1,1475 @@
+{
+  "schema": 1,
+  "tool": "harness_shape",
+  "anonymised": true,
+  "harness": {
+    "version_hint": "2.1.263",
+    "install": "global"
+  },
+  "settings": {
+    "user": {
+      "unreadable": false,
+      "memory_keys": {
+        "autoMemoryEnabled": true,
+        "autoDreamEnabled": false
+      },
+      "hooks": [
+        "Notification",
+        "PermissionDenied",
+        "PermissionRequest",
+        "PostToolBatch",
+        "PreToolUse",
+        "SessionEnd",
+        "SessionStart",
+        "UserPromptSubmit"
+      ],
+      "plugins": [
+        "p1@q1",
+        "p2@q1",
+        "p3@q2",
+        "p4@q3",
+        "p5@q4",
+        "p6@q1"
+      ]
+    }
+  },
+  "settings_managed_read": true,
+  "projects_total": 247,
+  "memory_dirs_total": 35,
+  "skipped": 0,
+  "read_errors": 0,
+  "memory_dirs": [
+    {
+      "key": "-s1-s2",
+      "key_len": 13,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 365,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m1.md",
+          "size": 805,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 78,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m2.md",
+          "size": 2572,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 103,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m3.md",
+          "size": 1241,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 71,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 3,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2--s3-s4",
+      "key_len": 25,
+      "is_symlink": true,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 3366,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m4.md",
+          "size": 37504,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 12,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": 13080955
+    },
+    {
+      "key": "-s1-s2-s5-s6",
+      "key_len": 32,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 199,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m5.md",
+          "size": 1533,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 124,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m6.md",
+          "size": 1994,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 84,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 2,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s5-s7-s8",
+      "key_len": 36,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 294,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 0,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": 14426974
+    },
+    {
+      "key": "-s1-s2-s5-s7-s9-s10",
+      "key_len": 43,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 234,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m7.md",
+          "size": 655,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 73,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m8.md",
+          "size": 2361,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 56,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 2,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": 14328076
+    },
+    {
+      "key": "-s1-s2-s5-s7-s9-s10-s11",
+      "key_len": 54,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 121,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m9.md",
+          "size": 452,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 68,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 1,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s5-s7-s12-s13",
+      "key_len": 41,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 643,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m10.md",
+          "size": 670,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 0,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s14-s15-s16-s2-s17-s18-s19-s20-s21-s22-s23-s24-s25-s26-s27-s28",
+      "key_len": 164,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 118,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m8.md",
+          "size": 2156,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 111,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 1,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s30-s31-s32",
+      "key_len": 33,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 1773,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m11.md",
+          "size": 1774,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 198,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m12.md",
+          "size": 1706,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 143,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m13.md",
+          "size": 2156,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 203,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m14.md",
+          "size": 583,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 125,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m15.md",
+          "size": 2615,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 215,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m16.md",
+          "size": 1597,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 229,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m17.md",
+          "size": 1294,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 164,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 7,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s30-s33",
+      "key_len": 28,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 304,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m18.md",
+          "size": 1602,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 135,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 1,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s30-s34-s35-s36",
+      "key_len": 45,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 505,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m19.md",
+          "size": 1764,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 168,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 1,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s37-s38",
+      "key_len": 32,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 670,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m20.md",
+          "size": 3160,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 128,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m21.md",
+          "size": 11367,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 95,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 2,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s37-s39",
+      "key_len": 33,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 1388,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 0,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s40-s2-s41-s42-s43",
+      "key_len": 48,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 429,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m22.md",
+          "size": 2004,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 145,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m23.md",
+          "size": 2519,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 137,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 2,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s40-s44-s45-s46",
+      "key_len": 48,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 338,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m24.md",
+          "size": 46170,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 313,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 1,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s40-s41-s47",
+      "key_len": 41,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 7590,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m25.md",
+          "size": 4470,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 288,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m26.md",
+          "size": 10661,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 167,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m27.md",
+          "size": 3043,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 163,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m28.md",
+          "size": 4019,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 191,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m29.md",
+          "size": 2702,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 182,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m30.md",
+          "size": 4010,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 116,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m31.md",
+          "size": 3134,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 260,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m32.md",
+          "size": 32140,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 338,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m33.md",
+          "size": 733,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 100,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m34.md",
+          "size": 5152,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 138,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m35.md",
+          "size": 2582,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 298,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m36.md",
+          "size": 2033,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 126,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m37.md",
+          "size": 4623,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 175,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m38.md",
+          "size": 3006,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 168,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m39.md",
+          "size": 1668,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 335,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m40.md",
+          "size": 17229,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 327,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m41.md",
+          "size": 5642,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 163,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m42.md",
+          "size": 2502,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 282,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m43.md",
+          "size": 1678,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 230,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m44.md",
+          "size": 832,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": false,
+          "description_len": null,
+          "has_name": true,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m45.md",
+          "size": 8443,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 399,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m46.md",
+          "size": 2502,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 260,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m47.md",
+          "size": 2663,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 324,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m48.md",
+          "size": 3280,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 157,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m49.md",
+          "size": 6032,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 175,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m50.md",
+          "size": 2232,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 210,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m51.md",
+          "size": 4293,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 338,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 27,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s40-s40-s48",
+      "key_len": 40,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 2081,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m52.md",
+          "size": 3418,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 243,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m53.md",
+          "size": 15574,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 643,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m54.md",
+          "size": 33727,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 197,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m55.md",
+          "size": 3547,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 181,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 4,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s40-s40-s49",
+      "key_len": 38,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 924,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m56.md",
+          "size": 3202,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 222,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m57.md",
+          "size": 3474,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 280,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m58.md",
+          "size": 3964,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 138,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 3,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s40-s50-s51-s52",
+      "key_len": 43,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 8117,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m59.md",
+          "size": 1979,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 87,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m60.md",
+          "size": 1759,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 153,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m61.md",
+          "size": 3763,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 87,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m62.md",
+          "size": 4749,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 369,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m63.md",
+          "size": 4435,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 78,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m64.md",
+          "size": 1788,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 122,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m65.md",
+          "size": 3749,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 169,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m66.md",
+          "size": 3998,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 195,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m67.md",
+          "size": 8214,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 179,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m68.md",
+          "size": 41956,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 79,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m69.md",
+          "size": 3639,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 185,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m70.md",
+          "size": 4774,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 154,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m71.md",
+          "size": 9392,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 145,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m72.md",
+          "size": 6029,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 248,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m73.md",
+          "size": 2475,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 142,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 15,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    },
+    {
+      "key": "-s1-s2-s29-s53",
+      "key_len": 27,
+      "is_symlink": false,
+      "project_is_symlink": false,
+      "files": [
+        {
+          "name": "MEMORY.md",
+          "size": 674,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": false,
+          "has_description": false,
+          "description_len": null,
+          "has_name": false,
+          "has_type": false,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m74.md",
+          "size": 8531,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 117,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        },
+        {
+          "name": "m75.md",
+          "size": 1270,
+          "is_symlink": false,
+          "unreadable": false,
+          "has_frontmatter": true,
+          "has_description": true,
+          "description_len": 104,
+          "has_name": true,
+          "has_type": true,
+          "frontmatter_truncated": false
+        }
+      ],
+      "index": {
+        "rows": 2,
+        "dangling_rows": 0,
+        "truncated": false
+      },
+      "lock_age_s": null
+    }
+  ]
+}
