@@ -4121,6 +4121,197 @@ def test_a_projects_directory_nobody_could_read_never_reads_as_nothing_written(
         assert "outside every store" not in reported.detail
 
 
+def test_a_store_that_would_not_resolve_is_not_a_directory_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """"Outside every store" is a claim about every store on the machine, and
+    a store naming a root the config does not define is one this run compared
+    nothing with.
+
+    The config parsed, so the emptiness the loop fell out with looked like a
+    completed comparison — and the row told an adopter to point the key at a
+    corpus root about a directory already inside one.
+    """
+    blob = {
+        "schema": 1,
+        "interpreter": sys.executable,
+        "roots": {"home": {"kind": "path", "path": str(profile)}},
+        "stores": [
+            {
+                "id": "personal",
+                "role": "personal",
+                "dir": "stores/personal",
+                "live_root": "home",
+            },
+            {
+                "id": "team",
+                "role": "project",
+                "dir": "stores/team",
+                "live_root": "shared",
+            },
+        ],
+    }
+    path = profile / "memkit.json"
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    mine = profile / "stores" / "team" / "search" / harness_memory.SAFE_SUBDIR
+    mine.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(mine))
+    machine = _machine(profile, monkeypatch, str(path))
+    assert machine.config() is not None, "the config itself must still parse"
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert "outside every store" not in row.detail
+    assert "could not read every configured store" in row.detail
+    # And the repair is the row that says why a store would not resolve, not
+    # a directory change decided from stores nobody read.
+    assert row.remedy == doctor._UNCOMPARED_REMEDY
+    assert "store-roots" in row.remedy
+
+
+def test_project_directories_no_store_was_compared_with_are_not_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """The count, asked through the same predicate the sentence beside it uses.
+
+    Bucketed on the raw relation, every project directory a failed comparison
+    left unplaced arrived in the caller as one more memory outside every
+    store — this row's loudest number, made from a comparison that never
+    happened.
+    """
+    broken = profile / "memkit.json"
+    broken.write_text("{ not json", encoding="utf-8")
+    projects = profile / "claude-config" / "projects"
+    for key, names in (
+        ("-home-u-git-app", ("one.md", "two.md")),
+        ("-home-u", ("note.md",)),
+    ):
+        (projects / key / "memory").mkdir(parents=True)
+        for name in names:
+            (projects / key / "memory" / name).write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, str(broken))),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert (
+        "2 project directories hold 3 memories nothing was compared with"
+        in row.detail
+    )
+    assert row.remedy == doctor._UNCOMPARED_REMEDY
+
+
+def test_the_derived_branch_advises_nothing_over_a_corpus_it_could_not_count(
+    profile, monkeypatch
+) -> None:
+    """The branch every adopter without the key lands on, and the only one
+    that never consulted the repair its own disclosure owns.
+
+    Adopting the corpus and switching the feature off are both instructions
+    about memories whose number this run does not know — the two things
+    `_unreadable_remedy` exists to say instead.
+    """
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    (projects / "-home-u-app" / "memory").mkdir(parents=True)
+    (projects / "-home-u-app" / "memory" / "one.md").write_text("x\n", encoding="utf-8")
+    os.chmod(projects, 0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        os.chmod(projects, 0o700)
+    assert "cannot be counted" in row.detail
+    assert row.remedy == doctor._unreadable_remedy()
+    assert "copies, never moves" not in row.remedy
+    assert "To run memkit alone" not in row.remedy
+
+
+def test_a_derived_directory_this_run_cannot_stat_is_not_reported_as_not_there_yet(
+    profile, monkeypatch
+) -> None:
+    """`os.path.isdir` answers False to two different questions, and every
+    sentence hung off that False is a positive claim about a read that never
+    happened."""
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    projects.mkdir(parents=True)
+    os.chmod(projects, 0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        os.chmod(projects, 0o700)
+    assert "could not read whether it is there" in row.detail
+    assert "not there yet" not in row.detail
+
+    # A directory that is genuinely absent keeps the sentence that says so.
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "that directory is not there yet" in row.detail
+
+
+def test_a_corpus_root_spelled_in_another_case_is_the_same_directory(
+    profile, monkeypatch
+) -> None:
+    """Where the filesystem folds case, two spellings of one corpus root are
+    one directory — and compared character by character, a directory already
+    inside a store is reported as outside every one of them.
+
+    Skipped rather than asserted on a case-sensitive filesystem: whether the
+    fold is real is a fact about the volume the test runs on, which is the
+    same thing the predicate itself probes.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "chain tension after the sprocket swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    flipped = str(mine).replace("/stores/", "/STORES/")
+    if not os.path.isdir(flipped):
+        pytest.skip("this filesystem does not fold case")
+    _settings(profile, autoMemoryDirectory=flipped)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert "is inside a store's corpus root" in row.detail
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_the_branch_that_could_not_settle_names_how_many_and_never_which(
+    profile, monkeypatch
+) -> None:
+    """How many memories are where nothing retrieves them, and by role where
+    the count came from — never a file on disk and never a directory.
+
+    A project key is an absolute path with its separators replaced, so a list
+    of them is a list of paths and longer than everything else in this row put
+    together.
+    """
+    path = _store_config(profile, stores=["personal"])
+    stray = profile / "elsewhere"
+    stray.mkdir()
+    _settings(profile, autoMemoryDirectory=str(stray))
+    projects = profile / "claude-config" / "projects"
+    for key, names in (
+        ("-home-u-git-app", ("one.md", "two.md")),
+        ("-home-u", ("note.md",)),
+    ):
+        (projects / key / "memory").mkdir(parents=True)
+        for name in names:
+            (projects / key / "memory" / name).write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "2 project directories hold 3 memories outside every store" in row.detail
+    for named in ("-home-u-git-app", "-home-u ", "one.md", "two.md", "note.md"):
+        assert named not in row.detail, named
+
+
 def test_a_project_directory_inside_a_corpus_root_is_not_outside_every_store(
     profile, monkeypatch
 ) -> None:
