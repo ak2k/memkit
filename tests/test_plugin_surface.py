@@ -5014,20 +5014,161 @@ def _workflow_steps(job: str) -> list:
     return job.split("\n      - ")[1:]
 
 
-# Arguments a pytest invocation can carry without changing WHICH tests run.
-# Named rather than excluded, because the exclusions are open-ended: a bare
-# path was the only shape the first version of this gate anticipated, and
-# `--ignore=`, `--deselect=`, `-k=`, `--co` and `--ignore-glob=` all remove the
-# very file this gate protects while still looking like a whole-suite run.
-_WHOLE_SUITE_ARGS = frozenset(
-    ("-q", "-qq", "-v", "-vv", "-ra", "-r", "--tb=short", "--tb=long",
-     "--color=no", "--color=yes", "--durations=10")
-)
+# This file, spelled the way the workflow's own steps would name it.
+_THIS_FILE = Path(__file__).resolve().relative_to(REPO).as_posix()
 
 
-def _runs_every_test(args: str) -> bool:
-    """Whether a pytest invocation runs the suite rather than a subset of it."""
-    return all(one in _WHOLE_SUITE_ARGS for one in args.split())
+def _env_map(block: str) -> dict:
+    """The first `env:` mapping in a workflow block.
+
+    A value carrying a `${{` expression is left out: nothing here expands one,
+    and the literal text is a value the runner would never hand a step.
+    """
+    lines = block.splitlines()
+    opens = [i for i, line in enumerate(lines) if re.match(r"\s*env:\s*$", line)]
+    if not opens:
+        return {}
+    at = opens[0]
+    indent = len(lines[at]) - len(lines[at].lstrip())
+    found = {}
+    for line in lines[at + 1 :]:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        key, sep, value = line.strip().partition(":")
+        value = value.strip().strip('"').strip("'")
+        if sep and "${{" not in value:
+            found[key.strip()] = value
+    return found
+
+
+def _job_env(job: str) -> dict:
+    """The job-level `env:` map, which every step of the job runs under."""
+    return _env_map(job.split("\n    steps:")[0])
+
+
+def _pytest_steps(job: str) -> list:
+    """Indices of the job's steps that run pytest, however the line is written.
+
+    No argument allowlist and no anchor on `run: `. Every earlier version of
+    this gate named the shapes a whole-suite invocation may take, and each one
+    was defeated by a shape it had not been told about — a block scalar, a
+    bare `--no-header`, an argument group that did not survive `re.M`. A step
+    either runs pytest or it does not.
+    """
+    return [
+        i for i, step in enumerate(_workflow_steps(job)) if "python -m pytest" in step
+    ]
+
+
+def _pytest_commands(step: str) -> list:
+    """Every pytest invocation in a step's script, as its argument list.
+
+    Continuations are joined first: what follows a backslash belongs to the
+    invocation as much as what precedes it.
+    """
+    joined = re.sub(r"\\\n\s*", " ", step)
+    return [
+        shlex.split(found.group(1))
+        for found in re.finditer(r"python -m pytest([^\n]*)", joined)
+    ]
+
+
+def _zsh_install_steps(job: str) -> list:
+    """Indices of the job's steps that INSTALL zsh, not the ones that prove it."""
+    return [
+        i
+        for i, step in enumerate(_workflow_steps(job))
+        if re.search(r"apt-get install[^\n]*\bzsh\b", step)
+    ]
+
+
+_COLLECTED: dict = {}
+
+
+def _collected_files(env: dict, args: list) -> dict:
+    """What `pytest <args>` collects under `env`, as {file: number of tests}.
+
+    The child environment is built key by key. Inheriting the caller's would
+    hide the very lever this measures, since a `PYTEST_ADDOPTS` in the parent
+    would then reach the child as well. `pyproject.toml` is the repo's own and
+    no `-o addopts=` suppresses it, because `addopts` there is a third lever.
+
+    Memoized on the environment and the arguments: the same pair collects the
+    same set, and the benign-rewrite cases ask for most of them twice.
+    """
+    key = (tuple(sorted(env.items())), tuple(args))
+    if key not in _COLLECTED:
+        child = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            **env,
+        }
+        # `no:cacheprovider` so the nested run leaves the cache of the run that
+        # spawned it alone.
+        done = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q",
+             "-p", "no:cacheprovider", *args],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            env=child,
+        )
+        assert done.returncode in (0, 5), (
+            f"collecting `pytest {' '.join(args)}` under {env} exited "
+            f"{done.returncode}:\n{done.stdout}\n{done.stderr}"
+        )
+        _COLLECTED[key] = {
+            name: int(count)
+            for name, count in re.findall(r"^(\S+\.py): (\d+)$", done.stdout, re.M)
+        }
+    return _COLLECTED[key]
+
+
+def _zsh_is_installed_before_pytest(workflow: str) -> None:
+    """Every pytest the gating job runs comes after the step installing zsh."""
+    job = _workflow_job(_uncommented(workflow), "python")
+    installs = _zsh_install_steps(job)
+    runs = _pytest_steps(job)
+    assert installs, "no step of the `python` job installs zsh"
+    assert runs, "no step of the `python` job runs pytest"
+    assert min(runs) > max(installs), (
+        f"the `python` job installs zsh at steps {installs} and runs pytest "
+        f"at {runs}"
+    )
+
+
+def _the_gating_job_runs_the_whole_suite(workflow: str) -> None:
+    """The gating job really collects the suite its steps read as running.
+
+    The outcome rather than the run line's arguments: `PYTEST_ADDOPTS` on
+    either `env:` map, `addopts` in `pyproject.toml`, an `--ignore=` among the
+    arguments and a filename appended to the run line each shrink what the job
+    runs while every step still reads as a whole-suite pytest. So the steps are
+    executed for their collection, under the environment the workflow text
+    builds, and what they reach is compared with what the repo collects on its
+    own. Asked of the job rather than of one step, this needs no way to tell
+    the whole-suite step from a narrower one — the narrow step reaching only
+    its own file is the ordinary case.
+    """
+    job = _workflow_job(_uncommented(workflow), "python")
+    steps = _workflow_steps(job)
+    whole = set(_collected_files({}, []))
+    assert _THIS_FILE in whole, f"{_THIS_FILE} is collected by nothing at all"
+    collected = {}
+    for i in _pytest_steps(job):
+        env = {**_job_env(job), **_env_map(steps[i])}
+        found = {}
+        for args in _pytest_commands(steps[i]):
+            found.update(_collected_files(env, args))
+        collected[i] = sorted(found)
+    seen = {name for names in collected.values() for name in names}
+    assert not whole - seen, (
+        f"the `python` job collects nothing from {sorted(whole - seen)}; its "
+        f"pytest steps reach {({i: len(v) for i, v in collected.items()})} files"
+    )
 
 
 def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
@@ -5060,22 +5201,77 @@ def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
     # The python leg: the gating job installs the shell, and then runs the
     # suite that needs it. Either one alone leaves the cells uncovered under a
     # context branch protection requires.
-    steps = _workflow_steps(_workflow_job(_uncommented(workflow), "python"))
-    installs = [i for i, step in enumerate(steps) if re.search(r"\bzsh --version\b", step)]
-    # The whole suite, which is the invocation these cells ride in: a pytest
-    # naming a file is some other step's narrower gate.
-    runs = [
-        i for i, step in enumerate(steps)
-        if any(
-            _runs_every_test(found)
-            for found in re.findall(
-                r"\brun: \S*python -m pytest((?:\s+\S+)*)\s*$", step, re.M
-            )
+    _zsh_is_installed_before_pytest(workflow)
+    # `zsh --version` is the evidence; `apt-get install` is what makes the
+    # shell present. Keyed on the evidence, a job that stopped installing and
+    # kept the version line reads as fully armed.
+    job = _workflow_job(_uncommented(workflow), "python")
+    steps = _workflow_steps(job)
+    for i in _zsh_install_steps(job):
+        assert re.search(r"\bzsh --version\b", steps[i]), (
+            f"step {i} of the `python` job installs zsh without verifying it"
         )
+
+
+def test_the_gating_job_collects_the_suite_it_reads_as_running() -> None:
+    """Installing the shell buys nothing if the cells are never collected.
+
+    The run line is not evidence that they are. Four levers outside it —
+    `PYTEST_ADDOPTS` on either `env:` map, `addopts` in `pyproject.toml`, an
+    `--ignore=` among the arguments, a filename appended to the line — narrow
+    what the job runs while the step still reads as a whole-suite pytest and
+    the gate stays green. So the job's own environment is rebuilt out of the
+    workflow text and the collection is executed under it.
+    """
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    _the_gating_job_runs_the_whole_suite(workflow)
+
+
+def _benign_rewrites(workflow: str) -> list:
+    """The workflow rewritten three ways that change nothing it does.
+
+    The scalar rewrite goes into whichever form the step is not written in, so
+    that a workflow already spelling the step the other way gets the same
+    three cases rather than an assertion about the form it happens to use.
+    """
+    plain = re.search(r"^([ ]*)run: (\S*python -m pytest[^\n]*)$", workflow, re.M)
+    folded = re.search(
+        r"^([ ]*)run: \|\n[ ]*(\S*python -m pytest[^\n]*)$", workflow, re.M
+    )
+    found = plain or folded
+    assert found, "no pytest `run:` in the workflow to rewrite"
+    indent, command, whole = found.group(1), found.group(2), found.group(0)
+    other = (
+        f"{indent}run: |\n{indent}  {command}" if plain else f"{indent}run: {command}"
+    )
+    rewrites = [
+        ("the other scalar form", other),
+        ("an inserted env:", f'{indent}env:\n{indent}  PYTHONHASHSEED: "0"\n{whole}'),
+        ("an added comment", f"{indent}# A line that says nothing.\n{whole}"),
     ]
-    assert len(installs) == 1, f"{len(installs)} steps of the `python` job run `zsh --version`"
-    assert len(runs) == 1, f"{len(runs)} steps of the `python` job run the whole suite"
-    assert installs[0] < runs[0], "the `python` job installs zsh after it runs the suite"
+    out = []
+    for name, replacement in rewrites:
+        rewritten = workflow.replace(whole, replacement, 1)
+        assert rewritten != workflow, f"{name} rewrote nothing"
+        out.append((name, rewritten))
+    return out
+
+
+def test_the_whole_suite_gate_survives_a_benign_rewrite_of_the_step() -> None:
+    """The direction the mutation corpus cannot express: an edit that must PASS.
+
+    A gate that recognizes spellings fails on a new one, and a corpus where
+    every probe asks for a red never notices. These three edits change how the
+    step is written and nothing about what it does, so a gate that goes red on
+    one of them is reading the text instead of the outcome.
+    """
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    for name, rewritten in _benign_rewrites(workflow):
+        try:
+            _zsh_is_installed_before_pytest(rewritten)
+            _the_gating_job_runs_the_whole_suite(rewritten)
+        except AssertionError as why:
+            raise AssertionError(f"the gate reds on {name}: {why}") from why
 
 
 def test_no_page_names_a_setting_the_harness_does_not_have() -> None:

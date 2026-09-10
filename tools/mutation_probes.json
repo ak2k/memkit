@@ -4277,7 +4277,7 @@
       "old": "run: .venv/bin/python -m pytest -q",
       "new": "run: .venv/bin/python -m pytest -q --ignore=tests/test_plugin_surface.py",
       "tests": [
-        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+        "tests/test_plugin_surface.py::test_the_gating_job_collects_the_suite_it_reads_as_running"
       ],
       "why": "a flag that deselects the suite leaves the required context green with none of these cases run, which is the same silent state as deleting the step"
     },
@@ -4324,6 +4324,39 @@
         "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
       ],
       "why": "an `env:` map on the job is how a failing shell-dependent case gets silenced, and this is the half of the arming that turns the context branch protection requires green"
+    },
+    {
+      "name": "zsh-gate-the-install-goes-and-the-version-line-stays",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n",
+      "new": "          zsh --version\n",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "a job that stopped installing the shell and kept printing its version reads as armed, and the cases pasted into zsh fail under the one context branch protection requires"
+    },
+    {
+      "name": "zsh-gate-the-job-env-deselects-the-file-it-gates",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      MEMKIT_RIG_REQUIRED: \"1\"\n",
+      "new": "      MEMKIT_RIG_REQUIRED: \"1\"\n      PYTEST_ADDOPTS: \"--ignore=tests/test_plugin_surface.py\"\n",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_gating_job_collects_the_suite_it_reads_as_running"
+      ],
+      "why": "an `env:` map deselects a file the run line never mentions, so the step still reads as a whole-suite pytest with none of these cases in it"
+    },
+    {
+      "name": "zsh-gate-the-repo-addopts-deselects-the-file-it-gates",
+      "module": "docs",
+      "file": "pyproject.toml",
+      "old": "addopts = \"-q\"",
+      "new": "addopts = \"-q --ignore=tests/test_plugin_surface.py\"",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_gating_job_collects_the_suite_it_reads_as_running"
+      ],
+      "why": "the third lever outside the run line: config the runner never sees decides what the whole-suite step actually collects"
     }
   ]
 }
