@@ -765,12 +765,18 @@ def test_a_memory_directory_that_will_not_list_is_named_by_the_walk(
 def test_one_unanswerable_name_in_the_inventory_does_not_drop_its_siblings(
     config_dir,
 ) -> None:
-    """A `.md` whose file test raises costs that name and nothing else.
+    """A `.md` whose file test raises costs that name, and says it did.
 
     Guarded per directory, one symlink loop took the whole project out of the
     walk, and the count an adopter reads was a count of the directories that
     happened to answer. The guard is per NAME, so what a loop costs is the row
     it is on.
+
+    And the row it costs is DISCLOSED. The flag answers "did this walk read
+    everything it was asked about", so a name nothing could stat turns it
+    false the same way an unreadable project directory does — otherwise a
+    count short by a memory nobody could look at is handed on as a count of
+    what is there.
     """
     _memories(config_dir, "-p-loop", "one.md", "two.md")
     memory = config_dir / "projects" / "-p-loop" / "memory"
@@ -779,9 +785,10 @@ def test_one_unanswerable_name_in_the_inventory_does_not_drop_its_siblings(
 
     found, read_ok, unreadable = harness_memory.inventory(str(config_dir))
     assert [(p.key, p.files) for p in found] == [("-p-loop", ["one.md", "two.md"])]
-    # The DIRECTORY listed, which is what this flag is about: the name that
-    # would not answer is off the list rather than counted as read.
-    assert (read_ok, unreadable) == (True, "")
+    assert read_ok is False
+    # Either loop may be the first the walk reaches; the path is the NAME that
+    # would not answer, not the directory holding it.
+    assert unreadable in (str(memory / "a.md"), str(memory / "b.md")), unreadable
 
 
 def test_a_project_that_will_not_answer_does_not_empty_the_inventory_walk(

@@ -651,8 +651,8 @@ def _foreign_canary(store: str, nonce: str) -> str:
         with open(path, encoding="utf-8") as f:
             body = f.read(4096)
     except (OSError, ValueError):
-        # swallow: ticket class-5 _foreign_canary — a canary this process
-        # cannot read reads as "no other config owns this store", so
+        # swallow: nothing discloses this one. A canary this process cannot
+        # read reads as "no other config owns this store", so
         # `canary-belongs-to-another-config` does not fire and no line says
         # why; the write half is still safe, because the create refuses a
         # differing destination.
@@ -1238,7 +1238,7 @@ def _git_tracked(path: str) -> bool:
     try:
         out = run_git(GitRoute.TRACKED, repo=parent, path=path, timeout=15)
     except (OSError, subprocess.SubprocessError, Untrusted):
-        # swallow: ticket class-5 _git_tracked — the manifest loses the
+        # swallow: nothing discloses this one. The manifest loses its
         # "tracked by git" warning and says nothing about having lost it.
         return False
     return out.returncode == 0

@@ -5288,18 +5288,15 @@ def test_no_page_names_a_setting_the_harness_does_not_have() -> None:
     copying a paragraph, and invisible to every other check here.
 
     CHANGELOG.md is excluded by decision, not by oversight: a changelog entry
-    may legitimately name the key it is recording the correction of. So is the
-    line that retracts the name outright — `harness_memory.py` opens by saying
-    it is not a key the harness reads, which is what a reader who meets the old
-    name anywhere else needs. THE LINE AND NOT THE FILE: a remedy string added
-    to that same module names the key to an adopter and still reds here.
+    may legitimately name the key it is recording the correction of. Every
+    other page and module is read WHOLE. A line-level exemption here — for a
+    retraction sentence, say — is a line any remedy string can be written on,
+    so the retraction states what the earlier reading got wrong without
+    spelling the name, and the file-level test keeps its teeth.
     """
 
     def names_it(text: str) -> bool:
-        return any(
-            "memoryDir" in line and "not a key the harness reads" not in line
-            for line in text.splitlines()
-        )
+        return "memoryDir" in text
 
     named = []
     for where in ("docs", "src", "skills"):

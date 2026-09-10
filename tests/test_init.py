@@ -2015,7 +2015,24 @@ def test_a_confined_directory_is_made_where_the_guard_judged_it(
     assert (plain / "search").is_dir()
 
 
-def test_no_oserror_handler_swallows_silently(profile) -> None:
+# The modules that meet a failed read and have to decide what to say about it,
+# each with the handler count this lint was reading when the entry was written.
+# One test over three, because it is one rule: the copies this replaced said
+# the same thing about one module each, and the two that had no copy are the
+# two where a silent handler had gone unread longest.
+_SWALLOW_MODULES = (
+    ("cli_init.py", 27),
+    ("memory_integrity.py", 4),
+    ("harness_memory.py", 8),
+)
+
+
+@pytest.mark.parametrize(
+    "module, handler_floor",
+    _SWALLOW_MODULES,
+    ids=[name for name, _count in _SWALLOW_MODULES],
+)
+def test_no_oserror_handler_swallows_silently(module, handler_floor) -> None:
     """A READ THAT COULD NOT LOOK NEVER ANSWERS WITH THE EMPTY COLLECTION.
 
     An `except OSError` whose whole body is `pass`, `continue` or an empty
@@ -2026,8 +2043,11 @@ def test_no_oserror_handler_swallows_silently(profile) -> None:
     does report the failure, and this prints the allowlist so a reviewer reads
     the reasons rather than trusting they exist.
 
-    `memory_integrity.py` and `harness_memory.py` hold the same class and are
-    frozen on this branch; the lint is promoted over them at the merge round.
+    It stays in this file, parametrized rather than moved, because it is one
+    module's lint widened to the two modules that hold the same class.
+
+    The per-module floor is the handler count measured when the module joined:
+    a lint whose set has quietly emptied passes everything.
     """
     import ast
 
@@ -2040,7 +2060,8 @@ def test_no_oserror_handler_swallows_silently(profile) -> None:
         "NotADirectoryError",
         "Exception",
     }
-    source = pathlib.Path(init.__file__).read_text(encoding="utf-8")
+    path = pathlib.Path(init.__file__).parent / module
+    source = path.read_text(encoding="utf-8")
     lines = source.splitlines()
 
     def caught(handler) -> set:
@@ -2078,11 +2099,11 @@ def test_no_oserror_handler_swallows_silently(profile) -> None:
 
     handlers = [
         handler
-        for node in ast.walk(ast.parse(source, init.__file__))
+        for node in ast.walk(ast.parse(source, str(path)))
         for handler in getattr(node, "handlers", [])
         if caught(handler) & catches
     ]
-    assert len(handlers) >= 8, len(handlers)
+    assert len(handlers) >= handler_floor, (module, len(handlers))
     allowlisted, offenders = [], []
     for handler in handlers:
         body = silent(handler.body)
@@ -2095,14 +2116,15 @@ def test_no_oserror_handler_swallows_silently(profile) -> None:
         while cursor >= 0 and lines[cursor].strip().startswith("#"):
             above.insert(0, lines[cursor].strip())
             cursor -= 1
-        where = f"cli_init.py:{first}  except {'/'.join(sorted(caught(handler)))}"
+        where = f"{module}:{first}  except {'/'.join(sorted(caught(handler)))}"
         excuse = [line for line in above if line.startswith("# swallow:")]
         if excuse:
             allowlisted.append(f"{where}  {body}  {excuse[0]}")
         else:
             offenders.append(f"{where}  {body}")
-    print("\n".join(["silent handlers, allowlisted:", *allowlisted]))
+    print("\n".join([f"silent handlers in {module}, allowlisted:", *allowlisted]))
     assert offenders == [], offenders
+
 
 def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
     """Same window, same file class: an append computed at plan time and

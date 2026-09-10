@@ -2141,8 +2141,8 @@
       "name": "inventory-counts-a-directory-whose-name-ends-in-md",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "                    if not entry.name.endswith(\".md\"):\n                        continue\n                    try:\n                        if not entry.is_file():\n                            continue\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        continue\n",
-      "new": "                    if not entry.name.endswith(\".md\"):\n                        continue\n                    try:\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        continue\n",
+      "old": "                    if not entry.name.endswith(\".md\"):\n                        continue\n                    try:\n                        if not entry.is_file():\n                            continue\n                        listed.append((entry.name, entry.is_symlink()))\n",
+      "new": "                    if not entry.name.endswith(\".md\"):\n                        continue\n                    try:\n                        listed.append((entry.name, entry.is_symlink()))\n",
       "tests": [
         "tests/test_harness_memory.py::test_a_directory_named_like_a_memory_is_not_one"
       ],
@@ -2187,7 +2187,7 @@
       "name": "inventory-reads-a-memory-directory-that-will-not-list-as-one-that-wrote-nothing",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "        except (FileNotFoundError, NotADirectoryError):\n            # THE ONE FAILURE THAT IS AN ANSWER, per project: the harness\n            # creates `memory/` with the first memory and not before, so a\n            # project without one wrote nothing rather than refused to answer.\n            continue\n        except (OSError, ValueError):\n            read_ok = False\n            unreadable = unreadable or memory\n            continue\n",
+      "old": "        except (FileNotFoundError, NotADirectoryError):\n            # swallow: THE ONE FAILURE THAT IS AN ANSWER, per project. The\n            # harness creates `memory/` with the first memory and not before,\n            # so a project without one wrote nothing rather than refused to\n            # answer: it is left out of the inventory, `read_ok` stays true,\n            # and the project count the auto-memory row prints is what carries\n            # the absence.\n            continue\n        except (OSError, ValueError):\n            read_ok = False\n            unreadable = unreadable or memory\n            continue\n",
       "new": "        except (OSError, ValueError):\n            continue\n",
       "tests": [
         "tests/test_harness_memory.py::test_a_memory_directory_that_will_not_list_is_named_by_the_walk",
@@ -5751,7 +5751,7 @@
       "new": "        except OSError:\n            continue\n",
       "tests": [
         "tests/test_init.py::test_a_memory_directory_that_cannot_be_listed_is_named",
-        "tests/test_init.py::test_no_oserror_handler_swallows_silently"
+        "tests/test_init.py::test_no_oserror_handler_swallows_silently[cli_init.py]"
       ],
       "why": "an empty listing and a listing that raised become one answer, so a directory holding memories nobody can currently read reaches the adopter as a machine with none."
     },
@@ -6278,7 +6278,7 @@
       "name": "harness-memory-one-unanswerable-name-drops-its-whole-directory",
       "module": "harness_memory",
       "file": "src/memkit/harness_memory.py",
-      "old": "                    try:\n                        if not entry.is_file():\n                            continue\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        continue\n",
+      "old": "                    try:\n                        if not entry.is_file():\n                            continue\n                        listed.append((entry.name, entry.is_symlink()))\n                    except OSError:\n                        # The answer both loops around this one already give a\n                        # name that will not stat. Dropped instead, a `.md`\n                        # named entry nothing can look at \u2014 a link loop, a\n                        # FIFO whose open blocks \u2014 left the other memories in\n                        # this directory counted and the walk reported as\n                        # clean, which is the sentence \"these are the\n                        # harness's memories\" resting on a read that failed.\n                        read_ok = False\n                        unreadable = unreadable or entry.path\n",
       "new": "                    if not entry.is_file():\n                        continue\n                    listed.append((entry.name, entry.is_symlink()))\n",
       "tests": [
         "tests/test_harness_shape.py::test_the_two_walks_answer_the_same_way_about_a_hostile_tree",

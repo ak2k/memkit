@@ -56,9 +56,10 @@ variables decide the DIRECTORY the same way (`OVERRIDE_ENV`) — of which memkit
 resolves none, and says so rather than naming a directory that is not the one
 being written to.
 
-`memoryDir` is not a key the harness reads. It was memkit's own earlier reading
-of this feature, and a remedy naming it changed nothing on the adopter's
-machine.
+AN EARLIER READING OF THIS FEATURE NAMED A FOURTH KEY, and the harness reads
+no such key. A remedy naming it changed nothing on the adopter's machine,
+which is why the three above are measured against a live build rather than
+taken from a schema description.
 """
 
 from __future__ import annotations
@@ -403,11 +404,22 @@ def inventory(config_dir: str) -> tuple:
                             continue
                         listed.append((entry.name, entry.is_symlink()))
                     except OSError:
-                        continue
+                        # The answer both loops around this one already give a
+                        # name that will not stat. Dropped instead, a `.md`
+                        # named entry nothing can look at — a link loop, a
+                        # FIFO whose open blocks — left the other memories in
+                        # this directory counted and the walk reported as
+                        # clean, which is the sentence "these are the
+                        # harness's memories" resting on a read that failed.
+                        read_ok = False
+                        unreadable = unreadable or entry.path
         except (FileNotFoundError, NotADirectoryError):
-            # THE ONE FAILURE THAT IS AN ANSWER, per project: the harness
-            # creates `memory/` with the first memory and not before, so a
-            # project without one wrote nothing rather than refused to answer.
+            # swallow: THE ONE FAILURE THAT IS AN ANSWER, per project. The
+            # harness creates `memory/` with the first memory and not before,
+            # so a project without one wrote nothing rather than refused to
+            # answer: it is left out of the inventory, `read_ok` stays true,
+            # and the project count the auto-memory row prints is what carries
+            # the absence.
             continue
         except (OSError, ValueError):
             read_ok = False
