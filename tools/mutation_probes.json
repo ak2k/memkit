@@ -4421,7 +4421,7 @@
       "name": "admission-file-count-is-last-releases",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**108 files, about 4.2 MiB**",
+      "old": "**108 files, about 4.3 MiB**",
       "new": "**101 files, about 3.0 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
@@ -4429,6 +4429,292 @@
         "tests/test_plugin_surface.py::test_the_admission_numbers_reproduce_from_its_own_recipe"
       ],
       "why": "The headline count is re-derived at each release and nothing else moves it, so the way it goes wrong is by staying at the previous release's number — which is what this writes, the count the pin still carries. It has to fail for two independent reasons: the figure no longer matches `git ls-files`, and the note now states 101 twice while claiming one count per tree described. A release that re-derives the table has to re-anchor this."
+    },
+    {
+      "name": "store-doc-git-section-heading-renamed",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "## Keep your store in git",
+      "new": "## Keeping the store under version control",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-main-checkout-bash]"
+      ],
+      "why": "the cases find both commands through that heading, so a rename silently leaves them executing nothing"
+    },
+    {
+      "name": "store-doc-key-derivation-maps-two-characters",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "printf '%s\\n' \"$root\" | tr -c 'A-Za-z0-9\\n' '-'",
+      "new": "printf '%s\\n' \"$root\" | tr '/.' '-'",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-non-git-bash]"
+      ],
+      "why": "the harness rewrites every character that is not a letter or digit; a path with an underscore or a space keys elsewhere under a block that names only two"
+    },
+    {
+      "name": "store-doc-target-is-the-corpus-root-itself",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`$store/search/auto-memory` where `search/` exists",
+      "new": "`$store/search` where `search/` exists",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-link-to-corpus-root-bash]"
+      ],
+      "why": "that paragraph is the reader's only definition of `$target`, and the corpus root is the one value the setting exists to avoid: the harness rewrites the frontmatter of every `.md` under it"
+    },
+    {
+      "name": "store-doc-prose-key-rule-names-two-characters",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "character that is not a letter or digit replaced by `-`",
+      "new": "character that is a `/` or a `.` replaced by `-`",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-non-git-bash]"
+      ],
+      "why": "the sentence states the rule the block below implements; a path with an underscore or a space keys elsewhere than a reader following the prose would look"
+    },
+    {
+      "name": "store-doc-submodule-keys-on-the-superproject",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "a repository's worktrees share that directory too; a submodule keys on",
+      "new": "a repository's worktrees share that directory too; a submodule keys not on",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-submodule-bash]"
+      ],
+      "why": "a submodule keys on itself, and a reader told otherwise looks for its memories under the superproject's directory"
+    },
+    {
+      "name": "store-doc-a-dir-that-is-not-a-link-is-created",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "fails and nothing after it runs.",
+      "new": "creates it and the rest of the line runs.",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-dir-is-a-directory-bash]"
+      ],
+      "why": "the line no-ops on a `$dir` that is an ordinary directory, so a reader promised it would be created waits for a link that never appears"
+    },
+    {
+      "name": "store-doc-target-is-a-directory-the-reader-already-owns",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`$store/search/auto-memory` where `search/` exists",
+      "new": "`$store/search/hot` where `search/` exists",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-link-to-corpus-root-bash]"
+      ],
+      "why": "the directory has to be one of the harness's OWN, not merely under the corpus root: a tier the reader keeps memories in has its frontmatter rewritten exactly as the corpus root would"
+    },
+    {
+      "name": "store-doc-the-line-needs-fewer-variables-than-it-does",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "and all three\nare yours to set before the line runs",
+      "new": "and both\nare yours to set before the line runs",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-store-unset-bash]"
+      ],
+      "why": "a reader who sets the number the page counts and no more leaves `$store` empty, and the line then stops with a status and no message that the page's next sentence explains wrongly"
+    },
+    {
+      "name": "store-doc-the-key-block-aborts-under-errexit",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "--git-common-dir 2>/dev/null) || root=",
+      "new": "--git-common-dir 2>/dev/null)",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[key-non-git-errexit-bash]"
+      ],
+      "why": "outside a repository the first rev-parse fails, and without a status errexit will not act on, `set -e` aborts the block at its first line: no key, no message, rc 128, and the documented cwd fallback never runs"
+    },
+    {
+      "name": "store-doc-dir-is-defined-as-the-key-not-the-directory",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$key/memory; ls -ld \"$dir\"`",
+      "new": "`dir=$key; ls -ld \"$dir\"`",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-dir-from-the-page-bash]"
+      ],
+      "why": "a reader who sets `$dir` to the key rather than the directory gets rc 1 with nothing on either stream, which is the documented outcome of a `$dir` that is not a link — so the page hands them a wrong diagnosis of their own silent no-op"
+    },
+    {
+      "name": "store-doc-a-recreated-dir-keeps-the-link-in-place",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "recreation between `rm` and `ln` leaves the link inside `$dir` rather than in\nits place",
+      "new": "recreation between `rm` and `ln` leaves the link where it belongs",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[repoint-harness-recreated-dir-bash]"
+      ],
+      "why": "the section's one safety instruction: a harness left running recreates `$dir` between the two commands, and the link then lands one level down where nothing reads through it"
+    },
+    {
+      "name": "store-doc-an-unset-target-stops-as-quietly-as-the-others",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "an unset `$target` fails `mkdir`, which does say so on stderr",
+      "new": "an unset `$target` fails `mkdir`, which says nothing on stderr",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_runs_where_it_is_pasted[guard-target-unset-bash]"
+      ],
+      "why": "the sentence's whole point is the asymmetry — two of the three variables stop a test and print nothing, the third stops a command that reports itself — and a reader told all three are silent has no way to read the failure they get"
+    },
+    {
+      "name": "store-doc-the-blocked-reader-is-routed-below-what-blocks-them",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "`.claude/settings.local.json`, which the\nharness reads above it",
+      "new": "`.claude/settings.local.json`, which the\nharness reads below it",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
+      ],
+      "why": "a route that does not outrank the scope it routes around is not a route, and this is the reader whose checked-in settings the flag refuses"
+    },
+    {
+      "name": "zsh-gate-the-suite-builder-drops-the-shell",
+      "module": "docs",
+      "file": "flake.nix",
+      "old": "nativeBuildInputs = [ pkgs.git pkgs.zsh ];",
+      "new": "nativeBuildInputs = [ pkgs.git ];",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "the nix suites are half the gate for the store-guidance cases, and without the shell in the builder's inputs they fail for a reason nobody reads as a missing dependency"
+    },
+    {
+      "name": "zsh-gate-the-skip-marker-is-armed-in-the-flake",
+      "module": "docs",
+      "file": "flake.nix",
+      "old": "MEMKIT_NO_CHECKOUT = \"1\";",
+      "new": "MEMKIT_NO_CHECKOUT = \"1\";\n              MEMKIT_NO_ZSH = \"1\";",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "the marker turns the zsh half into skips under a check name that reports green, which is the failure the guard exists for and the one no probe reached"
+    },
+    {
+      "name": "zsh-gate-the-ci-step-that-installs-the-shell-is-deleted",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      - name: zsh (the store-guidance cases are pasted into it)\n        run: |\n          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n",
+      "new": "",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "the python job is the required context, and an image that stops shipping zsh would leave the store-guidance cases failing there with nothing saying why"
+    },
+    {
+      "name": "zsh-gate-the-shell-is-installed-after-the-suite-runs",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      - name: zsh (the store-guidance cases are pasted into it)\n        run: |\n          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n\n      - name: Test suites (hook pytest + integrity unittest)\n        run: .venv/bin/python -m pytest -q\n",
+      "new": "      - name: Test suites (hook pytest + integrity unittest)\n        run: .venv/bin/python -m pytest -q\n\n      - name: zsh (the store-guidance cases are pasted into it)\n        run: |\n          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "installed after the suite has run it is installed for nothing, and every step still reads correct in isolation"
+    },
+    {
+      "name": "store-doc-the-repoint-line-becomes-a-recursive-force-delete",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "&& rm \"$dir\" &&",
+      "new": "&& rm -rf \"$dir\" &&",
+      "tests": [
+        "tests/test_plugin_surface.py::test_no_shell_block_the_adoption_section_prints_removes_anything_but_the_link_it_judges[dir-links-the-corpus-root-bash]"
+      ],
+      "why": "the page promises this `rm` removes the link and never what it points at, and a flag on it is a flag on the one removal the section prints"
+    },
+    {
+      "name": "zsh-gate-the-whole-suite-step-ignores-the-file-it-gates",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "run: .venv/bin/python -m pytest -q",
+      "new": "run: .venv/bin/python -m pytest -q --ignore=tests/test_plugin_surface.py",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_gating_job_collects_the_suite_it_reads_as_running"
+      ],
+      "why": "a flag that deselects the suite leaves the required context green with none of these cases run, which is the same silent state as deleting the step"
+    },
+    {
+      "name": "store-doc-a-false-clause-slipped-in-ahead-of-the-read-one",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "declares `autoMemoryDirectory` already, the flag below\nrefuses",
+      "new": "declares `autoMemoryDirectory` already, this link still reaches the directory\nthe key names and the flag below refuses",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
+      ],
+      "why": "the clause read is true and the sentence carrying it now says the opposite first, which is the one edit a claim anchored mid-sentence cannot see"
+    },
+    {
+      "name": "store-doc-the-link-is-offered-for-the-case-it-cannot-serve",
+      "module": "docs",
+      "file": "docs/STORE.md",
+      "old": "A symlink does the same job where the setting is not yours to set and no\nsettings file of yours outranks the one that carries it.",
+      "new": "A symlink does the same job where that setting is not yours to set.",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_store_in_git_section_agrees_with_its_own_precedence_list"
+      ],
+      "why": "each sentence stays a spelling the tables know while the paragraph now offers the link for the state its own reason sentence says the link reaches nothing in"
+    },
+    {
+      "name": "zsh-gate-the-shell-is-commented-out-of-the-builder",
+      "module": "docs",
+      "file": "flake.nix",
+      "old": "nativeBuildInputs = [ pkgs.git pkgs.zsh ];",
+      "new": "nativeBuildInputs = [ pkgs.git /* pkgs.zsh */ ];",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "nix drops the element and the flake stays valid, so this is deleting the shell in the one spelling a scanner that knows only `#` reads as still present"
+    },
+    {
+      "name": "zsh-gate-the-skip-marker-is-armed-in-the-workflow",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      DISABLE_AUTOUPDATER: \"1\"",
+      "new": "      DISABLE_AUTOUPDATER: \"1\"\n      MEMKIT_NO_ZSH: \"1\"",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "an `env:` map on the job is how a failing shell-dependent case gets silenced, and this is the half of the arming that turns the context branch protection requires green"
+    },
+    {
+      "name": "zsh-gate-the-install-goes-and-the-version-line-stays",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }\n          zsh --version\n",
+      "new": "          zsh --version\n",
+      "tests": [
+        "tests/test_plugin_surface.py::test_every_context_that_gates_on_these_cases_carries_a_zsh"
+      ],
+      "why": "a job that stopped installing the shell and kept printing its version reads as armed, and the cases pasted into zsh fail under the one context branch protection requires"
+    },
+    {
+      "name": "zsh-gate-the-job-env-deselects-the-file-it-gates",
+      "module": "docs",
+      "file": ".github/workflows/check.yml",
+      "old": "      MEMKIT_RIG_REQUIRED: \"1\"\n",
+      "new": "      MEMKIT_RIG_REQUIRED: \"1\"\n      PYTEST_ADDOPTS: \"--ignore=tests/test_plugin_surface.py\"\n",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_gating_job_collects_the_suite_it_reads_as_running"
+      ],
+      "why": "an `env:` map deselects a file the run line never mentions, so the step still reads as a whole-suite pytest with none of these cases in it"
+    },
+    {
+      "name": "zsh-gate-the-repo-addopts-deselects-the-file-it-gates",
+      "module": "docs",
+      "file": "pyproject.toml",
+      "old": "addopts = \"-q\"",
+      "new": "addopts = \"-q --ignore=tests/test_plugin_surface.py\"",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_gating_job_collects_the_suite_it_reads_as_running"
+      ],
+      "why": "the third lever outside the run line: config the runner never sees decides what the whole-suite step actually collects"
     },
     {
       "name": "init-remedy-names-the-other-channels-command",
