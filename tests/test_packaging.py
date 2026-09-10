@@ -947,6 +947,11 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
 
     dropped = []
     for node in ast.walk(tree):
+        # The isinstance is the checker's, not the walk's: `throws_away`
+        # answers about these three and nothing else, and a bare `ast.AST`
+        # carries neither `.value` nor `.lineno`.
+        if not isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign)):
+            continue
         if not throws_away(node):
             continue
         answer = called(node.value)
