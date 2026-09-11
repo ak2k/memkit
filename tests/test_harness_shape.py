@@ -1906,6 +1906,42 @@ _STDOUT_DOORS = (
 )
 
 
+def _fill_with_projects(config: Path, start: int, stop: int) -> int:
+    """Give `config` the project memories numbered `start` up to `stop`."""
+    for index in range(start, stop):
+        memory = _memory_dir(config, f"-p{index}")
+        _write(memory / "top.md", f"---\nname: t{index}\n---\nbody\n")
+        _write(memory / "hot" / "deep.md", f"---\nname: d{index}\n---\nbody\n")
+        _write(memory / "MEMORY.md", "- [a](top.md)\n- [b](hot/deep.md)\n")
+    return stop
+
+
+def _a_shape_past_the_buffer(
+    config: Path, argv: list[str], env: dict[str, str],
+) -> subprocess.CompletedProcess:
+    """Grow `config` until the shape it renders is past the buffer the running
+    interpreter gives a stream, and hand back the run that rendered it.
+
+    The count is derived rather than written down because
+    `io.DEFAULT_BUFFER_SIZE` is not one number across the interpreters this
+    suite runs under: the packaged one's buffer is many times the development
+    venv's, so a project count that clears the smaller buffer sits well under
+    the larger, and a case about what happens PAST the buffer would pass on a
+    machine where it never got there.
+    """
+    made = 0
+    while True:
+        made = _fill_with_projects(config, made, max(12, made * 2))
+        whole = subprocess.run(
+            argv, capture_output=True, text=True, timeout=300, env=env,
+        )
+        assert whole.returncode == 0, whole.stderr
+        # With a margin, so nothing rests on a shape that cleared the buffer
+        # by a few bytes.
+        if len(whole.stdout) > io.DEFAULT_BUFFER_SIZE * 9 // 8:
+            return whole
+
+
 def test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal(
     tmp_path,
 ) -> None:
@@ -1924,15 +1960,9 @@ def test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal(
     errno class, and a limit a test can set on itself.
     """
     config = tmp_path / "config"
-    for index in range(12):
-        memory = _memory_dir(config, f"-p{index}")
-        _write(memory / "top.md", f"---\nname: t{index}\n---\nbody\n")
-        _write(memory / "hot" / "deep.md", f"---\nname: d{index}\n---\nbody\n")
-        _write(memory / "MEMORY.md", "- [a](top.md)\n- [b](hot/deep.md)\n")
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     argv = [sys.executable, str(TOOL), "--config-dir", str(config)]
-    whole = subprocess.run(argv, capture_output=True, text=True, timeout=300, env=env)
-    assert whole.returncode == 0, whole.stderr
+    whole = _a_shape_past_the_buffer(config, argv, env)
     # Past the stream's own buffer, so the limit is reached while the document
     # is being written rather than before any of it is.
     assert len(whole.stdout) > io.DEFAULT_BUFFER_SIZE, len(whole.stdout)
@@ -1979,25 +2009,25 @@ def test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2(
     stream that fails, so the write is an `AttributeError` and not one of the
     four failures the boundary maps.
 
-    UNDER AND PAST THE BUFFER BOTH, because they are two doors and not one: an
-    8 KiB `BufferedWriter` decides whether the failure arrives at the write or
-    at the flush after it, so which door an operator leaves by depended on the
-    size of the machine being captured. The sizes are asserted rather than
-    assumed.
+    UNDER AND PAST THE BUFFER BOTH, because they are two doors and not one:
+    the `BufferedWriter` the running interpreter gives this stream decides
+    whether the failure arrives at the write or at the flush after it, so which
+    door an operator leaves by depended on the size of the machine being
+    captured. The sizes are asserted against `io.DEFAULT_BUFFER_SIZE` rather
+    than assumed, and the shape for the past door is grown until it is really
+    past whatever this interpreter set that to.
     """
-    projects = 2 if "under" in door else 12
     config = tmp_path / "config"
-    for index in range(projects):
-        memory = _memory_dir(config, f"-p{index}")
-        _write(memory / "top.md", f"---\nname: t{index}\n---\nbody\n")
-        _write(memory / "hot" / "deep.md", f"---\nname: d{index}\n---\nbody\n")
-        _write(memory / "MEMORY.md", "- [a](top.md)\n- [b](hot/deep.md)\n")
     argv = [sys.executable, str(TOOL), "--config-dir", str(config)]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    whole = subprocess.run(
-        argv, capture_output=True, text=True, timeout=300, env=env,
-    )
-    assert whole.returncode == 0, whole.stderr
+    if "past" in door:
+        whole = _a_shape_past_the_buffer(config, argv, env)
+    else:
+        _fill_with_projects(config, 0, 2 if "under" in door else 12)
+        whole = subprocess.run(
+            argv, capture_output=True, text=True, timeout=300, env=env,
+        )
+        assert whole.returncode == 0, whole.stderr
     if door.startswith("a pipe"):
         # The parametrisation is worth nothing unless the two shapes really
         # land on opposite sides of the stream's buffer.
