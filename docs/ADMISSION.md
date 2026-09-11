@@ -13,7 +13,7 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **108 files, about 4.4 MiB**
+The table below counts **the tree this file ships in** — **109 files, about 4.4 MiB**
 — which is the tree the next release pins. The marketplace pin still installs the
 v0.4.0 tree — **101 files, about 3.0 MiB** — and everything added since arrives
 from the next release. The recipe at the bottom reproduces either one, against
@@ -32,7 +32,7 @@ back together.
 | `bin/`, `src/memkit/`, `hooks/`, `.claude-plugin/`, `skills/` | 19 | the payload proper — the wrappers, the hook module, the manifests |
 | `tests/` | 61 | not needed at run time; see below |
 | `.github/`, `nix/`, `tools/`, `flake.*`, `pyproject.toml`, config files | 20 | likewise |
-| `README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 8 | including this file |
+| `README.md`, `CHANGELOG.md`, `LICENSE`, `NOTICE`, and all of `docs/` | 9 | including this file |
 | `.git/` | ~44 | the clone's own history, about 0.7 MiB on top of the tracked files. Varies with your git version |
 
 Measured on a real install: the tracked files above, plus a `.git` of **roughly
@@ -158,11 +158,14 @@ README's *Derived state* has the table.
 - `memkit init` writes, and only what its manifest said and only after you
   approve the digest: the state directory (0700), the config at the path you
   named, the store skeleton, one canary memory, and a journal record per
-  mutation written at the mutation. Two further writes happen **only** behind
+  mutation written at the mutation. Four further writes happen **only** behind
   their own flags: `--wire-claude-md` appends an `@-import` line to your
-  `CLAUDE.md`, and `--auto-dream-off` sets `"autoDreamEnabled": false`. That
-  key is the only `settings.json` key init may write, enforced as an allowlist
-  — the plugin never enables itself.
+  `CLAUDE.md`; `--auto-dream-off` sets `"autoDreamEnabled": false`;
+  `--auto-memory-off` sets `"autoMemoryEnabled": false`; and
+  `--adopt-auto-memory` copies the memories the harness has written under its
+  own config directory into the store and sets `"autoMemoryDirectory"` to the
+  directory inside it. Those three keys are the whole set init may write,
+  enforced as an allowlist — the plugin never enables itself.
 
 ## Where the trust boundary sits
 

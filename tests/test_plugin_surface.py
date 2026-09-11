@@ -644,6 +644,38 @@ def test_the_admission_notes_recipe_returns_the_number_it_states() -> None:
     assert "marketplace.json" in recipe, "no recipe for the tree an install gets"
 
 
+def test_the_changelog_probe_counts_come_from_the_corpora_they_describe() -> None:
+    """Two counts of the same kind, each asked of its own tree.
+
+    The released entry described the corpus that shipped with 0.4.0 and the
+    corpus has grown by three hundred probes since, so a reader had no way to
+    tell a figure that is still true of that release from one nobody had
+    updated. Neither number was read by anything.
+
+    The sweep's own `--list` answers for this tree, and the tag answers for the
+    release, so the entry that describes a frozen tree stays frozen and the one
+    that describes this tree moves with it.
+    """
+    _needs_checkout()
+    log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    listing = subprocess.run(
+        [sys.executable, str(REPO / "tools" / "mutation_sweep.py"), "--list"],
+        cwd=REPO, capture_output=True, text=True, timeout=120,
+    )
+    assert listing.returncode == 0, listing.stderr
+    here = re.search(r"^(\d+) probes$", listing.stdout, re.M)
+    assert here, listing.stdout[-200:]
+    assert f"{here.group(1)} probes" in log, (
+        here.group(1), "not the probe count the changelog states for this tree"
+    )
+
+    released = _git("show", "v0.4.0:tools/mutation_probes.json")
+    assert released.returncode == 0, released.stderr
+    then = len(json.loads(released.stdout)["probes"])
+    assert f"{then} probes" in log, (
+        then, "not the probe count the changelog states for the 0.4.0 tree"
+    )
 
 
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:

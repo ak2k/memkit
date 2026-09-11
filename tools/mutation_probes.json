@@ -4445,7 +4445,7 @@
       "name": "admission-file-count-is-last-releases",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**108 files, about 4.4 MiB**",
+      "old": "**109 files, about 4.4 MiB**",
       "new": "**101 files, about 3.0 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
@@ -4453,6 +4453,17 @@
         "tests/test_plugin_surface.py::test_the_admission_numbers_reproduce_from_its_own_recipe"
       ],
       "why": "The headline count is re-derived at each release and nothing else moves it, so the way it goes wrong is by staying at the previous release's number — which is what this writes, the count the pin still carries. It has to fail for two independent reasons: the figure no longer matches `git ls-files`, and the note now states 101 twice while claiming one count per tree described. A release that re-derives the table has to re-anchor this."
+    },
+    {
+      "name": "changelog-probe-count-is-the-previous-releases",
+      "module": "docs",
+      "file": "CHANGELOG.md",
+      "old": "the 662 probes",
+      "new": "the 365 probes",
+      "tests": [
+        "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
+      ],
+      "why": "The unreleased entry counts the corpus in this tree and the 0.4.0 entry counts the one that shipped with that release. The way the live figure goes wrong is by standing still while probes are added, which is what this writes — the released tree's own count, a number that is true two paragraphs below and false here. A probe added without re-deriving the sentence has to fail."
     },
     {
       "name": "store-doc-git-section-heading-renamed",

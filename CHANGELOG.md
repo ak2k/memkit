@@ -13,6 +13,12 @@ ordering.
 
 ### Added
 
+- **The mutation sweep runs in CI over the whole corpus**, in a job of its own
+  — no module list, and so the 662 probes `tools/mutation_sweep.py --list`
+  counts in this tree rather than a subset somebody keeps in step by hand. The
+  two `--module` runs it replaces covered 114 of them, which is how an anchor
+  that had slipped off the code it was written for sat dead for twenty-three
+  commits with every gate green.
 - **"Keep your store in git" in `docs/STORE.md`** — the store as a private
   repository, which findings need history to say anything at all, and where
   Claude Code's own agent-written memories land. They default to a directory
