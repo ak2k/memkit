@@ -3399,6 +3399,10 @@ _RM_REACHES = {
     "removes the link and never what it points at": "link-only",
     "removes the link and what it points at with it": "through",
 }
+_LINK_NAME_FORMS = {
+    "the directory's own absolute path": "absolute",
+    "the name it was handed": "verbatim",
+}
 _DIR_SHAPES = {"symlink": "link"}
 _VARIABLE_COUNTS = {"both": 2, "all three": 3, "all four": 4}
 _RECREATED_DIR_OUTCOMES = {
@@ -3648,6 +3652,22 @@ def _rm_reach(section: str) -> str:
         r"`rm` ([^,]+), so memories already lying flat in the corpus root",
         _RM_REACHES,
         "how far the page's `rm` reaches",
+    )
+
+
+def _link_name_form(section: str) -> str:
+    """Which path the page says the line stores in the link it makes.
+
+    `ln` stores the name it is handed, and `$dir` lives under `projects/`: a
+    relative `$store` reaches the store from where the reader pasted the line
+    and nothing from there, so the two spellings are a working link and a
+    dangling one at the same rc.
+    """
+    return _stated(
+        section,
+        r"so the line links to (.+?) rather than to",
+        _LINK_NAME_FORMS,
+        "which path the repoint line stores in the link",
     )
 
 
@@ -4260,6 +4280,7 @@ _STORE_IN_GIT_CELLS = (
     "repoint-flat-store",
     "repoint-link-outside-the-store",
     "repoint-target-is-a-link",
+    "repoint-relative-store",
     "repoint-harness-recreated-dir",
     "guard-dir-is-a-directory",
     "guard-store-missing",
@@ -4278,6 +4299,7 @@ _REPOINT_SUCCEEDS = (
     "repoint-flat-store",
     "repoint-link-outside-the-store",
     "repoint-target-is-a-link",
+    "repoint-relative-store",
 )
 
 
@@ -4435,6 +4457,16 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         f"dir={shlex.quote(str(dir_))}",
         f"target={shlex.quote(str(target))}",
     ]
+    if cell == "repoint-relative-store":
+        # The page requires no absolute `$store`, and the reader who spells it
+        # relative is the case the line's own wording has to survive: a name
+        # stored as it was handed over is read back from `$dir`'s parent, which
+        # is a dangling link at the rc of a repoint that worked.
+        assignments = [
+            f"store={shlex.quote(os.path.relpath(named_store, repo))}",
+            f"dir={shlex.quote(str(dir_))}",
+            f"target={shlex.quote(os.path.relpath(target, repo))}",
+        ]
     # One cell per variable the line reads. The page's sentence rests on an
     # asymmetry — two of the three stop a test and one stops a command — and
     # an asymmetry with one case measured is an asymmetry nobody has measured.
@@ -4523,6 +4555,11 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert _file_map(store) == expected, (script, _file_map(store))
         if cell == "repoint-link-outside-the-store":
             assert _file_map(outside) == outside_before, (script, _file_map(outside))
+        if cell == "repoint-relative-store":
+            # Reaching the store is the whole of it: the assertions above read
+            # the link's name, and only this one reads what it arrives at.
+            assert _link_name_form(section) == "absolute", "the page claims otherwise"
+            assert dir_.is_dir(), (script, os.readlink(dir_))
         if cell == "repoint-target-is-a-link":
             # Nothing on the page stops this one, and the cell records why it
             # matters: what the harness writes now lands outside the corpus.

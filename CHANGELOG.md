@@ -13,6 +13,10 @@ ordering.
 
 ### Added
 
+- **`memkit init` adopts the harness's own auto-memory.** `--adopt-auto-memory`
+  copies the memories the harness wrote into the store and sends the next ones
+  there; `--auto-memory-off` stops that writing instead; and `memkit doctor`
+  grows an `auto-memory` row counting both sides and naming the deciding scope.
 - **The mutation sweep runs in CI over the whole corpus**, in a job of its own
   — no module list, and so the 662 probes `tools/mutation_sweep.py --list`
   counts in this tree rather than a subset somebody keeps in step by hand. The

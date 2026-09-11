@@ -334,7 +334,7 @@ directory. Quit the harness first — it recreates `$dir` at startup, and a
 recreation between `rm` and `ln` leaves the link inside `$dir` rather than in
 its place.
 
-`[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$target" "$dir"`
+`[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$(CDPATH= cd "$target" && pwd -L)" "$dir"`
 
 That race ends at rc 0 all the same, and `ls -ld "$dir"` then shows a directory
 where it showed a link. Where it shows a directory holding one link named for
@@ -355,6 +355,11 @@ fails and nothing after it runs. `$store` is your store's root, and all three
 are yours to set before the line runs: an unset `$store` or `$dir` fails a
 test rather than a command, so the line stops with a status and nothing on
 stderr, while an unset `$target` fails `mkdir`, which does say so on stderr.
+`$store` and `$target` may be relative, so the line links to the directory's
+own absolute path rather than to the name it was handed, with `CDPATH` emptied
+for that one `cd`: a relative name in `$dir`'s place is read from `$dir`'s
+parent under `projects/` rather than from where the line was pasted, and the
+repair would end at rc 0 having put a dangling link where a working one was.
 Under `set -u` all three are the shell's own message instead where the line
 reaches that name, and it stops there rather than on a test. An earlier test
 that fails first never expands the later name, so that line stops exactly as it
