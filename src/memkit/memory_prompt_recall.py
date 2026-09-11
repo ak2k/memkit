@@ -1084,7 +1084,8 @@ class Config:
         None when the switch is off, when there is no repository above the
         session's directory, when that repository carries no
         `PROJECT_CONFIG_NAME`, or when the file it carries was refused —
-        `project_error` then holds the reason, for the surfaces that report it.
+        `project_error` then holds the reason, which `--debug-config` prints
+        and nothing else reads.
 
         Resolved at most once per Config, and the hook's `_config()` is
         lru-cached, so one hook process opens this file at most once.

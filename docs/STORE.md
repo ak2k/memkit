@@ -361,7 +361,7 @@ that fails first never expands the later name, so that line stops exactly as it
 does without the option: a status, and nothing to read.
 
 `memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
-honours and reports which file declares it — by the role that file plays, never
+honors and reports which file declares it — by the role that file plays, never
 by its path — and how the directory it names stands to a corpus root: inside one,
 so what the harness writes there is retrieved, or in one of the placements that
 keeps it out of retrieval, from a name retrieval prunes to outside every store.

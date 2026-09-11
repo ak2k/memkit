@@ -5756,3 +5756,17 @@ def test_the_auto_dream_flag_no_longer_claims_to_stop_the_writing(profile) -> No
     note = " ".join(_plan(profile, auto_dream_off=True).notes)
     assert "BACKGROUND CONSOLIDATION" in note
     assert "--auto-memory-off is the flag that stops the writing" in note
+
+    # The page an agent reads before it ever runs the command. The help and the
+    # note were corrected while this bullet went on saying the flag "stops
+    # writing and consolidating memories", which is the sentence that produced
+    # the two memory systems in the first place.
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    page = (repo / "skills" / "init" / "SKILL.md").read_text(encoding="utf-8")
+    named = [c for c in page.split("\n- ") if c.startswith("`--auto-dream-off`")]
+    assert named, "the skill documents no --auto-dream-off flag"
+    bullet = named[0].split("\n\n", 1)[0].split("\n- ", 1)[0]
+    assert "consolidation only" in bullet, bullet
+    # And it does not claim the writing among what it stops, which is the half
+    # that was false.
+    assert "writing" not in bullet.split("consolidation only")[0], bullet

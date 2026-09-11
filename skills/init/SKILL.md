@@ -32,8 +32,15 @@ The flags themselves may be in any order after it:
   user's `CLAUDE.md`. Read the manifest's own note about what that buys before
   recommending it: it puts each hot memory's *description* in every session,
   not its body.
-- `--auto-dream-off` — turn the harness's own auto-memory off, so it stops
-  writing and consolidating memories beside memkit's.
+- `--auto-dream-off` — set `"autoDreamEnabled": false` in the user's
+  `settings.json`. That stops the harness's background consolidation only; it
+  goes on writing its own memories beside memkit's.
+- `--adopt-auto-memory` — copy the memories the harness has already written
+  under its own config directory into the store, and set
+  `"autoMemoryDirectory"` so the ones it writes next land there too. Copies,
+  never moves.
+- `--auto-memory-off` — set `"autoMemoryEnabled": false`, so the harness
+  writes no memories of its own at all and memkit is the only one here.
 
 **Relay the manifest verbatim, including the digest.** It names every path,
 every write, where each symlink lands and whether a target is tracked by git.
@@ -53,6 +60,13 @@ let the whole thing happen inside one turn: run the dry-run, read the digest
 out of your own tool result, and apply it with `--wire-claude-md` and
 `--auto-dream-off` attached, writing to the user's `CLAUDE.md` and
 `settings.json` without a message they ever saw. Do not work around the prompt.
+
+`--adopt-auto-memory` is the flag to relay most carefully, because it is the
+one that moves files: it copies memories the user never named — whatever the
+harness has written under its own config directory — into the store, and the
+manifest's list of them is what the person is being asked to approve. It and
+`--auto-memory-off` are opposite answers to one question, so argparse refuses
+the pair with exit 2 rather than picking one.
 
 The digest binds the state of the tree, not the text that was read. If anything
 under the manifest changed in between, this refuses and nothing is written —

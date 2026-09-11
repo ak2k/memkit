@@ -3259,7 +3259,12 @@ Exit codes: 0 done (or the manifest printed) / 2 usage error / 5 refused, and
 nothing was written — stderr names which refusal / 6 started and did not
 finish; the journal says how far. Recover with the two turns, not by repeating
 the last one: what landed has changed the digest, so re-run --dry-run and
-confirm the digest THAT prints."""
+confirm the digest THAT prints.
+
+6 is also what a run that performed every action and then failed its own
+integrity check returns. That report prints the checker's output and names
+each file it is red on, saying whether this run wrote it — a file this run
+did not write is one no re-run will touch."""
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

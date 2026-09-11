@@ -29,7 +29,7 @@ ordering.
   every project's memories into that one directory, with no per-project
   directory under it. On a flat store — one with no `search/` — the same value
   is `<store>/auto-memory`. Two corrections to advice given while this page was
-  in review: a checked-in `.claude/settings.json` is honoured, so a clone can
+  in review: a checked-in `.claude/settings.json` is honored, so a clone can
   redirect where an agent writes, and the value is that harness-owned
   subdirectory rather than the corpus root itself, because the harness rewrites
   the frontmatter of any `.md` file that already carries it, written or edited

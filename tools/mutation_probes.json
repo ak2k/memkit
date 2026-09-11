@@ -4848,9 +4848,9 @@
       "old": "- `--wire-claude-md` —",
       "new": "- `--wire-claudemd` —",
       "tests": [
-        "tests/test_plugin_surface.py::test_every_flag_the_init_skill_documents_is_inside_a_grant"
+        "tests/test_plugin_surface.py::test_every_flag_the_init_skill_documents_is_one_init_accepts"
       ],
-      "why": "a documented flag the grant cannot admit puts a permission prompt in the middle of the handshake this page promises is two turns"
+      "why": "a flag the page names and the parser does not have is an exit 2 on the turn this page promises writes nothing"
     },
     {
       "name": "skill-init-drops-the-dry-run-position-rule",

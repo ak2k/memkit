@@ -17,6 +17,7 @@ what it decides is what it exports into the process it replaces itself with.
 
 from __future__ import annotations
 
+import argparse
 import ast
 import hashlib
 import json
@@ -6444,11 +6445,35 @@ def test_the_doctor_skill_says_to_relay_the_report_rather_than_re_derive_it():
         assert status in body, status
 
 
-def test_every_flag_the_init_skill_documents_is_inside_a_grant() -> None:
-    """A skill that tells the agent to pass a flag and then leaves it outside
-    the pre-approval is a handshake with a permission prompt in the middle of
-    it — on the one skill where the two turns are the whole of the consent."""
+def test_every_flag_the_init_skill_documents_is_one_init_accepts() -> None:
+    """A skill that names a flag the command does not have sends the agent into
+    a usage error on the turn that was supposed to write nothing — on the one
+    skill where the two turns are the whole of the consent.
+
+    The rule this replaces asked whether each documented flag was "reachable
+    from a prefix grant", which every string is: appending anything to a prefix
+    leaves the prefix where it started, so the loop was satisfied by a flag
+    that does not exist. What the grant decides is ORDER — it matches the
+    command up to `--dry-run`, so anything written before that falls outside
+    the pre-approval — and what decides whether a flag exists at all is the
+    parser.
+    """
+    from memkit import cli_init
+
     body = (SKILLS / "init" / "SKILL.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"^- `(--[a-z-]+)(?: [A-Z]+)?`", body, re.M))
+    assert documented >= {"--store", "--config", "--wire-claude-md"}, documented
+
+    parser = argparse.ArgumentParser()
+    cli_init.add_arguments(parser)
+    # The option strings argparse will actually match, rather than the help
+    # text they appear in: a flag named only inside another flag's help would
+    # pass a text search and still exit 2.
+    accepted = {
+        option for action in parser._actions for option in action.option_strings
+    }
+    assert documented <= accepted, sorted(documented - accepted)
+
     grants = [
         entry.strip().removeprefix("Bash(").rstrip(")")
         for entry in _frontmatter(SKILLS / "init" / "SKILL.md")[
@@ -6456,18 +6481,25 @@ def test_every_flag_the_init_skill_documents_is_inside_a_grant() -> None:
         ].split("), Bash(")
     ]
     prefixes = [g[: -len(":*")] for g in grants if g.endswith(":*")]
-    assert prefixes, grants
-    documented = set(re.findall(r"^- `(--[a-z-]+)(?: [A-Z]+)?`", body, re.M))
-    assert documented >= {"--store", "--config", "--wire-claude-md"}, documented
-    for flag in documented:
-        # Every documented flag has to be reachable from at least one prefix
-        # grant: appended to it, the command is still inside the pattern.
-        assert any(
-            f"{prefix} {flag}".startswith(prefix) for prefix in prefixes
-        ), flag
-    # And the read-only turn is one of the prefixes, which is the half that was
-    # missing.
+    # A PREFIX grant ending at `--dry-run` is what makes the optional flags
+    # pre-approved at all. An exact grant would prompt for a flag this page
+    # tells the agent to pass, on the turn that writes nothing.
     assert any(p.endswith("init --dry-run") for p in prefixes), prefixes
+
+    # And the page writes the command the way the grant matches it. `--dry-run`
+    # first, immediately after `init`; a flag ahead of it is outside the
+    # prefix. The FENCED blocks only — the grant in the frontmatter is the
+    # pattern rather than an invocation, and it is asserted above.
+    fenced = "\n".join(body.split("```")[1::2])
+    shown = [
+        line
+        for line in fenced.splitlines()
+        if "memkit init " in line and "--dry-run" in line
+    ]
+    assert shown, "the page shows no read-only invocation at all"
+    for line in shown:
+        argv = line.split("memkit init ", 1)[1].split()
+        assert argv[0] == "--dry-run", line
 
 
 def test_the_init_skill_describes_both_turns_and_the_codes_it_can_return():
