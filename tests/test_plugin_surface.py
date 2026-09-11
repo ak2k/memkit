@@ -5313,11 +5313,25 @@ def test_the_whole_suite_gate_survives_a_benign_rewrite_of_the_step() -> None:
 
 
 def _sweep_steps(job: str) -> list:
-    """Every step of `job` that runs the mutation sweep, by index."""
+    """Every step of `job` that runs the mutation sweep over a corpus, by index.
+
+    `--selftest` is left out: it drives fixed cases and reads no corpus at all,
+    so counting it here would make the falsification the job runs first
+    indistinguishable from the second sweep step this file refuses.
+    """
     return [
         i
         for i, step in enumerate(_workflow_steps(job))
-        if re.search(r"\bmutation_sweep\.py\b", step)
+        if re.search(r"\bmutation_sweep\.py\b", step) and "--selftest" not in step
+    ]
+
+
+def _selftest_steps(job: str) -> list:
+    """Every step of `job` that runs the sweep against its own cases, by index."""
+    return [
+        i
+        for i, step in enumerate(_workflow_steps(job))
+        if re.search(r"\bmutation_sweep\.py\b[^\n]*\s--selftest\b", step)
     ]
 
 
@@ -5336,6 +5350,11 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
     them were caught. A gate that instead listed the verdict words it accepts
     would go green the day a new verdict is added, which is the class this
     replaces.
+
+    One verdict other than CAUGHT exits 0: a probe whose every paired test
+    skipped for the reason it declares, which three here do on the runner's
+    case-sensitive filesystem. So the number read back is the catches plus
+    those, and the sweep's own falsification runs before either is believed.
     """
     workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
     live = _uncommented(workflow)
@@ -5355,6 +5374,20 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
     (job_name,) = running
     step = _workflow_steps(jobs[job_name])[running[job_name][0]]
 
+    # And the sweep is falsified before it is read. The sweep is what decides
+    # what a verdict means, so a refusal that had quietly stopped refusing
+    # would report a green corpus first and be checked afterwards.
+    falsified = _selftest_steps(jobs[job_name])
+    assert len(falsified) == 1, (
+        f"`{job_name}` runs the sweep's own falsification {len(falsified)} "
+        "times; one step, because every number this job reports rests on "
+        "verdicts only that step checks"
+    )
+    assert falsified[0] < running[job_name][0], (
+        f"in `{job_name}` the corpus is swept before the sweep is falsified, "
+        "so a sweep that had stopped refusing reports its green number first"
+    )
+
     assert "--module" not in step, (
         f"the sweep step in `{job_name}` names modules, so the corpus it runs "
         "is a hand-kept list that nothing re-derives"
@@ -5369,6 +5402,16 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
     assert "probes" in step and "CAUGHT" in step, (
         f"the sweep step in `{job_name}` reads nothing back out of the run, so "
         "an empty selection exits 0 and gates nothing"
+    )
+    # A probe whose every paired test skipped for the reason it declares is an
+    # exception the sweep exits 0 on, so the caught count alone stops reaching
+    # the probe count on a runner that has one. Added back rather than
+    # ignored: a step that dropped the declared ones would drop with them a
+    # probe whose declaration has stopped matching the skip it names.
+    assert "DECLARED" in step and re.search(r"done \+ declared == probes", step), (
+        f"the sweep step in `{job_name}` does not add the declared exceptions "
+        "back to the caught count, so a declared probe is either a silent pass "
+        "or a shortfall the step cannot account for"
     )
     floor = re.search(r"done < (\d+)", step)
     assert floor, f"the sweep step in `{job_name}` asserts no probe-count floor"

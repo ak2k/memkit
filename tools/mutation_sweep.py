@@ -10,6 +10,8 @@ them one at a time, and requires the paired tests to fail.
 WHAT A VERDICT MEANS
 
     CAUGHT           the selection was green, the mutation made it red
+    DECLARED         every paired test skipped for the reason the probe
+                     declares, so the machine could not ask this one
     CAUGHT-NOTHING   the selection stayed green: the rule is unguarded
     ANCHOR           the `old` text is not in the file, or not once
     NOOP             `old` == `new`, so the probe proves nothing
@@ -18,9 +20,9 @@ WHAT A VERDICT MEANS
     SKIPPED          every paired test skipped, so the probe asked nothing
     REVERT           the file did not come back byte-identical
 
-Only CAUGHT is a pass, and every other verdict exits non-zero. The three that
-look like bookkeeping are the ones that matter most: each is a way a sweep can
-report a number it did not earn.
+Only CAUGHT and DECLARED are a pass; every other verdict exits non-zero. The
+three that look like bookkeeping are the ones that matter most: each is a way a
+sweep can report a number it did not earn.
 
 ANCHOR is an error rather than a skip. A probe whose anchor has moved is a
 probe that stopped testing anything, and a sweep that skips it counts down its
@@ -40,6 +42,15 @@ to an exit code. Cases here skip without `uv`, without a network or without a
 checkout, and reporting those as an unguarded rule blames the tree for the
 machine. Both are failures — neither is proof — but only one of them is about
 the code.
+
+DECLARED is the single all-skipped case that is not a failure, and it is a
+property of the CORPUS rather than of the machine. A probe may carry
+`declared_skip`: the environment fact its paired tests skip on, in the skip's
+own words. The verdict is DECLARED only when EVERY reason pytest reported
+matches that text, so a checkout without git, a machine without `uv` and a root
+container all still come back SKIPPED. Waiving every all-skipped probe instead
+would hand those machines a way to launder a real failure, which is the whole
+reason SKIPPED is a failure here.
 
 THE STALE BYTECODE TRAP
 
@@ -89,13 +100,25 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 CORPUS = REPO / "tools" / "mutation_probes.json"
 
-# The selftests below all drive one cheap, central case.
+# The selftests below drive two cheap, central cases.
 CHILD_ENV_TEST = (
     "tests/test_doctor.py"
     "::test_the_gate_hands_a_child_no_variable_that_names_code"
 )
 
+# The other one is a declared exception of the corpus, reached through the
+# predicate its case asks: breaking that predicate makes the case skip on a
+# filesystem of either kind, which is what a selftest of DECLARED needs in
+# order to mean the same thing on this machine and on the runner.
+FOLDS_CASE_TEST = (
+    "tests/test_init.py"
+    "::test_a_key_the_store_already_holds_another_spelling_of_diverges"
+)
+FOLDS_CASE_PREDICATE = '    return (probe / "A").exists()\n'
+FOLDS_CASE_REASON = "a case-sensitive filesystem tells the two keys apart"
+
 CAUGHT = "CAUGHT"
+DECLARED = "DECLARED"
 
 
 class ProbeError(Exception):
@@ -179,6 +202,9 @@ def _run_tests(
             "--no-header",
             "-p",
             "no:cacheprovider",
+            # The reason a case skipped, not only that one did: a probe's
+            # declared exception is honored against the skip that happened.
+            "-rs",
             "-x",
             *nodes,
         ],
@@ -280,18 +306,41 @@ class Sweep:
             return CAUGHT, _first_failure(out)
         if out.returncode == 0:
             if _all_skipped(out):
-                return "SKIPPED", "every paired test skipped, so nothing was asked"
+                reasons = _skip_reasons(out)
+                declared = probe.get("declared_skip")
+                # EVERY reason, never one of them: a selection where one case
+                # skipped on the declared fact and another on something the
+                # probe says nothing about is a selection that asked nothing.
+                if declared and reasons and all(why == declared for why in reasons):
+                    return DECLARED, declared
+                seen = "; ".join(dict.fromkeys(reasons)) or "no reason reported"
+                return "SKIPPED", f"every paired test skipped: {seen}"
             return "CAUGHT-NOTHING", "the selection stayed green"
         if out.returncode in (4, 5):
             return "SELECTION", _tail(out)
         return "CAUGHT-NOTHING", f"pytest exited {out.returncode}: {_tail(out)}"
 
 
+_SKIP_REASON = re.compile(r"^SKIPPED \[\d+\] .+?:\d+: (.+)$", re.MULTILINE)
+
+
+def _skip_reasons(out: subprocess.CompletedProcess) -> list:
+    """The reason each skipping case gave, as `-rs` reported it."""
+    return [why.strip() for why in _SKIP_REASON.findall(out.stdout or "")]
+
+
 def _counts(out: subprocess.CompletedProcess) -> dict:
     """pytest's own tally, per outcome, from its summary line."""
     found = re.findall(
         r"(\d+) (passed|failed|skipped|error|errors|xfailed|xpassed)",
-        out.stdout or "",
+        # Without the reasons `-rs` prints. Those are prose a test author
+        # wrote, and a reason that spelled "3 passed" would be counted here as
+        # pytest's own tally of a run where nothing passed at all.
+        "\n".join(
+            line
+            for line in (out.stdout or "").splitlines()
+            if not line.startswith("SKIPPED [")
+        ),
     )
     tally: dict = {}
     for number, outcome in found:
@@ -378,6 +427,45 @@ SELFTESTS = [
             "tests": ["tests/test_doctor.py::test_no_such_test_exists_here"],
         },
         "SELECTION",
+    ),
+    (
+        "a probe whose every paired test skipped for the reason it declares "
+        "is an exception, not a failure",
+        {
+            "name": "selftest-declared",
+            "module": "selftest",
+            "file": "tests/test_init.py",
+            "old": FOLDS_CASE_PREDICATE,
+            "new": "    return False\n",
+            "tests": [FOLDS_CASE_TEST],
+            "declared_skip": FOLDS_CASE_REASON,
+        },
+        DECLARED,
+    ),
+    (
+        "an all-skipped probe that declares nothing is still a failure",
+        {
+            "name": "selftest-skipped-undeclared",
+            "module": "selftest",
+            "file": "tests/test_init.py",
+            "old": FOLDS_CASE_PREDICATE,
+            "new": "    return False\n",
+            "tests": [FOLDS_CASE_TEST],
+        },
+        "SKIPPED",
+    ),
+    (
+        "a declaration the observed skip does not match waives nothing",
+        {
+            "name": "selftest-skipped-other-reason",
+            "module": "selftest",
+            "file": "tests/test_init.py",
+            "old": FOLDS_CASE_PREDICATE,
+            "new": "    return False\n",
+            "tests": [FOLDS_CASE_TEST],
+            "declared_skip": "this machine has no uv",
+        },
+        "SKIPPED",
     ),
 ]
 
@@ -568,19 +656,28 @@ def main(argv: list | None = None) -> int:
     sweep = Sweep(args.python, verify_baseline=not args.no_baseline)
     tally: dict = {}
     failures = []
+    waived = []
     started = time.monotonic()
     for index, probe in enumerate(probes, 1):
         verdict, detail = sweep.run_probe(probe)
         tally[verdict] = tally.get(verdict, 0) + 1
-        mark = "." if verdict == CAUGHT else "!"
+        mark = {CAUGHT: ".", DECLARED: "-"}.get(verdict, "!")
         print(f"{mark} [{index:>3}/{len(probes)}] {verdict:<14} {probe['name']}")
         if verdict != CAUGHT:
             print(f"      {detail}")
+        if verdict == DECLARED:
+            waived.append((probe["name"], detail))
+        elif verdict != CAUGHT:
             failures.append((probe["name"], verdict, detail))
 
     caught = tally.get(CAUGHT, 0)
     print(f"\nCAUGHT {caught}/{len(probes)}  in {time.monotonic() - started:.0f}s")
-    for verdict in sorted(v for v in tally if v != CAUGHT):
+    # Printed at zero as well as at three. A gate that reads this back has to
+    # be able to tell "no probe was waived" from "the sweep stopped saying".
+    print(f"DECLARED {len(waived)}/{len(probes)}")
+    for name, why in waived:
+        print(f"  {name} — {why}")
+    for verdict in sorted(v for v in tally if v not in (CAUGHT, DECLARED)):
         print(f"  {verdict}: {tally[verdict]}")
 
     clean_after, dirty = _git_is_clean()
