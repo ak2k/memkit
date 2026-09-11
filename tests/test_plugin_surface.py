@@ -5347,8 +5347,8 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
     falsified = _selftest_steps(jobs[job_name])
     assert len(falsified) == 1, (
         f"`{job_name}` runs the sweep's own falsification {len(falsified)} "
-        "times; one step, because every number this job reports rests on the "
-        "verdicts that step is what checks"
+        "times; one step, because every number this job reports rests on "
+        "verdicts only that step checks"
     )
     assert falsified[0] < running[job_name][0], (
         f"in `{job_name}` the corpus is swept before the sweep is falsified, "
