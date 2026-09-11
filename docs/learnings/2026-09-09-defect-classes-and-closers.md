@@ -70,7 +70,7 @@ probes narrower than the guard they were written for; zero probes over `settings
 anchor-broken for ten commits, because the anchors test is scoped to the closure modules and the
 full sweep ran nowhere in CI.
 Mechanism: tests run with production constants unless marked as being about the constant; the
-mutation sweep runs in CI over the full corpus, 661 probes over 14 modules measured on this tree
+mutation sweep runs in CI over the full corpus, 662 probes over 14 modules measured on this tree
 with `tools/mutation_sweep.py --list`.
 Tripwire: a lint that a guard over a line budget needs a spanning probe or a split; the ratchet keyed
 by content hash, not ordinal (the ordinal identity drifted under an insertion at 0bc9a07).
