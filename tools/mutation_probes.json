@@ -5362,6 +5362,7 @@
       "tests": [
         "tests/test_init.py::test_a_key_the_store_already_holds_another_spelling_of_diverges"
       ],
+      "declared_skip": "a case-sensitive filesystem tells the two keys apart",
       "why": "the destination guard above is made of path strings and `os.path.realpath` does not canonicalise case, so on a case-insensitive filesystem — APFS, the default on macOS — a key differing from an existing directory only in case passes every one of them. The copy lands in the directory that is there, the row names the spelling that is not, the checker calls it an orphan, `memory-integrity --write` repairs the row to the on-disk name and the next init writes the key's spelling back: the two rewriting each other forever, with no link involved at all."
     },
     {
@@ -5373,6 +5374,7 @@
       "tests": [
         "tests/test_init.py::test_a_file_the_store_already_holds_another_spelling_of_diverges"
       ],
+      "declared_skip": "a case-sensitive filesystem tells the two names apart",
       "why": "the key is one half of the path a row points at and the file name is the other, so a spelling rule stated at the key alone leaves the half a memory is actually named by unguarded. On a case-insensitive filesystem — APFS, the default on macOS — a memory renamed `alpha.md` -> `Alpha.md` in the harness opens the `alpha.md` the store already holds, reads as already adopted so nothing is copied, and the generated row names the spelling the disk does not carry: two rows for one file, STALE out of the checker, and a confirm that exits 6 on every re-run."
     },
     {
@@ -5863,6 +5865,7 @@
       "tests": [
         "tests/test_doctor.py::test_a_corpus_root_spelled_in_another_case_is_the_same_directory"
       ],
+      "declared_skip": "this filesystem does not fold case",
       "why": "realpath answers in the spelling it was handed, so on a folding filesystem a corpus root reached through a differently-cased ancestor is reported as outside every store"
     },
     {
