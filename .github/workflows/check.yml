@@ -323,13 +323,27 @@ jobs:
           uv venv --python 3.12
           uv pip install --python .venv -e . pytest
 
+      # Seconds, and they buy the rest of this job: the sweep is what decides
+      # a verdict, so a sweep whose refusals have quietly stopped refusing
+      # reports a number for a corpus it never ran. First, because a green
+      # sweep read afterwards is a number already believed.
+      - name: The sweep, falsified
+        run: .venv/bin/python tools/mutation_sweep.py --selftest
+
       # THE OUTCOME, NEVER A LIST OF ACCEPTED SPELLINGS. The sweep exits
-      # non-zero for every verdict but CAUGHT, and the one state that exits 0
-      # having proved nothing is an EMPTY selection — `CAUGHT 0/0`, which a
-      # mistyped filter or a corpus that stopped loading produces. So what is
-      # asserted is the number of probes that ran and that every one of them
-      # was caught. A step that instead listed the verdict words it would
-      # accept would go green the day a new one is added.
+      # non-zero for every verdict but CAUGHT and DECLARED, and the one state
+      # that exits 0 having proved nothing is an EMPTY selection — `CAUGHT
+      # 0/0`, which a mistyped filter or a corpus that stopped loading
+      # produces. So what is asserted is the number of probes that ran and
+      # that every one of them was either caught or a declared exception. A
+      # step that instead listed the verdict words it would accept would go
+      # green the day a new one is added.
+      #
+      # DECLARED is added back rather than ignored, and the names are printed:
+      # three probes here are guarded by cases that skip on a case-sensitive
+      # filesystem, which this runner has and the author's machine does not.
+      # A sum that dropped them would also drop a probe whose declaration
+      # stopped matching the skip it names, and that is a probe asking nothing.
       - name: Mutation sweep (the whole corpus)
         run: |
           .venv/bin/python tools/mutation_sweep.py > sweep.log 2>&1 && swept=0 || swept=$?
@@ -341,16 +355,22 @@ jobs:
           log = open(sys.argv[1], encoding="utf-8").read()
           ran = re.search(r"^probes +: (\d+)$", log, re.M)
           caught = re.search(r"^CAUGHT (\d+)/(\d+) ", log, re.M)
-          if not (ran and caught):
+          waived = re.search(r"^DECLARED (\d+)/(\d+)$", log, re.M)
+          if not (ran and caught and waived):
               sys.exit("the sweep printed no count this step can read")
           probes, done, total = int(ran.group(1)), int(caught.group(1)), int(caught.group(2))
-          if not probes == total == done:
-              sys.exit(f"{probes} probes selected, {done} of {total} caught")
-          # The floor is what a narrowed selection cannot get under. 661 at the
-          # commit that set it, with room for a probe or two to be retired.
+          declared = int(waived.group(1))
+          for line in re.findall(r"^\S+ \[ *\d+/\d+\] DECLARED .*$", log, re.M):
+              print(line)
+          if not (probes == total and done + declared == probes):
+              sys.exit(f"{probes} probes selected, {done} caught and {declared} declared")
+          # The floor is what a narrowed selection cannot get under, and it
+          # counts catches alone: a corpus that declared its way to 661 would
+          # have proved nothing. 661 at the commit that set it, with room for a
+          # probe or two to be retired.
           if done < 640:
-              sys.exit(f"only {done} probes ran; the corpus held 661 when this floor was set")
-          print(f"{done} probes, every one caught")
+              sys.exit(f"only {done} probes were caught; the corpus held 661 when this floor was set")
+          print(f"{done} probes caught, {declared} declared exceptions")
           ASSERT
 
   wordlist:
