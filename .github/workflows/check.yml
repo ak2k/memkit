@@ -360,8 +360,13 @@ jobs:
               sys.exit("the sweep printed no count this step can read")
           probes, done, total = int(ran.group(1)), int(caught.group(1)), int(caught.group(2))
           declared = int(waived.group(1))
-          for line in re.findall(r"^\S+ \[ *\d+/\d+\] DECLARED .*$", log, re.M):
+          named = re.findall(r"^\S+ \[ *\d+/\d+\] DECLARED .*$", log, re.M)
+          for line in named:
               print(line)
+          # One loop in the sweep prints the per-probe line and counts it, so
+          # a log naming fewer than it counted was edited between the steps.
+          if len(named) != declared:
+              sys.exit(f"the sweep counted {declared} declared and named {len(named)}")
           if not (probes == total and done + declared == probes):
               sys.exit(f"{probes} probes selected, {done} caught and {declared} declared")
           # The floor is what a narrowed selection cannot get under, and it

@@ -5413,6 +5413,15 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
         "back to the caught count, so a declared probe is either a silent pass "
         "or a shortfall the step cannot account for"
     )
+    # One loop in the sweep prints a probe's DECLARED line and counts it, so
+    # the names and the counter can only disagree in a log edited between the
+    # two steps. Printing the names is a reporting duty; counting what was
+    # printed is what makes the report checkable.
+    assert re.search(r"len\([^)]+\)\s*[!=]=\s*declared", step), (
+        f"the sweep step in `{job_name}` prints the declared probes by name "
+        "without asserting it printed one per declared exception, so a log "
+        "naming fewer than it counts goes green"
+    )
     floor = re.search(r"done < (\d+)", step)
     assert floor, f"the sweep step in `{job_name}` asserts no probe-count floor"
     corpus = json.loads(
