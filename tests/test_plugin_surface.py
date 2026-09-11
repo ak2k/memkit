@@ -5702,7 +5702,7 @@ def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
     script = "set -e\n" + "\n".join(blocks)
     ran = subprocess.run(
         ["sh", "-c", script], capture_output=True, text=True, timeout=60,
-        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+        env=_sealed_env(home),
     )
     assert ran.returncode == 0, (ran.returncode, ran.stderr, script)
 
@@ -5719,7 +5719,7 @@ def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
          "--config", str(config), "--search",
          "why do prepared statements break under pgbouncer transaction pooling"],
         capture_output=True, text=True, timeout=60,
-        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+        env=_sealed_env(home),
     )
     assert out.returncode == hook.EXIT_OK, (out.returncode, out.stdout, out.stderr)
     # The pointer the top of the README promises — same file, same section tag.
