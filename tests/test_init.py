@@ -52,6 +52,12 @@ def profile(tmp_path, monkeypatch):
         "CLAUDE_PLUGIN_ROOT",
     ):
         monkeypatch.delenv(name, raising=False)
+    # AND THE VARIABLES THE HARNESS DECIDES AUTO-MEMORY FROM. The preflight
+    # refuses both auto-memory flags on them, so a runner that exported one
+    # would turn every adoption case in this file into that refusal — a suite
+    # whose answer depends on the shell it was started from.
+    for name in (harness_memory.DISABLE_ENV, *harness_memory.OVERRIDE_ENV):
+        monkeypatch.delenv(name, raising=False)
     yield tmp_path
     # `_use_config` sets module globals and clears caches; a case that pointed
     # the reader at a fixture config would otherwise leave every later case in
@@ -2992,6 +2998,107 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(
     )
 
 
+def test_the_off_flag_is_refused_under_a_variable_that_runs_the_feature(
+    profile, monkeypatch
+) -> None:
+    """A settings scope cannot answer a question the environment already did.
+
+    `$CLAUDE_CODE_DISABLE_AUTO_MEMORY` is read before the harness opens a
+    settings file, so a value it reads as "run it" outranks every scope this
+    write reaches. Accepted, the manifest printed "the harness then neither
+    reads nor writes auto-memory" and offered a digest for it, over a boolean
+    that changes nothing while that value is in the environment.
+
+    THE VARIABLE IS THREE-VALUED and only one of the three is a conflict: a
+    value spelling off agrees with the write, and one spelling neither leaves
+    the settings to decide. Both are asserted here, because a guard that
+    refused on the variable being SET would take the flag away from the
+    adopter it works for.
+    """
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    refusal = _refuses(profile, "auto-memory-forced-on", auto_memory_off=True)
+    assert harness_memory.DISABLE_ENV in refusal.message
+    # The spelling, because what has to be changed is what was written.
+    assert "'0'" in refusal.message, refusal.message
+    # And a remedy for the variable rather than for a settings key: the
+    # harness reads this one first, so a repair naming the key repairs nothing.
+    assert "wherever it is exported" in refusal.message, refusal.message
+    assert harness_memory.ENABLED_KEY + '": false' not in refusal.message.split(
+        "Unset"
+    )[1], refusal.message
+    # The other two values decide nothing here.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "1")
+    assert _plan(profile, auto_memory_off=True).actions
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "maybe")
+    assert _plan(profile, auto_memory_off=True).actions
+    # And the variable is never a refusal for a plain init.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    assert _plan(profile).actions
+
+
+def test_adoption_is_refused_while_a_variable_chooses_the_directory(
+    profile, monkeypatch
+) -> None:
+    """The redirect half of the flag claims to know where every project
+    writes next, and under one of these variables memkit does not.
+
+    Each of the three takes a resolver of its own — a cowork path, a remote
+    projects root, a literal project key — and memkit resolves none of them,
+    which is the whole reason this is a refusal rather than a note: the
+    manifest's own sentence says every project's new memories land in the
+    store, and a directory a variable chose first makes that false.
+
+    Asserted for every name in the tuple, because a loop that skipped one
+    would write that adopter's redirect under a directory nobody could name.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    for name in harness_memory.OVERRIDE_ENV:
+        monkeypatch.setenv(name, str(profile / "elsewhere"))
+        refusal = _refuses(profile, "auto-memory-overridden", adopt_auto_memory=True)
+        assert "$" + name in refusal.message, refusal.message
+        assert "does not resolve it" in refusal.message, refusal.message
+        # Never resolved: the directory the variable names is not in the
+        # sentence, because memkit did not work out that it is the one.
+        assert str(profile / "elsewhere") not in refusal.message, refusal.message
+        # The other flag writes a boolean and is not about a directory.
+        assert _plan(profile, auto_memory_off=True).actions
+        monkeypatch.delenv(name)
+    # An empty value is not a variable the harness reads.
+    monkeypatch.setenv(harness_memory.OVERRIDE_ENV[0], "")
+    assert _plan(profile, adopt_auto_memory=True).actions
+
+
+def test_adoption_under_a_variable_that_switched_the_feature_off_says_so(
+    profile,
+    monkeypatch,
+) -> None:
+    """DISCLOSED, NOT REFUSED, and the direction is what decides which.
+
+    A variable that turns auto-memory off leaves the copy half of this flag
+    worth running — the files are there — and makes the redirect half a
+    setting no session carrying that value will act on. memkit reads one
+    environment and the adopter's sessions need not carry it, so refusing
+    would take away a copy that works; the manifest says the state instead,
+    beside the settings-scope sentence that says the same thing.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "yes")
+    rendered = _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    ).render()
+    assert "Auto-memory is switched off by the environment" in rendered, rendered
+    assert harness_memory.DISABLE_ENV in rendered
+    assert "'yes'" in rendered, rendered
+    assert "need not be the one your sessions run in" in rendered
+    # The copy is still planned: that is what makes this a note.
+    assert "Adoption: 1 files" in rendered, rendered
+    # And a value the harness reads as "run it" says nothing of the kind.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "off")
+    assert "switched off by the environment" not in _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    ).render()
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="the integrity checker's own floor"
 )
@@ -4282,6 +4389,108 @@ def test_a_project_key_the_check_would_read_as_a_memory_is_skipped(
     assert "IsADirectoryError" not in checked.stderr, checked.stderr
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_name_the_check_reads_a_shorter_path_out_of_is_skipped(
+    profile,
+) -> None:
+    """A `#` IN A NAME IS A PERMANENT DEAD LINK, and it passed every rule.
+
+    The checker's link parser cuts a destination at the first `#` — everything
+    after one is an anchor into a document — so `issue#123.md` was copied, a
+    row was generated pointing at it, and the check init runs over its own
+    work read that row as pointing at `search/projects/<key>/issue`, which is
+    nothing. Exit 6 out of the command that built the store, and no re-run
+    repairs it: the file is there, the row is regenerated byte for byte, and
+    the only way out is hand-editing a ledger memkit wrote.
+
+    The rule the label test applies is not this one — `#` is printable, is not
+    link syntax and is not whitespace — which is why this is a clause of its
+    own. The control in the same run is the same memory named `issue123.md`.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "issue#123.md": (
+                "---\nname: n1\ndescription: a harness memory about widgets\n"
+                "---\n\nbody\n"
+            ),
+            "issue123.md": (
+                "---\nname: n2\ndescription: the control, same memory\n"
+                "---\n\nbody\n"
+            ),
+        },
+    )
+    # A key carrying one is the other half of the same path, and skips whole.
+    _harness(profile, "-home-u#2", {"ok.md": BARE})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    # Said on the DRY RUN, and it NAMES THE CHARACTER: an adopter who has to
+    # rename a file has to be told what in the name is the problem.
+    assert "-home-u/issue#123.md: the file name holds a `#`" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "'-home-u#2': the project key holds a `#`" in manifest.stdout, (
+        manifest.stdout
+    )
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert not (adopted / "-home-u" / "issue#123.md").exists()
+    assert not (adopted / "-home-u#2").exists()
+    # The control adopted, and the tally counts the two skips.
+    assert (adopted / "-home-u" / "issue123.md").is_file()
+    assert "Adoption: 1 files" in out.stdout, out.stdout
+    assert "2 skipped" in out.stdout, out.stdout
+    # And the row the run did write survives the parser that reads it.
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "search/projects/-home-u/issue123.md" in ledger, ledger
+    assert "#" not in "".join(
+        line for line in ledger.splitlines() if line.startswith("- [")
+    ), ledger
+    # The whole of the claim: the store passes the check that used to fail.
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "DEAD-LINK" not in checked.stdout, checked.stdout
+
+
+def test_the_destination_a_row_would_carry_is_read_back_before_it_is_written(
+    profile,
+) -> None:
+    """The two halves are tested where they are read; the PATH is what the
+    check opens.
+
+    `_checker_link` is the parser restated, and the rule below it is asked of
+    the composed destination as well — a part tested and a whole never tested
+    is how the next part gets through. Asserted here as the parser's own
+    contract, because the composed rule is otherwise unreachable while both
+    halves hold.
+    """
+    assert init._checker_link("search/projects/-home-u/ok.md") == (
+        "search/projects/-home-u/ok.md"
+    )
+    # The cut, which is the whole defect.
+    assert init._checker_link("search/projects/-home-u/issue#123.md") == (
+        "search/projects/-home-u/issue"
+    )
+    # And the two rules `_dest` applies before it, which the name test above
+    # already refuses on but which this restatement has to carry to be the
+    # same parser: the first whitespace token, and the angle-bracket strip.
+    assert init._checker_link("  a/b.md  c/d.md ") == "a/b.md"
+    assert init._checker_link("<a/b.md>") == "a/b.md"
+    assert init._checker_link("   ") == ""
+
+
 def test_the_manifest_says_where_a_linked_source_directory_resolves(
     profile,
 ) -> None:
@@ -5349,6 +5558,11 @@ def test_the_two_shapes_of_exit_six_say_in_their_output_which_one_they_are(
         (store / "search").mkdir(parents=True, exist_ok=True)
         theirs.write_text("# theirs\n", encoding="utf-8")
         return 1, (
+            # THE LINE THAT SAYS WHICH STORE THE BLOCK IS ABOUT. Attribution
+            # resolves a finding against the root announced for its own block,
+            # so a stub without it is a stub of an output the checker does not
+            # produce — and one that would attribute nothing.
+            f"notes store: verified in {store}  (configured path)\n"
             "[FAIL] ./ (0 hot, 2 search, hot ledger 248b)\n"
             "  DESC-BAD: ./search/memkit-canary.md — description empty\n"
             "  ORPHAN: ./search/not-from-here.md — no row in SEARCH.md"
@@ -5455,7 +5669,97 @@ def test_a_red_finding_that_carries_a_line_number_is_attributed_too(
         if line.strip().startswith("STALE:")
     ]
     assert stale, checked.stdout + checked.stderr
-    assert init._files_the_checker_names("\n".join(stale), str(store)) == [str(ledger)]
+    # THE LINES THAT PLACE IT TRAVEL WITH IT. A finding is resolved against the
+    # root announced for its own block, so the announcement and the block
+    # header are part of what the parser is fed — and nothing else is, because
+    # a report carrying the DEAD-LINK as well names this same file through the
+    # rule that DOES put an em dash after its path.
+    opening = [
+        line
+        for line in checked.stdout.splitlines()
+        if " store: verified in " in line or line.startswith("[FAIL]")
+    ]
+    assert len(opening) == 2, checked.stdout
+    assert init._files_the_checker_names("\n".join(opening + stale)) == [str(ledger)]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_second_stores_red_is_named_against_the_store_it_came_from(
+    profile,
+) -> None:
+    """ONE CONFIG, TWO STORES, AND THE CHECKER VERIFIES BOTH.
+
+    Every path the checker prints is relative to the root of the store whose
+    block it is in. Joined instead onto the root of the store this run just
+    created, an older store's `DEAD-LINK` was reported against a file of the
+    same name under the NEW store — whose own block said `[OK]` — purely
+    because something is there at that path, and the sentence under it sent
+    the adopter at a re-run that cannot touch the broken file.
+
+    The two `SEARCH.md` are what make this a real confusion rather than a
+    contrived one: every store has one, so the wrong root always resolves.
+    """
+    first = profile / "notes"
+    manifest = _dry(profile, "--store", str(first))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(profile, _digest_of(manifest), "--store", str(first))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+
+    # A dead row put into the FIRST store by hand, after it was built.
+    ledger = first / "SEARCH.md"
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + "- [gone](search/gone.md) — a row for a file that is not there\n",
+        encoding="utf-8",
+    )
+
+    second = profile / "second"
+    manifest = _dry(profile, "--store", str(second))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(profile, _digest_of(manifest), "--store", str(second))
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    err = out.stderr
+    # The checker really is red about the first store and happy with the
+    # second — the state the attribution has to survive.
+    assert "DEAD-LINK: ./SEARCH.md" in err, err
+    assert "[OK]" in err, err
+    # Named against the store it came out of, and as a file this run did not
+    # write, which is the half that decides the recovery.
+    assert f"{ledger} — this run did not write it" in err, err
+    assert str(second / "SEARCH.md") not in err, err
+    assert "no re-run will change" in err, err
+    # Nothing this run wrote is red, so it is not offered the other recovery.
+    assert "what landed has moved the old one" not in err, err
+
+
+def test_a_finding_no_block_places_is_left_unattributed(profile) -> None:
+    """A FILE NAMED ON A GUESS IS WORSE THAN A FILE NOT NAMED, because the
+    sentence under it tells the adopter what to do about it.
+
+    Findings before any block, and findings in a block past the last root the
+    report announced, are ones nothing can place. The old rule placed them
+    under the store it was handed and the file was there, so the guess always
+    succeeded.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "SEARCH.md").write_text("# index\n", encoding="utf-8")
+    block = (
+        "[FAIL] ./ (0 hot, 0 search, hot ledger 0b)\n"
+        "  DEAD-LINK: ./SEARCH.md:9 — [gone](search/gone.md) points at no file"
+    )
+    # No store was announced, so no root was announced either.
+    assert init._files_the_checker_names(block) == []
+    # One announced, two blocks: the second is past the end.
+    announced = f"notes store: verified in {store}  (configured path)\n"
+    assert init._files_the_checker_names(announced + block) == [
+        str(store / "SEARCH.md")
+    ]
+    assert init._files_the_checker_names(
+        announced + "[OK]   ./ (0 hot, 0 search, hot ledger 0b)\n" + block
+    ) == []
 
 
 @pytest.mark.skipif(

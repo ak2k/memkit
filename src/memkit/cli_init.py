@@ -865,6 +865,63 @@ def check_refusals(
                 "run this again.",
             )
 
+    # AND ABOVE EVERY SCOPE THOSE GATES READ, THE ENVIRONMENT. Two variables
+    # decide these same two questions before the harness opens a settings file
+    # at all — `harness_memory.DISABLE_ENV` for whether auto-memory runs,
+    # `OVERRIDE_ENV` for where it writes — and no gate here consulted either:
+    # `--auto-memory-off` under a value spelling "run it" printed "the harness
+    # then neither reads nor writes auto-memory" over a write nothing could
+    # make true, and `--adopt-auto-memory` under a directory override promised
+    # every project's new memories would land in the store while the override
+    # sends them elsewhere. Both were accepted, and a digest was offered for
+    # them. Asked of the readers doctor asks, so the two commands cannot come
+    # to disagree about what the environment decided.
+    if auto_memory_off:
+        # THREE-VALUED, AND ONLY ONE OF THE THREE IS A CONFLICT. A value the
+        # harness reads as "off" agrees with the write, and one it reads as
+        # neither leaves the settings to decide; `forced` is true only for the
+        # spellings that RUN the feature over every scope below them.
+        forced, spelled = harness_memory.env_switch()
+        if forced:
+            raise Refusal(
+                "auto-memory-forced-on",
+                f"${harness_memory.DISABLE_ENV} is set to {spelled!r}, which "
+                "the harness reads as an instruction to RUN auto-memory "
+                "before it opens a settings file at all: no settings scope "
+                "turns it off while that value is in the environment. "
+                f'--auto-memory-off writes "{harness_memory.ENABLED_KEY}": '
+                f"false into {_display_path(_settings_path(machine))}, and "
+                "the manifest says the harness then neither reads nor writes "
+                "auto-memory — which that variable makes false. Unset "
+                f"${harness_memory.DISABLE_ENV} wherever it is exported — a "
+                "shell profile, a direnv file, a wrapper script — or set it "
+                "to 1, and run this again.",
+            )
+    if adopt_auto_memory:
+        # NAMED, NEVER RESOLVED — see `harness_memory.OVERRIDE_ENV`. Each of
+        # these takes a resolver of its own, so what memkit can say honestly
+        # is that one is in effect and that it does not know the directory.
+        # An unresolved override is exactly the state in which the redirect
+        # this flag writes cannot be checked against anything, and the flag's
+        # own sentence claims to know where every project writes next.
+        overridden = harness_memory.overrides()
+        if overridden:
+            raise Refusal(
+                "auto-memory-overridden",
+                "an environment override is in effect ("
+                + ", ".join("$" + name for name in overridden)
+                + "), so where the harness writes is not what any settings "
+                "file says and memkit does not resolve it. "
+                f'--adopt-auto-memory writes "{harness_memory.DIRECTORY_KEY}": '
+                f'"{_home_form(_redirect_dir(store_path))}" into '
+                f"{_display_path(_settings_path(machine))}, and the manifest "
+                "says every project's new memories land there from then on — "
+                "which is not true of a directory a variable chose first. "
+                "Unset it wherever it is exported and run this again, or drop "
+                "the flag: copying what is already written is a separate "
+                "decision from redirecting what is written next.",
+            )
+
     # BOTH OF THESE ARE --adopt-auto-memory's ALONE. `--auto-memory-off` writes
     # one boolean and has to stay idempotent: refusing it because the feature
     # is already off would take away the convergence every other flag here has,
@@ -2283,6 +2340,32 @@ def _name_fits(name: str) -> bool:
     return len(_utf8(name)) + _TMP_SUFFIX_BYTES <= _NAME_MAX_BYTES
 
 
+def _checker_link(dest: str) -> str:
+    """A row's destination as the integrity check's link parser reads it.
+
+    RESTATED RATHER THAN IMPORTED, for the reason `_rows_pointing_nowhere` is
+    restated: `memory_integrity` exits at import below 3.12 and this module
+    answers to the 3.9 floor the dispatcher runs on. Two rules carry it, both
+    read off that parser — `_dest` takes the first whitespace token and strips
+    `<>`, and `_link_path` then CUTS THE DESTINATION AT THE FIRST `#`, since
+    everything after one is an anchor into a document rather than part of the
+    path. A 3.12 case runs the real checker over a store this rule passed, so
+    a restatement that drifts fails there.
+
+    WHAT IT IS FOR is the comparison, not the value: a destination that comes
+    back unchanged is one the check will look for where the row put it, and a
+    destination that comes back SHORTER is a row pointing at a path nothing is
+    at. `#` is the only character that reaches that second answer through a
+    generated row — the link half is always `search/<key>/<name>`, so no
+    leading segment can read as a URL scheme and the `<>` strip never bites —
+    which is why the skip lines that use this name it.
+    """
+    raw = dest.strip()
+    if not raw:
+        return ""
+    return raw.split()[0].strip("<>").split("#", 1)[0].strip()
+
+
 def _rows_pointing_nowhere(text: str, dest: str, store: str, landing: set) -> list:
     """The destinations in `text` that resolve to no file, read from `dest`.
 
@@ -2309,7 +2392,7 @@ def _rows_pointing_nowhere(text: str, dest: str, store: str, landing: set) -> li
     for raw in _MD_LINK_RE.findall(text):
         if not raw.strip():
             continue
-        target = raw.strip().split()[0].strip("<>").split("#", 1)[0].strip()
+        target = _checker_link(raw)
         if not target or _SCHEME_RE.match(target):
             continue
         if "/" not in target and not target.lower().endswith(_PATH_SUFFIXES):
@@ -2376,6 +2459,21 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 f"{_findable(project.key)}: the project key holds a character "
                 "no manifest line and no ledger row could carry — a link "
                 "ends at the first `)`, at a space, or at a newline"
+            )
+            continue
+        # AND THE CHARACTER THAT PASSES THAT TEST AND STILL LOSES THE FILE.
+        # `#` is printable, is not link syntax and is not whitespace, so the
+        # rule above keeps it — and the integrity check's own link parser
+        # reads a destination only as far as the first one. A key holding one
+        # is copied, rowed, and then read as a path that stops before it: the
+        # check init runs over its own work goes red, and no re-run repairs a
+        # row memkit generated from a name that is still on disk.
+        if _checker_link(project.key) != project.key:
+            skipped.append(
+                f"{_findable(project.key)}: the project key holds a `#`, and "
+                "the integrity check reads a link destination only as far as "
+                "the first one — the row this run would write would point at "
+                "the path before it, which is no file"
             )
             continue
         # AND IT MUST NOT BE A NAME THE CHECK READS AS A MEMORY. A key is a
@@ -2506,6 +2604,19 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     f"{shown}: the file name holds a character no manifest "
                     "line and no ledger row could carry — a link ends at the "
                     "first `)`, at a space, or at a newline"
+                )
+                continue
+            # THE SAME CHARACTER, THE OTHER HALF OF THE SAME PATH. Kept as
+            # a clause of its own rather than folded into the rule above,
+            # because the two answer to different parsers: that one is the
+            # ledger's row SYNTAX, and this one is what the check does with a
+            # destination the syntax accepted.
+            if _checker_link(name) != name:
+                skipped.append(
+                    f"{shown}: the file name holds a `#`, and the integrity "
+                    "check reads a link destination only as far as the first "
+                    "one — the row this run would write would point at the "
+                    "path before it, which is no file"
                 )
                 continue
             if not _name_fits(name):
@@ -2640,9 +2751,24 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                         "was derivable from it"
                     )
                     continue
+                link = os.path.relpath(dest, store)
+                # THE PATH THOSE TWO HALVES COMPOSE, ASKED OF THE PARSER THAT
+                # WILL READ IT. Each half is tested where it is read, and this
+                # is the string a row actually carries — the only thing the
+                # check opens. Deliberately belt and braces: a rule that tests
+                # the parts and never the whole is one the next part walks
+                # past, and what that costs here is a store that fails its own
+                # integrity check on a row nothing regenerates.
+                if _checker_link(link) != link:
+                    skipped.append(
+                        f"{shown}: the destination a row would carry is not "
+                        "the path the integrity check reads back out of it, "
+                        "so the row would point at no file"
+                    )
+                    continue
                 row = (
                     label,
-                    os.path.relpath(dest, store),
+                    link,
                     desc,
                 )
             held, readable = _held_text(dest)
@@ -3096,6 +3222,24 @@ def build_plan(
                 "lands in that directory while the boolean is false. Setting "
                 "it back to true is an edit to that file; memkit has no flag "
                 "that does it."
+            )
+        # AND THE SAME STATE AN ENVIRONMENT VARIABLE PUTS A MACHINE IN, said
+        # in the same place. `harness_memory.DISABLE_ENV` turns the feature
+        # off ahead of every settings scope, so the redirect above is written
+        # for a feature no process carrying that value will exercise — and
+        # this one process's environment need not be the one the adopter's
+        # sessions run in, which is why the off direction is disclosed here
+        # rather than refused in the preflight.
+        forced, spelled = harness_memory.env_switch()
+        if forced is False:
+            notes.append(
+                "Auto-memory is switched off by the environment: "
+                f"${harness_memory.DISABLE_ENV} is set to {spelled!r}, which "
+                "the harness reads ahead of every settings file. This copies "
+                "what it wrote while the feature was on; nothing new lands in "
+                "the directory above for any session carrying that value. "
+                "memkit reads its own environment, which need not be the one "
+                "your sessions run in."
             )
     if auto_memory_off:
         target = _settings_path(machine)
@@ -3786,17 +3930,36 @@ _CHECKER_FINDING = re.compile(r"^ +([A-Z][A-Z0-9-]*): (\S+?)(?::\d+)? — ")
 # shape would also match the rules whose second word is a DIRECTORY or a
 # ledger's row count, and neither is a file an adopter can be told to fix.
 _CHECKER_PLAIN_FINDING = re.compile(r"^ +(ROW-LOST|STALE): (\S+?)(?::\d+)? ")
+# The line that opens the checker's report for ONE store: its id, the root it
+# verified, and where that root came from. The checker verifies every store
+# the config names, and every path it prints is spelled relative to the root
+# of the store whose block it is in — so the roots are read in the order they
+# are announced and the blocks are counted against them.
+_CHECKER_STORE = re.compile(r"^(\S+) store: verified in (.+?)  \(")
+# And the line that opens one store's block, whatever its verdict. A warning
+# block names files too, and an `[OK]` block is what makes the count right for
+# the blocks after it.
+_CHECKER_BLOCK = re.compile(r"^\[(?:FAIL|WARN|OK)\]\s")
 
 
-def _files_the_checker_names(output: str, store: str) -> list:
+def _files_the_checker_names(output: str) -> list:
     """Every file a red check named, absolute, in the order it named them.
 
-    The paths are spelled relative to the store root, and the checker verifies
-    every store the config names rather than only the one this action is
-    about — so a finding is kept only when it resolves to something that is
-    actually there under this store. A path joined onto the wrong root is a
-    file name the adopter cannot act on, which is the failure the sentence
-    below it exists to end.
+    RESOLVED AGAINST THE STORE THE FINDING CAME OUT OF. The checker verifies
+    every store the config names, each in a block of its own, and every path
+    it prints is relative to THAT store's root. Joined instead onto the root
+    of the store this run happened to create, an older store's `DEAD-LINK`
+    became a finding against a file of the same name under the new one — whose
+    own block said `[OK]` — and the recovery sentence sent the adopter at a
+    re-run that could not touch the broken file. So the roots are read off the
+    `<id> store: verified in <root>` lines in the order they are announced,
+    and the verdict lines are counted against them: the nth block is the nth
+    store.
+
+    AMBIGUOUS IS UNATTRIBUTED. A finding printed before any block, or in a
+    block past the last root announced, is one nothing here can place — and a
+    file named on a guess is worse than a file not named, because the sentence
+    under it tells the adopter what to do about it.
 
     ROW-LOST spells its path from the store's PARENT instead, so the store's
     own directory name is dropped when it is what stands between the path and
@@ -3808,9 +3971,20 @@ def _files_the_checker_names(output: str, store: str) -> list:
     — did this run write it — asked of every file the block names.
     """
     named: list = []
+    roots: list = []
+    store = ""
+    blocks = 0
     for line in output.splitlines():
+        announced = _CHECKER_STORE.match(line)
+        if announced is not None:
+            roots.append(announced.group(2))
+            continue
+        if _CHECKER_BLOCK.match(line) is not None:
+            store = roots[blocks] if blocks < len(roots) else ""
+            blocks += 1
+            continue
         found = _CHECKER_FINDING.match(line) or _CHECKER_PLAIN_FINDING.match(line)
-        if found is None:
+        if found is None or not store:
             continue
         rel = found.group(2)
         full = os.path.normpath(os.path.join(store, rel))
@@ -4021,7 +4195,7 @@ def _perform(
     elif action.op == VERIFY:
         code, output = _run_checker(machine, config_path)
         if code != 0:
-            journal.checker_named = _files_the_checker_names(output, action.path)
+            journal.checker_named = _files_the_checker_names(output)
             print(
                 "memkit init: the store was created and the integrity "
                 f"checker is not happy with it:\n{output}",
