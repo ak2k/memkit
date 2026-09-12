@@ -14783,28 +14783,53 @@ def test_a_dir_behind_a_chain_of_symlinks_refuses_rather_than_raises(
 ) -> None:
     """The other `RuntimeError` on this guard, and this one needs no staging.
 
-    `realpath` walks a symlink chain by recursing once per link, so a `dir`
-    behind a thousand committed links answers with `RecursionError` — neither
-    an `OSError` nor a `ValueError`, and uncaught it left the prompt path
-    emitting nothing at all: rc 0, no pointers, the user's own stores gone
-    with the repository's.
+    `realpath` walks a symlink chain by recursing once per link on the
+    interpreters this repository floors at, so a `dir` behind a thousand
+    committed links answers with `RecursionError` — neither an `OSError` nor a
+    `ValueError`, and uncaught it left the prompt path emitting nothing at all:
+    rc 0, no pointers, the user's own stores gone with the repository's.
 
     The chain is BUILT rather than staged, and the depth is proven by the
     library call itself rather than by a number written here, so the case
-    stays honest if either the limit or `realpath` changes shape.
+    stays honest if either the limit or `realpath` changes shape. It changed
+    shape: 3.14 walks the chain iteratively and resolves it, where 3.9 and
+    3.12 still recurse and raise. So the chain is MEASURED here and the case
+    branches on what this interpreter actually did with it — a refusal
+    carrying the exception's own name where it raised, and an accepted store
+    where it resolved, since a chain that resolves inside the checkout is a
+    `dir` this guard has no reason to refuse. Neither branch is a skip.
     """
     repo = _project_checkout(tmp_path, blob=_project_blob(dir="l0"))
     links = sys.getrecursionlimit() + 100
     os.symlink(PROJECT_STORE_DIR, repo / f"l{links - 1}")
     for i in range(links - 2, -1, -1):
         os.symlink(f"l{i + 1}", repo / f"l{i}")
-    with pytest.raises(RecursionError):
-        os.path.realpath(str(repo / "l0"))
+    try:
+        resolved = os.path.realpath(str(repo / "l0"))
+    except (RecursionError, OSError) as exc:
+        raised = exc
+    else:
+        raised = None
+
+    if raised is None:
+        # The chain really does arrive at the corpus, so the file asked for a
+        # directory inside its own checkout and gets it: the same tooth the
+        # refusal is, read from the other side.
+        assert resolved == os.path.realpath(str(repo / PROJECT_STORE_DIR)), resolved
+        cfg = _config_at(tmp_path, monkeypatch, repo)
+        assert _within(10, cfg.project_store) is not None, cfg.project_error
+        ids = [s.id for s in cfg.searched_stores()]
+        assert PROJECT_STORE_ID in ids, (ids, cfg.project_error)
+        return
 
     reason = _refusal(tmp_path, monkeypatch, repo)
+    # The name the guard reports is the one the measurement above produced,
+    # not a word written here: the sentence is the assertion, and what fills
+    # its last field comes off the exception the chain really raised.
     assert reason == (
-        f"{hook.PROJECT_CONFIG_NAME}: 'dir' does not resolve: RecursionError"
-    ), reason
+        f"{hook.PROJECT_CONFIG_NAME}: 'dir' does not resolve: "
+        f"{getattr(raised, 'strerror', None) or type(raised).__name__}"
+    ), (reason, raised)
     assert reason == hook.sanitize(reason), repr(reason)
 
 
