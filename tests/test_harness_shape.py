@@ -1946,7 +1946,11 @@ def _a_shape_past_the_buffer(
         # by a few bytes.
         if rendered > io.DEFAULT_BUFFER_SIZE * 9 // 8:
             return whole
-    pytest.fail(
+    # `raise` and not `pytest.fail`: the declared return type is a completed
+    # process, and pyright reads this file — it resolves no `NoReturn` for a
+    # pytest it is configured not to import, so the fail would be a code path
+    # returning nothing.
+    raise AssertionError(
         f"{made} projects render {rendered} bytes and this interpreter buffers "
         f"{io.DEFAULT_BUFFER_SIZE}: the shape stopped growing"
     )
