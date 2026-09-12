@@ -5669,12 +5669,18 @@ def test_a_red_finding_that_carries_a_line_number_is_attributed_too(
         if line.strip().startswith("STALE:")
     ]
     assert stale, checked.stdout + checked.stderr
-    # THE WHOLE REPORT, not the findings pulled out of it: a finding is
-    # resolved against the root announced for its own block, so the lines that
-    # announce it are part of what the parser is fed.
-    assert str(ledger) in init._files_the_checker_names(checked.stdout), (
-        checked.stdout
-    )
+    # THE LINES THAT PLACE IT TRAVEL WITH IT. A finding is resolved against the
+    # root announced for its own block, so the announcement and the block
+    # header are part of what the parser is fed — and nothing else is, because
+    # a report carrying the DEAD-LINK as well names this same file through the
+    # rule that DOES put an em dash after its path.
+    opening = [
+        line
+        for line in checked.stdout.splitlines()
+        if " store: verified in " in line or line.startswith("[FAIL]")
+    ]
+    assert len(opening) == 2, checked.stdout
+    assert init._files_the_checker_names("\n".join(opening + stale)) == [str(ledger)]
 
 
 @pytest.mark.skipif(
