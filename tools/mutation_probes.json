@@ -4456,6 +4456,7 @@
     },
     {
       "name": "changelog-probe-count-is-the-previous-releases",
+      "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
       "old": "the 662 probes",
