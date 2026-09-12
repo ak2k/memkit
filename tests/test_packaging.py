@@ -775,11 +775,10 @@ def test_every_test_file_is_in_the_flake_suite_map() -> None:
 # module that grew a fifth table grew no lint; one test over `(module, table)`
 # is the whole class in one place.
 #
-# Each entry is `(module, guards, uncalled)`. `uncalled` names the
-# guards deliberately at zero call sites, so the non-vacuity half below can
-# still demand that every OTHER name is reached. `floor` is the module's call
-# count measured when the entry was written: the lint cannot silently empty,
-# and it cannot silently shrink either.
+# Each entry is `(module, guards, uncalled)`. `uncalled` names the guards a
+# module defines for a caller elsewhere, so this lint does not demand a call
+# site for them; it still demands that every OTHER name is reached, which is
+# what a call-count floor stood in for before it was retired.
 _PATH_GUARD_MODULES = (
     (
         "src/memkit/cli_init.py",
