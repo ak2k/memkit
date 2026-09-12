@@ -47,8 +47,10 @@ DECLARED is the single all-skipped case that is not a failure, and it is a
 property of the CORPUS rather than of the machine. A probe may carry
 `declared_skip`: the environment fact its paired tests skip on, in the skip's
 own words. The verdict is DECLARED only when EVERY reason pytest reported
-matches that text, so a checkout without git, a machine without `uv` and a root
-container all still come back SKIPPED. Waiving every all-skipped probe instead
+matches that text AND the probe is one `_load_corpus` holds a reviewed
+declaration for, so a checkout without git, a machine without `uv` and a root
+container come back SKIPPED because no probe is allowed to declare them rather
+than because the matching rule refuses them. Waiving every all-skipped probe instead
 would hand those machines a way to launder a real failure, which is the whole
 reason SKIPPED is a failure here.
 
@@ -125,10 +127,55 @@ class ProbeError(Exception):
     """A probe that cannot be run as written."""
 
 
+# Every key a probe may carry. CLOSED, because a key nothing reads is
+# indistinguishable from a rule in force: `declared_skipp` waives nothing and
+# looks exactly like a waiver, and the corpus is where a reader goes to find
+# out what a probe claims.
+PROBE_KEYS = frozenset(
+    {
+        "name",
+        "module",
+        "file",
+        "old",
+        "new",
+        "tests",
+        "why",
+        "same_length",
+        "smoke",
+        "occurrences",
+        "declared_skip",
+    }
+)
+
+# WHICH probes may waive themselves, and ON WHAT. `declared_skip` is the one
+# line in a corpus that turns a red verdict green, and nothing else constrains
+# it: any probe could carry any reason and come back DECLARED on a machine
+# whose skip happened to say that. These three are the case-folding cases and
+# the reasons are their skips' own words, so a fourth declaration is a refusal
+# here and an argument in review rather than a line somebody added.
+DECLARATIONS = frozenset(
+    {
+        (
+            "init-adoption-rows-a-spelling-the-disk-does-not-hold",
+            "a case-sensitive filesystem tells the two keys apart",
+        ),
+        (
+            "init-adoption-rows-a-file-spelling-the-disk-does-not-hold",
+            "a case-sensitive filesystem tells the two names apart",
+        ),
+        (
+            "auto-memory-compares-two-spellings-of-one-directory-raw",
+            "this filesystem does not fold case",
+        ),
+    }
+)
+
+
 def _load_corpus(path: Path) -> list:
     raw = json.loads(path.read_text(encoding="utf-8"))
     probes = raw["probes"] if isinstance(raw, dict) else raw
     seen = set()
+    declared = set()
     for probe in probes:
         for field in ("name", "module", "file", "old", "new", "tests"):
             if field not in probe:
@@ -139,6 +186,26 @@ def _load_corpus(path: Path) -> list:
         seen.add(name)
         if not probe["tests"]:
             raise ProbeError(f"{name}: names no test")
+        unknown = sorted(set(probe) - PROBE_KEYS)
+        if unknown:
+            raise ProbeError(f"{name}: nothing reads {', '.join(unknown)}")
+        if "declared_skip" in probe:
+            why = probe["declared_skip"]
+            if not isinstance(why, str) or not why.strip():
+                raise ProbeError(
+                    f"{name}: declared_skip is the skip's own words, and this "
+                    f"one is {why!r}"
+                )
+            declared.add((name, why))
+    if declared != DECLARATIONS:
+        added = sorted(declared - DECLARATIONS)
+        gone = sorted(DECLARATIONS - declared)
+        raise ProbeError(
+            "a declared skip is the one corpus line that turns a red verdict "
+            "green, so which probes carry one is pinned in this file.\n"
+            f"  not reviewed: {added or 'none'}\n"
+            f"  reviewed, and not in this corpus: {gone or 'none'}"
+        )
     return list(probes)
 
 
