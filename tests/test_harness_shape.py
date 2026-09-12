@@ -1994,6 +1994,50 @@ def test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal(
     assert json.loads(dest.read_text(encoding="utf-8"))["anonymised"] is True
 
 
+def test_a_failed_write_removes_the_inode_it_made_and_not_the_name(tmp_path) -> None:
+    """What `discard` unlinks is what `create` made, not what the name means now.
+
+    The removal is safe because `O_EXCL` proved the inode was this run's — and
+    that proof is about an INODE, while the unlink was spelled as a name. A
+    write that failed after somebody moved this run's file aside and published
+    their own at the name destroyed theirs and reported `True`, off which the
+    one line says "nothing was left at this name": the operator is told their
+    destination is clear, and what is gone is a file this run never wrote.
+
+    The inode is taken from the fresh `O_EXCL` descriptor inside `create`,
+    because by `discard` the handle is closed and the name is the only thing
+    left to ask — and the name is exactly what cannot be trusted here.
+    """
+    module = _tool_module()
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    landing = module._Landing(str(dest), "shape.json")
+    try:
+        os.close(landing.create())
+        # The state a failed write's `discard` meets: this run's file moved
+        # aside, and a different inode published at the name it was made at.
+        os.rename(str(dest / "shape.json"), str(dest / "archived-partial.json"))
+        _write(dest / "shape.json", "somebody else's\n")
+        assert landing.discard() is False, "it unlinked a file this run never made"
+        assert (dest / "shape.json").read_text(encoding="utf-8") == (
+            "somebody else's\n"
+        ), "the replacement at the name is gone"
+    finally:
+        landing.close()
+
+    # The control, or the guard above passes by refusing every unlink: a name
+    # still carrying this run's inode IS removed, which is what makes the
+    # operator's retry possible and the one line true.
+    control = module._Landing(str(dest), "control.json")
+    try:
+        os.close(control.create())
+        assert control.discard() is True
+        assert not (dest / "control.json").exists()
+    finally:
+        control.close()
+
+
 @pytest.mark.parametrize("door", _STDOUT_DOORS)
 def test_every_door_out_of_the_stdout_route_is_one_line_and_an_exit_2(
     tmp_path, door,
