@@ -38,10 +38,12 @@ jobs:
         run: |
           uv venv --python 3.12
           uv pip install --python .venv -e . pytest
-      # The counts the admission note and the changelog state about this tree,
-      # re-derived. RELEASE_CHECKS switches the release-tier cases on.
-      - name: Stated counts, re-derived
-        run: RELEASE_CHECKS=1 .venv/bin/python -m pytest tests/test_plugin_surface.py -k "admission_notes_recipe or changelog_probe_counts" -o addopts= -q
+      # The release-tier cases: the counts the admission note and the changelog
+      # state about this tree, re-derived, and the hook's timing ratios.
+      # RELEASE_CHECKS switches them on; the two files run whole so a case
+      # added to either tier later is not missed by a name filter here.
+      - name: Release-tier cases
+        run: RELEASE_CHECKS=1 .venv/bin/python -m pytest tests/test_plugin_surface.py tests/test_memory_prompt_recall.py -o addopts= -q
       - name: The sweep, falsified
         run: .venv/bin/python tools/mutation_sweep.py --selftest
       # Every probe caught, none declared: the release-tier cases are on, so the

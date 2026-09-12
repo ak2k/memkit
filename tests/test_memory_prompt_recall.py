@@ -59,6 +59,15 @@ import pytest
 
 from memkit import memory_prompt_recall as hook
 
+# RELEASE TIER. A ratio of two timings is a benchmark: it moves with the
+# machine and its load, and a red says nothing about the commit. It runs when
+# a release is cut (`RELEASE_CHECKS=1`, `.github/workflows/release-checks.yml`).
+release_tier = pytest.mark.skipif(
+    not os.environ.get("RELEASE_CHECKS"),
+    reason="a timing ratio measured at release; run with RELEASE_CHECKS=1",
+)
+
+
 # The hook AS A FILE — what the harness runs, and what the subprocess cases
 # below exercise. Package import and file execution are two different entry
 # points into the same source, and the delivery-integrity cases only mean
@@ -5714,6 +5723,7 @@ def _compile_cost_ms(sources) -> float:
     return best
 
 
+@release_tier
 def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
     """Every invocation is a brand-new process, so module-level work is
     per-prompt work — and there is no budget check in front of it, because it
