@@ -232,7 +232,11 @@ LONG_ROW_CHARS = 300
 # ellipsis out of it. The long form belongs in the file body.
 MAX_DESC_CHARS = 155
 
-LINK_RE = re.compile(r"\(([^)]+\.md)\)")
+# A row's DESTINATION, matched within one line: a description is prose and
+# may carry an unbalanced bracket, and a match free to run past the newline
+# would read the row below's link as this row's and leave that memory
+# looking unrowed.
+LINK_RE = re.compile(r"\(([^)\n]+\.md)\)")
 ROW_RE = re.compile(r"^- \[[^\]]+\]\([^)]+\.md\)")
 TIER_RE = re.compile(r"^tier:\s*\S+", re.MULTILINE)
 COUNT_RE = re.compile(r"\((\d+) memories")
