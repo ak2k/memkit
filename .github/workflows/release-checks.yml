@@ -1,0 +1,56 @@
+name: Release checks
+
+# THE SLOW AND THE STALE, OFF THE COMMIT PATH. check.yml is what every commit
+# must pass. This workflow holds the checks whose red would not mean the commit
+# is wrong: counts a document states about the tree, which are re-derived when
+# a release is cut and can only go stale in between, and the mutation sweep on
+# the platform where every probe is caught rather than declared.
+#
+# Not a required check, deliberately: a required context that does not run on
+# a pull request stays pending and the PR cannot merge. Nothing here is named
+# in branch protection or in automerge.yml.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-tier:
+    name: release-tier
+    # macos-14: the three case-folding probes are CAUGHT here rather than
+    # DECLARED as they are on Linux, so this is the run on which every probe in
+    # the corpus has to be caught.
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      - name: Environment
+        run: |
+          uv venv --python 3.12
+          uv pip install --python .venv -e . pytest
+      # The release-tier cases: the counts the admission note and the changelog
+      # state about this tree, re-derived, and the hook's timing ratios.
+      # RELEASE_CHECKS switches them on; the two files run whole so a case
+      # added to either tier later is not missed by a name filter here.
+      - name: Release-tier cases
+        run: RELEASE_CHECKS=1 .venv/bin/python -m pytest tests/test_plugin_surface.py tests/test_memory_prompt_recall.py -o addopts= -q
+      - name: The sweep, falsified
+        run: .venv/bin/python tools/mutation_sweep.py --selftest
+      # Every probe caught, none declared: the release-tier cases are on, so the
+      # probes over them run, and this filesystem folds case.
+      - name: Mutation sweep, every probe caught
+        run: |
+          RELEASE_CHECKS=1 .venv/bin/python tools/mutation_sweep.py > sweep.log 2>&1 && swept=0 || swept=$?
+          cat sweep.log
+          test "$swept" -eq 0
+          grep -Eq '^DECLARED 0/[0-9]+$' sweep.log || { echo "a probe was declared rather than caught on the release runner"; exit 1; }

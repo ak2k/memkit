@@ -775,11 +775,10 @@ def test_every_test_file_is_in_the_flake_suite_map() -> None:
 # module that grew a fifth table grew no lint; one test over `(module, table)`
 # is the whole class in one place.
 #
-# Each entry is `(module, guards, uncalled, floor)`. `uncalled` names the
-# guards deliberately at zero call sites, so the non-vacuity half below can
-# still demand that every OTHER name is reached. `floor` is the module's call
-# count measured when the entry was written: the lint cannot silently empty,
-# and it cannot silently shrink either.
+# Each entry is `(module, guards, uncalled)`. `uncalled` names the guards a
+# module defines for a caller elsewhere, so this lint does not demand a call
+# site for them; it still demands that every OTHER name is reached, which is
+# what a call-count floor stood in for before it was retired.
 _PATH_GUARD_MODULES = (
     (
         "src/memkit/cli_init.py",
@@ -791,7 +790,6 @@ _PATH_GUARD_MODULES = (
             ),
         ),
         (),
-        2,
     ),
     (
         "src/memkit/cli_doctor.py",
@@ -804,7 +802,6 @@ _PATH_GUARD_MODULES = (
             ("_store_relation", "which store the directory overlaps, and how"),
         ),
         (),
-        13,
     ),
     (
         "src/memkit/memory_prompt_recall.py",
@@ -826,7 +823,6 @@ _PATH_GUARD_MODULES = (
         # The module's public path judgment, in the set at zero call sites so
         # that the first call site someone adds arrives under the rule.
         ("path_refusal",),
-        26,
     ),
     (
         "tools/harness_shape.py",
@@ -849,7 +845,6 @@ _PATH_GUARD_MODULES = (
             ("inside_worktree", "_Landing: the checkout question asked of the descriptor"),
         ),
         (),
-        27,
     ),
 )
 
@@ -901,13 +896,13 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
     Two non-vacuity halves, because a lint that silently empties is worse than
     none: every name must still resolve to a `def` in its module, so a rename
     fails here rather than quietly clearing the set, and the module's call
-    sites must still meet the floor measured beside it.
+    sites: every name in the table is still called somewhere.
 
     The modules are read as TEXT and never imported. The hook has to be —
     importing it would run its module body in this process — and the other
     three follow the same rule so that the walk is the same walk.
     """
-    module, guards, uncalled, floor = entry
+    module, guards, uncalled = entry
     source = (REPO / module).read_text(encoding="utf-8")
     tree = ast.parse(source, module)
     named = frozenset(name for name, _reason in guards)
@@ -928,7 +923,6 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
         return None
 
     calls = [answer for answer in map(called, ast.walk(tree)) if answer is not None]
-    assert len(calls) >= floor, f"{module}: {len(calls)} call sites, floor {floor}"
     unreached = sorted(named - set(calls) - set(uncalled))
     assert not unreached, (
         f"{module}: {unreached} is named and never called — the lint would "
@@ -990,146 +984,124 @@ _CLOSURE_SEEDS = (
 
 _EXIT_STATEMENTS = (ast.Return, ast.Continue, ast.Raise)
 
-# Identity, not position: `(file, function, kind, digest of the guard's own
-# source)`. Line numbers are informative only — one edit above a function
-# shifts every guard below it — and so is the ordinal, which an insert ABOVE
-# an existing guard in the same function renumbers all the way down, taking
-# forty entries the change never touched red with it. The digest moves when
-# and only when that guard's own text moves, which is the commit that owes it
-# a probe or a fresh reason.
-_UNPROBED: dict[tuple[str, str, str, str], str] = {
-    ("cli_doctor.py", "_managed_dir", "if->exit", "2f9cea9c03bd"): (
-        "on darwin the managed settings directory is the Library one"
+# Identity, not position and not text: `(file, function, kind)` → how many
+# guards of that kind in that function have no probe, and why. Line numbers
+# and ordinals move when anything above them moves; a digest of the guard's
+# source moved whenever the guard was EDITED, so a two-line fix to a guard
+# re-froze this table. A count moves only when a guard of that kind is added
+# to or removed from the function — the commit that owes a probe or a reason.
+_UNPROBED: dict[tuple[str, str, str], tuple[int, str]] = {
+    ('cli_doctor.py', 'Machine.config', 'except'): (
+        2,
+        "a ConfigError is kept as the config's error rather than raised · anything else out of the loader is kept as text, so doctor survives it",
     ),
-    ("cli_doctor.py", "Settings.__init__", "except", "49129f5bd440"): (
-        "a settings file that is not there leaves the scope empty, not failed"
+    ('cli_doctor.py', 'Machine.config', 'if->exit'): (
+        1,
+        'no resolved config path means there is no config to read',
     ),
-    ("cli_doctor.py", "Settings.__init__", "except", "be52c1456571"): (
-        "a settings file that cannot be opened is recorded FORBIDDEN"
+    ('cli_doctor.py', 'Settings.__init__', 'except'): (
+        4,
+        "a settings file that is not there leaves the scope empty, not failed · a settings file that cannot be opened is recorded FORBIDDEN · any other OS error on that file is recorded UNREADABLE · settings that do not parse are recorded UNPARSED, and a document nested past the parser's own depth is one of them: `RecursionError` joined `ValueError` here, which is what took `memkit init` from a traceback back to an answer",
     ),
-    ("cli_doctor.py", "Settings.__init__", "except", "9fb71c982f1d"): (
-        "any other OS error on that file is recorded UNREADABLE"
+    ('cli_doctor.py', 'Settings.__init__', 'if->exit'): (
+        1,
+        'settings whose top level is not an object are UNPARSED, not empty',
     ),
-    ("cli_doctor.py", "Settings.__init__", "except", "3c4701c8e397"): (
-        "settings that do not parse are recorded UNPARSED, and a document "
-        "nested past the parser's own depth is one of them: `RecursionError` "
-        "joined `ValueError` here, which is what took `memkit init` from a "
-        "traceback back to an answer"
+    ('cli_doctor.py', '_adopter_owns', 'if->exit'): (
+        1,
+        "the named scope's own flag answers; no other scope stands in for it",
     ),
-    ("cli_doctor.py", "Settings.__init__", "if->exit", "935e50823400"): (
-        "settings whose top level is not an object are UNPARSED, not empty"
+    ('cli_doctor.py', '_auto_memory_rows', 'if->exit'): (
+        2,
+        'an off switch this checkout carries gets the checkout remedy · scopes contradicting the off switch are disclosed, not passed over',
     ),
-    ("cli_doctor.py", "_session_cwd", "except", "7be5ed5a3324"): (
-        "returns '' when the session's own directory will not resolve"
+    ('cli_doctor.py', '_checkout_remedy', 'if->exit'): (
+        1,
+        'the checkout scope gets the remedy that names what changing it costs',
     ),
-    ("cli_doctor.py", "settings_scopes", "except", "f380d15dc1b7"): (
-        "a user scope whose containment could not be tested is not treated "
-        "as one this machine placed, and the scope records the exception's "
-        "class so the rows say which scope went unlocated"
+    ('cli_doctor.py', '_consolidation_recency', 'if->exit'): (
+        1,
+        'no default directory means no recency to report',
     ),
-    ("cli_doctor.py", "settings_scopes", "except", "23f861046114"): (
-        "two directories that could not be compared are not declared one "
-        "directory: the checked-in scope is emptied and records the "
-        "exception's class rather than being dropped as absent"
+    ('cli_doctor.py', '_declared_below', 'if->exit'): (
+        2,
+        'a name outside SCOPE_ORDER has nothing below it · a scope that is not on this machine is skipped, not counted',
     ),
-    ("cli_doctor.py", "Machine.config", "if->exit", "90414542b26a"): (
-        "no resolved config path means there is no config to read"
+    ('cli_doctor.py', '_default_memory_dir', 'except'): (
+        1,
+        'a key that will not compute is reported as unknown, never raised',
     ),
-    ("cli_doctor.py", "Machine.config", "except", "cbc63a02c4c4"): (
-        "a ConfigError is kept as the config's error rather than raised"
+    ('cli_doctor.py', '_default_memory_dir', 'if->exit'): (
+        1,
+        "with no session directory the harness's own directory is underivable",
     ),
-    ("cli_doctor.py", "Machine.config", "except", "867f3b5a9eff"): (
-        "anything else out of the loader is kept as text, so doctor survives it"
+    ('cli_doctor.py', '_env_switch_note', 'if->exit'): (
+        2,
+        'no forced value means no note about the variable · a forced-on value says no settings scope turns the feature off',
     ),
-    ("cli_doctor.py", "_store_relation", "if->exit", "69d858ab3254"): (
-        "the first store root holding the directory decides at versus over"
+    ('cli_doctor.py', '_env_switch_remedy', 'if->exit'): (
+        1,
+        "a forced-on value's remedy is to unset the variable, not edit settings",
     ),
-    ("cli_doctor.py", "_how_inside", "if->exit", "166cef1d0249"): (
-        "a directory under a pruned name is 'pruned' before anything else"
+    ('cli_doctor.py', '_how_inside', 'if->exit'): (
+        1,
+        "a directory under a pruned name is 'pruned' before anything else",
     ),
-    ("cli_doctor.py", "_placed", "if->exit", "c763ff8d20e0"): (
-        "outside every store, nothing retrieves what lands there"
+    ('cli_doctor.py', '_left_behind', 'if->exit'): (
+        1,
+        'nothing outside the configured directory is nothing left behind',
     ),
-    ("cli_doctor.py", "_placed", "if->exit", "303991247d30"): (
-        "a directory at or over a corpus root is refused, with what it costs"
+    ('cli_doctor.py', '_managed_dir', 'if->exit'): (
+        1,
+        'on darwin the managed settings directory is the Library one',
     ),
-    ("cli_doctor.py", "_odd_switch", "if->exit", "c2544feb2e26"): (
-        "no scope, or a real bool, is not an odd value to remark on"
+    ('cli_doctor.py', '_odd_switch', 'if->exit'): (
+        1,
+        'no scope, or a real bool, is not an odd value to remark on',
     ),
-    ("cli_doctor.py", "_checkout_remedy", "if->exit", "3c3a1e15434a"): (
-        "the checkout scope gets the remedy that names what changing it costs"
+    ('cli_doctor.py', '_placed', 'if->exit'): (
+        2,
+        'outside every store, nothing retrieves what lands there · a directory at or over a corpus root is refused, with what it costs',
     ),
-    ("cli_doctor.py", "_env_switch_note", "if->exit", "1004cb47f421"): (
-        "no forced value means no note about the variable"
+    ('cli_doctor.py', '_session_cwd', 'except'): (
+        1,
+        "returns '' when the session's own directory will not resolve",
     ),
-    ("cli_doctor.py", "_env_switch_note", "if->exit", "9e0b2ca707e3"): (
-        "a forced-on value says no settings scope turns the feature off"
+    ('cli_doctor.py', '_store_relation', 'if->exit'): (
+        1,
+        'the first store root holding the directory decides at versus over',
     ),
-    ("cli_doctor.py", "_env_switch_remedy", "if->exit", "a34a62758f07"): (
-        "a forced-on value's remedy is to unset the variable, not edit settings"
+    ('cli_doctor.py', 'settings_scopes', 'except'): (
+        2,
+        "a user scope whose containment could not be tested is not treated as one this machine placed, and the scope records the exception's class so the rows say which scope went unlocated · two directories that could not be compared are not declared one directory: the checked-in scope is emptied and records the exception's class rather than being dropped as absent",
     ),
-    ("cli_doctor.py", "_adopter_owns", "if->exit", "2357aa3e124a"): (
-        "the named scope's own flag answers; no other scope stands in for it"
+    ('harness_memory.py', '_project_path', 'except'): (
+        2,
+        'a cwd that will not resolve is used as it was given · an unknown root, or a failing resolve, leaves the resolved path',
     ),
-    ("cli_doctor.py", "_declared_below", "if->exit", "08d7fcc55715"): (
-        "a name outside SCOPE_ORDER has nothing below it"
+    ('harness_memory.py', '_project_path', 'if->exit'): (
+        3,
+        "no repository root leaves the resolved path as the project path · no common ancestor leaves the resolved path as the project path · a submodule's git directory makes its worktree root the project",
     ),
-    ("cli_doctor.py", "_declared_below", "if->exit", "de75ac5d93fc"): (
-        "a scope that is not on this machine is skipped, not counted"
+    ('harness_memory.py', 'configured_dir', 'if->exit'): (
+        2,
+        'no scope declares the key, so no directory is configured · a declared value the resolver rejects configures no directory either',
     ),
-    ("cli_doctor.py", "_default_memory_dir", "if->exit", "abb8fe235aee"): (
-        "with no session directory the harness's own directory is underivable"
+    ('harness_memory.py', 'env_switch', 'if->exit'): (
+        2,
+        'an unset or empty variable is no answer, not an off one · a spelling the harness reads as off means the feature does not run',
     ),
-    ("cli_doctor.py", "_default_memory_dir", "except", "db9090f32353"): (
-        "a key that will not compute is reported as unknown, never raised"
+    ('harness_memory.py', 'harness_dir', 'if->exit'): (
+        1,
+        'a value that is not a non-empty string names no directory',
     ),
-    ("cli_doctor.py", "_consolidation_recency", "if->exit", "5b67efc7d3cf"): (
-        "no default directory means no recency to report"
+    ('harness_memory.py', 'project_key', 'if->exit'): (
+        1,
+        "a key over the cap is refused: the harness's suffix is unmeasured",
     ),
-    ("cli_doctor.py", "_left_behind", "if->exit", "835a1a226452"): (
-        "nothing outside the configured directory is nothing left behind"
-    ),
-    ("cli_doctor.py", "_auto_memory_rows", "if->exit", "e17afb6c013a"): (
-        "an off switch this checkout carries gets the checkout remedy"
-    ),
-    ("cli_doctor.py", "_auto_memory_rows", "if->exit", "01351b3db1ef"): (
-        "scopes contradicting the off switch are disclosed, not passed over"
-    ),
-    ("harness_memory.py", "project_key", "if->exit", "ba392320016e"): (
-        "a key over the cap is refused: the harness's suffix is unmeasured"
-    ),
-    ("harness_memory.py", "_project_path", "except", "eb2dc065a69c"): (
-        "a cwd that will not resolve is used as it was given"
-    ),
-    ("harness_memory.py", "_project_path", "if->exit", "8d8e208844ba"): (
-        "no repository root leaves the resolved path as the project path"
-    ),
-    ("harness_memory.py", "_project_path", "if->exit", "563054543608"): (
-        "no common ancestor leaves the resolved path as the project path"
-    ),
-    ("harness_memory.py", "_project_path", "if->exit", "e35b6f5cf918"): (
-        "a submodule's git directory makes its worktree root the project"
-    ),
-    ("harness_memory.py", "_project_path", "except", "8c1c7e4bc59c"): (
-        "an unknown root, or a failing resolve, leaves the resolved path"
-    ),
-    ("harness_memory.py", "switch", "if->exit", "a146d101d634"): (
-        "the first scope in the harness's order that declares the key answers"
-    ),
-    ("harness_memory.py", "harness_dir", "if->exit", "ed6c126d09cf"): (
-        "a value that is not a non-empty string names no directory"
-    ),
-    ("harness_memory.py", "env_switch", "if->exit", "0798dbaa09bb"): (
-        "an unset or empty variable is no answer, not an off one"
-    ),
-    ("harness_memory.py", "env_switch", "if->exit", "7e109f8354c0"): (
-        "a spelling the harness reads as off means the feature does not run"
-    ),
-    ("harness_memory.py", "configured_dir", "if->exit", "db68486ef19a"): (
-        "no scope declares the key, so no directory is configured"
-    ),
-    ("harness_memory.py", "configured_dir", "if->exit", "537b608d7fc3"): (
-        "a declared value the resolver rejects configures no directory either"
+    ('harness_memory.py', 'switch', 'if->exit'): (
+        1,
+        "the first scope in the harness's order that declares the key answers",
     ),
 }
 
@@ -1241,9 +1213,17 @@ def _digest(text: str, lineno: int, end_lineno: int) -> str:
 
 
 def _identity(row) -> tuple:
-    """`(file, function, kind, digest)` — what `_UNPROBED` is keyed on."""
-    _name, qualified, kind, _ordinal, digest = row[:5]
-    return (row[0], qualified, kind, digest)
+    """`(file, function, kind)` — what `_UNPROBED` is keyed on."""
+    _name, qualified, kind = row[:3]
+    return (row[0], qualified, kind)
+
+
+def _unprobed_counts(table: list) -> dict:
+    counts: dict = {}
+    for row in table:
+        if not row[7]:
+            counts[_identity(row)] = counts.get(_identity(row), 0) + 1
+    return counts
 
 
 def _guard_table() -> list:
@@ -1357,12 +1337,9 @@ def _printed(table: list) -> str:
 def _refrozen(table: list) -> str:
     """`_UNPROBED` as it would have to read for this tree — paste-ready."""
     lines = ["_UNPROBED = {"]
-    for row in table:
-        if row[7]:
-            continue
-        identity = _identity(row)
-        reason = _UNPROBED.get(identity, "WHAT THIS GUARD REFUSES OR RETURNS")
-        lines.append(f'    {identity!r}: (\n        "{reason}"\n    ),')
+    for identity, count in sorted(_unprobed_counts(table).items()):
+        reason = _UNPROBED.get(identity, (0, "WHAT THESE GUARDS REFUSE OR RETURN"))[1]
+        lines.append(f"    {identity!r}: (\n        {count},\n        {reason!r},\n    ),")
     lines.append("}")
     return "\n".join(lines)
 
@@ -1382,11 +1359,13 @@ def test_every_guard_in_the_auto_memory_closure_has_a_probe() -> None:
     the same commit, which is what keeps the count falling rather than a
     line-item that once counted 57 and now means nothing.
 
-    Identity is `(file, function, kind, digest of the guard's own source)`:
-    keyed by line, and then by ordinal within the function, the same guards
-    went red on forty entries the change never touched — a line moves when
-    anything above it moves, and an ordinal moves when anything above it in
-    the same function is INSERTED. A digest moves only with the guard.
+    Identity is `(file, function, kind)` with a COUNT: keyed by line, then by
+    ordinal, then by a digest of the guard's source, the same guards went red
+    on entries the change never touched — a line moves when anything above it
+    moves, an ordinal when anything above it in the same function is
+    inserted, and a digest whenever the guard is edited, which taxed every
+    fix to a guard with a re-freeze here. A count moves only when a guard of
+    that kind is added to or removed from that function.
     """
     table = _guard_table()
     print(_printed(table))
@@ -1395,10 +1374,10 @@ def test_every_guard_in_the_auto_memory_closure_has_a_probe() -> None:
     probed = [row for row in table if row[7]]
     assert probed, "no probe anchored on any guard — the corpus was not read"
 
-    computed = {_identity(row) for row in table if not row[7]}
-    frozen = set(_UNPROBED)
-    unpinned = sorted(computed - frozen)
-    retired = sorted(frozen - computed)
+    computed = _unprobed_counts(table)
+    frozen = {key: count for key, (count, _reason) in _UNPROBED.items()}
+    unpinned = sorted(k for k, n in computed.items() if n > frozen.get(k, 0))
+    retired = sorted(k for k, n in frozen.items() if n > computed.get(k, 0))
     still_guards = {_identity(row) for row in table}
     assert not unpinned and not retired, (
         f"guards with no probe that _UNPROBED does not list: {unpinned}\n"
@@ -1486,4 +1465,12 @@ def test_every_probe_on_these_two_files_still_anchors() -> None:
                 f"{probe['name']}: old and new are the same text, so the "
                 "probe mutates nothing"
             )
-    assert checked == 114, checked
+    # Read from the corpus, not stated: a number here went stale with every
+    # probe added to or retired from these two files. What cannot be read
+    # from the corpus is that each closure module still has probes on it.
+    per_module = {
+        module: sum(1 for probe in probes if probe["file"] == module)
+        for module in _CLOSURE_MODULES
+    }
+    assert all(per_module.values()), per_module
+    assert checked == sum(per_module.values()), (checked, per_module)

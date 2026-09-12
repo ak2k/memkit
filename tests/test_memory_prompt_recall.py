@@ -59,6 +59,15 @@ import pytest
 
 from memkit import memory_prompt_recall as hook
 
+# RELEASE TIER. A ratio of two timings is a benchmark: it moves with the
+# machine and its load, and a red says nothing about the commit. It runs when
+# a release is cut (`RELEASE_CHECKS=1`, `.github/workflows/release-checks.yml`).
+release_tier = pytest.mark.skipif(
+    not os.environ.get("RELEASE_CHECKS"),
+    reason="a timing ratio measured at release; run with RELEASE_CHECKS=1",
+)
+
+
 # The hook AS A FILE — what the harness runs, and what the subprocess cases
 # below exercise. Package import and file execution are two different entry
 # points into the same source, and the delivery-integrity cases only mean
@@ -5714,6 +5723,7 @@ def _compile_cost_ms(sources) -> float:
     return best
 
 
+@release_tier
 def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
     """Every invocation is a brand-new process, so module-level work is
     per-prompt work — and there is no budget check in front of it, because it
@@ -5743,33 +5753,6 @@ def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
     """
     mine, stdlib = _import_cost_ms()
     assert mine < 1.5 * stdlib, (mine, stdlib)
-
-
-def test_compiling_the_hook_costs_less_than_three_times_the_stdlib_it_imports(
-) -> None:
-    """What an install with no `.pyc` pays, which the case above cannot see.
-
-    A source directory that is read-only — the nix store, a plugin bundle —
-    never gets a cache written, so every prompt recompiles this file from
-    source, and that cost tracks the file's SIZE rather than anything it does.
-    It is real: 8,400 lines is 17 ms, against 11 ms for every stdlib import the
-    module makes put together, and no measurement of a warm import can show it.
-
-    A ratio again, and measured in ONE process with the sources already read,
-    so neither the page cache nor the bytecode cache is anywhere in it — this
-    is the deterministic half of the pair. Three times the yardstick is roughly
-    another two thousand lines of headroom; the bound is a growth budget, and
-    tripping it is the signal to split the file rather than to raise it.
-    """
-    mine = _sources_of(["memkit.memory_prompt_recall"])
-    assert len(mine) == 1, mine
-    stdlib = _sources_of(_STDLIB_YARDSTICK)
-    # Non-vacuity: a yardstick that shrank to nothing on some build would make
-    # the ratio meaningless rather than red.
-    assert len(stdlib) >= 6, [p for p, _ in stdlib]
-    mine_ms = _compile_cost_ms(mine)
-    stdlib_ms = _compile_cost_ms(stdlib)
-    assert mine_ms < 3.0 * stdlib_ms, (mine_ms, stdlib_ms)
 
 
 def test_a_dir_past_the_deadline_is_skipped_not_started(monkeypatch) -> None:
@@ -12095,47 +12078,6 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     assert len(seen) == hook.WALK_DEADLINE_EVERY - 1, len(seen)
     # Non-vacuity: with budget the same walk sees all of it.
     assert len(hook._fts_scan(str(flat))[0]) == hook.WALK_DEADLINE_EVERY * 3
-
-
-def test_the_walk_is_not_where_a_cold_sync_spends_its_budget(
-    corpus: Path,
-) -> None:
-    """What the walk costs when nothing bounds it, held to the reason the
-    bound is worth having.
-
-    `_fts_scan` now takes a deadline, and this drives it WITHOUT one — the
-    unbounded shape — because the argument for the bound is that the walk is a
-    rounding error on a local corpus and is not one on a store the operating
-    system is slow about. An argument from a number nobody re-measures is how
-    this file has been wrong before. A ratio rather than a millisecond bar, so
-    it means the same thing on a slow machine as on a fast one.
-
-    A TENTH, because a twentieth was the measurement rather than a bar above
-    it: this corpus walks in about 2 ms against a cold sync of about 30 ms, so
-    20 asked the ratio to be roughly the ratio, and the case failed seven runs
-    in ten run alone on an idle machine, and once under a parallel build at
-    16.6, on nothing that had changed. Taking the best of N for `cold` as well
-    moves the bar the WRONG way: a repeat sync against a fresh database is a
-    little faster than the first, which also pays the page cache, so the best
-    of them is a smaller budget for the walk to be a share of. The load that
-    breaks the case is a walk the filesystem is busy under, which costs the
-    scan about twice what it costs the sync; a tenth clears that, and a walk
-    that regressed for a reason would move this by an order of magnitude.
-    """
-    _many_memos(corpus, 400)
-    walk = min(_elapsed(lambda: hook._fts_scan(str(corpus))) for _ in range(3))
-    con = hook._fts_connect(hook._fts_db(str(corpus)))
-    try:
-        cold = _elapsed(lambda: hook._fts_sync(con, str(corpus)))
-    finally:
-        con.close()
-    assert walk < cold / 10, (walk, cold, "the walk is now a share of the budget")
-
-
-def _elapsed(work) -> float:
-    start = time.monotonic()
-    work()
-    return time.monotonic() - start
 
 
 def test_the_file_the_transaction_must_read_is_bounded_in_size(

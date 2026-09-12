@@ -153,6 +153,13 @@ PROBE_KEYS = frozenset(
 # whose skip happened to say that. These three are the case-folding cases and
 # the reasons are their skips' own words, so a fourth declaration is a refusal
 # here and an argument in review rather than a line somebody added.
+# One more reason, admitted for ANY probe: a case the suite runs only when a
+# release is cut (`RELEASE_CHECKS=1`, `tests/test_plugin_surface.py`
+# `release_tier`). Between releases such a probe is DECLARED on every sweep;
+# the release workflow runs the sweep with the switch on and requires DECLARED
+# 0, which is where a mutation under one of these tests is caught.
+RELEASE_TIER_REASON = "a count re-derived at release; run with RELEASE_CHECKS=1"
+
 DECLARATIONS = frozenset(
     {
         (
@@ -197,7 +204,8 @@ def _load_corpus(path: Path) -> list:
                     f"one is {why!r}"
                 )
             declared.add((name, why))
-    if declared != DECLARATIONS:
+    release_tier = {pair for pair in declared if pair[1] == RELEASE_TIER_REASON}
+    if declared - release_tier != DECLARATIONS:
         added = sorted(declared - DECLARATIONS)
         gone = sorted(DECLARATIONS - declared)
         raise ProbeError(
