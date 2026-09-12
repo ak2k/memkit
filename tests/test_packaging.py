@@ -775,7 +775,7 @@ def test_every_test_file_is_in_the_flake_suite_map() -> None:
 # module that grew a fifth table grew no lint; one test over `(module, table)`
 # is the whole class in one place.
 #
-# Each entry is `(module, guards, uncalled, floor)`. `uncalled` names the
+# Each entry is `(module, guards, uncalled)`. `uncalled` names the
 # guards deliberately at zero call sites, so the non-vacuity half below can
 # still demand that every OTHER name is reached. `floor` is the module's call
 # count measured when the entry was written: the lint cannot silently empty,
@@ -924,11 +924,6 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
         return None
 
     calls = [answer for answer in map(called, ast.walk(tree)) if answer is not None]
-    # Every guard in the table is called somewhere it is not listed as
-    # uncalled — the question a call-count floor stood in for, and answered
-    # by name rather than by a number that moved with every refactor.
-    never = sorted(named - set(calls) - set(uncalled))
-    assert not never, f"{module}: {never} are in the guard table and never called"
     unreached = sorted(named - set(calls) - set(uncalled))
     assert not unreached, (
         f"{module}: {unreached} is named and never called — the lint would "
