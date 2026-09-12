@@ -1930,16 +1930,30 @@ def _a_shape_past_the_buffer(
     machine where it never got there.
     """
     made = 0
-    while True:
+    rendered = 0
+    # BOUNDED, because nothing else here is: the repo configures no pytest
+    # timeout, so a shape that stopped growing would double the tree until the
+    # disk filled rather than fail. Eight rounds from twelve is 1536 projects
+    # against the 192 the largest buffer measured here takes.
+    for _ in range(8):
         made = _fill_with_projects(config, made, max(12, made * 2))
         whole = subprocess.run(
             argv, capture_output=True, text=True, timeout=300, env=env,
         )
         assert whole.returncode == 0, whole.stderr
+        rendered = len(whole.stdout)
         # With a margin, so nothing rests on a shape that cleared the buffer
         # by a few bytes.
-        if len(whole.stdout) > io.DEFAULT_BUFFER_SIZE * 9 // 8:
+        if rendered > io.DEFAULT_BUFFER_SIZE * 9 // 8:
             return whole
+    # `raise` and not `pytest.fail`: the declared return type is a completed
+    # process, and pyright reads this file — it resolves no `NoReturn` for a
+    # pytest it is configured not to import, so the fail would be a code path
+    # returning nothing.
+    raise AssertionError(
+        f"{made} projects render {rendered} bytes and this interpreter buffers "
+        f"{io.DEFAULT_BUFFER_SIZE}: the shape stopped growing"
+    )
 
 
 def test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal(
@@ -1992,6 +2006,50 @@ def test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal(
     )
     assert again.returncode == 0, again.stdout + again.stderr
     assert json.loads(dest.read_text(encoding="utf-8"))["anonymised"] is True
+
+
+def test_a_failed_write_removes_the_inode_it_made_and_not_the_name(tmp_path) -> None:
+    """What `discard` unlinks is what `create` made, not what the name means now.
+
+    The removal is safe because `O_EXCL` proved the inode was this run's — and
+    that proof is about an INODE, while the unlink was spelled as a name. A
+    write that failed after somebody moved this run's file aside and published
+    their own at the name destroyed theirs and reported `True`, off which the
+    one line says "nothing was left at this name": the operator is told their
+    destination is clear, and what is gone is a file this run never wrote.
+
+    The inode is taken from the fresh `O_EXCL` descriptor inside `create`,
+    because by `discard` the handle is closed and the name is the only thing
+    left to ask — and the name is exactly what cannot be trusted here.
+    """
+    module = _tool_module()
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    landing = module._Landing(str(dest), "shape.json")
+    try:
+        os.close(landing.create())
+        # The state a failed write's `discard` meets: this run's file moved
+        # aside, and a different inode published at the name it was made at.
+        os.rename(str(dest / "shape.json"), str(dest / "archived-partial.json"))
+        _write(dest / "shape.json", "somebody else's\n")
+        assert landing.discard() is False, "it unlinked a file this run never made"
+        assert (dest / "shape.json").read_text(encoding="utf-8") == (
+            "somebody else's\n"
+        ), "the replacement at the name is gone"
+    finally:
+        landing.close()
+
+    # The control, or the guard above passes by refusing every unlink: a name
+    # still carrying this run's inode IS removed, which is what makes the
+    # operator's retry possible and the one line true.
+    control = module._Landing(str(dest), "control.json")
+    try:
+        os.close(control.create())
+        assert control.discard() is True
+        assert not (dest / "control.json").exists()
+    finally:
+        control.close()
 
 
 @pytest.mark.parametrize("door", _STDOUT_DOORS)
@@ -3672,6 +3730,22 @@ elif mode == "squeeze":
         except OSError:
             break
     os.close(held.pop())
+elif mode == "hungry":
+    # The parse that runs out of memory, keyed on the STACK: the handle
+    # `_read_json` passes carries no name to key on, and a patch keyed on one
+    # fires for no call at all and reads as "there is no defect here".
+    import json as _json
+
+    def _hungry(whole):
+        def go(*args, **kwargs):
+            if sys._getframe(1).f_code.co_name == "_read_json":
+                raise MemoryError
+            return whole(*args, **kwargs)
+
+        return go
+
+    _json.load = _hungry(_json.load)
+    _json.loads = _hungry(_json.loads)
 sys.exit(module.main(argv))
 '''
 
@@ -3689,6 +3763,7 @@ _HOSTILE_TREES = {
     "an index row deeper than the recursion limit -> exit 0": 0,
     "--raw with the shape going down a pipe -> exit 0": 0,
     "--out into a directory that refuses the write -> exit 2": 2,
+    "a settings parse that runs out of memory -> exit 2": 2,
 }
 
 
@@ -3711,6 +3786,13 @@ def _hostile_tree(kind, tmp_path):
         door = _write(tmp_path / "door.py", _HOSTILE_DOOR)
         mode = "nul" if kind.startswith("a NUL byte") else "squeeze"
         return [sys.executable, str(door), str(TOOL), mode, str(config)], []
+    if kind.startswith("a settings parse"):
+        # A file to parse, and a small one: what is staged is the failure, and
+        # a tree that allocated its way to a real MemoryError would be a case
+        # about this machine's memory rather than about the boundary.
+        _write(config / "settings.json", json.dumps({"hooks": {}}))
+        door = _write(tmp_path / "door.py", _HOSTILE_DOOR)
+        return [sys.executable, str(door), str(TOOL), "hungry", str(config)], []
     if kind.startswith("a fifo"):
         os.mkfifo(str(memory / "note.md"))
         return plain, []

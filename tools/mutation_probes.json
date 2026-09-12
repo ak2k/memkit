@@ -6667,8 +6667,8 @@
       "name": "harness-shape-the-contract-boundary-lets-a-nul-byte-past-it",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    except (OSError, ValueError, RecursionError, UnicodeError) as exc:\n",
-      "new": "    except (OSError, RecursionError, UnicodeError) as exc:\n",
+      "old": "    except (OSError, ValueError, RecursionError, UnicodeError, MemoryError) as exc:\n",
+      "new": "    except (OSError, RecursionError, UnicodeError, MemoryError) as exc:\n",
       "tests": [
         "tests/test_harness_shape.py::test_hostile_trees_exit_zero_or_two_with_no_traceback[a NUL byte in the destination path -> exit 2]"
       ],
@@ -6678,8 +6678,8 @@
       "name": "harness-shape-the-contract-boundary-lets-a-syscall-failure-past-it",
       "module": "harness_shape",
       "file": "tools/harness_shape.py",
-      "old": "    except (OSError, ValueError, RecursionError, UnicodeError) as exc:\n        # Fd 1 before the report and not after it: the failure may BE the\n",
-      "new": "    except (ValueError, RecursionError, UnicodeError) as exc:\n        # Fd 1 before the report and not after it: the failure may BE the\n",
+      "old": "    except (OSError, ValueError, RecursionError, UnicodeError, MemoryError) as exc:\n        # Fd 1 before the report and not after it: the failure may BE the\n",
+      "new": "    except (ValueError, RecursionError, UnicodeError, MemoryError) as exc:\n        # Fd 1 before the report and not after it: the failure may BE the\n",
       "tests": [
         "tests/test_harness_shape.py::test_out_refuses_a_destination_it_cannot_make_rather_than_crashing",
         "tests/test_harness_shape.py::test_out_answers_with_an_exit_2_when_the_directory_it_runs_in_is_gone",

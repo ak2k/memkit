@@ -117,6 +117,13 @@ KEPT_PLUGIN = "memkit"
 # somebody's whole disk.
 FRONTMATTER_BYTES = 65536
 
+# And how much of a settings file is parsed. `_read_json` reads a whole file
+# into memory before the parser sees any of it, and a settings file is the
+# adopter's: without a cap, one pathological file is a capture that leaves by
+# a door this tool did not choose. Generously above any real one — a bound,
+# not a size anybody should meet.
+SETTINGS_BYTES = 4 * 1024 * 1024
+
 _FENCE = "---"
 # A top-level key is a literal prefix and is tested as one; only the nested
 # `type:` under `metadata:` needs a pattern, for the indent it is known by.
@@ -226,10 +233,21 @@ def _read_json(path: str):
     exists and records the second as its own state. Omitting it said "no
     settings at that scope", which is a different machine — and one a
     materialiser reproduces by writing a file that does not parse.
+
+    AND FOR A FILE PAST THE CAP, which earns the same None a third way. The
+    parse takes the whole file into memory first, so the size of somebody
+    else's settings file decided how much this capture allocated; past the
+    cap it is a scope this run could not read, which is a state the caller
+    already books. READ AS BYTES for the reason the frontmatter read is:
+    `read(n)` on a text stream counts characters, and the cap is named in
+    bytes because bytes are what came off the disk.
     """
     try:
-        with _open_regular(path) as handle:
-            data = json.load(handle)
+        with _open_regular_bytes(path) as handle:
+            raw = handle.read(SETTINGS_BYTES + 1)
+        if len(raw) > SETTINGS_BYTES:
+            return None
+        data = json.loads(raw)
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -1221,6 +1239,9 @@ class _Landing:
         # The level a leaf was created in, taken only once there is a leaf to
         # remove — see `discard`.
         self.made_in = None
+        # And WHICH FILE was created in it, as `(st_dev, st_ino)` off the
+        # descriptor that made it. A name is not an identity here.
+        self.created = None
         self.fd = _open_dir(base)
 
     def close(self) -> None:
@@ -1266,6 +1287,8 @@ class _Landing:
         AND THE LEVEL THE LEAF WAS MADE IN IS KEPT, because the other thing
         that can happen to this file is a write that fails part-way, and by
         then the name is not a way back to that directory — see `discard`.
+        The INODE is kept with it and for the same reason: the level is where
+        the file was made, and the name in it is not proof of which file.
         """
         current = os.dup(self.fd)
         try:
@@ -1295,6 +1318,12 @@ class _Landing:
                 )
             except FileExistsError:
                 raise _Refused(_occupant(current, self.leaf)) from None
+            # WHAT THIS RUN MADE, off the fresh descriptor and not off the
+            # name: by the time anything is removed the handle is closed, so
+            # `os.fstat` is no longer available to ask and the name is the one
+            # thing somebody else can have changed in between.
+            mine = os.fstat(fd)
+            self.created = (mine.st_dev, mine.st_ino)
             if judge_worktree:
                 try:
                     inside = _worktree_above(current, self.directory)
@@ -1327,11 +1356,21 @@ class _Landing:
         operator's own name with mode 0600, and the `O_EXCL` create then
         refused their retry: two guarantees that are each right and compose
         into a destination that is neither written nor retryable, on a host an
-        unattended capture may not get a second run at. Removing it is safe for
-        the same reason the create is safe — `O_EXCL` proved the inode is this
-        run's and no other name was involved — and it goes through the
-        descriptor of the level the leaf was made in, so what is unlinked is
-        what was created and not whatever that path now means.
+        unattended capture may not get a second run at. What `O_EXCL` proved is
+        that an INODE is this run's, and the descriptor of the level the leaf
+        was made in carries that proof only as far as the directory: the name
+        inside it is still whatever it now means, so a file moved aside and
+        replaced at the name was destroyed by a removal that reported success.
+        The inode recorded at the create is what the name is held to, and a
+        name carrying anything else is left alone.
+
+        The stat and the unlink are two calls and the window between them is
+        real: a replacement published inside it, or an inode number reused
+        there, is still removed. What that costs is bounded by what the guard
+        above it already refuses, and closing it takes a different shape —
+        writing into a private directory and publishing with a link that
+        refuses an existing destination, so the name this run removes is one
+        nobody else can reach.
 
         FALSE IS THE ANSWER THE CALLER'S LINE TURNS ON rather than a second
         failure to report: a directory whose mode changed under the run keeps
@@ -1342,7 +1381,15 @@ class _Landing:
             return False
         gone = True
         try:
-            os.unlink(self.leaf, dir_fd=self.made_in)
+            # `os.stat` and not `os.lstat`: only the first is in
+            # `os.supports_dir_fd` on the 3.8 floor this has to run on, and
+            # `follow_symlinks=False` so a link planted at the name answers
+            # about itself rather than about what it points at.
+            now = os.stat(self.leaf, dir_fd=self.made_in, follow_symlinks=False)
+            if (now.st_dev, now.st_ino) != self.created:
+                gone = False
+            else:
+                os.unlink(self.leaf, dir_fd=self.made_in)
         except FileNotFoundError:
             # Somebody else took the name away, which leaves the retry exactly
             # where this removing it would have.
@@ -1358,8 +1405,12 @@ class _Landing:
         os.close(fd)
         # A name somebody else has already taken away is not a name to chase:
         # the refusal stands either way, and no byte of the shape was written.
+        # And a name somebody else has taken OVER is not this run's to remove,
+        # for the reason `discard` gives — this window is shorter, not absent.
         with contextlib.suppress(OSError):
-            os.unlink(self.leaf, dir_fd=current)
+            now = os.stat(self.leaf, dir_fd=current, follow_symlinks=False)
+            if (now.st_dev, now.st_ino) == self.created:
+                os.unlink(self.leaf, dir_fd=current)
 
 
 def _occupant(fd: int, leaf: str) -> str:
@@ -1596,6 +1647,10 @@ def main(argv=None) -> int:
     stdlib as a `ValueError` before the kernel sees it, a name that is not
     UTF-8 reaches an encode as a `UnicodeError` — and `RecursionError`
     because the depth of an index chain is theirs to choose too.
+    `MemoryError` for the same reason one step further out: the SIZE of what
+    is read is theirs as well, and a parse that ran out is a machine that
+    failed under this run rather than a fault in it. The caps are what make it
+    unlikely; the boundary is what makes it a 2 when it happens anyway.
 
     Interior code catches only to BOOK a measurement — a file it could not
     read, a row it could not look at, an entry it skipped — or to carry a
@@ -1603,7 +1658,7 @@ def main(argv=None) -> int:
     """
     try:
         return _run(argv)
-    except (OSError, ValueError, RecursionError, UnicodeError) as exc:
+    except (OSError, ValueError, RecursionError, UnicodeError, MemoryError) as exc:
         # Fd 1 before the report and not after it: the failure may BE the
         # stdout write, whose bytes are still buffered.
         _drop_stdout()
