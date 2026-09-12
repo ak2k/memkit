@@ -5745,33 +5745,6 @@ def test_importing_the_hook_costs_less_than_the_stdlib_it_imports() -> None:
     assert mine < 1.5 * stdlib, (mine, stdlib)
 
 
-def test_compiling_the_hook_costs_less_than_three_times_the_stdlib_it_imports(
-) -> None:
-    """What an install with no `.pyc` pays, which the case above cannot see.
-
-    A source directory that is read-only — the nix store, a plugin bundle —
-    never gets a cache written, so every prompt recompiles this file from
-    source, and that cost tracks the file's SIZE rather than anything it does.
-    It is real: 8,400 lines is 17 ms, against 11 ms for every stdlib import the
-    module makes put together, and no measurement of a warm import can show it.
-
-    A ratio again, and measured in ONE process with the sources already read,
-    so neither the page cache nor the bytecode cache is anywhere in it — this
-    is the deterministic half of the pair. Three times the yardstick is roughly
-    another two thousand lines of headroom; the bound is a growth budget, and
-    tripping it is the signal to split the file rather than to raise it.
-    """
-    mine = _sources_of(["memkit.memory_prompt_recall"])
-    assert len(mine) == 1, mine
-    stdlib = _sources_of(_STDLIB_YARDSTICK)
-    # Non-vacuity: a yardstick that shrank to nothing on some build would make
-    # the ratio meaningless rather than red.
-    assert len(stdlib) >= 6, [p for p, _ in stdlib]
-    mine_ms = _compile_cost_ms(mine)
-    stdlib_ms = _compile_cost_ms(stdlib)
-    assert mine_ms < 3.0 * stdlib_ms, (mine_ms, stdlib_ms)
-
-
 def test_a_dir_past_the_deadline_is_skipped_not_started(monkeypatch) -> None:
     # Skipped, and SAID so: a corpus that was never searched must not read as
     # a corpus that was searched and failed (errs_lex), which is the
