@@ -5558,6 +5558,11 @@ def test_the_two_shapes_of_exit_six_say_in_their_output_which_one_they_are(
         (store / "search").mkdir(parents=True, exist_ok=True)
         theirs.write_text("# theirs\n", encoding="utf-8")
         return 1, (
+            # THE LINE THAT SAYS WHICH STORE THE BLOCK IS ABOUT. Attribution
+            # resolves a finding against the root announced for its own block,
+            # so a stub without it is a stub of an output the checker does not
+            # produce — and one that would attribute nothing.
+            f"notes store: verified in {store}  (configured path)\n"
             "[FAIL] ./ (0 hot, 2 search, hot ledger 248b)\n"
             "  DESC-BAD: ./search/memkit-canary.md — description empty\n"
             "  ORPHAN: ./search/not-from-here.md — no row in SEARCH.md"
@@ -5664,7 +5669,91 @@ def test_a_red_finding_that_carries_a_line_number_is_attributed_too(
         if line.strip().startswith("STALE:")
     ]
     assert stale, checked.stdout + checked.stderr
-    assert init._files_the_checker_names("\n".join(stale), str(store)) == [str(ledger)]
+    # THE WHOLE REPORT, not the findings pulled out of it: a finding is
+    # resolved against the root announced for its own block, so the lines that
+    # announce it are part of what the parser is fed.
+    assert str(ledger) in init._files_the_checker_names(checked.stdout), (
+        checked.stdout
+    )
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_second_stores_red_is_named_against_the_store_it_came_from(
+    profile,
+) -> None:
+    """ONE CONFIG, TWO STORES, AND THE CHECKER VERIFIES BOTH.
+
+    Every path the checker prints is relative to the root of the store whose
+    block it is in. Joined instead onto the root of the store this run just
+    created, an older store's `DEAD-LINK` was reported against a file of the
+    same name under the NEW store — whose own block said `[OK]` — purely
+    because something is there at that path, and the sentence under it sent
+    the adopter at a re-run that cannot touch the broken file.
+
+    The two `SEARCH.md` are what make this a real confusion rather than a
+    contrived one: every store has one, so the wrong root always resolves.
+    """
+    first = profile / "notes"
+    manifest = _dry(profile, "--store", str(first))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(profile, _digest_of(manifest), "--store", str(first))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+
+    # A dead row put into the FIRST store by hand, after it was built.
+    ledger = first / "SEARCH.md"
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + "- [gone](search/gone.md) — a row for a file that is not there\n",
+        encoding="utf-8",
+    )
+
+    second = profile / "second"
+    manifest = _dry(profile, "--store", str(second))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(profile, _digest_of(manifest), "--store", str(second))
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    err = out.stderr
+    # The checker really is red about the first store and happy with the
+    # second — the state the attribution has to survive.
+    assert "DEAD-LINK: ./SEARCH.md" in err, err
+    assert "[OK]" in err, err
+    # Named against the store it came out of, and as a file this run did not
+    # write, which is the half that decides the recovery.
+    assert f"{ledger} — this run did not write it" in err, err
+    assert str(second / "SEARCH.md") not in err, err
+    assert "no re-run will change" in err, err
+    # Nothing this run wrote is red, so it is not offered the other recovery.
+    assert "what landed has moved the old one" not in err, err
+
+
+def test_a_finding_no_block_places_is_left_unattributed(profile) -> None:
+    """A FILE NAMED ON A GUESS IS WORSE THAN A FILE NOT NAMED, because the
+    sentence under it tells the adopter what to do about it.
+
+    Findings before any block, and findings in a block past the last root the
+    report announced, are ones nothing can place. The old rule placed them
+    under the store it was handed and the file was there, so the guess always
+    succeeded.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "SEARCH.md").write_text("# index\n", encoding="utf-8")
+    block = (
+        "[FAIL] ./ (0 hot, 0 search, hot ledger 0b)\n"
+        "  DEAD-LINK: ./SEARCH.md:9 — [gone](search/gone.md) points at no file"
+    )
+    # No store was announced, so no root was announced either.
+    assert init._files_the_checker_names(block) == []
+    # One announced, two blocks: the second is past the end.
+    announced = f"notes store: verified in {store}  (configured path)\n"
+    assert init._files_the_checker_names(announced + block) == [
+        str(store / "SEARCH.md")
+    ]
+    assert init._files_the_checker_names(
+        announced + "[OK]   ./ (0 hot, 0 search, hot ledger 0b)\n" + block
+    ) == []
 
 
 @pytest.mark.skipif(

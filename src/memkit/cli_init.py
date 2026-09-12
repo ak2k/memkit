@@ -3930,17 +3930,36 @@ _CHECKER_FINDING = re.compile(r"^ +([A-Z][A-Z0-9-]*): (\S+?)(?::\d+)? — ")
 # shape would also match the rules whose second word is a DIRECTORY or a
 # ledger's row count, and neither is a file an adopter can be told to fix.
 _CHECKER_PLAIN_FINDING = re.compile(r"^ +(ROW-LOST|STALE): (\S+?)(?::\d+)? ")
+# The line that opens the checker's report for ONE store: its id, the root it
+# verified, and where that root came from. The checker verifies every store
+# the config names, and every path it prints is spelled relative to the root
+# of the store whose block it is in — so the roots are read in the order they
+# are announced and the blocks are counted against them.
+_CHECKER_STORE = re.compile(r"^(\S+) store: verified in (.+?)  \(")
+# And the line that opens one store's block, whatever its verdict. A warning
+# block names files too, and an `[OK]` block is what makes the count right for
+# the blocks after it.
+_CHECKER_BLOCK = re.compile(r"^\[(?:FAIL|WARN|OK)\]\s")
 
 
-def _files_the_checker_names(output: str, store: str) -> list:
+def _files_the_checker_names(output: str) -> list:
     """Every file a red check named, absolute, in the order it named them.
 
-    The paths are spelled relative to the store root, and the checker verifies
-    every store the config names rather than only the one this action is
-    about — so a finding is kept only when it resolves to something that is
-    actually there under this store. A path joined onto the wrong root is a
-    file name the adopter cannot act on, which is the failure the sentence
-    below it exists to end.
+    RESOLVED AGAINST THE STORE THE FINDING CAME OUT OF. The checker verifies
+    every store the config names, each in a block of its own, and every path
+    it prints is relative to THAT store's root. Joined instead onto the root
+    of the store this run happened to create, an older store's `DEAD-LINK`
+    became a finding against a file of the same name under the new one — whose
+    own block said `[OK]` — and the recovery sentence sent the adopter at a
+    re-run that could not touch the broken file. So the roots are read off the
+    `<id> store: verified in <root>` lines in the order they are announced,
+    and the verdict lines are counted against them: the nth block is the nth
+    store.
+
+    AMBIGUOUS IS UNATTRIBUTED. A finding printed before any block, or in a
+    block past the last root announced, is one nothing here can place — and a
+    file named on a guess is worse than a file not named, because the sentence
+    under it tells the adopter what to do about it.
 
     ROW-LOST spells its path from the store's PARENT instead, so the store's
     own directory name is dropped when it is what stands between the path and
@@ -3952,9 +3971,20 @@ def _files_the_checker_names(output: str, store: str) -> list:
     — did this run write it — asked of every file the block names.
     """
     named: list = []
+    roots: list = []
+    store = ""
+    blocks = 0
     for line in output.splitlines():
+        announced = _CHECKER_STORE.match(line)
+        if announced is not None:
+            roots.append(announced.group(2))
+            continue
+        if _CHECKER_BLOCK.match(line) is not None:
+            store = roots[blocks] if blocks < len(roots) else ""
+            blocks += 1
+            continue
         found = _CHECKER_FINDING.match(line) or _CHECKER_PLAIN_FINDING.match(line)
-        if found is None:
+        if found is None or not store:
             continue
         rel = found.group(2)
         full = os.path.normpath(os.path.join(store, rel))
@@ -4165,7 +4195,7 @@ def _perform(
     elif action.op == VERIFY:
         code, output = _run_checker(machine, config_path)
         if code != 0:
-            journal.checker_named = _files_the_checker_names(output, action.path)
+            journal.checker_named = _files_the_checker_names(output)
             print(
                 "memkit init: the store was created and the integrity "
                 f"checker is not happy with it:\n{output}",
