@@ -1576,6 +1576,18 @@ def _label_ms(chunk: str) -> float:
     return best
 
 
+def _label_inputs() -> tuple:
+    """A heading at the label's scan cap, and one a thousand times larger."""
+    prose = "設定は再試行回数の上限値です"
+    at_cap = "# " + (prose * (hook.LABEL_SCAN_MAX_CHARS // len(prose) + 1))[
+        : hook.LABEL_SCAN_MAX_CHARS
+    ]
+    huge = "# " + (prose * (hook.INDEX_FILE_MAX_BYTES // len(prose) + 1))[
+        : hook.INDEX_FILE_MAX_BYTES
+    ]
+    return at_cap, huge
+
+
 def test_the_ranking_label_is_bounded_by_what_it_can_ever_display() -> None:
     """The one unbounded stage between two bounded ones.
 
@@ -1598,16 +1610,20 @@ def test_the_ranking_label_is_bounded_by_what_it_can_ever_display() -> None:
     thousand times larger, in one process, so the bound is a ratio rather than
     a number that means something different on another machine.
     """
-    prose = "設定は再試行回数の上限値です"
-    at_cap = "# " + (prose * (hook.LABEL_SCAN_MAX_CHARS // len(prose) + 1))[
-        : hook.LABEL_SCAN_MAX_CHARS
-    ]
-    huge = "# " + (prose * (hook.INDEX_FILE_MAX_BYTES // len(prose) + 1))[
-        : hook.INDEX_FILE_MAX_BYTES
-    ]
+    at_cap, huge = _label_inputs()
     # What reaches a reader is the same either way, which is the other half of
     # the claim: the cap removes cost, not content.
     assert hook._section_label(huge) == hook._section_label(at_cap)
+
+
+@release_tier
+def test_the_ranking_label_costs_no_more_past_the_cap() -> None:
+    """The timing half of the bound above, measured at release: the same call
+    on a chunk at the cap and on one a thousand times larger, in one process,
+    so the bound is a ratio rather than a number that means something
+    different on another machine — and a ratio is still a timing, which moves
+    with the machine's load and says nothing about a commit."""
+    at_cap, huge = _label_inputs()
     small_ms, huge_ms = _label_ms(at_cap), _label_ms(huge)
     assert huge_ms < 8 * small_ms + 5, (small_ms, huge_ms)
 
