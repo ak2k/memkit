@@ -954,9 +954,15 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
             continue
         if not throws_away(node):
             continue
-        answer = called(node.value)
-        if answer is not None:
-            dropped.append(f"{module}:{node.lineno}  {answer}")
+        # ANY guard call inside the thrown-away value, not the top node of
+        # it. `not _within(...)`, `_within(...) or x`, `bool(_within(...))`
+        # and `(_within(...),)` drop the answer exactly as a bare call does,
+        # and each of them puts a `UnaryOp`, `BoolOp`, `Call` on a builtin or
+        # a `Tuple` where the question used to look — five plants past this
+        # lint at once, against a bare-call control it did catch.
+        for answer in map(called, ast.walk(node.value)):
+            if answer is not None:
+                dropped.append(f"{module}:{node.lineno}  {answer}")
     assert dropped == [], dropped
 
 
