@@ -344,45 +344,81 @@ jobs:
       # filesystem, which this runner has and the author's machine does not.
       # A sum that dropped them would also drop a probe whose declaration
       # stopped matching the skip it names, and that is a probe asking nothing.
-      - name: Mutation sweep (the whole corpus)
+      # NARROWED BY THE DIFF, NEVER BY A LIST. The corpus says which file and
+      # which tests each probe is about; the change says which files it
+      # touched; the modules to sweep are what those two facts select, and
+      # nothing here names one. A change under the sweep itself, its corpus or
+      # this workflow sweeps the whole corpus, and so does a run with no base
+      # to diff against. The whole corpus also runs on the release schedule
+      # (release-checks.yml), where every probe has to be caught.
+      - name: Mutation sweep (the modules this change touches)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          .venv/bin/python tools/mutation_sweep.py > sweep.log 2>&1 && swept=0 || swept=$?
-          cat sweep.log
-          test "$swept" -eq 0
-          .venv/bin/python - sweep.log <<'ASSERT'
-          import re, sys
+          .venv/bin/python - "$BASE" <<'SWEEP'
+          import json, re, subprocess, sys
 
-          log = open(sys.argv[1], encoding="utf-8").read()
-          ran = re.search(r"^probes +: (\d+)$", log, re.M)
-          caught = re.search(r"^CAUGHT (\d+)/(\d+) ", log, re.M)
-          waived = re.search(r"^DECLARED (\d+)/(\d+)$", log, re.M)
-          if not (ran and caught and waived):
-              sys.exit("the sweep printed no count this step can read")
-          probes, done, total = int(ran.group(1)), int(caught.group(1)), int(caught.group(2))
-          declared = int(waived.group(1))
-          named = re.findall(r"^\S+ \[ *\d+/\d+\] DECLARED .*$", log, re.M)
-          for line in named:
-              print(line)
-          # One loop in the sweep prints the per-probe line and counts it, so
-          # a log naming fewer than it counted was edited between the steps.
-          if len(named) != declared:
-              sys.exit(f"the sweep counted {declared} declared and named {len(named)}")
-          if not (probes == total and done + declared == probes):
-              sys.exit(f"{probes} probes selected, {done} caught and {declared} declared")
-          # THE WHOLE CORPUS, AND NO MORE WAIVERS THAN IT DECLARES. Both are
-          # read from the corpus file rather than stated as a number here: a
-          # numeric floor went stale with every probe added or retired, and a
-          # narrowed selection or a corpus that stopped loading is what these
-          # two comparisons refuse.
-          import json
+          base = sys.argv[1] if len(sys.argv) > 1 else ""
           corpus = json.load(open("tools/mutation_probes.json", encoding="utf-8"))["probes"]
-          if probes != len(corpus):
-              sys.exit(f"{probes} probes ran; the corpus holds {len(corpus)}")
-          allowed = sum(1 for probe in corpus if "declared_skip" in probe)
-          if declared > allowed:
-              sys.exit(f"{declared} declared; the corpus declares only {allowed}")
-          print(f"{done} probes caught, {declared} declared exceptions, corpus of {len(corpus)}")
-          ASSERT
+          whole_on = {
+              "tools/mutation_sweep.py", "tools/mutation_probes.json",
+              ".github/workflows/check.yml", "pyproject.toml", "flake.nix",
+          }
+          if not base or set(base) <= {"0"}:
+              changed, why = None, "no base to diff against"
+          else:
+              diff = subprocess.run(
+                  ["git", "diff", "--name-only", f"{base}...HEAD"], capture_output=True, text=True
+              )
+              if diff.returncode:
+                  sys.exit(f"git diff against {base} failed: {diff.stderr}")
+              changed, why = set(diff.stdout.split()), ""
+              if changed & whole_on:
+                  changed, why = None, "the change touches " + ", ".join(sorted(set(diff.stdout.split()) & whole_on))
+          if changed is None:
+              selections = [([], corpus)]
+              print(f"sweeping the whole corpus: {why}")
+          else:
+              modules = sorted({
+                  probe["module"] for probe in corpus
+                  if probe["file"] in changed or any(t.split("::")[0] in changed for t in probe["tests"])
+              })
+              if not modules:
+                  print("no probe is about a file this change touches; nothing to sweep")
+                  sys.exit(0)
+              selections = [(["--module", m], [p for p in corpus if p["module"] == m]) for m in modules]
+              print("modules this change touches:", " ".join(modules))
+          for argv, selected in selections:
+              run = subprocess.run([sys.executable, "tools/mutation_sweep.py", *argv], capture_output=True, text=True)
+              log = run.stdout + run.stderr
+              print(log)
+              if run.returncode:
+                  sys.exit(f"the sweep exited {run.returncode} for {argv or 'the whole corpus'}")
+              ran = re.search(r"^probes +: (\d+)$", log, re.M)
+              caught = re.search(r"^CAUGHT (\d+)/(\d+) ", log, re.M)
+              waived = re.search(r"^DECLARED (\d+)/(\d+)$", log, re.M)
+              if not (ran and caught and waived):
+                  sys.exit("the sweep printed no count this step can read")
+              probes, done, total = int(ran.group(1)), int(caught.group(1)), int(caught.group(2))
+              declared = int(waived.group(1))
+              named = re.findall(r"^\S+ \[ *\d+/\d+\] DECLARED .*$", log, re.M)
+              for line in named:
+                  print(line)
+              # One loop in the sweep prints the per-probe line and counts it, so
+              # a log naming fewer than it counted was edited between the steps.
+              if len(named) != declared:
+                  sys.exit(f"the sweep counted {declared} declared and named {len(named)}")
+              if not (probes == total and done + declared == probes):
+                  sys.exit(f"{probes} probes selected, {done} caught and {declared} declared")
+              # THE WHOLE SELECTION, AND NO MORE WAIVERS THAN IT DECLARES — both
+              # read from the corpus, never stated as a number here.
+              if probes != len(selected):
+                  sys.exit(f"{probes} probes ran; the corpus holds {len(selected)} for {argv or 'the whole corpus'}")
+              allowed = sum(1 for probe in selected if "declared_skip" in probe)
+              if declared > allowed:
+                  sys.exit(f"{declared} declared; the corpus declares only {allowed} here")
+              print(f"{done} probes caught, {declared} declared exceptions, {len(selected)} selected")
+          SWEEP
 
   wordlist:
     name: wordlist
