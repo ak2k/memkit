@@ -4289,6 +4289,7 @@ _STORE_IN_GIT_CELLS = (
     "guard-target-unset",
     "guard-store-not-a-directory",
     "guard-target-is-a-file",
+    "guard-target-cannot-be-entered",
 )
 
 # The cells where the page's line is meant to run to the end. Everything else
@@ -4351,11 +4352,11 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
     previous revision of this page left behind — `$dir` a symlink to the
     corpus root — repoints cleanly with every stored file where it was, in a
     store with `search/` and in a flat one; an ordinary directory, a `$store`
-    that is not there, is unset, or is not a directory, and a `$target`
-    already taken by a file all change nothing at all. Two cells are states
-    the page does not
-    speak for and does not stop: a `$dir` linking out of the store, and a
-    `$target` that is itself a link out of it.
+    that is not there, is unset, or is not a directory, a `$target` already
+    taken by a file, and a `$target` that is there and cannot be entered all
+    change nothing at all. Two cells are states the page does not speak for
+    and does not stop: a `$dir` linking out of the store, and a `$target`
+    that is itself a link out of it.
 
     What is asserted is exit status and the filesystem, never a utility's
     message: `mv` and `mkdir` word their failures differently under bash and
@@ -4432,6 +4433,12 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         # `mkdir` fails here, and it runs BEFORE `rm`: that order is why the
         # reader's link survives a `$target` that is already taken.
         target.write_text("in the way\n", encoding="utf-8")
+    if cell == "guard-target-cannot-be-entered":
+        # The one staged failure that reaches PAST `mkdir`: the directory is
+        # there, so `mkdir -p` is content, and it is reading the path back
+        # that fails. Every command the line runs before that point it has
+        # run for nothing, so this cell is about what is left of `$dir`.
+        target.mkdir()
 
     # The cell that runs the page's own `$dir` definition runs with the config
     # dir somewhere the default never names, so the `${CLAUDE_CONFIG_DIR:-...}`
@@ -4488,7 +4495,23 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert len(halves) == 2, line
         line = '&& mkdir "$dir" && ln -sn'.join(halves)
     script = "\n".join([*([opts] if opts else []), *prelude, *assignments, line])
-    out = _shell_out(shell, script, repo, home, config_dir=config_dir)
+    denied = cell == "guard-target-cannot-be-entered"
+    if denied and os.geteuid() == 0:
+        # The rule `needs_permissions` states for this file, and this cell
+        # cannot carry the marker because its axis is one parametrized id.
+        # Under root the directory IS enterable, so the line runs to the end
+        # and the shared status assertion below would fail for a reason about
+        # the runner rather than about the page.
+        pytest.skip("root enters mode-000 directories, so nothing is unenterable")
+    if denied:
+        target.chmod(0o000)
+    try:
+        out = _shell_out(shell, script, repo, home, config_dir=config_dir)
+    finally:
+        # Unenterable for the line's own run and no longer: the assertions
+        # below and pytest's own cleanup both walk this directory afterwards.
+        if denied:
+            target.chmod(0o700)
 
     if cell == "repoint-dir-from-the-page":
         # The page's line ends by SHOWING what is there, and the next paragraph
