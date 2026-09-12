@@ -14807,7 +14807,10 @@ def test_a_dir_behind_a_chain_of_symlinks_refuses_rather_than_raises(
     try:
         resolved = os.path.realpath(str(repo / "l0"))
     except (RecursionError, OSError) as exc:
-        raised = exc
+        # Bound on both arms, since the branch below reads it on one of them.
+        # `raised is None` is what pairs the two names, and that pairing is a
+        # fact about this block rather than one a type checker can follow.
+        resolved, raised = None, exc
     else:
         raised = None
 

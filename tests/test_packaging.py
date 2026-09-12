@@ -954,13 +954,18 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
             continue
         if not throws_away(node):
             continue
+        # A bare annotation (`_: int`) has no value to throw away, and it is
+        # the one shape of the three that can arrive here without one.
+        value = node.value
+        if value is None:
+            continue
         # ANY guard call inside the thrown-away value, not the top node of
         # it. `not _within(...)`, `_within(...) or x`, `bool(_within(...))`
         # and `(_within(...),)` drop the answer exactly as a bare call does,
         # and each of them puts a `UnaryOp`, `BoolOp`, `Call` on a builtin or
         # a `Tuple` where the question used to look — five plants past this
         # lint at once, against a bare-call control it did catch.
-        for answer in map(called, ast.walk(node.value)):
+        for answer in map(called, ast.walk(value)):
             if answer is not None:
                 dropped.append(f"{module}:{node.lineno}  {answer}")
     assert dropped == [], dropped
