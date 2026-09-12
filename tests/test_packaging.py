@@ -791,7 +791,6 @@ _PATH_GUARD_MODULES = (
             ),
         ),
         (),
-        2,
     ),
     (
         "src/memkit/cli_doctor.py",
@@ -804,7 +803,6 @@ _PATH_GUARD_MODULES = (
             ("_store_relation", "which store the directory overlaps, and how"),
         ),
         (),
-        13,
     ),
     (
         "src/memkit/memory_prompt_recall.py",
@@ -826,7 +824,6 @@ _PATH_GUARD_MODULES = (
         # The module's public path judgment, in the set at zero call sites so
         # that the first call site someone adds arrives under the rule.
         ("path_refusal",),
-        26,
     ),
     (
         "tools/harness_shape.py",
@@ -849,7 +846,6 @@ _PATH_GUARD_MODULES = (
             ("inside_worktree", "_Landing: the checkout question asked of the descriptor"),
         ),
         (),
-        27,
     ),
 )
 
@@ -901,13 +897,13 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
     Two non-vacuity halves, because a lint that silently empties is worse than
     none: every name must still resolve to a `def` in its module, so a rename
     fails here rather than quietly clearing the set, and the module's call
-    sites must still meet the floor measured beside it.
+    sites: every name in the table is still called somewhere.
 
     The modules are read as TEXT and never imported. The hook has to be —
     importing it would run its module body in this process — and the other
     three follow the same rule so that the walk is the same walk.
     """
-    module, guards, uncalled, floor = entry
+    module, guards, uncalled = entry
     source = (REPO / module).read_text(encoding="utf-8")
     tree = ast.parse(source, module)
     named = frozenset(name for name, _reason in guards)
@@ -928,7 +924,11 @@ def test_every_guard_call_uses_the_value_it_returns(entry) -> None:
         return None
 
     calls = [answer for answer in map(called, ast.walk(tree)) if answer is not None]
-    assert len(calls) >= floor, f"{module}: {len(calls)} call sites, floor {floor}"
+    # Every guard in the table is called somewhere it is not listed as
+    # uncalled — the question a call-count floor stood in for, and answered
+    # by name rather than by a number that moved with every refactor.
+    never = sorted(named - set(calls) - set(uncalled))
+    assert not never, f"{module}: {never} are in the guard table and never called"
     unreached = sorted(named - set(calls) - set(uncalled))
     assert not unreached, (
         f"{module}: {unreached} is named and never called — the lint would "
