@@ -482,6 +482,7 @@ def test_every_relative_link_in_the_readme_resolves() -> None:
     )
 
 
+@release_tier
 def test_the_admission_note_answers_what_it_claims_to() -> None:
     """What an adopter receives and where the trust boundary sits — the two
     questions the plugin section defers to it.
@@ -565,6 +566,7 @@ def test_the_admission_note_answers_what_it_claims_to() -> None:
     )
 
 
+@release_tier
 def test_the_admission_notes_breakdown_sums_to_the_total_it_states() -> None:
     """The rows are the argument. This page's opening line says the case
     "rests on the exact ones", and a reader who does what it asks — count the
@@ -6970,6 +6972,7 @@ def test_the_search_cli_marks_its_records_as_not_prompt_outcomes(tmp_path) -> No
     assert _prompt_records(records) == []
 
 
+@release_tier
 def test_the_admission_numbers_reproduce_from_its_own_recipe() -> None:
     """The one document written to be checkable has to check out.
 
