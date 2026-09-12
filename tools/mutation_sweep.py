@@ -305,17 +305,7 @@ class Sweep:
         if out.returncode == 1:
             return CAUGHT, _first_failure(out)
         if out.returncode == 0:
-            if _all_skipped(out):
-                reasons = _skip_reasons(out)
-                declared = probe.get("declared_skip")
-                # EVERY reason, never one of them: a selection where one case
-                # skipped on the declared fact and another on something the
-                # probe says nothing about is a selection that asked nothing.
-                if declared and reasons and all(why == declared for why in reasons):
-                    return DECLARED, declared
-                seen = "; ".join(dict.fromkeys(reasons)) or "no reason reported"
-                return "SKIPPED", f"every paired test skipped: {seen}"
-            return "CAUGHT-NOTHING", "the selection stayed green"
+            return _green_verdict(out, probe)
         if out.returncode in (4, 5):
             return "SELECTION", _tail(out)
         return "CAUGHT-NOTHING", f"pytest exited {out.returncode}: {_tail(out)}"
@@ -355,9 +345,36 @@ def _all_skipped(out: subprocess.CompletedProcess) -> bool:
     on a machine with no `uv`, no network or no checkout. Counting those as
     "the rule is unguarded" would blame the tree for the environment — and
     counting them as caught would be worse. They get their own verdict.
+
+    SKIPPED IS THE ONLY OUTCOME THE TALLY MAY CARRY, and `passed` is not the
+    only one that disqualifies: `1 skipped, 1 xpassed` is a selection where a
+    case RAN and changed its outcome under the mutation, and reading it as
+    "ran nothing" waived that mutation as DECLARED at exit 0. Every word
+    pytest counts beside `skipped` — `passed`, `failed`, `xpassed`,
+    `xfailed`, `error`, and whichever it adds next — is a case that ran.
     """
     tally = _counts(out)
-    return bool(tally.get("skipped")) and not tally.get("passed")
+    return bool(tally.get("skipped")) and set(tally) == {"skipped"}
+
+
+def _green_verdict(out: subprocess.CompletedProcess, probe: dict) -> tuple:
+    """The verdict for a selection pytest exited 0 on.
+
+    Its own function because the tallies that must NOT reach DECLARED cannot
+    be staged from the suite — they need an `xfail`, and there is none under
+    `tests/` — so the falsification below hands this the summary line direct.
+    """
+    if not _all_skipped(out):
+        return "CAUGHT-NOTHING", "the selection stayed green"
+    reasons = _skip_reasons(out)
+    declared = probe.get("declared_skip")
+    # EVERY reason, never one of them: a selection where one case skipped on
+    # the declared fact and another on something the probe says nothing about
+    # is a selection that asked nothing.
+    if declared and reasons and all(why == declared for why in reasons):
+        return DECLARED, declared
+    seen = "; ".join(dict.fromkeys(reasons)) or "no reason reported"
+    return "SKIPPED", f"every paired test skipped: {seen}"
 
 
 def _tail(out: subprocess.CompletedProcess, lines: int = 6) -> str:
@@ -469,17 +486,66 @@ SELFTESTS = [
     ),
 ]
 
+# The reason the synthetic tallies below carry, so the DECLARED grant is the
+# only thing they are asked about.
+MIXED_REASON = "a case-sensitive filesystem tells the two keys apart"
+
+# A verdict is read off pytest's summary line, and the line that breaks
+# DECLARED — a case that RAN and changed its outcome, beside a case that
+# skipped — takes an `xfail` to produce. There is none under `tests/`, and
+# adding one would print an xpassed into every later run of the suite, so
+# these are the summary line itself rather than a probe over the tree.
+TALLY_SELFTESTS = [
+    (
+        "a tally of nothing but skips is the exception DECLARED is for",
+        "1 skipped in 0.01s",
+        DECLARED,
+    ),
+    (
+        "a case that xpassed beside a skip is a case that ran",
+        "1 skipped, 1 xpassed in 0.01s",
+        "CAUGHT-NOTHING",
+    ),
+    (
+        "so is one that xfailed",
+        "1 skipped, 1 xfailed in 0.01s",
+        "CAUGHT-NOTHING",
+    ),
+    (
+        "and an errored case is not a selection that asked nothing either",
+        "1 skipped, 1 error in 0.01s",
+        "CAUGHT-NOTHING",
+    ),
+]
+
+
+def _summary(line: str) -> subprocess.CompletedProcess:
+    """A green run of pytest, reduced to what a verdict is read off."""
+    return subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=f"SKIPPED [1] tests/none.py:1: {MIXED_REASON}\n{line}\n",
+        stderr="",
+    )
+
 
 def selftest(python: str) -> int:
     print("=== the sweep, falsified ===\n")
     sweep = Sweep(python)
     bad = 0
-    for why, probe, want in SELFTESTS:
-        got, detail = sweep.run_probe(probe)
+
+    def report(why: str, want: str, got: str, detail: str) -> int:
         ok = got == want
-        bad += 0 if ok else 1
         print(f"[{'ok ' if ok else 'BAD'}] {why}")
         print(f"      wanted {want}, got {got} — {detail}\n")
+        return 0 if ok else 1
+
+    for why, probe, want in SELFTESTS:
+        got, detail = sweep.run_probe(probe)
+        bad += report(why, want, got, detail)
+    for why, line, want in TALLY_SELFTESTS:
+        got, detail = _green_verdict(_summary(line), {"declared_skip": MIXED_REASON})
+        bad += report(f"{why}: {line}", want, got, detail)
     print("the sweep refuses what it must" if not bad else f"{bad} selftest(s) wrong")
     return 1 if bad else 0
 
