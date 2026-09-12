@@ -23,6 +23,12 @@
       "description": "Absolute path to the JSON config naming your memory stores. /memkit:init writes this file for you at the path you give here, and the plugin is inert until it exists: no directory of yours is read before then. Set it at install \u2014 an install that skips it has no route to a config and stays silent with nothing at runtime to say so.",
       "default": "~/.config/memkit/memkit.json",
       "required": false
+    },
+    "memkitInterpreter": {
+      "type": "string",
+      "title": "python that runs the recall hook",
+      "description": "Absolute path to the python the hook runs under. Leave it unset unless memkit asks for it: the wrapper resolves one itself and /memkit:init records the one it ran under. Set it when the wrapper reports that nothing it tried can run the hook \u2014 a python below 3.9, or one whose sqlite3 has no FTS5, which is the table the index is. The path is probed before it is used and skipped with a reason if it fails, so a wrong value cannot make this install worse than an unset one.",
+      "required": false
     }
   }
 }

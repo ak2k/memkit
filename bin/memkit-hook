@@ -81,9 +81,11 @@ else
     unset MEMKIT_CONFIG
 fi
 
+# The resolution says its own refusal — it is the only thing that knows which
+# candidates it tried and why each one was not runnable — so there is nothing
+# to print here. Exit 0 whatever happened: see the contract at the top.
 PY=$(memkit_resolve_interpreter "$CONFIG") || PY=""
 if [ -z "$PY" ]; then
-    memkit_no_interpreter_message "$CONFIG"
     exit 0
 fi
 

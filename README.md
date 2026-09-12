@@ -313,6 +313,7 @@ is on your own `PATH`.
 | **The install is not the plugin channel** | `subagent-delivery` | no `task:` record at all in `log.jsonl`, whatever the brief | the subagent hook is registered by `hooks/hooks.json`, which only a plugin install reads. A nix or pip install registers what its own `settings.json` names, so the `PreToolUse` entry is yours to add |
 | **No config reached the hook** | `config-route` | `--debug-config` prints `config: none`, exit 3 | read the option back out of `settings.json` — [Writing it by hand](#writing-it-by-hand) |
 | **The config path is wrong** | `config-route` | `--debug-config` says the path does not exist | fix the path and re-run the install command |
+| **The python running the hook cannot search** | `interpreter` | every store answers `index-unavailable`, the pointer block is empty, and nothing else looks wrong. A python below 3.9 cannot parse the hook at all; one whose sqlite3 has no FTS5 parses it and fails every query | name one that can: `memkit init --interpreter <absolute path>`, `--config memkitInterpreter=<absolute path>` at install, or `MEMKIT_INTERPRETER` in the launching environment. Each is probed before it is used |
 | **The prompt was under three words** | `gate-outcomes` | `gate:short`; `--search` with the same words answers | deliberate — a two-word prompt has no subject to retrieve on |
 | **The prompt began with `/`** | `gate-outcomes` | no record at all — Claude Code resolves slash commands before the hook runs, so an empty `tail -1` is the tell | deliberate: a slash command is an instruction to Claude Code, not a question about your work |
 | **The prompt was over 4000 characters** | `gate-outcomes` | `gate:long` | deliberate, and the one most people meet: a pasted stack trace or log excerpt retrieves on the paste's vocabulary rather than on your question. Ask in your own words, then paste. **Prompts only** — a subagent brief has no length ceiling, since a long brief is a brief |
@@ -564,15 +565,35 @@ point.
   and for the CLIs means exit 2. That is deliberate too — one file travels
   between channels, so a config that is broken for one of them is broken.
 - **`interpreter`** — an absolute path to the python that runs the hook, and
-  the plugin channel is where it matters. There the wrapper resolves an
-  interpreter itself, preferring this value and falling back to whatever
-  `python3` the launching shell's `PATH` gives it — which on a machine with
-  direnv, mise or an activated venv is not a python you chose. The nix channel
-  bakes its interpreter in and ignores this. It must be **absolute and
-  canonical**: a value with `..`, `//` or `/./` in it, or under `/proc` or
+  the plugin channel is where it matters. There the wrapper resolves one
+  itself, in four steps: this value, then `$MEMKIT_INTERPRETER`, then the
+  `memkitInterpreter` install option, then a pinned list of absolute system
+  paths. It is never a `PATH` lookup, which on a machine with direnv, mise or
+  an activated venv would hand every prompt to a python you did not choose. The
+  nix channel bakes its interpreter in and ignores this. It must be **absolute
+  and canonical**: a value with `..`, `//` or `/./` in it, or under `/proc` or
   `/dev/fd`, names a different file depending on which directory the session
-  stands in, so it is refused with a line on stderr and the `PATH` probe
-  answers instead. `~` is expanded.
+  stands in, so it is refused with a line on stderr and the next route answers
+  instead. `~` is expanded.
+
+  **This value alone is not probed**, and the other three are. A candidate
+  qualifies only if it is python 3.9 or newer and its sqlite3 can create an
+  FTS5 table — the extension the index is a table in — and the wrapper starts
+  each of the other three once to ask. This field is read on every prompt, so
+  probing it would put a python start in front of the one that serves; what
+  makes trusting it honest is that `memkit init` probes before it records, and
+  records only what qualified. A config written by hand escapes that, and
+  `memkit doctor`'s `interpreter` row is what catches it: a python whose
+  sqlite3 has no FTS5 answers every search with a failure the hook turns into
+  an empty block, which is indistinguishable from a store with nothing to say.
+
+  **Naming one when nothing works.** Three routes do it, and none needs a
+  config memkit did not write — which matters because init refuses to overwrite
+  one it did not: `memkit init --interpreter <absolute path>` probes the path
+  and records it here; `--config memkitInterpreter=<absolute path>` at install
+  is the only one that reaches a hook a GUI-launched harness started; and
+  `MEMKIT_INTERPRETER=<absolute path>` in the launching environment is the one
+  to reach for from a terminal.
 - **`eval.cases`** — three slices. `suite` pairs a prompt with the *basename*
   of the memory it is about; the tier is resolved at run time from where the
   file lives now, so promoting a memory from `search/` to `hot/` flips its
@@ -1254,8 +1275,8 @@ writes).
 `src/`, `tests/` and `tools/` by directory, so a new file is covered there with
 no edit. `pyrightconfig-hook39.json` is an explicit file list, and it must name
 every file a **3.9 interpreter can execute**. That is two entry points: the
-recall hook, which Claude Code runs with whatever `python3` the `PATH`
-resolves to, and `memkit.cli` — with `memkit.cli_doctor` and `memkit.cli_init`,
+recall hook, which the plugin's `bin/memkit-hook` runs under the first
+interpreter its four routes admit, and `memkit.cli` — with `memkit.cli_doctor` and `memkit.cli_init`,
 which the dispatcher imports at module scope — because the plugin's
 `bin/memkit` runs all of them on that same interpreter. Only checker-backed
 work routes to 3.12, and sending the whole dispatcher there would put `memkit

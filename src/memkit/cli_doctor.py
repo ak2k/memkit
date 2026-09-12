@@ -53,6 +53,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -2573,6 +2574,12 @@ def _hook_path(machine: Machine) -> list[Check]:
 # does not have to go and look each name up — and a test pins the two together,
 # because the vocabulary grows without a version bump and a name that arrived
 # here without arriving there is a record nobody can read.
+# The one name in the map below that a check BRANCHES on rather than counts,
+# so it is a constant: a string literal at the branch is a name that can drift
+# from the vocabulary the log writes and the README publishes, and the branch
+# would then simply stop firing.
+INDEX_UNAVAILABLE = "index-unavailable"
+
 OUTCOME_REASONS = {
     "injected": "pointers were written into the prompt",
     "gate:envelope": "the prompt began with an editor or tool envelope",
@@ -2595,7 +2602,7 @@ OUTCOME_REASONS = {
     "prompt",
     "output-lost": "pointers were built and the write did not land",
     "dup-registration": "two installs on one machine registered the same hook",
-    "index-unavailable": "a store was asked and could not answer — an index "
+    INDEX_UNAVAILABLE: "a store was asked and could not answer — an index "
     "mid-rebuild, an unreadable corpus, or a query the budget ran out under",
     "gate:event": "a prompt-shaped payload arrived under an event name this "
     "hook did not register for",
@@ -2906,10 +2913,19 @@ def _gate_outcomes(machine: Machine) -> list[Check]:
     """The mechanized *Why nothing appeared* table: what actually happened, in
     counts, each rendered with the table's own reason.
 
-    Always INFO. Every one of these is a state the hook is designed to reach,
-    and a histogram is evidence rather than a verdict — "nothing passed the
-    floor", "there was nothing to search" and "retrieval raised" are three
-    different answers and none of them is broken by itself.
+    INFO for all but one name. Every other outcome here is a state the hook is
+    designed to reach, and a histogram is evidence rather than a verdict —
+    "nothing passed the floor", "there was nothing to search" and "retrieval
+    raised" are three different answers and none of them is broken by itself.
+
+    `index-unavailable` IS broken, and it was the row that made this check's
+    always-INFO rule cost something: a store was asked and could not answer, so
+    the last prompt got nothing back and the hook still exited 0 with an empty
+    block. Reported as one line in a histogram, under a verdict of OK, it is
+    indistinguishable from a corpus with nothing to say. Only the LAST record
+    is read that way — the outcome is reachable transiently while an index
+    rebuilds, and one of them among the last four hundred prompts is a race
+    that resolved itself, not an install that has stopped answering.
 
     THE PER-PROMPT POPULATION ONLY, and it says so. It counted that population
     from the day it was written and labelled the count "last N prompts", which
@@ -2924,14 +2940,26 @@ def _gate_outcomes(machine: Machine) -> list[Check]:
         return [
             Check("gate-outcomes", INFO, "no records yet, so nothing to count")
         ]
-    return [
-        Check(
-            "gate-outcomes",
-            INFO,
-            f"last {len(records)} prompts (this hook only; subagent spawns are "
-            f"counted by task-outcomes): " + _histogram(records),
-        )
-    ]
+    counted = (
+        f"last {len(records)} prompts (this hook only; subagent spawns are "
+        f"counted by task-outcomes): " + _histogram(records)
+    )
+    if records[-1].get("outcome") == INDEX_UNAVAILABLE:
+        return [
+            Check(
+                "gate-outcomes",
+                FAIL,
+                f"the last prompt served here recorded {INDEX_UNAVAILABLE!r} — "
+                f"{_gloss(INDEX_UNAVAILABLE)}. Retrieval is answering nothing, "
+                f"and an empty pointer block is what a prompt gets. {counted}",
+                "Read the interpreter and index-state rows in this report: a "
+                "python whose sqlite3 has no FTS5 puts every store into this "
+                "state, and so does a corpus this process cannot read. "
+                + INTERPRETER_ROUTES,
+                actor=USER,
+            )
+        ]
+    return [Check("gate-outcomes", INFO, counted)]
 
 
 @_produces("task-outcomes")
@@ -4760,6 +4788,93 @@ NO_CHECKER_REMEDY = (
 HOOK_FLOOR = (3, 9)
 
 
+# --- can a python actually SERVE, which the filesystem cannot say -------------
+#
+# Two facts, and an executable file answers neither. A python below the floor
+# cannot parse the hook at all; a python above it may have been built against a
+# sqlite with no FTS5, which is the extension the index is a table in — and
+# that second one does not refuse, it answers nothing: every search fails, the
+# hook exits 0 with an empty block, and the only trace is an
+# `index-unavailable` line in a log nobody is reading.
+#
+# THE PROBE IS ONE PROGRAM AND IT LIVES IN TWO FILES, because `bin/lib/
+# common.sh` has to run it before there is a python to import this from. The
+# copies are held identical by a test that scrapes the shell literal, which is
+# the same arrangement the checker's floor used to have and for the same
+# reason. The reasons below are pinned across the two files the same way: an
+# adopter meets the shell's wording in the hook's stderr and this one in
+# doctor, and two spellings of one fact is two things to look up.
+#
+# The reason is carried by the exit STATUS rather than printed, because the
+# shell side reads it without a second fork.
+PROBE_BELOW_FLOOR = 3
+PROBE_NO_FTS5 = 4
+INTERPRETER_PROBE = (
+    "import sys\n"
+    f"if sys.version_info[:2] < {HOOK_FLOOR}: sys.exit({PROBE_BELOW_FLOOR})\n"
+    "import sqlite3\n"
+    "try: sqlite3.connect(':memory:')"
+    ".execute('create virtual table t using fts5(x)')\n"
+    f"except Exception: sys.exit({PROBE_NO_FTS5})"
+)
+PROBE_REASONS = {
+    PROBE_BELOW_FLOOR: (
+        f"is a python older than {HOOK_FLOOR[0]}.{HOOK_FLOOR[1]}, which cannot "
+        "parse the hook"
+    ),
+    PROBE_NO_FTS5: (
+        "is a python whose sqlite3 has no FTS5, so every search fails"
+    ),
+}
+
+# What an adopter is told to do about it, in one place because three surfaces
+# say it: doctor's `interpreter` remedy, doctor's `gate-outcomes` remedy, and
+# the wrapper's own refusal — which is written in POSIX sh and therefore holds
+# its own copy, pinned to this one by a test.
+INTERPRETER_ROUTES = (
+    "Name a python that can: `memkit init --interpreter <absolute path>` "
+    "records it in the config, `--config memkitInterpreter=<absolute path>` at "
+    "install sets it for a plugin the GUI started, and $MEMKIT_INTERPRETER "
+    "sets it for one launched from a shell. Each route is probed before it is "
+    "used."
+)
+
+
+def fts5_available() -> bool:
+    """Whether THIS process's sqlite3 can create an FTS5 table.
+
+    In memory and in process: it starts nothing, writes nothing and touches no
+    path, which is what lets a read-only report ask the question at all.
+    """
+    try:
+        with contextlib.closing(sqlite3.connect(":memory:")) as con:
+            con.execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def interpreter_refusal(path: str) -> str:
+    """Why `path` cannot run the hook, or "" when it can.
+
+    A started process, which is the only way to ask: the two facts that decide
+    this are properties of a build, and nothing about the file on disk carries
+    either. Through `_execute`, so the path is held to the same admission rule
+    as every other program this package starts — a candidate inside the
+    session's own directory is refused rather than run.
+    """
+    try:
+        out = _execute([path, "-I", "-c", INTERPRETER_PROBE], timeout=30)
+    except (OSError, subprocess.SubprocessError, Untrusted) as exc:
+        return f"could not be started ({exc})"
+    if out.returncode == 0:
+        return ""
+    return PROBE_REASONS.get(
+        out.returncode,
+        f"did not answer the interpreter probe (exit {out.returncode})",
+    )
+
+
 
 def build_facts() -> tuple:
     """(package version, hook version, payload sha) — the three answers to
@@ -4940,11 +5055,18 @@ def _recorded_interpreter(machine: Machine) -> str:
 def _interpreter(machine: Machine) -> list[Check]:
     """Which python runs the hook, and which route runs the checker.
 
-    The stock-mac case is the one this exists for: `python3` there is 3.9.6 and
-    the checker's floor is 3.12, so an install that works perfectly for
-    retrieval cannot regenerate a ledger without `uvx`. That is INFORMATION,
-    never a failure — and reporting WHICH route resolved is what makes the
-    claim scoreable instead of a shrug.
+    The stock-mac case is the one the checker half exists for: `python3` there
+    is 3.9.6 and the checker's floor is 3.12, so an install that works
+    perfectly for retrieval cannot regenerate a ledger without `uvx`. That is
+    INFORMATION, never a failure — and reporting WHICH route resolved is what
+    makes the claim scoreable instead of a shrug.
+
+    The HOOK half is a failure, and it is the one arm of this check that can
+    say retrieval is broken rather than describe it: a python below the floor
+    cannot parse the hook, and one whose sqlite3 has no FTS5 answers every
+    search with an error the hook converts into an empty block. Both leave a
+    green report over an install that returns nothing, which is the false green
+    this whole command exists to prevent.
     """
     running = ".".join(str(n) for n in sys.version_info[:3])
     route, interpreter = _checker_route(machine)
@@ -4962,20 +5084,54 @@ def _interpreter(machine: Machine) -> list[Check]:
         if shape:
             honoured = (
                 f'. The config records "interpreter": "{recorded}", which '
-                f"{shape}, so the wrapper refuses it by name and falls back "
-                "to the python3 on PATH"
+                f"{shape}, so the wrapper refuses it by name and falls "
+                "through to the routes below it"
             )
         elif not (os.path.isfile(expanded) and os.access(expanded, os.X_OK)):
             honoured = (
                 f'. The config records "interpreter": "{recorded}", which is '
-                "not an executable file, so the wrapper falls back to the "
-                "python3 on PATH"
+                "not an executable file, so the wrapper falls through to the "
+                "routes below it"
             )
         elif os.path.realpath(expanded) != os.path.realpath(sys.executable):
             honoured = (
                 f'. The config records "{recorded}" and this process is '
                 f"{_display_path(sys.executable)}"
             )
+    # WHICH PYTHON WILL ACTUALLY SERVE, and can it. The wrapper prefers the
+    # config's record and does not probe it — that field is read on every
+    # prompt, so a probe there would put a python start in front of the one
+    # that serves, and what makes the trust honest is that `init` probes before
+    # it writes. A config written by hand escapes that entirely, which is the
+    # state this arm exists for: a python that answers every search with a
+    # failure looks exactly like a store with nothing to say.
+    serving = expand_home(recorded) if recorded else ""
+    if not (
+        serving
+        and not path_refusal(serving)
+        and os.path.isfile(serving)
+        and os.access(serving, os.X_OK)
+    ):
+        # Nothing usable is recorded, so the wrapper resolves one — and on the
+        # plugin channel this process IS that resolution, because `bin/memkit`
+        # exec'd it. Asking about it costs no process at all.
+        serving = sys.executable
+    if os.path.realpath(serving) == os.path.realpath(sys.executable):
+        cannot = "" if fts5_available() else PROBE_REASONS[PROBE_NO_FTS5]
+    else:
+        cannot = interpreter_refusal(serving)
+    if cannot:
+        return [
+            Check(
+                "interpreter",
+                FAIL,
+                f"the python that will run the hook, {_display_path(serving)}, "
+                f"{cannot}. Retrieval cannot work here{honoured}",
+                INTERPRETER_ROUTES,
+                actor=USER,
+                terminal=True,
+            )
+        ]
     floor = f"{CHECKER_FLOOR[0]}.{CHECKER_FLOOR[1]}"
     if route is CheckerRoute.NONE:
         return [

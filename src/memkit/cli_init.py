@@ -57,6 +57,7 @@ from memkit.cli_doctor import (
     CANARY_NAME,
     CONFIG_DIR_ENV,
     EXCLUDE_STRAY,
+    INTERPRETER_ROUTES,
     NO_CHECKER_REMEDY,
     OPTION_KEY,
     USER,
@@ -66,6 +67,8 @@ from memkit.cli_doctor import (
     _within,
     authored_configs,
     canary_query,
+    fts5_available,
+    interpreter_refusal,
 )
 from memkit.memory_prompt_recall import (
     CONFIG_ENV,
@@ -737,6 +740,7 @@ def check_refusals(
     auto_dream_off: bool,
     adopt_auto_memory: bool,
     auto_memory_off: bool,
+    interpreter: str | None = None,
 ) -> None:
     """Every reason init will not proceed, in the order they are cheapest to
     answer and most terminal to meet."""
@@ -748,14 +752,53 @@ def check_refusals(
             "makes this work, and an obscure failure later would be worse "
             "than this sentence now.",
         )
-    interpreter = _interpreter()
-    if not (os.path.isfile(interpreter) and os.access(interpreter, os.X_OK)):
-        raise Refusal(
-            "no-interpreter",
-            f"no usable interpreter resolved ({interpreter!r}). The config "
-            "init writes records the python that will read every prompt, and "
-            "recording one that cannot run is an install that answers nothing.",
-        )
+    # THE FIELD THIS COMMAND WRITES IS THE ONE THE WRAPPER DOES NOT PROBE, so
+    # everything that makes it trustworthy has to happen here. Three questions
+    # in the order they can be answered: is it a path this build would act on,
+    # is it an executable file, and can it serve — the last of which needs the
+    # binary started, because a python below the floor and one whose sqlite3
+    # has no FTS5 are both ordinary executable files.
+    if interpreter:
+        named = expand_home(interpreter)
+        why = path_refusal(named)
+        if not why and not (
+            os.path.isfile(named) and os.access(named, os.X_OK)
+        ):
+            why = "is not an executable file"
+        if not why:
+            why = interpreter_refusal(named)
+        if why:
+            raise Refusal(
+                "interpreter-unusable",
+                f"--interpreter {interpreter} {why}. This value is written "
+                'into the config as "interpreter" and exec\'d on every prompt '
+                "without being probed again, so a value that cannot serve is "
+                "an install that answers nothing and reports nothing. Nothing "
+                "was written.",
+            )
+    else:
+        resolved = _interpreter()
+        if not (os.path.isfile(resolved) and os.access(resolved, os.X_OK)):
+            raise Refusal(
+                "no-interpreter",
+                f"no usable interpreter resolved ({resolved!r}). The config "
+                "init writes records the python that will read every prompt, "
+                "and recording one that cannot run is an install that answers "
+                "nothing.",
+            )
+        # The FLOOR needs no asking — this process imported the package, so it
+        # clears it. FTS5 does: it is a property of the sqlite this python was
+        # built against, and a build without it runs everything here and
+        # answers every search with a failure.
+        if not fts5_available():
+            raise Refusal(
+                "interpreter-unusable",
+                f"{_display_path(resolved)} is the python running this "
+                "command, and its sqlite3 has no FTS5 — which is the table the "
+                "whole index is. Recording it would give you a store, a green "
+                "integrity check, and nothing back on any prompt.\n"
+                + INTERPRETER_ROUTES,
+            )
     _refuse_path("config", config_path)
     _refuse_path("store", store_path)
 
@@ -1222,6 +1265,28 @@ def _interpreter() -> str:
     the link records a path whose target the adopter can move.
     """
     return os.path.realpath(sys.executable)
+
+
+def _chosen_interpreter(named: str | None) -> str:
+    """The python this run will RECORD, which is not always the one it is.
+
+    `--interpreter` exists because the config's `interpreter` field was
+    reachable only through this command and this command was reachable only
+    through a config it had already written: an adopter whose every candidate
+    python is unusable had no first move. Naming one here is that move, and it
+    is the only one of the three routes that leaves the answer written down
+    rather than living in an environment.
+
+    Resolved for the reason `_interpreter` resolves: a venv's `python3` is a
+    symlink, and the field is read by a wrapper that cannot follow one back to
+    a target the adopter has moved. The SHAPE is judged before this, in
+    `check_refusals`, against the value as typed — resolving first would turn a
+    relative path into an absolute one inside whatever directory the session
+    stands in, which is the value that rule exists to refuse.
+    """
+    if named:
+        return os.path.realpath(expand_home(named))
+    return _interpreter()
 
 
 def _store_id(store: str) -> str:
@@ -2920,6 +2985,7 @@ def build_plan(
     auto_dream_off: bool = False,
     adopt_auto_memory: bool = False,
     auto_memory_off: bool = False,
+    interpreter: str | None = None,
 ) -> Plan:
     """Everything init would do, computed against the tree as it is now."""
     config_path = _resolve_config(machine, config)
@@ -2932,7 +2998,11 @@ def build_plan(
         auto_dream_off=auto_dream_off,
         adopt_auto_memory=adopt_auto_memory,
         auto_memory_off=auto_memory_off,
+        interpreter=interpreter,
     )
+    # AFTER the refusals and never before: this is the value that goes into the
+    # config, and the refusal above is what established it can serve.
+    interpreter_path = _chosen_interpreter(interpreter)
     nonce = _canary_nonce(config_path)
     store_id = _store_id(store_path)
     # ONE SCAN, read by the adoption planner and by the note it sits above.
@@ -3002,18 +3072,18 @@ def build_plan(
             _merge_config(
                 _read_or_empty(config_path),
                 nonce=nonce,
-                interpreter=_interpreter(),
+                interpreter=interpreter_path,
                 entries=_config_entries(store=store_path, store_id=store_id),
                 where=config_path,
             ),
             note=f"adds root and store {store_id!r}; records interpreter "
-            f"{_display_path(_interpreter())} and canary nonce {nonce}. "
+            f"{_display_path(interpreter_path)} and canary nonce {nonce}. "
             "Existing stores are kept. "
             + _config_route_note(machine, config_path),
             authored_config=True,
             payload={
                 "nonce": nonce,
-                "interpreter": _interpreter(),
+                "interpreter": interpreter_path,
                 "entries": _config_entries(store=store_path, store_id=store_id),
             },
         ),
@@ -3406,10 +3476,11 @@ The digest binds the state of the tree, not the text you read. Pass the same
 flags to both calls: a different request produces a different digest.
 
 Exit codes: 0 done (or the manifest printed) / 2 usage error / 5 refused, and
-nothing was written — stderr names which refusal / 6 started and did not
-finish; the journal says how far. Recover with the two turns, not by repeating
-the last one: what landed has changed the digest, so re-run --dry-run and
-confirm the digest THAT prints.
+nothing was written — stderr names which refusal, and `interpreter-unusable` is
+the one --interpreter returns / 6 started and did not finish; the journal says
+how far. Recover with the two turns, not by repeating the last one: what landed
+has changed the digest, so re-run --dry-run and confirm the digest THAT
+prints.
 
 6 is also what a run that performed every action and then failed its own
 integrity check returns. That report prints the checker's output and names
@@ -3440,6 +3511,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help="where the config goes (default: the memkitConfig install option, "
         f"else {DEFAULT_CONFIG})",
+    )
+    parser.add_argument(
+        "--interpreter",
+        metavar="PATH",
+        help="the absolute python to record as the one that runs the hook "
+        "(default: the python running this command). Probed before it is "
+        "written: a path below the 3.9 floor, or one whose sqlite3 has no "
+        "FTS5, is refused and nothing is written",
     )
     parser.add_argument(
         "--wire-claude-md",
@@ -3496,6 +3575,7 @@ def run(args: argparse.Namespace) -> int:
             auto_dream_off=getattr(args, "auto_dream_off", False),
             adopt_auto_memory=getattr(args, "adopt_auto_memory", False),
             auto_memory_off=getattr(args, "auto_memory_off", False),
+            interpreter=getattr(args, "interpreter", None),
         )
     except Refusal as refusal:
         return _refuse(refusal)

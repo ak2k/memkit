@@ -56,9 +56,28 @@ ordering.
   a 15-second budget against a 7-second one, so a rate over the union is a
   rate over an unknown mixture. `gate-outcomes` now says which population it
   counts.
+- **Three routes that name the python the hook runs under**, none of which
+  needs a config memkit already wrote: `memkit init --interpreter <path>`,
+  a `memkitInterpreter` install option, and `$MEMKIT_INTERPRETER`. The
+  `interpreter` field was reachable only through init, and init refuses to
+  overwrite a config it did not author, so an adopter whose every candidate
+  python was unusable had no first move.
 
 ### Fixed
 
+- **The plugin wrapper no longer execs a python that cannot run the hook.**
+  A candidate qualifies only if it is 3.9 or newer and its sqlite3 can create
+  an FTS5 table; each of the three routes above and each pinned system path is
+  probed once, and one that fails is skipped with its reason kept. On a host
+  whose first pinned path was a 3.7 the hook wrapper exited non-zero on every
+  prompt — a blocked turn, from the file whose contract is that every path
+  exits 0 — and the refusal it writes was unreachable, because it fired only
+  where none of the pinned paths existed. It now names each candidate and why.
+- **`memkit doctor` fails rather than informs when retrieval cannot work.** A
+  python whose sqlite3 has no FTS5 answers every search with an error the hook
+  turns into an empty block, and the report was green over it: `interpreter`
+  read as INFO and `gate-outcomes` counted `index-unavailable` as one line in a
+  histogram. Both now FAIL, and the remedy names the three routes.
 - **HOT-STALE can see a ledger row change.** The walk that dates a row reads
   `git log -p`, and it skipped the `---`/`+++` file headers by excluding any
   line whose second character was another `+` or `-`. That is every row in the

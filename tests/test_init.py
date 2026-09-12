@@ -6124,3 +6124,101 @@ def test_a_refusal_after_a_red_check_still_reports_the_red_check(
     assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
     assert "changed-underfoot" in capsys.readouterr().err
     assert len(reported) == 1
+
+
+# --- --interpreter: naming a python without a config init already owns -------
+
+
+# A stand-in for a python whose build cannot serve, answering the probe the
+# way the real one does: an exit status and nothing else. A script rather than
+# a search for a real 3.7 or a real FTS5-less 3.12, because neither is present
+# on any machine this suite runs on and the thing under test is the reaction to
+# the status, not the interpreter that produced it.
+_PROBE_STUB = "#!/bin/sh\nexit %d\n"
+
+
+def _stub_interpreter(path, status: int) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_PROBE_STUB % status, encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_a_named_interpreter_that_qualifies_is_what_the_config_records(
+    profile, capsys
+) -> None:
+    """The route out of the deadlock, and the only one that leaves the answer
+    written down.
+
+    `interpreter` was reachable only through init, and init refuses to write
+    over a config it did not author — so an adopter whose every candidate
+    python is unusable had no first move at all: the field they needed could
+    only be written by the command that could not run.
+    """
+    named = _stub_interpreter(profile / "elsewhere" / "python3", 0)
+    plan = _plan(profile, interpreter=named)
+    rendered = plan.render()
+    assert named in rendered, rendered
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.payload["interpreter"] == named, action.payload
+    assert json.loads(action.content)["interpreter"] == named, action.content
+    # And the default is still the python this command is, which is what makes
+    # the wrapper's decision not to re-probe the field an honest one.
+    (default,) = [
+        a for a in _plan(profile).actions if a.op == init.MERGE_CONFIG
+    ]
+    assert default.payload["interpreter"] == init._interpreter()
+
+
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (doctor.PROBE_BELOW_FLOOR, "older than 3.9"),
+        (doctor.PROBE_NO_FTS5, "no FTS5"),
+    ],
+)
+def test_a_named_interpreter_that_cannot_serve_is_refused_before_any_write(
+    profile, status, reason
+) -> None:
+    """PROBED, not merely tested for the executable bit.
+
+    The two ways a python fails here are both properties of a build and
+    neither is visible from the filesystem: below the floor it cannot parse the
+    hook, and without FTS5 it parses everything and answers every search with a
+    failure the hook turns into an empty block. This field is exec'd on every
+    prompt without being probed again, so what is written has to have been
+    established here or nowhere.
+    """
+    named = _stub_interpreter(profile / "elsewhere" / "python3", status)
+    refusal = _refuses(profile, "interpreter-unusable", interpreter=named)
+    assert reason in refusal.message, refusal.message
+    assert named in refusal.message, refusal.message
+
+
+def test_a_named_interpreter_is_held_to_the_same_shape_rule_as_the_field(
+    profile,
+) -> None:
+    """The value goes into a field a POSIX-sh wrapper reads and exec's, and
+    that wrapper refuses a path whose meaning depends on who resolves it. A
+    value init accepted and the wrapper then refused would be a repair that
+    reports success and changes nothing."""
+    for value in ("python3", "/usr/bin/../bin/python3", "/proc/self/exe"):
+        refusal = _refuses(profile, "interpreter-unusable", interpreter=value)
+        assert value in refusal.message, refusal.message
+
+
+def test_a_python_here_with_no_fts5_is_refused_rather_than_recorded(
+    profile, monkeypatch
+) -> None:
+    """The default path, where there is no `--interpreter` to probe.
+
+    The floor needs no asking — this process imported the package — but FTS5
+    does, and recording a python without it hands the adopter a store, a green
+    integrity check and nothing back on any prompt.
+    """
+    monkeypatch.setattr(doctor, "fts5_available", lambda: False)
+    monkeypatch.setattr(init, "fts5_available", lambda: False)
+    refusal = _refuses(profile, "interpreter-unusable")
+    assert "FTS5" in refusal.message
+    # The remedy names the routes rather than describing the problem twice.
+    assert "--interpreter" in refusal.message

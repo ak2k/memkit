@@ -177,10 +177,17 @@ def test_the_option_key_mangles_to_the_variable_the_wrapper_reads() -> None:
     with an underscore or a digit is still checked against the real rule.
     """
     options = _json(PLUGIN_MANIFEST)["userConfig"]
-    assert list(options) == ["memkitConfig"], options
-    key = next(iter(options))
-    expected = "CLAUDE_PLUGIN_OPTION_" + re.sub(r"[^A-Za-z0-9_]", "_", key).upper()
-    assert expected in COMMON_SH.read_text(encoding="utf-8"), expected
+    assert list(options) == ["memkitConfig", "memkitInterpreter"], options
+    shell = COMMON_SH.read_text(encoding="utf-8")
+    # EVERY key, not the first: a second option is a second variable the shell
+    # has to read by the mangled name, and a manifest key nothing reads is an
+    # option an adopter can set that does nothing at all.
+    for key in options:
+        expected = (
+            "CLAUDE_PLUGIN_OPTION_"
+            + re.sub(r"[^A-Za-z0-9_]", "_", key).upper()
+        )
+        assert expected in shell, expected
 
 
 def test_the_option_key_is_one_the_harness_will_accept() -> None:
@@ -1774,6 +1781,173 @@ def test_a_directory_recorded_as_the_interpreter_is_not_exec_d(
         assert other.returncode != 126, (wrapper, other.returncode, other.stderr)
 
 
+# --- the probe: an executable file is not a python that can serve -------------
+
+
+def _probe_stub(directory: Path, status: int) -> Path:
+    """A candidate that answers the wrapper's probe with a status and nothing
+    else.
+
+    A script rather than a hunt for a real 3.7 or a real FTS5-less 3.12:
+    neither exists on any machine this suite runs on, and what is under test is
+    the wrapper's reaction to the status rather than the build that produced
+    it. The stub also refuses to be a python for anything else, which is what
+    makes "it was skipped" observable — a shim that ran would leave output.
+    """
+    return _shim(directory, "python3", f"exit {status}")
+
+
+def test_the_probe_program_is_the_same_program_in_the_shell_and_in_python(
+) -> None:
+    """One program, two files, because the shell has to run it before there is
+    a python to import the other from.
+
+    The same arrangement the checker's floor used to have and for the same
+    reason — and the same failure if it drifts: the wrapper would admit a
+    candidate doctor calls unusable, or refuse one doctor calls fine, and the
+    adopter reading both would have no way to tell which was right.
+    """
+    shell = COMMON_SH.read_text(encoding="utf-8")
+    body = re.search(
+        r'MEMKIT_INTERPRETER_PROBE="([^"]+)"', shell, re.S
+    )
+    assert body, "the probe program is not assigned a literal"
+    assert body.group(1) == doctor.INTERPRETER_PROBE, (
+        body.group(1),
+        doctor.INTERPRETER_PROBE,
+    )
+    # The floor inside it is the one the package holds, so the two cannot say
+    # different things about which pythons are admitted.
+    assert f"< {doctor.HOOK_FLOOR}:" in doctor.INTERPRETER_PROBE
+    # And the reasons, which an adopter meets in the wrapper's stderr and in
+    # doctor's report: two spellings of one fact is two things to look up.
+    for status, reason in doctor.PROBE_REASONS.items():
+        assert f"exit({status})" in doctor.INTERPRETER_PROBE, status
+        assert reason in shell, reason
+
+
+def test_a_candidate_that_exists_and_cannot_serve_is_skipped_for_one_that_can(
+    root, tmp_path, shimmed
+) -> None:
+    """`[ -f ]` and `[ -x ]` answer neither question that matters.
+
+    A pinned path can hold a python three releases below the floor — which
+    dies on the hook's own syntax before its first statement — or one whose
+    sqlite3 has no FTS5, which imports everything and fails every query. Both
+    used to be exec'd, and the first of them broke the hook wrapper's exit
+    contract from inside: `exec` hands the interpreter's status through.
+    """
+    below = _probe_stub(tmp_path / "old", doctor.PROBE_BELOW_FLOOR)
+    nofts5 = _probe_stub(tmp_path / "nofts5", doctor.PROBE_NO_FTS5)
+    good = _shim(tmp_path / "good", "python3", SHIM_BODY)
+    repinned = _repinned(root, [below, nofts5, good])
+    decided = _decide(repinned, "memkit-hook", shimmed())
+    assert decided.interpreter == str(good), decided.interpreter
+    # The two that were skipped are named with their reasons rather than
+    # passed over silently — a candidate that exists and was not used is the
+    # one an adopter goes looking for.
+    assert str(below) not in decided.handoff, decided.handoff
+    # And the ORDER holds: the first qualifying candidate answers, so a
+    # qualifying path ahead of the others is not overtaken.
+    first = _decide(_repinned(root, [good, below]), "memkit-hook", shimmed())
+    assert first.interpreter == str(good), first.interpreter
+
+
+def test_no_candidate_that_can_serve_still_exits_zero_and_names_each_one(
+    root, tmp_path
+) -> None:
+    """The exit contract, at the failure that used to break it.
+
+    A pinned path holding a python below the floor left `exec` handing a
+    SyntaxError's status back on UserPromptSubmit — a blocked turn, produced by
+    the file whose whole contract is that every path exits 0 — and the
+    diagnosis this file writes was unreachable, because it fired only when none
+    of the pinned paths EXISTED.
+    """
+    below = _probe_stub(tmp_path / "old", doctor.PROBE_BELOW_FLOOR)
+    nofts5 = _probe_stub(tmp_path / "nofts5", doctor.PROBE_NO_FTS5)
+    absent = tmp_path / "nowhere" / "python3"
+    bare = _repinned(root, [below, nofts5, absent])
+    env = {"PATH": str(tmp_path / "empty"), "HOME": str(tmp_path / "home")}
+    out = _run(bare / "bin" / "memkit-hook", env=env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == ""
+    # EACH candidate, with why it was refused. A list of paths cannot tell a
+    # machine where nothing is installed from one where the wrong thing is.
+    assert f"{below}: {doctor.PROBE_REASONS[doctor.PROBE_BELOW_FLOOR]}" in out.stderr
+    assert f"{nofts5}: {doctor.PROBE_REASONS[doctor.PROBE_NO_FTS5]}" in out.stderr
+    assert f"{absent}: is not an executable file" in out.stderr, out.stderr
+    # And the routes out, all three, because this text is reached by somebody
+    # whose stderr the harness swallows and who has nowhere else to read them.
+    for route in (
+        "MEMKIT_INTERPRETER=",
+        "memkitInterpreter",
+        "memkit init --interpreter",
+    ):
+        assert route in out.stderr, route
+
+
+def test_the_environment_route_wins_over_the_pinned_list_and_is_itself_probed(
+    root, tmp_path, shimmed
+) -> None:
+    """The route a person reaches for from a terminal, before any config
+    exists.
+
+    It is PROBED, unlike the config's field: nothing vetted it at write time,
+    because there was no write. A value that cannot serve therefore falls
+    through to the next route rather than taking retrieval down, which is what
+    makes setting it a safe thing to try.
+    """
+    named = _shim(tmp_path / "named", "python3", SHIM_BODY)
+    pinned = _shim(tmp_path / "pinned", "python3", "exit 0")
+    repinned = _repinned(root, [pinned])
+
+    decided = _decide(
+        repinned, "memkit-hook", shimmed(MEMKIT_INTERPRETER=str(named))
+    )
+    assert decided.interpreter == str(named), decided.interpreter
+
+    # Probed: a named value that cannot serve is skipped for the pinned one,
+    # with the reason kept.
+    bad = _probe_stub(tmp_path / "bad", doctor.PROBE_NO_FTS5)
+    fell = _decide(repinned, "memkit-hook", shimmed(MEMKIT_INTERPRETER=str(bad)))
+    assert fell.interpreter == str(pinned), fell.interpreter
+
+    # And the same value under the install option, which is the only one of the
+    # two that reaches a hook a GUI-launched harness started.
+    option = _decide(
+        repinned,
+        "memkit-hook",
+        shimmed(CLAUDE_PLUGIN_OPTION_MEMKITINTERPRETER=str(named)),
+    )
+    assert option.interpreter == str(named), option.interpreter
+
+
+def test_the_config_field_outranks_both_named_routes_and_is_not_probed(
+    root, tmp_path, shimmed
+) -> None:
+    """The steady state, and the one candidate the wrapper does not start.
+
+    That field is read on every prompt, so probing it would put a python start
+    in front of the one that serves. What makes trusting it honest is the other
+    end: `memkit init` probes before it records. The stub here answers the
+    probe with a refusal and is exec'd anyway, which is the property under
+    test — a wrapper that had probed it would have fallen through.
+    """
+    recorded = tmp_path / "recorded" / "python3"
+    marker = tmp_path / "recorded-ran.txt"
+    _shim(recorded.parent, "python3", f'echo ran > "{marker}"')
+    pinned = _shim(tmp_path / "pinned", "python3", "exit 0")
+    config = _config_file(tmp_path / "rec.json", interpreter=str(recorded))
+    env = shimmed(
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
+        MEMKIT_INTERPRETER=str(pinned),
+    )
+    decided = _decide(_repinned(root, [pinned]), "memkit-hook", env)
+    assert decided.interpreter == str(recorded), decided.interpreter
+    assert marker.is_file(), "the recorded interpreter did not run"
+
+
 def test_a_relative_config_path_is_not_a_path_into_the_session_dir(
     root, tmp_path, shimmed
 ) -> None:
@@ -1816,6 +1990,130 @@ _REDIRECT = re.compile(r"^\d?[<>]+")
 _WORD = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*)")
 
 
+def _outside_quotes(text: str) -> str:
+    r"""`text` with every quoted span and every comment blanked, byte for byte.
+
+    Both scrapes below read shell source A LINE AT A TIME and blank quoted
+    spans within a line — which is right until a literal spans several, and one
+    does: the interpreter probe is a python program assigned to a shell
+    variable. Read line by line, its `import` sits in command position and its
+    `sys.exit(3)` is an exit from a file that is SOURCED, so both scrapes
+    reported it, and both were reading data as code.
+
+    Blanked here rather than exempted at each reader, because an exemption is a
+    hole one scrape has and the other does not. Spaces rather than deletion, so
+    a column-shaped assertion downstream stays honest, and newlines are kept so
+    line numbers still name lines.
+
+    COMMENTS TOO, and in the same pass rather than before it — that ordering is
+    the whole reason this is one function. Strip comments first and a `#`
+    inside a literal ends the line; blank quotes first and an apostrophe in a
+    comment opens a span that runs to the next one, several lines down. Both
+    were reproduced here: these files are dense with prose comments, and
+    `the config's` alone swallowed seven real command words.
+
+    POSIX rules, and each of the three earns its place in a file this reads:
+    nothing is special inside single quotes (`'"'` is a literal double quote);
+    a backslash escapes the next character everywhere except there, so the `\"`
+    in `${_value#\"}` is a character and NOT the start of a span — reading it
+    as one ran a span through the next thirty lines; and a `#` opens a comment
+    only at the start of a word, since `"$#"` is an argument count and
+    `${1#\~/}` is a parameter expansion.
+    """
+    out = []
+    quote = None
+    escaped = False
+    comment = False
+    previous = "\n"
+    for char in text:
+        if char == "\n":
+            comment = False
+            escaped = False
+            out.append(char)
+            previous = char
+            continue
+        if comment:
+            out.append(" ")
+            previous = char
+            continue
+        if escaped:
+            escaped = False
+            # Outside a span the protected character is still code; inside one
+            # it is still data.
+            out.append(char if quote is None else " ")
+            previous = char
+            continue
+        if quote is None:
+            if char == "\\":
+                escaped = True
+                out.append(char)
+            elif char == "#" and (previous.isspace() or previous in ";&|("):
+                comment = True
+                out.append(" ")
+            else:
+                out.append(char)
+                if char in "'\"":
+                    quote = char
+        elif quote == '"' and char == "\\":
+            escaped = True
+            out.append(" ")
+        elif char == quote:
+            quote = None
+            out.append(char)
+        else:
+            out.append(" ")
+        previous = char
+    return "".join(out)
+
+
+def test_the_quote_blanker_keeps_code_and_drops_only_what_is_quoted() -> None:
+    """The control for the helper above, which is the thing two scrapes now
+    trust. A blanker that blanked everything would make both of them green
+    about nothing, and a blanker that blanked nothing would put them back where
+    they were.
+
+    Every line here is a form that broke one of the two orderings the helper's
+    docstring rejects.
+    """
+    source = "\n".join(
+        [
+            'printf %s "quoted words"',
+            "V=\"first",
+            "exit 3",
+            'second"',
+            "exec real_command",
+            "W='exit 9'",
+            "# the config's own field",
+            "still_code here",
+            'printf %s "a # that is not a comment"',
+            "trailing_code # exit 7",
+            'expansion ${1#\\~/} and "$#"',
+            "case $v in '\"'*) v=${v#\\\"} ;; esac",
+            "after_the_escape here",
+        ]
+    )
+    blanked = _outside_quotes(source)
+    assert blanked.splitlines()[0].startswith("printf %s "), blanked
+    assert "quoted words" not in blanked, blanked
+    # The line inside the multi-line span is gone, and the one after the span
+    # closes is not.
+    assert "exit 3" not in blanked, blanked
+    assert "exit 9" not in blanked, blanked
+    assert "exit 7" not in blanked, blanked
+    assert "exec real_command" in blanked, blanked
+    # An apostrophe in a comment opens nothing, so the code after it survives.
+    assert "still_code here" in blanked, blanked
+    # A `#` mid-word is not a comment, in either of the two forms these files
+    # use it in.
+    assert "expansion" in blanked and "${1#" in blanked, blanked
+    # A `\"` outside a span is a character, not an opener: reading it as one
+    # ran a span through every line that followed.
+    assert "after_the_escape here" in blanked, blanked
+    # Byte for byte, so a line number and a column still name what they did.
+    assert len(blanked) == len(source)
+    assert blanked.count("\n") == source.count("\n")
+
+
 def _command_words(text: str) -> set[str]:
     """Every word this text uses in command position.
 
@@ -1825,7 +2123,7 @@ def _command_words(text: str) -> set[str]:
     `grep` would have to be extended by the same person who added the command.
     """
     words: set[str] = set()
-    for raw in text.splitlines():
+    for raw in _outside_quotes(text).splitlines():
         # A `#` only opens a comment at the start of a word — `${x#pat}` is a
         # parameter expansion, and eating the rest of that line would hide any
         # command after it.
@@ -2330,7 +2628,7 @@ def _exit_statuses(text: str, where: str) -> set[int]:
     branch nobody remembered to reach.
     """
     statuses = set()
-    for lineno, raw in enumerate(text.splitlines(), 1):
+    for lineno, raw in enumerate(_outside_quotes(text).splitlines(), 1):
         code = _code_only(raw).rstrip()
         if not EXIT_TOKEN.search(code):
             continue
@@ -2369,7 +2667,7 @@ def test_the_sourced_library_can_end_no_wrapper() -> None:
     text = COMMON_SH.read_text(encoding="utf-8")
     found = [
         (n, line.strip())
-        for n, line in enumerate(text.splitlines(), 1)
+        for n, line in enumerate(_outside_quotes(text).splitlines(), 1)
         if EXIT_TOKEN.search(_code_only(line))
     ]
     assert not found, found

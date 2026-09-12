@@ -14,17 +14,21 @@
 # FLOOR case, a stock macOS where `/bin/sh` is bash 3.2 in POSIX mode. Nothing
 # here may need bash 4. Held by shellcheck --shell=sh in CI, on Linux.
 #
-# THE DEPENDENCY CONTRACT, and it is the empty set: no wrapper and nothing in
-# this file runs a command that is not a shell builtin. Not `sed`, not `head`,
-# not `grep` — nothing that has to be found on a PATH.
+# THE DEPENDENCY CONTRACT, and it is about LOOKUP rather than about count: no
+# wrapper and nothing in this file runs a command it would have to FIND. Not
+# `sed`, not `head`, not `grep` — nothing whose identity comes from a PATH the
+# harness composed. One program is started, and it is the only one: a python
+# already resolved to an absolute path, run once to ask whether it can serve
+# before the wrapper hands the prompt to it. That start cannot go to a program
+# this file did not name, which is the whole of what the rule protects.
 #
 # The PATH these run on is composed by the harness, not by the adopter, and it
 # is not required to have coreutils on it. Reading the `interpreter` field
 # through `sed | head` was enough to break the whole resolution inside a Linux
 # nix sandbox, where neither exists: `head: not found`, the recorded
 # interpreter silently unread, and the wrapper still exiting 0 — an install
-# that answers nothing while reporting healthy. Every external command here is
-# one more way for that to happen on a machine nobody tested.
+# that answers nothing while reporting healthy. Every command found rather than
+# named here is one more way for that to happen on a machine nobody tested.
 #
 # `command -v`, `printf`, `read`, `cd`, `pwd` and `[` are builtins in every
 # shell that satisfies the floor above. `tests/test_plugin_surface.py` pins the
@@ -356,20 +360,104 @@ memkit_resolve_config() {
 memkit_interpreter_refused() {
     memkit_stderr \
         "the config records \"interpreter\": \"$1\", which $2." \
-        "Falling back to a pinned system python; retrieval is unaffected."
+        "Falling back to the other routes and then to a pinned system python;" \
+        "retrieval is unaffected wherever one of them answers."
 }
 
-# The pinned fallback, for an install whose config records no interpreter — a
-# fresh one, before `memkit init` has written the field it writes.
+# --- what makes a candidate runnable -----------------------------------------
+#
+# TWO FACTS, AND NEITHER IS VISIBLE FROM THE FILESYSTEM. A path that is an
+# executable file may be a python too old to PARSE the hook — that file uses
+# assignment expressions, so a 3.7 dies with a SyntaxError before its first
+# statement runs — and one new enough may have been built against a sqlite with
+# no FTS5, which is the extension the whole index is a table in. The first is
+# the exit contract broken from inside: `exec` hands the interpreter's status
+# through, so a SyntaxError is a non-zero exit on UserPromptSubmit, which is a
+# blocked turn. The second is worse than a refusal, because it looks like an
+# empty corpus — every search fails, the hook exits 0 with nothing, and the
+# only trace is an `index-unavailable` line in a log nobody is reading.
+#
+# ONE `-c` PROGRAM answers both in a single start, with the reason in the exit
+# STATUS rather than on stdout: reading a reason back costs a second fork per
+# candidate for a string this file would then have to parse. 3 is below the
+# floor, 4 is no FTS5, 0 qualifies, and anything else is a candidate that is
+# not a python at all.
+#
+# The program is syntax-valid back to python 2 on purpose. An interpreter that
+# could not PARSE the probe would exit 1 and be reported as "did not answer",
+# which sends a reader to the wrong question about their own python.
+#
+# `-I` for the reason doctor's own probe uses it: `python -c` puts the
+# session's directory on `sys.path`, and `site` imports a `sitecustomize.py` it
+# finds there before the `-c` line runs — so an unisolated probe is the
+# checkout executing code. Isolated mode drops that entry and the environment
+# with it.
+#
+# THE DEPENDENCY CONTRACT AT THE TOP OF THIS FILE STILL HOLDS. What runs here
+# is a path this file has already admitted and tested with `[ -f ]` and
+# `[ -x ]`, never a word looked up on a PATH the harness composed — which is
+# the whole of what that contract is about.
+#
+# 3.9 is the hook's floor, and it is written twice: this literal, and
+# `HOOK_FLOOR` in `src/memkit/cli_doctor.py`. A POSIX-sh probe cannot import
+# python, so the copies are held in agreement by a test that scrapes this one.
+MEMKIT_INTERPRETER_PROBE="import sys
+if sys.version_info[:2] < (3, 9): sys.exit(3)
+import sqlite3
+try: sqlite3.connect(':memory:').execute('create virtual table t using fts5(x)')
+except Exception: sys.exit(4)"
+
+# Silent and 0 when the candidate qualifies; the reason on stdout and non-zero
+# when it does not. The reason is a clause that reads after a colon, because
+# every caller renders it as `<path>: <reason>`.
+memkit_interpreter_probe() {
+    "$1" -I -c "$MEMKIT_INTERPRETER_PROBE" >/dev/null 2>&1
+    _status=$?
+    case $_status in
+        0) return 0 ;;
+        3) printf '%s\n' "is a python older than 3.9, which cannot parse the hook" ;;
+        4) printf '%s\n' "is a python whose sqlite3 has no FTS5, so every search fails" ;;
+        *) printf '%s\n' "did not answer the interpreter probe (exit $_status)" ;;
+    esac
+    return 1
+}
+
+# One named route, admitted, tested and probed, in that order and never out of
+# it: the shape rule is what stops a `/proc/self/cwd/python3` being STARTED by
+# the probe that was meant to vet it.
+#
+# It answers in `_chosen` rather than on stdout, and appends its reason to
+# `_tried`, because a helper that printed the path could not also print the
+# reason — and the caller needs both, one to exec and one to say why nothing
+# was exec'd.
+memkit_try_interpreter() {
+    _chosen=""
+    _try=$(memkit_expand_home "$1")
+    if _why=$(memkit_path_refusal "$_try"); then
+        :
+    elif [ ! -f "$_try" ] || [ ! -x "$_try" ]; then
+        _why="is not an executable file"
+    elif _why=$(memkit_interpreter_probe "$_try"); then
+        _chosen=$_try
+        return 0
+    fi
+    _tried=${_tried-}"  $_try: $_why (via $2)
+"
+    return 1
+}
+
+# The LAST route, for an install no earlier one answered for — a fresh one,
+# before `memkit init` has written the field it writes and before anybody has
+# named a python by hand.
 #
 # ABSOLUTE PATHS, NOT A LOOKUP. `command -v python3` reads the session's own
 # PATH, which a checkout steers through direnv, a checked-in venv or a
 # `node_modules/.bin`; what came back was exec'd on every prompt, before any
 # rule in this package existed to have an opinion about it. There is no way to
 # filter that lookup correctly here: POSIX sh under this project's own
-# zero-external-command rule has no `realpath`, so a filter is a string prefix
-# test against a logical `$PWD`, and its success path — every entry rejected —
-# prints the empty string, which POSIX reads as the current directory.
+# no-lookup rule has no `realpath`, so a filter is a string prefix test against
+# a logical `$PWD`, and its success path — every entry rejected — prints the
+# empty string, which POSIX reads as the current directory.
 #
 # So this is an ALLOW-LIST, and its incompleteness is a support ticket rather
 # than a vulnerability: an install it does not cover REFUSES, visibly, and the
@@ -471,8 +559,46 @@ memkit_config_interpreter() {
 # with its last segment dropped, which is how the value gets written by hand —
 # passed the guard, skipped the PATH probe, and left `exec` dying 126 on every
 # prompt of every session. Measured from all three wrappers.
+#
+# FOUR ROUTES, and the order is the whole design:
+#
+#   1. the config's `interpreter`, NOT PROBED. It is the steady state — every
+#      prompt of every configured install reads it — so a probe here would put
+#      a python start in front of the one that serves. What makes trusting it
+#      honest is the other end: `memkit init` probes before it records, and
+#      records only what qualified, so the field this reads was vetted when it
+#      was written. A config written by hand is the case that escapes that,
+#      and doctor's `interpreter` check is where it is caught.
+#   2. $MEMKIT_INTERPRETER, probed.
+#   3. the memkitInterpreter install option, probed.
+#   4. the pinned system paths, probed.
+#
+# 2 AND 3 ARE BOTH HERE AND NEITHER IS REDUNDANT, for the reason the header of
+# `bin/memkit-hook` already gives about the config: a GUI-launched harness has
+# no shell environment to inherit a variable from, so an env-var-only route
+# works in a terminal and not in the product — which is the failure that
+# wrapper exists to prevent, reproduced one field over. The option is the
+# harness's own typed mechanism and is the only one of the two that reaches a
+# hook the GUI started. The variable is the only one of the two that works
+# before the plugin has been configured at all, and it is what a person reaches
+# for from a terminal to prove a candidate before committing to it.
+#
+# NEITHER IS A WIDENING OF THE AMBIENT-CONFIGURATION RULE, and that is measured
+# rather than argued: rung 2 of `memkit_resolve_config` already lets anything
+# that can write `CLAUDE_PLUGIN_DATA` into this environment hand the wrapper a
+# config naming any binary, unprobed. These two name a binary and nothing else,
+# they pass the same admission rule every path here passes, and they are
+# probed — so they reach strictly less than what the config rungs already
+# trust.
+#
+# `_tried` collects `<path>: <reason> (via <route>)` for every candidate that
+# was refused, which is what the diagnosis prints. It is a caller's variable
+# rather than a returned string because the return value is already spoken
+# for, and it cannot escape this shell in any case: the wrappers call this
+# inside a command substitution.
 memkit_resolve_interpreter() {
     _config=$1
+    _tried=""
     _recorded=$(memkit_config_interpreter "$_config") || _recorded=""
     if [ -n "$_recorded" ]; then
         if [ -f "$_recorded" ] && [ -x "$_recorded" ]; then
@@ -480,13 +606,32 @@ memkit_resolve_interpreter() {
             return 0
         fi
         memkit_interpreter_refused "$_recorded" "is not an executable file"
+        _tried="  $_recorded: is not an executable file (via the config's \"interpreter\")
+"
+    fi
+    if [ -n "${MEMKIT_INTERPRETER:-}" ] &&
+        memkit_try_interpreter "$MEMKIT_INTERPRETER" "\$MEMKIT_INTERPRETER"; then
+        printf '%s\n' "$_chosen"
+        return 0
+    fi
+    if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITINTERPRETER:-}" ] &&
+        memkit_try_interpreter "$CLAUDE_PLUGIN_OPTION_MEMKITINTERPRETER" \
+            "the memkitInterpreter install option"; then
+        printf '%s\n' "$_chosen"
+        return 0
     fi
     for _candidate in $MEMKIT_SYSTEM_PYTHONS; do
-        if [ -f "$_candidate" ] && [ -x "$_candidate" ]; then
-            printf '%s\n' "$_candidate"
+        if memkit_try_interpreter "$_candidate" "a pinned system path"; then
+            printf '%s\n' "$_chosen"
             return 0
         fi
     done
+    # HERE, and not at the three call sites. The reasons live in `_tried`,
+    # which is a variable of this function running inside a command
+    # substitution — a wrapper reading it back would read the value its own
+    # shell never received. So the resolution that collected them is what says
+    # them, on stderr, which the substitution does not capture.
+    memkit_no_interpreter_message "$_config" "$_tried"
     return 1
 }
 
@@ -503,24 +648,49 @@ memkit_resolve_interpreter() {
 # In a live session it goes to the harness's debug log, because the wrapper
 # exits 0 whatever happens — see the exit contract in `memkit-hook`.
 #
-# The tried paths go in as one message EACH, and the splitting is the point.
-# The list is newline-separated, so interpolating it whole put five physical
-# lines into a single message — and the error log's rule is that every line
-# carries the wrapper's name, so four of them arrived owned by nothing. That
-# happened only where this message fires at all, which is a machine none of
-# the five paths exists on: a NixOS install, and this repo's own Linux build.
-# One path per line is also the shape the reader wants, since the question
-# they are answering is whether their python is on the list.
+# THE CANDIDATES AND WHY EACH ONE FAILED, not a list of paths. A machine where
+# every pinned path is absent and one where the first of them is a python three
+# releases below the floor are different problems with different repairs, and a
+# bare list of what was tried cannot tell them apart — nor can a bare
+# traceback, which is what the second case used to produce, from `exec` rather
+# than from anything in this file.
+#
+# One candidate per MESSAGE, and the splitting is the point: the list arrives
+# newline-separated, and interpolating it whole put several physical lines into
+# a single message — while the error log's rule is that every line carries the
+# wrapper's name, so all but the first arrived owned by nothing.
+#
+# THE ROUTES ARE NAMED HERE and not only in the README, because this text is
+# reached by somebody whose install answers nothing and whose stderr the
+# harness swallows; a remedy they have to go and look up is one more step than
+# the state affords.
 memkit_no_interpreter_message() {
-    # shellcheck disable=SC2086  # unquoted so each path becomes its own word
+    # A NEWLINE IFS for exactly one expansion. `$2` is one candidate per line
+    # with its reason, and reasons have spaces in them — under the default IFS
+    # the list would arrive as forty words, i.e. forty messages, each of which
+    # the error log prefixes with the wrapper's name.
+    _oldifs=${IFS-}
+    IFS='
+'
+    # shellcheck disable=SC2086  # unquoted so each LINE becomes its own message
     memkit_stderr \
-        "no interpreter is recorded in the config and none of the pinned" \
-        "system paths exists, so the recall hook cannot run. Record an" \
-        "absolute python 3.9-or-newer path as \"interpreter\" in the memkit" \
-        "config — \`memkit init\` writes that field for you. A python found" \
-        "only through this session's PATH is deliberately not used: that" \
-        "lookup is one a checkout steers, and what it returns would run on" \
-        "every prompt. Pinned paths tried:" \
-        $MEMKIT_SYSTEM_PYTHONS \
+        "no interpreter is recorded in the config that this build can run, and" \
+        "no other route named one either, so the recall hook cannot run. A" \
+        "candidate qualifies only if it is python 3.9 or newer and its sqlite3" \
+        "can create an FTS5 table, which is what the index is. Tried:" \
+        $2 \
+        "Three routes name one, and none of them needs a config memkit did not" \
+        "write:" \
+        "  MEMKIT_INTERPRETER=<absolute path>, in the environment the harness" \
+        "  is launched from" \
+        "  the memkitInterpreter install option: \`claude plugin install" \
+        "  memkit@memkit --yes --config memkitInterpreter=<absolute path>\`, or" \
+        "  \`/plugin configure memkit@memkit\`" \
+        "  \`memkit init --interpreter <absolute path>\`, which probes the path" \
+        "  and records it as \"interpreter\" in the config it writes" \
+        "A python found only through this session's PATH is deliberately not" \
+        "used: that lookup is one a checkout steers, and what it returns would" \
+        "run on every prompt." \
         "Config in use: ${1:-<none resolved>}"
+    IFS=$_oldifs
 }
