@@ -4889,6 +4889,7 @@
     },
     {
       "name": "shell-grows-a-line-the-published-count-does-not-know",
+      "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "plugin",
       "file": "bin/lib/common.sh",
       "old": "# POSIX sh only. The harness runs these with whatever `/bin/sh` is. On the",
