@@ -5482,18 +5482,17 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
         "without asserting it printed one per declared exception, so a log "
         "naming fewer than it counts goes green"
     )
-    floor = re.search(r"done < (\d+)", step)
-    assert floor, f"the sweep step in `{job_name}` asserts no probe-count floor"
-    corpus = json.loads(
-        (REPO / "tools" / "mutation_probes.json").read_text(encoding="utf-8")
-    )["probes"]
-    # A floor is only a floor while it is close under the corpus. Above it the
-    # step is red on arrival; far below it — at 0, or at the 114 the two
-    # `--module` runs used to cover — a narrowed selection walks under it and
-    # the step reports a number it did not earn.
-    assert 0.9 * len(corpus) <= int(floor.group(1)) <= len(corpus), (
-        f"the step's floor is {floor.group(1)} against a corpus of "
-        f"{len(corpus)} probes"
+    # NO NUMERIC FLOOR. A floor here went stale with every probe added or
+    # retired, and it was a number about the corpus stated somewhere else.
+    # The step reads the corpus file and asks two things a number cannot
+    # drift from: the whole corpus ran, and no more waivers were taken than
+    # the corpus declares.
+    assert "mutation_probes.json" in step and re.search(
+        r"probes\s*!=\s*len\(corpus\)", step
+    ), f"the sweep step in `{job_name}` does not check that the whole corpus ran"
+    assert "declared_skip" in step and re.search(r"declared\s*>\s*allowed", step), (
+        f"the sweep step in `{job_name}` accepts more declared exceptions than "
+        "the corpus declares"
     )
 
     # A job is a context, and a context nothing waits for is a gate that does

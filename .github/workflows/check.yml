@@ -369,13 +369,19 @@ jobs:
               sys.exit(f"the sweep counted {declared} declared and named {len(named)}")
           if not (probes == total and done + declared == probes):
               sys.exit(f"{probes} probes selected, {done} caught and {declared} declared")
-          # The floor is what a narrowed selection cannot get under, and it
-          # counts catches alone: a corpus that declared its way to 661 would
-          # have proved nothing. 661 at the commit that set it, with room for a
-          # probe or two to be retired.
-          if done < 640:
-              sys.exit(f"only {done} probes were caught; the corpus held 661 when this floor was set")
-          print(f"{done} probes caught, {declared} declared exceptions")
+          # THE WHOLE CORPUS, AND NO MORE WAIVERS THAN IT DECLARES. Both are
+          # read from the corpus file rather than stated as a number here: a
+          # numeric floor went stale with every probe added or retired, and a
+          # narrowed selection or a corpus that stopped loading is what these
+          # two comparisons refuse.
+          import json
+          corpus = json.load(open("tools/mutation_probes.json", encoding="utf-8"))["probes"]
+          if probes != len(corpus):
+              sys.exit(f"{probes} probes ran; the corpus holds {len(corpus)}")
+          allowed = sum(1 for probe in corpus if "declared_skip" in probe)
+          if declared > allowed:
+              sys.exit(f"{declared} declared; the corpus declares only {allowed}")
+          print(f"{done} probes caught, {declared} declared exceptions, corpus of {len(corpus)}")
           ASSERT
 
   wordlist:
