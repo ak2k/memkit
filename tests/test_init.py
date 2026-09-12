@@ -1019,6 +1019,34 @@ def test_the_only_settings_key_init_may_write_is_an_allowlist(profile) -> None:
     assert caught.value.name == "enabled-plugins"
 
 
+def test_a_settings_key_init_never_touched_comes_back_byte_for_byte(
+    profile,
+) -> None:
+    """The settings file is the adopter's, re-serialized from its own parse so
+    that one key can change. Every other line has to survive that round trip as
+    the bytes they typed — an escape sequence carries the same value and turns
+    a one-key diff into a rewrite of every line holding a character outside
+    ASCII.
+    """
+    target = profile / "claude-config" / "settings.json"
+    prose = "autoMode — 3 × per session, mostly"
+    before = (
+        json.dumps(
+            {"autoModeNote": prose, "autoMemoryEnabled": True},
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    target.write_text(before, encoding="utf-8")
+    written = init._settings_with(str(target), {"autoMemoryEnabled": False})
+    untouched = [line for line in before.splitlines() if "autoModeNote" in line]
+    assert untouched, before
+    assert set(untouched) <= set(written.splitlines()), written
+    assert "\\u" not in written, written
+    assert json.loads(written)["autoMemoryEnabled"] is False
+
+
 def test_the_refusal_reaches_the_caller_named_and_with_a_reason(profile) -> None:
     """The name is the half a caller branches on and the sentence is the half a
     person acts on. An agent given only prose parses it; one given only a token
@@ -3565,6 +3593,70 @@ def test_the_description_cap_is_the_checkers_own(profile) -> None:
     assert init._MAX_DESC_CHARS == checker.MAX_DESC_CHARS
     assert set(init._LEDGER_NAMES) == set(checker.LEDGER_NAMES)
     assert init._INDEX_HEADING == checker.INDEX_HEADING
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_restated_link_pattern_is_the_checkers_own(profile) -> None:
+    """One rule, two spellings, because the checker exits at import below 3.12
+    and this module answers to the 3.9 floor the dispatcher runs on. A row's
+    destination is what decides whether a memory is rowed at all, so a copy
+    that drifts has the two halves disagreeing about which files the store
+    already indexes.
+    """
+    from memkit import memory_integrity as checker
+
+    assert init._LINK_RE.pattern == checker.LINK_RE.pattern
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_rows_description_cannot_swallow_the_next_rows_link(profile) -> None:
+    """A DESCRIPTION IS PROSE AND A LINK IS NOT. A row's text may hold an
+    unbalanced bracket — the cap's truncation is one way to get one — and a
+    link that could be read across the line break would take the destination
+    off the row below, leaving that memory unrowed and the store failing the
+    check the confirm turn runs over its own work.
+    """
+    # An opener inside what survives the cap, its closer past it. Derived from
+    # the cap rather than counted, so the shape holds if the cap moves.
+    opener = init._MAX_DESC_CHARS - 10
+    long = (
+        "an adopted memory whose description opens a bracket late".ljust(
+            opener, "x"
+        )
+        + "(and closes it only past the cut"
+        + "y" * 40
+    )
+    survives = long[: init._MAX_DESC_CHARS - 1]
+    assert "(" in survives and ")" not in survives, survives
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "aaa.md": f"---\nname: aaa\ndescription: {long}\n---\n\nbody\n",
+            "bbb.md": "---\nname: bbb\ndescription: an ordinary one\n---\n\nb\n",
+        },
+    )
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+
+    # The confirm runs the checker over the store it has just built, so the
+    # exit code is the checker's answer as well as init's.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    said = out.stdout + out.stderr
+    assert "ORPHAN" not in said, said
+    assert "STALE" not in said, said
+    assert out.returncode == init.EXIT_OK, said
+
+    rows = _rows_of((store / "SEARCH.md").read_text(encoding="utf-8"))
+    assert "search/projects/-home-u/bbb.md" in rows, rows
+    assert "search/projects/-home-u/aaa.md" in rows, rows
 
 
 def test_a_replaced_description_takes_the_lines_under_it(profile) -> None:

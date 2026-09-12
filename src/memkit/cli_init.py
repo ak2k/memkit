@@ -1403,8 +1403,10 @@ _YAML_INDICATORS = set("-?:,[]{}#&*!|>%@`")
 # `tier:` is the layout the tier directories replaced, and the checker rejects
 # a file still carrying it.
 _TIER_RE = re.compile(r"^tier:\s*\S+", re.MULTILINE)
-# A markdown link's destination, the way the checker reads a ledger's rows.
-_LINK_RE = re.compile(r"\(([^)]+\.md)\)")
+# A markdown link's destination, the way the checker reads a ledger's rows —
+# within one line, so a description carrying an unbalanced bracket cannot
+# take the destination off the row below it.
+_LINK_RE = re.compile(r"\(([^)\n]+\.md)\)")
 # The same links read the way the checker's DEAD-LINK rule reads them, which
 # is not the same question: a row's destination need not end in `.md` to fail
 # that check, so an index rowing a `.png` that is not coming wedges the store
@@ -3350,7 +3352,11 @@ def _settings_with(path: str, changes: dict) -> str:
             "understand — that is how a whole configuration gets lost.",
         ) from exc
     blob.update(changes)
-    return json.dumps(blob, indent=2) + "\n"
+    # `ensure_ascii=False`, because this is a read-modify-write over a file
+    # somebody else wrote and then has to review. Escaping every character
+    # outside ASCII changes no value and rewrites every line of their own
+    # prose that held one, so the diff for a one-key edit is unreadable.
+    return json.dumps(blob, indent=2, ensure_ascii=False) + "\n"
 
 
 def _settings_with_auto_dream_off(path: str) -> str:
