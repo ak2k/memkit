@@ -4496,17 +4496,21 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
         assert len(halves) == 2, line
         line = '&& mkdir "$dir" && ln -sn'.join(halves)
     script = "\n".join([*([opts] if opts else []), *prelude, *assignments, line])
-    # Unenterable for the line's own run and no longer: the assertions below
-    # and pytest's own cleanup both walk this directory afterwards.
     denied = cell == "guard-target-cannot-be-entered"
+    if denied and os.geteuid() == 0:
+        # The rule `needs_permissions` states for this file, and this cell
+        # cannot carry the marker because its axis is one parametrized id.
+        # Under root the directory IS enterable, so the line runs to the end
+        # and the shared status assertion below would fail for a reason about
+        # the runner rather than about the page.
+        pytest.skip("root enters mode-000 directories, so nothing is unenterable")
     if denied:
         target.chmod(0o000)
-        # Staging rather than a claim about the page: an owner who can enter
-        # it anyway is running some other case under this one's name.
-        assert not os.access(target, os.X_OK), target
     try:
         out = _shell_out(shell, script, repo, home, config_dir=config_dir)
     finally:
+        # Unenterable for the line's own run and no longer: the assertions
+        # below and pytest's own cleanup both walk this directory afterwards.
         if denied:
             target.chmod(0o700)
 
