@@ -52,6 +52,12 @@ def profile(tmp_path, monkeypatch):
         "CLAUDE_PLUGIN_ROOT",
     ):
         monkeypatch.delenv(name, raising=False)
+    # AND THE VARIABLES THE HARNESS DECIDES AUTO-MEMORY FROM. The preflight
+    # refuses both auto-memory flags on them, so a runner that exported one
+    # would turn every adoption case in this file into that refusal — a suite
+    # whose answer depends on the shell it was started from.
+    for name in (harness_memory.DISABLE_ENV, *harness_memory.OVERRIDE_ENV):
+        monkeypatch.delenv(name, raising=False)
     yield tmp_path
     # `_use_config` sets module globals and clears caches; a case that pointed
     # the reader at a fixture config would otherwise leave every later case in
@@ -2990,6 +2996,107 @@ def test_adoption_refuses_while_the_harness_feature_is_switched_off(
     assert str(managed / doctor.MANAGED_SETTINGS_NAME) in refusal.message, (
         refusal.message
     )
+
+
+def test_the_off_flag_is_refused_under_a_variable_that_runs_the_feature(
+    profile, monkeypatch
+) -> None:
+    """A settings scope cannot answer a question the environment already did.
+
+    `$CLAUDE_CODE_DISABLE_AUTO_MEMORY` is read before the harness opens a
+    settings file, so a value it reads as "run it" outranks every scope this
+    write reaches. Accepted, the manifest printed "the harness then neither
+    reads nor writes auto-memory" and offered a digest for it, over a boolean
+    that changes nothing while that value is in the environment.
+
+    THE VARIABLE IS THREE-VALUED and only one of the three is a conflict: a
+    value spelling off agrees with the write, and one spelling neither leaves
+    the settings to decide. Both are asserted here, because a guard that
+    refused on the variable being SET would take the flag away from the
+    adopter it works for.
+    """
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    refusal = _refuses(profile, "auto-memory-forced-on", auto_memory_off=True)
+    assert harness_memory.DISABLE_ENV in refusal.message
+    # The spelling, because what has to be changed is what was written.
+    assert "'0'" in refusal.message, refusal.message
+    # And a remedy for the variable rather than for a settings key: the
+    # harness reads this one first, so a repair naming the key repairs nothing.
+    assert "wherever it is exported" in refusal.message, refusal.message
+    assert harness_memory.ENABLED_KEY + '": false' not in refusal.message.split(
+        "Unset"
+    )[1], refusal.message
+    # The other two values decide nothing here.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "1")
+    assert _plan(profile, auto_memory_off=True).actions
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "maybe")
+    assert _plan(profile, auto_memory_off=True).actions
+    # And the variable is never a refusal for a plain init.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    assert _plan(profile).actions
+
+
+def test_adoption_is_refused_while_a_variable_chooses_the_directory(
+    profile, monkeypatch
+) -> None:
+    """The redirect half of the flag claims to know where every project
+    writes next, and under one of these variables memkit does not.
+
+    Each of the three takes a resolver of its own — a cowork path, a remote
+    projects root, a literal project key — and memkit resolves none of them,
+    which is the whole reason this is a refusal rather than a note: the
+    manifest's own sentence says every project's new memories land in the
+    store, and a directory a variable chose first makes that false.
+
+    Asserted for every name in the tuple, because a loop that skipped one
+    would write that adopter's redirect under a directory nobody could name.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    for name in harness_memory.OVERRIDE_ENV:
+        monkeypatch.setenv(name, str(profile / "elsewhere"))
+        refusal = _refuses(profile, "auto-memory-overridden", adopt_auto_memory=True)
+        assert "$" + name in refusal.message, refusal.message
+        assert "does not resolve it" in refusal.message, refusal.message
+        # Never resolved: the directory the variable names is not in the
+        # sentence, because memkit did not work out that it is the one.
+        assert str(profile / "elsewhere") not in refusal.message, refusal.message
+        # The other flag writes a boolean and is not about a directory.
+        assert _plan(profile, auto_memory_off=True).actions
+        monkeypatch.delenv(name)
+    # An empty value is not a variable the harness reads.
+    monkeypatch.setenv(harness_memory.OVERRIDE_ENV[0], "")
+    assert _plan(profile, adopt_auto_memory=True).actions
+
+
+def test_adoption_under_a_variable_that_switched_the_feature_off_says_so(
+    profile,
+    monkeypatch,
+) -> None:
+    """DISCLOSED, NOT REFUSED, and the direction is what decides which.
+
+    A variable that turns auto-memory off leaves the copy half of this flag
+    worth running — the files are there — and makes the redirect half a
+    setting no session carrying that value will act on. memkit reads one
+    environment and the adopter's sessions need not carry it, so refusing
+    would take away a copy that works; the manifest says the state instead,
+    beside the settings-scope sentence that says the same thing.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "yes")
+    rendered = _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    ).render()
+    assert "Auto-memory is switched off by the environment" in rendered, rendered
+    assert harness_memory.DISABLE_ENV in rendered
+    assert "'yes'" in rendered, rendered
+    assert "need not be the one your sessions run in" in rendered
+    # The copy is still planned: that is what makes this a note.
+    assert "Adoption: 1 files" in rendered, rendered
+    # And a value the harness reads as "run it" says nothing of the kind.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "off")
+    assert "switched off by the environment" not in _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    ).render()
 
 
 @pytest.mark.skipif(

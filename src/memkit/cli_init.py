@@ -865,6 +865,63 @@ def check_refusals(
                 "run this again.",
             )
 
+    # AND ABOVE EVERY SCOPE THOSE GATES READ, THE ENVIRONMENT. Two variables
+    # decide these same two questions before the harness opens a settings file
+    # at all — `harness_memory.DISABLE_ENV` for whether auto-memory runs,
+    # `OVERRIDE_ENV` for where it writes — and no gate here consulted either:
+    # `--auto-memory-off` under a value spelling "run it" printed "the harness
+    # then neither reads nor writes auto-memory" over a write nothing could
+    # make true, and `--adopt-auto-memory` under a directory override promised
+    # every project's new memories would land in the store while the override
+    # sends them elsewhere. Both were accepted, and a digest was offered for
+    # them. Asked of the readers doctor asks, so the two commands cannot come
+    # to disagree about what the environment decided.
+    if auto_memory_off:
+        # THREE-VALUED, AND ONLY ONE OF THE THREE IS A CONFLICT. A value the
+        # harness reads as "off" agrees with the write, and one it reads as
+        # neither leaves the settings to decide; `forced` is true only for the
+        # spellings that RUN the feature over every scope below them.
+        forced, spelled = harness_memory.env_switch()
+        if forced:
+            raise Refusal(
+                "auto-memory-forced-on",
+                f"${harness_memory.DISABLE_ENV} is set to {spelled!r}, which "
+                "the harness reads as an instruction to RUN auto-memory "
+                "before it opens a settings file at all: no settings scope "
+                "turns it off while that value is in the environment. "
+                f'--auto-memory-off writes "{harness_memory.ENABLED_KEY}": '
+                f"false into {_display_path(_settings_path(machine))}, and "
+                "the manifest says the harness then neither reads nor writes "
+                "auto-memory — which that variable makes false. Unset "
+                f"${harness_memory.DISABLE_ENV} wherever it is exported — a "
+                "shell profile, a direnv file, a wrapper script — or set it "
+                "to 1, and run this again.",
+            )
+    if adopt_auto_memory:
+        # NAMED, NEVER RESOLVED — see `harness_memory.OVERRIDE_ENV`. Each of
+        # these takes a resolver of its own, so what memkit can say honestly
+        # is that one is in effect and that it does not know the directory.
+        # An unresolved override is exactly the state in which the redirect
+        # this flag writes cannot be checked against anything, and the flag's
+        # own sentence claims to know where every project writes next.
+        overridden = harness_memory.overrides()
+        if overridden:
+            raise Refusal(
+                "auto-memory-overridden",
+                "an environment override is in effect ("
+                + ", ".join("$" + name for name in overridden)
+                + "), so where the harness writes is not what any settings "
+                "file says and memkit does not resolve it. "
+                f'--adopt-auto-memory writes "{harness_memory.DIRECTORY_KEY}": '
+                f'"{_home_form(_redirect_dir(store_path))}" into '
+                f"{_display_path(_settings_path(machine))}, and the manifest "
+                "says every project's new memories land there from then on — "
+                "which is not true of a directory a variable chose first. "
+                "Unset it wherever it is exported and run this again, or drop "
+                "the flag: copying what is already written is a separate "
+                "decision from redirecting what is written next.",
+            )
+
     # BOTH OF THESE ARE --adopt-auto-memory's ALONE. `--auto-memory-off` writes
     # one boolean and has to stay idempotent: refusing it because the feature
     # is already off would take away the convergence every other flag here has,
@@ -3096,6 +3153,24 @@ def build_plan(
                 "lands in that directory while the boolean is false. Setting "
                 "it back to true is an edit to that file; memkit has no flag "
                 "that does it."
+            )
+        # AND THE SAME STATE AN ENVIRONMENT VARIABLE PUTS A MACHINE IN, said
+        # in the same place. `harness_memory.DISABLE_ENV` turns the feature
+        # off ahead of every settings scope, so the redirect above is written
+        # for a feature no process carrying that value will exercise — and
+        # this one process's environment need not be the one the adopter's
+        # sessions run in, which is why the off direction is disclosed here
+        # rather than refused in the preflight.
+        forced, spelled = harness_memory.env_switch()
+        if forced is False:
+            notes.append(
+                "Auto-memory is switched off by the environment: "
+                f"${harness_memory.DISABLE_ENV} is set to {spelled!r}, which "
+                "the harness reads ahead of every settings file. This copies "
+                "what it wrote while the feature was on; nothing new lands in "
+                "the directory above for any session carrying that value. "
+                "memkit reads its own environment, which need not be the one "
+                "your sessions run in."
             )
     if auto_memory_off:
         target = _settings_path(machine)
