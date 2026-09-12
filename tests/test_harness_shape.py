@@ -1930,16 +1930,26 @@ def _a_shape_past_the_buffer(
     machine where it never got there.
     """
     made = 0
-    while True:
+    rendered = 0
+    # BOUNDED, because nothing else here is: the repo configures no pytest
+    # timeout, so a shape that stopped growing would double the tree until the
+    # disk filled rather than fail. Eight rounds from twelve is 1536 projects
+    # against the 192 the largest buffer measured here takes.
+    for _ in range(8):
         made = _fill_with_projects(config, made, max(12, made * 2))
         whole = subprocess.run(
             argv, capture_output=True, text=True, timeout=300, env=env,
         )
         assert whole.returncode == 0, whole.stderr
+        rendered = len(whole.stdout)
         # With a margin, so nothing rests on a shape that cleared the buffer
         # by a few bytes.
-        if len(whole.stdout) > io.DEFAULT_BUFFER_SIZE * 9 // 8:
+        if rendered > io.DEFAULT_BUFFER_SIZE * 9 // 8:
             return whole
+    pytest.fail(
+        f"{made} projects render {rendered} bytes and this interpreter buffers "
+        f"{io.DEFAULT_BUFFER_SIZE}: the shape stopped growing"
+    )
 
 
 def test_a_write_that_fails_part_way_leaves_no_document_and_no_refusal(
