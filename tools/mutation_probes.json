@@ -5816,8 +5816,8 @@
       "name": "scope-resolution-distrusts-the-user-scope-no-variable-moved",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    user_owned = not config_value or not _under_cwd(\n",
-      "new": "    user_owned = not _under_cwd(\n",
+      "old": "        user_owned = not config_value or not _under_cwd(\n",
+      "new": "        user_owned = not _under_cwd(\n",
       "tests": [
         "tests/test_doctor.py::test_the_user_scope_is_untrusted_only_where_a_variable_moved_it"
       ],
@@ -5827,8 +5827,8 @@
       "name": "scope-resolution-reads-one-settings-file-as-two-scopes",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "    project_dir = \"\" if not here or _resolved(here) == _resolved(user) else here\n",
-      "new": "    project_dir = here\n",
+      "old": "        project_dir = \"\" if not here or _resolved(here) == _resolved(user) else here\n",
+      "new": "        project_dir = here\n",
       "tests": [
         "tests/test_doctor.py::test_one_settings_file_is_one_scope_however_many_scopes_name_it"
       ],
