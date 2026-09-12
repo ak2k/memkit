@@ -4354,10 +4354,9 @@ def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, 
     store with `search/` and in a flat one; an ordinary directory, a `$store`
     that is not there, is unset, or is not a directory, a `$target` already
     taken by a file, and a `$target` that is there and cannot be entered all
-    change nothing at all. Two cells are states
-    the page does not
-    speak for and does not stop: a `$dir` linking out of the store, and a
-    `$target` that is itself a link out of it.
+    change nothing at all. Two cells are states the page does not speak for
+    and does not stop: a `$dir` linking out of the store, and a `$target`
+    that is itself a link out of it.
 
     What is asserted is exit status and the filesystem, never a utility's
     message: `mv` and `mkdir` word their failures differently under bash and
