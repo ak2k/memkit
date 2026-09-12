@@ -5408,7 +5408,9 @@ def _selftest_steps(job: str) -> list:
 
 
 def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome() -> None:
-    """The corpus is one list; a step that names modules is a second one.
+    """The corpus is one list; a step that names modules is a second one. The
+    modules a pull request sweeps are derived from its diff and the corpus,
+    never spelled in the step; the whole corpus runs on the release schedule.
 
     Two `--module` runs covered 114 probes of 661 and twelve modules ran in CI
     at all, so an anchor that had slipped off the code it was written for sat
@@ -5460,9 +5462,18 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
         "so a sweep that had stopped refusing reports its green number first"
     )
 
-    assert "--module" not in step, (
-        f"the sweep step in `{job_name}` names modules, so the corpus it runs "
+    # NARROWED BY THE DIFF, NEVER BY A LIST. The step may pass `--module`,
+    # but only a name it derived from the change's own file list and the
+    # corpus's `file`, `tests` and `module` fields — never one spelled here.
+    assert not re.search(r"--module\s+[A-Za-z_]", step), (
+        f"the sweep step in `{job_name}` names a module, so the corpus it runs "
         "is a hand-kept list that nothing re-derives"
+    )
+    assert re.search(r"git\W+diff", step) and all(
+        f'"{field}"' in step for field in ("module", "file", "tests")
+    ), (
+        f"the sweep step in `{job_name}` narrows the corpus without deriving "
+        "the modules from the change and the corpus"
     )
     assert not re.search(r"mutation_sweep\.py[^\n]*\s-k\b", step), (
         f"the sweep step in `{job_name}` narrows the corpus with -k"
@@ -5500,8 +5511,8 @@ def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome()
     # drift from: the whole corpus ran, and no more waivers were taken than
     # the corpus declares.
     assert "mutation_probes.json" in step and re.search(
-        r"probes\s*!=\s*len\(corpus\)", step
-    ), f"the sweep step in `{job_name}` does not check that the whole corpus ran"
+        r"probes\s*!=\s*len\(selected\)", step
+    ), f"the sweep step in `{job_name}` does not check that the whole selection ran"
     assert "declared_skip" in step and re.search(r"declared\s*>\s*allowed", step), (
         f"the sweep step in `{job_name}` accepts more declared exceptions than "
         "the corpus declares"
