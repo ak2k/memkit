@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import time
+import unicodedata
 
 import pytest
 
@@ -6074,3 +6075,52 @@ def test_the_auto_dream_flag_no_longer_claims_to_stop_the_writing(profile) -> No
     # And it does not claim the writing among what it stops, which is the half
     # that was false.
     assert "writing" not in bullet.split("consolidation only")[0], bullet
+
+
+def test_the_redirect_is_spelled_the_way_the_harness_will_spell_it(tmp_path) -> None:
+    """The harness NFC-normalizes `autoMemoryDirectory` before it uses it. A
+    store path handed over in NFD — the spelling macOS `listdir` gives a
+    composed character — was recorded as init spelled it and used as the
+    harness spells it: one directory on APFS, two on a normalization-sensitive
+    filesystem. The redirect is recorded in the harness's spelling.
+    """
+    nfd = unicodedata.normalize("NFD", str(tmp_path / "José" / "store"))
+    nfc = unicodedata.normalize("NFC", nfd)
+    assert nfd != nfc
+    redirect = init._redirect_dir(nfd)
+    assert redirect == unicodedata.normalize("NFC", redirect)
+    assert redirect.startswith(nfc)
+
+
+def test_a_refusal_after_a_red_check_still_reports_the_red_check(
+    profile, monkeypatch, capsys
+) -> None:
+    """A settings file that moved between the manifest and the last write
+    refuses, by contract. When VERIFY had already gone red, the refusal
+    returned before the deferred red-check report, so the run named the
+    refusal and lost the files the check was red on. Both are reported.
+    """
+    _harness(profile, "-home-u", {"ok.md": TRAP})
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(profile, store=str(profile / "notes"), adopt_auto_memory=True)
+    settings = profile / "claude-config" / "settings.json"
+
+    def red_and_moved(_machine, _config):
+        current = (
+            json.loads(settings.read_text(encoding="utf-8"))
+            if settings.exists()
+            else {}
+        )
+        current["movedBySession"] = True
+        settings.write_text(json.dumps(current), encoding="utf-8")
+        return 1, "ORPHAN: ./hot/x.md — no row in MEMORY.md"
+
+    reported: list = []
+    monkeypatch.setattr(init, "_run_checker", red_and_moved)
+    monkeypatch.setattr(
+        init, "_report_red_verify", lambda journal: reported.append(journal)
+    )
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    assert "changed-underfoot" in capsys.readouterr().err
+    assert len(reported) == 1

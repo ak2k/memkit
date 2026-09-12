@@ -41,6 +41,7 @@ import stat
 import subprocess
 import sys
 import time
+import unicodedata
 
 from memkit import harness_memory
 from memkit._exec import (
@@ -2902,7 +2903,12 @@ def _redirect_dir(store: str) -> str:
     path. Pointed at the corpus root, that is every memory in the store;
     pointed here, it is only what the harness itself wrote.
     """
-    return os.path.join(store, "search", harness_memory.SAFE_SUBDIR)
+    # The harness NFC-normalizes the setting before it uses it; recorded in
+    # any other spelling, the directory it writes to is a different one on a
+    # normalization-sensitive filesystem.
+    return unicodedata.normalize(
+        "NFC", os.path.join(store, "search", harness_memory.SAFE_SUBDIR)
+    )
 
 
 def build_plan(
@@ -4044,6 +4050,10 @@ def apply_plan(machine: Machine, plan: Plan, config_path: str) -> int:
         try:
             code = _perform(machine, journal, action, config_path)
         except Refusal as refusal:
+            # VERIFY's red answer is deferred to the end of the loop; a refusal
+            # that ends the loop early still owes it.
+            if incomplete != EXIT_OK:
+                _report_red_verify(journal)
             # A refusal raised BELOW the first write is not a refusal any more.
             # Exit 5 promises "nothing was written" and the skill's table tells
             # the agent so, and this became reachable the moment the settings
