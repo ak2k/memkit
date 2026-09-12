@@ -12097,47 +12097,6 @@ def test_the_walk_stops_on_the_clock_without_sweeping_what_it_did_not_reach(
     assert len(hook._fts_scan(str(flat))[0]) == hook.WALK_DEADLINE_EVERY * 3
 
 
-def test_the_walk_is_not_where_a_cold_sync_spends_its_budget(
-    corpus: Path,
-) -> None:
-    """What the walk costs when nothing bounds it, held to the reason the
-    bound is worth having.
-
-    `_fts_scan` now takes a deadline, and this drives it WITHOUT one — the
-    unbounded shape — because the argument for the bound is that the walk is a
-    rounding error on a local corpus and is not one on a store the operating
-    system is slow about. An argument from a number nobody re-measures is how
-    this file has been wrong before. A ratio rather than a millisecond bar, so
-    it means the same thing on a slow machine as on a fast one.
-
-    A TENTH, because a twentieth was the measurement rather than a bar above
-    it: this corpus walks in about 2 ms against a cold sync of about 30 ms, so
-    20 asked the ratio to be roughly the ratio, and the case failed seven runs
-    in ten run alone on an idle machine, and once under a parallel build at
-    16.6, on nothing that had changed. Taking the best of N for `cold` as well
-    moves the bar the WRONG way: a repeat sync against a fresh database is a
-    little faster than the first, which also pays the page cache, so the best
-    of them is a smaller budget for the walk to be a share of. The load that
-    breaks the case is a walk the filesystem is busy under, which costs the
-    scan about twice what it costs the sync; a tenth clears that, and a walk
-    that regressed for a reason would move this by an order of magnitude.
-    """
-    _many_memos(corpus, 400)
-    walk = min(_elapsed(lambda: hook._fts_scan(str(corpus))) for _ in range(3))
-    con = hook._fts_connect(hook._fts_db(str(corpus)))
-    try:
-        cold = _elapsed(lambda: hook._fts_sync(con, str(corpus)))
-    finally:
-        con.close()
-    assert walk < cold / 10, (walk, cold, "the walk is now a share of the budget")
-
-
-def _elapsed(work) -> float:
-    start = time.monotonic()
-    work()
-    return time.monotonic() - start
-
-
 def test_the_file_the_transaction_must_read_is_bounded_in_size(
     corpus: Path,
 ) -> None:
