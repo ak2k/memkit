@@ -2340,6 +2340,32 @@ def _name_fits(name: str) -> bool:
     return len(_utf8(name)) + _TMP_SUFFIX_BYTES <= _NAME_MAX_BYTES
 
 
+def _checker_link(dest: str) -> str:
+    """A row's destination as the integrity check's link parser reads it.
+
+    RESTATED RATHER THAN IMPORTED, for the reason `_rows_pointing_nowhere` is
+    restated: `memory_integrity` exits at import below 3.12 and this module
+    answers to the 3.9 floor the dispatcher runs on. Two rules carry it, both
+    read off that parser — `_dest` takes the first whitespace token and strips
+    `<>`, and `_link_path` then CUTS THE DESTINATION AT THE FIRST `#`, since
+    everything after one is an anchor into a document rather than part of the
+    path. A 3.12 case runs the real checker over a store this rule passed, so
+    a restatement that drifts fails there.
+
+    WHAT IT IS FOR is the comparison, not the value: a destination that comes
+    back unchanged is one the check will look for where the row put it, and a
+    destination that comes back SHORTER is a row pointing at a path nothing is
+    at. `#` is the only character that reaches that second answer through a
+    generated row — the link half is always `search/<key>/<name>`, so no
+    leading segment can read as a URL scheme and the `<>` strip never bites —
+    which is why the skip lines that use this name it.
+    """
+    raw = dest.strip()
+    if not raw:
+        return ""
+    return raw.split()[0].strip("<>").split("#", 1)[0].strip()
+
+
 def _rows_pointing_nowhere(text: str, dest: str, store: str, landing: set) -> list:
     """The destinations in `text` that resolve to no file, read from `dest`.
 
@@ -2366,7 +2392,7 @@ def _rows_pointing_nowhere(text: str, dest: str, store: str, landing: set) -> li
     for raw in _MD_LINK_RE.findall(text):
         if not raw.strip():
             continue
-        target = raw.strip().split()[0].strip("<>").split("#", 1)[0].strip()
+        target = _checker_link(raw)
         if not target or _SCHEME_RE.match(target):
             continue
         if "/" not in target and not target.lower().endswith(_PATH_SUFFIXES):
@@ -2433,6 +2459,21 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                 f"{_findable(project.key)}: the project key holds a character "
                 "no manifest line and no ledger row could carry — a link "
                 "ends at the first `)`, at a space, or at a newline"
+            )
+            continue
+        # AND THE CHARACTER THAT PASSES THAT TEST AND STILL LOSES THE FILE.
+        # `#` is printable, is not link syntax and is not whitespace, so the
+        # rule above keeps it — and the integrity check's own link parser
+        # reads a destination only as far as the first one. A key holding one
+        # is copied, rowed, and then read as a path that stops before it: the
+        # check init runs over its own work goes red, and no re-run repairs a
+        # row memkit generated from a name that is still on disk.
+        if _checker_link(project.key) != project.key:
+            skipped.append(
+                f"{_findable(project.key)}: the project key holds a `#`, and "
+                "the integrity check reads a link destination only as far as "
+                "the first one — the row this run would write would point at "
+                "the path before it, which is no file"
             )
             continue
         # AND IT MUST NOT BE A NAME THE CHECK READS AS A MEMORY. A key is a
@@ -2563,6 +2604,19 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     f"{shown}: the file name holds a character no manifest "
                     "line and no ledger row could carry — a link ends at the "
                     "first `)`, at a space, or at a newline"
+                )
+                continue
+            # THE SAME CHARACTER, THE OTHER HALF OF THE SAME PATH. Kept as
+            # a clause of its own rather than folded into the rule above,
+            # because the two answer to different parsers: that one is the
+            # ledger's row SYNTAX, and this one is what the check does with a
+            # destination the syntax accepted.
+            if _checker_link(name) != name:
+                skipped.append(
+                    f"{shown}: the file name holds a `#`, and the integrity "
+                    "check reads a link destination only as far as the first "
+                    "one — the row this run would write would point at the "
+                    "path before it, which is no file"
                 )
                 continue
             if not _name_fits(name):
@@ -2697,9 +2751,24 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                         "was derivable from it"
                     )
                     continue
+                link = os.path.relpath(dest, store)
+                # THE PATH THOSE TWO HALVES COMPOSE, ASKED OF THE PARSER THAT
+                # WILL READ IT. Each half is tested where it is read, and this
+                # is the string a row actually carries — the only thing the
+                # check opens. Deliberately belt and braces: a rule that tests
+                # the parts and never the whole is one the next part walks
+                # past, and what that costs here is a store that fails its own
+                # integrity check on a row nothing regenerates.
+                if _checker_link(link) != link:
+                    skipped.append(
+                        f"{shown}: the destination a row would carry is not "
+                        "the path the integrity check reads back out of it, "
+                        "so the row would point at no file"
+                    )
+                    continue
                 row = (
                     label,
-                    os.path.relpath(dest, store),
+                    link,
                     desc,
                 )
             held, readable = _held_text(dest)
