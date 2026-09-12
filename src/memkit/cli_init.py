@@ -535,7 +535,10 @@ def _merge_config(
     # No `citations` block, ever. It is optional, and an empty one makes the
     # first checker run an adopter does report two warnings about a feature
     # they never opted into.
-    return json.dumps(blob, indent=2) + "\n"
+    # `ensure_ascii=False` for the reason `_settings_with` gives: a store path
+    # or an existing value outside ASCII comes back as an escape that carries
+    # the same value and reads as a different file.
+    return json.dumps(blob, indent=2, ensure_ascii=False) + "\n"
 
 
 # --- the refusals ------------------------------------------------------------

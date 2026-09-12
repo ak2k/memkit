@@ -1495,6 +1495,33 @@ def test_a_second_init_does_not_renumber_the_first_ones_nonce(profile) -> None:
     assert blob["interpreter"] == sys.executable
 
 
+def test_a_config_value_outside_ascii_comes_back_as_the_bytes_it_went_in_as(
+    profile,
+) -> None:
+    """The mirror of the settings round trip, and the same reason: a second
+    init re-serializes the whole config from its own parse to add one store, so
+    a store path or a value somebody typed has to survive that as itself rather
+    than as an escape only a machine reads.
+    """
+    accented = str(profile / "notes-café-×")
+    first = init._merge_config(
+        "", nonce="mkcORIGINAL", interpreter=sys.executable,
+        entries=init._config_entries(store=accented, store_id="café"),
+    )
+    assert accented in first, first
+    merged = init._merge_config(
+        first,
+        nonce="mkcSECOND",
+        interpreter=sys.executable,
+        entries=init._config_entries(store=str(profile / "b"), store_id="b"),
+    )
+    untouched = [line for line in first.splitlines() if accented in line]
+    assert untouched, first
+    assert set(untouched) <= set(merged.splitlines()), merged
+    assert "\\u" not in merged, merged
+    assert json.loads(merged)["roots"]["café"]["path"] == accented
+
+
 def test_the_seeded_store_passes_the_checker_and_answers_doctors_query(profile):
     """§5.7's verification, end to end without the harness: a cold init
     produces a store doctor rates with zero FAIL checks and a canary that comes

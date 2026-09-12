@@ -5841,12 +5841,23 @@
       "name": "init-the-settings-rewrite-escapes-the-adopters-own-prose",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    return json.dumps(blob, indent=2, ensure_ascii=False) + \"\\n\"\n",
-      "new": "    return json.dumps(blob, indent=2) + \"\\n\"\n",
+      "old": "    # prose that held one, so the diff for a one-key edit is unreadable.\n    return json.dumps(blob, indent=2, ensure_ascii=False) + \"\\n\"\n",
+      "new": "    # prose that held one, so the diff for a one-key edit is unreadable.\n    return json.dumps(blob, indent=2) + \"\\n\"\n",
       "tests": [
         "tests/test_init.py::test_a_settings_key_init_never_touched_comes_back_byte_for_byte"
       ],
       "why": "the settings file is re-serialized from its own parse so one key can change, and escaping every non-ASCII character rewrites every line of somebody else's prose that held one"
+    },
+    {
+      "name": "init-the-config-merge-escapes-the-adopters-own-values",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    # the same value and reads as a different file.\n    return json.dumps(blob, indent=2, ensure_ascii=False) + \"\\n\"\n",
+      "new": "    # the same value and reads as a different file.\n    return json.dumps(blob, indent=2) + \"\\n\"\n",
+      "tests": [
+        "tests/test_init.py::test_a_config_value_outside_ascii_comes_back_as_the_bytes_it_went_in_as"
+      ],
+      "why": "a second init re-serializes the whole config from its own parse to add one store, so escaping every non-ASCII character rewrites a store path the adopter typed into a form only a machine reads"
     },
     {
       "name": "scope-resolution-distrusts-the-user-scope-no-variable-moved",
