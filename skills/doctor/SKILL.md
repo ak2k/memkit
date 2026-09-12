@@ -18,7 +18,7 @@ Two follow-ups are covered by the same grant, and no other subcommand is:
   for exactly this, and without it that remedy named a command this skill
   could not issue.
 - `--check <id>` re-runs one check by name after a fix, which is cheaper than
-  a whole report and is how you show something is now green.
+  a whole report and is how you re-read that one row's detail and remedy.
 
 ## Relay the report verbatim
 

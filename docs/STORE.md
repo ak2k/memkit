@@ -37,9 +37,9 @@ frontmatter to be retrievable.
   any files stranded outside it:
 
   ```
-  store notes: /home/you/notes [project; always; searched]
-    corpus:  /home/you/notes/search — 1 file
-    ! 2 markdown files under /home/you/notes are outside the corpus root and
+  store notes: ~/notes [project; always; searched]
+    corpus:  ~/notes/search — 1 file
+    ! 2 markdown files under ~/notes are outside the corpus root and
       will not be retrieved — move them into search/
   ```
 - **What is skipped.** `archive/` and `hot/` are pruned while walking —
@@ -226,55 +226,173 @@ to date against.
 
 Claude Code keeps a memory of its own, and by default none of it reaches your
 store. Measured on 2.1.238, the version CI installs: it writes agent-curated
-memories to `~/.claude/projects/<sanitized cwd>/memory/`, one directory per
-project, the cwd sanitized by replacing `/` and `.` with `-`.
+memories to `<config dir>/projects/<project key>/memory/`. Measured on 2.1.258:
+it creates that directory at startup even when it writes nothing into it, and
+the key, matching the documentation page, is the git repository root with every
+character that is not a letter or digit replaced by `-`, so every subdirectory
+of one repository shares one directory; outside a repository the cwd is used
+instead. The path is the physical one, so a checkout reached through a symlink
+keys on the symlink's target. A linked worktree maps to its main checkout's
+root, so a repository's worktrees share that directory too; a submodule keys on
+itself. Measured on 2.1.258: the config dir is `$CLAUDE_CONFIG_DIR` when that
+is set. Read from the code on 2.1.258 and not exercised: it is `~/.claude`
+otherwise, and a key past 200 characters is truncated there and given a base36
+hash suffix.
 
 ```bash
-pwd | tr './' '-'      # /Users/you/.config/nix -> -Users-you--config-nix
+# needs git 2.31+; a "fatal:" here means the key fell back to the cwd
+# ASCII, newline-free paths only: tr maps bytes, the harness maps characters
+# `|| root=` keeps the fallback reachable where the paste runs under `set -e`
+root=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || root=
+case $root in */.git) root=${root%/.git} ;;
+  *) root=$(git rev-parse --path-format=absolute --show-toplevel || pwd -P) ;; esac
+key=$(printf '%s\n' "$root" | tr -c 'A-Za-z0-9\n' '-')
+printf '%s\n' "$key"
 ```
+
+The common dir is the main checkout's `.git` from a linked worktree, which is
+why it is read first; in a submodule it sits under the superproject, and the
+`case` falls through to the submodule's own root.
 
 Left there they are outside every store: nothing retrieves them and nothing
 curates them. Point the harness at the store instead. The setting is
-`memoryDir`, and the value worth giving it is the **corpus root** rather than the
-store root, so that what the harness writes is retrievable the moment it lands:
+`autoMemoryDirectory`, and the value worth giving it is a directory of the
+harness's own **under the corpus root**, so that what it writes is retrievable
+the moment it lands:
 
 ```json
-{ "memoryDir": "~/notes/search" }
+{ "autoMemoryDirectory": "~/notes/search/auto-memory" }
 ```
 
-In `~/.claude/settings.json` that sends every project's memories to your personal
-store, which is the one to set once and forget about. In a checkout's
+Retrieval walks the corpus recursively, so a subdirectory of `search/` is read
+like any other. Give the harness one of its own rather than the corpus root:
+measured on 2.1.258, a Write or Edit of a `.md` file that already carries
+frontmatter, whose path starts with the configured directory, rewrites that
+frontmatter — `name` slugified, a session id and a timestamp appended — so a
+directory that also holds your own memory files gets them rewritten too. Read
+from the code, not exercised: every other top-level key is moved under
+`metadata:` at the same time. Measured on 2.1.258: a leading `~/` is expanded,
+and the value is used as it stands for every project, with no per-project
+directory under it.
+
+In your user settings — `<config dir>/settings.json` — that sends every
+project's memories to your personal store, which is the one to set once and
+forget about. In a checkout's
 `.claude/settings.local.json` it sends that project's memories to that project's
-store. **Not its checked-in `.claude/settings.json`** — the harness ignores
-`memoryDir` there deliberately, so that cloning a repository cannot redirect
-where your agent writes.
+store. So does its **checked-in `.claude/settings.json`**: measured on 2.1.258,
+`claude -p` reads `autoMemoryDirectory` from that file with no trust check. Read
+from the code, not exercised: in an interactive session the checked-in value is
+gated on folder trust. A clone's checked-in settings can redirect where your
+agent writes. The settings schema's own description says that file is ignored,
+and is wrong. Read from the code, not exercised: the precedence among settings
+scopes, highest first, is managed policy, the `--settings` flag,
+`.claude/settings.local.json`, `.claude/settings.json`, then user settings.
 
-A symlink does the same job, and is the route to know when that setting is not
-yours to set. Move what is already written before you swap, or it is orphaned:
+A symlink does the same job where the setting is not yours to set and no
+settings file of yours outranks the one that carries it. The shape is one link
+per project: the harness's own memory directory for this repository —
+`<config dir>/projects/<key>/memory`, for the key the block above prints —
+becomes a symlink into the store. Retrieval then
+reads what the harness writes, and the harness goes on writing to the path it
+already knows. Point the link at a directory of the harness's own, for the
+reason the setting has one: a corpus directory that also holds your own memory
+files gets them rewritten. Where a checkout's checked-in
+`.claude/settings.json` declares `autoMemoryDirectory` already, the flag below
+refuses (`auto-memory-redirected`) and this link reaches nothing: the harness
+writes where that file sends it, not to the directory the key names. The route
+left there is that checkout's own `.claude/settings.local.json`, which the
+harness reads above it. Under managed policy the value is not yours to
+override.
 
-```bash
-store=~/notes; dir=~/.claude/projects/$(pwd | tr './' '-')/memory
-mv "$dir"/*.md "$store"/search/ && rmdir "$dir"
-ln -s "$store"/search "$dir"
-```
+**What the shape costs.** The link is per project, so the next repository needs
+its own. It is tied to the physical path the key derives from, so a checkout
+that moves keys somewhere else and needs a new link. And whatever is already
+written has to move into the store before the swap or it is orphaned, and it
+lands there as new files: they carry no ledger row until the checker's
+`--write` pass adds one.
 
-`memkit doctor` reports whether the feature is on and names the directory it
-believes is in use — but it derives that path from the cwd, so what it names is
-the default and not a `memoryDir` you have moved.
+**`/memkit:init --adopt-auto-memory` does all of that for every project at
+once.** It copies what the harness has written into the store and redirects the
+harness there, listing every path in one manifest you approve before anything
+is written. That is the route this page recommends, and the reason it no longer
+prints a chain of shell to do the same work by hand. It writes the setting into
+your user settings, the bottom of the precedence list above, so where a checkout
+carries a checked-in `.claude/settings.json` that sets it too, set
+`.claude/settings.local.json` in that checkout instead: untracked, and above
+both. Its refusal is order-dependent, too — it reads the cwd when it runs, so a
+clone made afterwards is checked by nothing.
+
+**One case still wants a hand.** An earlier revision of this page pointed that
+directory at the corpus root itself. With `$key` still set by the block above,
+this names the harness's memory directory for this repository and shows what
+is there:
+
+`dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$key/memory; ls -ld "$dir"`
+
+Where `ls -ld "$dir"` shows a symlink, repoint it at the harness's own
+directory. Quit the harness first — it recreates `$dir` at startup, and a
+recreation between `rm` and `ln` leaves the link inside `$dir` rather than in
+its place.
+
+`[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && target=$(CDPATH= cd "$target" && pwd -L) && rm "$dir" && ln -sn "$target" "$dir"`
+
+That race ends at rc 0 all the same, and `ls -ld "$dir"` then shows a directory
+where it showed a link. Where it shows a directory holding one link named for
+`$target`, the harness recreated `$dir` and the link landed one level down
+inside it. Quit the harness and move that link up into `$dir`'s own place: it
+already points where the line above was taking it. This page prints no command
+for the move — `ls -ld` prints one line about a directory and never its
+contents, so what else is in there is yours to read first.
+
+`$target` is the harness's directory under the corpus root:
+`$store/search/auto-memory` where `search/` exists, `$store/auto-memory` where
+it does not — a store with no `search/` has `$store` itself for a corpus root.
+Creating `search/` afterwards takes that directory back out of retrieval, so
+making `search/` first is the simpler order. `rm` removes the link and never
+what it points at, so memories already lying flat in the corpus root stay
+where they are and stay retrievable. Where `$dir` is not a link the first test
+fails and nothing after it runs. `$store` is your store's root, and all three
+are yours to set before the line runs: an unset `$store` or `$dir` fails a
+test rather than a command, so the line stops with a status and nothing on
+stderr, while an unset `$target` fails `mkdir`, which does say so on stderr.
+`$store` and `$target` may be relative, so the line links to the directory's
+own absolute path rather than to the name it was handed, with `CDPATH` emptied
+for that one `cd`: a relative name in `$dir`'s place is read from `$dir`'s
+parent under `projects/` rather than from where the line was pasted, and the
+repair would end at rc 0 having put a dangling link where a working one was.
+Under `set -u` all three are the shell's own message instead where the line
+reaches that name, and it stops there rather than on a test. An earlier test
+that fails first never expands the later name, so that line stops exactly as it
+does without the option: a status, and nothing to read.
+
+`memkit doctor` reads `autoMemoryDirectory` from the settings scopes the harness
+honors and reports which file declares it — by the role that file plays, never
+by its path — and how the directory it names stands to a corpus root: inside one,
+so what the harness writes there is retrieved, or in one of the placements that
+keeps it out of retrieval, from a name retrieval prunes to outside every store.
+Could not look is a third answer and not a quieter version of the second: where
+a store this run had to read would not resolve, the row places the directory
+against nothing and sends you to that store rather than to the directory. Where
+the key is unset it says the harness writes to the directory it derives from the
+git root, under its own config directory, and counts the memories already
+outside every store — or, where a store would not resolve, the memories nothing
+was compared with. It renders no path on any branch.
 
 ### Before you wire it up
 
-- **The default path is derived from the cwd**, so a symlink into it is tied to
-  one checkout path. Clone the project to `~/work/app` on one machine and
-  `~/src/app` on another, and only the machine whose path you linked is wired up.
-  `memoryDir` carries no such coupling, which is the better reason to prefer it.
-- **The layout rule does not relax for a repository.** The harness writes flat —
-  `MEMORY.md` and one file per memory, no `search/`. Point it at the store root
+- **The default path is derived from the repository root**, so a symlink into
+  it is tied to one checkout path. Clone the project to `~/work/app` on one
+  machine and `~/src/app` on another, and only the machine whose path you linked
+  is wired up. `autoMemoryDirectory` carries no such coupling, which is the
+  better reason to prefer it.
+- **The layout rule does not relax for a repository.** The harness writes into
+  one directory — `MEMORY.md` and one file per memory, no `search/`. Point it at
+  the store root
   and every one of those files sits above the corpus root and is not retrieved:
   [the same trap as any other file left there](#what-retrieval-actually-requires),
-  now arriving on its own. Pointing at `<store>/search` is what avoids it, and the
-  `MEMORY.md` that lands there alongside them is ignored by retrieval and by the
-  checker alike, wherever it sits.
+  now arriving on its own. Pointing at `<store>/search/auto-memory` avoids it,
+  and the `MEMORY.md` that lands there alongside them is ignored by retrieval
+  and by the checker alike, wherever it sits.
 - **The lighter alternative**, for a repository that already keeps its memories
   in its own tree: leave the harness where it is and put a stub `MEMORY.md` in its
   directory naming the real store.

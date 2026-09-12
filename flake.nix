@@ -110,10 +110,16 @@
           # cannot run here — and without the marker they SKIP everywhere,
           # including the plain-python leg where they are the gate. `pkgs.git`
           # above is not the missing half: git is present, the checkout is not.
+          # zsh is here for the same reason: the store-guidance cases paste the
+          # documented commands into both shells an adopter uses, and where one
+          # of them is absent they fail unless the context declares itself
+          # without it. No build here declares that, and the suite asserts the
+          # marker's name appears nowhere in this file at all — so writing it
+          # down, even in a comment, is what turns the assertion red.
           suite =
             name: file:
             pkgs.runCommand "memkit-${name}" {
-              nativeBuildInputs = [ pkgs.git ];
+              nativeBuildInputs = [ pkgs.git pkgs.zsh ];
               MEMKIT_NO_CHECKOUT = "1";
             } ''
               cd ${inputs.self}
@@ -144,6 +150,8 @@
             "test_plugin_surface.py" = "plugin-tests";
             "test_doctor.py" = "doctor-tests";
             "test_init.py" = "init-tests";
+            "test_harness_memory.py" = "harness-memory-tests";
+            "test_harness_shape.py" = "harness-shape-tests";
           };
           # Top-level FILES only, which quietly excludes `tests/rig/` — and
           # that exclusion is deliberate rather than incidental. Those

@@ -23,10 +23,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
+import unicodedata
 
 import pytest
 
-from memkit import _exec
+from memkit import _exec, harness_memory
 from memkit import cli_doctor as doctor
 from memkit import memory_prompt_recall as hook
 
@@ -219,6 +222,39 @@ def test_every_string_in_the_envelope_is_bounded_in_bytes() -> None:
     check.detail.encode("utf-8").decode("utf-8")
 
 
+def test_no_spelling_of_home_survives_the_choke_point(tmp_path, monkeypatch) -> None:
+    """Home reaches a row by four spellings, and one place sees all four.
+
+    Two paths, because `$HOME` is a symlink on more machines than not and the
+    harness builds a project key from the resolved one while this report's own
+    re-speller reads the environment's; and each of those again with every
+    separator replaced, which is what a project key is.
+
+    A SIBLING IS NOT A CHILD: a directory whose name merely starts with home's
+    is a different directory, and re-spelling it names one that is not there.
+    The two rules differ because a key's own separator is `-`, so `-old` after
+    a key is a child while `-old` after a path is a sibling.
+    """
+    real = tmp_path / "resolved"
+    real.mkdir()
+    link = tmp_path / "home"
+    link.symlink_to(real)
+    monkeypatch.setenv("HOME", str(link))
+    resolved = os.path.realpath(str(link))
+    key = harness_memory.key_spelling(resolved)
+
+    assert doctor._bound(str(link)) == "~"
+    assert doctor._bound(f"{link}/.claude/settings.json") == "~/.claude/settings.json"
+    assert doctor._bound(f"could not read {resolved}/x") == "could not read ~/x"
+    assert doctor._bound(harness_memory.key_spelling(str(link))) == "~"
+    assert doctor._bound(f"{key}-git-app (2), one more") == "~-git-app (2), one more"
+
+    for tail in ("_old", "-old", "old"):
+        assert doctor._bound(f"{link}{tail}/notes.md") == f"{link}{tail}/notes.md"
+    for tail in ("_old", "old"):
+        assert doctor._bound(f"{key}{tail}") == f"{key}{tail}"
+
+
 # --- the closed vocabularies -------------------------------------------------
 
 
@@ -377,6 +413,11 @@ def profile(tmp_path, monkeypatch):
         hook.PLUGIN_DATA_ENV,
         "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
         "CLAUDE_PLUGIN_ROOT",
+        # The harness's own memory surfaces that are not a settings file: a
+        # developer with one of these exported would get an answer from the
+        # fixture that CI never gets.
+        harness_memory.DISABLE_ENV,
+        *harness_memory.OVERRIDE_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
     tmp_path.joinpath("state").mkdir(exist_ok=True)
@@ -408,6 +449,13 @@ def _config_file(path, *, schema=1, stores=(), search_cli=None) -> str:
         blob["search_cli"] = search_cli
     path.write_text(json.dumps(blob), encoding="utf-8")
     return str(path)
+
+
+# The auto-memory row's settled answer. That check never passes — every branch
+# of it rests on a settings walk, on an environment this one process inherited
+# and on a directory listing — so what separates "nothing to act on here" from
+# "here is what to change" is the remedy rather than the status.
+SETTLED = (doctor.INFO, "")
 
 
 def _only(checks, check_id):
@@ -745,7 +793,7 @@ def test_the_config_is_parsed_once_however_many_checks_ask(profile, monkeypatch)
 NONCE = "zq7v4k2mxr"
 
 
-def _store_config(profile, *, stores, nonce=None, gate=None) -> str:
+def _store_config(profile, *, stores, nonce=None, gate=None, dirs=None) -> str:
     """A config over real directories under the scratch profile.
 
     It RECORDS AN INTERPRETER, which is what `memkit init` writes and what the
@@ -766,7 +814,10 @@ def _store_config(profile, *, stores, nonce=None, gate=None) -> str:
             {
                 "id": name,
                 "role": "personal" if name == "personal" else "project",
-                "dir": f"stores/{name}",
+                # `dirs` is how a case puts one store's corpus root somewhere
+                # the default layout never reaches: under a pruned name, or
+                # inside another store's.
+                "dir": (dirs or {}).get(name, f"stores/{name}"),
                 "live_root": "home",
                 **({"cwd_gate": {"root": gate}} if gate and name != "personal" else {}),
             }
@@ -2171,19 +2222,303 @@ def test_auto_memory_armed_is_information_and_names_the_setting(profile, monkeyp
     """The one differentiator the field survey found unclaimed: none of the six
     competitors handles built-in auto-memory coexistence at all. Two memory
     systems on one project is a choice, so it is INFO and the remedy names the
-    exact key."""
+    exact key.
+
+    Which key is the whole of what changed here. `autoDreamEnabled: false`
+    stops background consolidation and NOTHING else — the harness still writes
+    every memory — so the remedy that named it was one an adopter could follow
+    and still have two memory systems. `autoMemoryEnabled` is the switch.
+    """
     path = _store_config(profile, stores=["personal"])
     _settings(profile, autoDreamEnabled=True)
     checks = doctor.collect(_machine(profile, monkeypatch, path))
     (row,) = _only(checks, "auto-memory")
     assert row.status == doctor.INFO
-    assert "autoDreamEnabled is ON" in row.detail
-    assert '"autoDreamEnabled": false' in row.remedy
+    assert "the harness would write this project's memories to" in row.detail
+    assert '"autoMemoryEnabled": false' in row.remedy
+    assert row.actor == doctor.USER
     assert doctor.verdict([row]) == "OK"
 
+    # Consolidation off is not the feature off: same branch, one more line.
     _settings(profile, autoDreamEnabled=False)
     (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
-    assert row.status == doctor.PASS
+    assert row.status == doctor.INFO
+    assert f"auto-dream is off in {doctor._ROLE['user']}: no background" in row.detail
+    assert "the harness would write this project's memories to" in row.detail
+
+
+def test_auto_memory_off_is_the_only_state_that_says_memkit_is_alone(
+    profile, monkeypatch
+) -> None:
+    """`autoMemoryEnabled: false` and the harness neither reads nor writes
+    auto-memory, which is the one state where an adopter has one memory system.
+
+    Measured on 2.1.232, 2.1.240 and 2.1.258. It is checked FIRST because it
+    settles the question the other branches are about: where a feature that is
+    not running writes is not a fact anybody needs.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False, autoMemoryDirectory="/u/elsewhere")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert f"auto-memory is off in {doctor._ROLE['user']}" in row.detail
+    # And the directory it would have used is not reported as a second system,
+    # which is what the branch order buys.
+    assert "elsewhere" not in row.detail
+    assert doctor.verdict([row]) == "OK"
+
+
+def test_a_memory_directory_that_will_not_list_is_named_by_its_role(
+    profile, monkeypatch
+) -> None:
+    """The directory the walk stopped on, in the detail and in the remedy.
+
+    A failed enumeration used to mean one thing — `projects/` would not list —
+    and both strings said so. One project's `memory/` fails the walk too, and
+    over that state the row sent an adopter to a directory that is already
+    readable while the one that is not went unnamed.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    shut = profile / "claude-config" / "projects" / "-p-shut" / "memory"
+    shut.mkdir(parents=True)
+    (shut / "one.md").write_text("x\n", encoding="utf-8")
+    shut.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        shut.chmod(0o755)
+    assert "cannot be counted" in row.detail and str(shut) not in row.detail
+    assert "readable" in row.remedy and str(shut) not in row.remedy
+    assert "projects" not in row.remedy
+    # And the walk that failed bears out nothing, so the claim is not made.
+    assert "memkit is the only memory system here" not in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_a_directory_inside_a_store_is_retrieved_and_settles_the_row(profile, monkeypatch):
+    """The state this whole check exists to send an adopter to: the harness
+    writing into a directory of its own INSIDE the corpus root, where memkit
+    retrieves what it writes. One memory system, two writers.
+
+    Inside rather than AT the corpus root, which is what it used to be: the
+    harness re-serialises every `.md` under the directory it is pointed at, so
+    the root itself hands memkit's whole corpus to somebody else's YAML writer.
+    Retrieval recurses, so a subdirectory costs nothing.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "widget calibration after a flash")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert "is inside a store's corpus root" in row.detail
+    assert doctor._ROLE["user"] in row.detail
+
+
+@pytest.mark.parametrize("switched_off", (True, False))
+@pytest.mark.parametrize(
+    "variable", (harness_memory.DISABLE_ENV, *harness_memory.OVERRIDE_ENV)
+)
+def test_the_inventory_row_names_no_variable_this_process_does_not_carry(
+    profile, monkeypatch, variable, switched_off
+) -> None:
+    """One variable at a time, over both branches, and two properties.
+
+    A remedy naming a variable the reader does not have is worse than no
+    remedy: following it changes nothing, and the row goes on saying what it
+    said. The gate that stops this row passing was narrower than the set of
+    things it discloses, so an override variable deciding where the harness
+    writes left `memkit is the only memory system here` standing.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, **({"autoMemoryEnabled": False} if switched_off else {}))
+    monkeypatch.setenv(
+        variable, "1" if variable == harness_memory.DISABLE_ENV else "/u/elsewhere"
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    named = set(re.findall(r"\$([A-Z_]+)", row.remedy))
+    assert all(os.environ.get(one) for one in named), (named, row.remedy)
+    # And what voided the claim is in the detail, not only in the gate: a row
+    # that stops saying the reassuring thing without saying why says nothing.
+    assert variable in row.detail
+    assert "memkit is the only memory system here" not in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_a_retrieved_directory_does_not_pass_over_an_inventory_it_could_not_read(
+    profile, monkeypatch
+) -> None:
+    """The pass this branch gives is a claim about the machine, and this run
+    could not enumerate what the harness already wrote on it.
+
+    The branch returned before the walk was ever called, so the one state that
+    voids every other branch's pass — an inventory that would not list — was
+    invisible here. The parallel guard on the derived directory already gated
+    on it.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "widget calibration after a flash")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    projects = profile / "claude-config" / "projects"
+    projects.mkdir(parents=True, exist_ok=True)
+    projects.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        projects.chmod(0o755)
+    assert (row.status, row.remedy) != SETTLED
+    assert "cannot be counted" in row.detail and str(projects) not in row.detail
+    assert "readable" in row.remedy and str(projects) not in row.remedy
+    assert row.actor == doctor.USER
+
+
+def test_a_checkout_that_decided_the_switch_still_discloses_the_scopes_that_disagree(
+    profile, monkeypatch
+) -> None:
+    """Two disclosures, one row, and the second one was unreachable.
+
+    Which file wins is inferred rather than measured for this key, so a second
+    scope declaring it otherwise is reported. Ordered behind the checkout
+    branch, that report never fired for the state where it matters most: a
+    clone deciding the switch over a user settings file that says otherwise.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=True)
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "this checkout says so" in row.detail
+    assert f"{doctor._ROLE['user']} declares it otherwise" in row.detail
+    # The remedy stays the one that does not send an adopter into the clone.
+    assert row.remedy == doctor._checkout_remedy("value", "project")
+
+
+def test_a_gated_store_still_holds_what_the_harness_writes_into_it(
+    profile, monkeypatch
+) -> None:
+    """Asked of EVERY configured store rather than of the searched ones.
+
+    A project store gated to a root this session is standing outside of is not
+    searchable right now — and it still holds the memories in it. Answering
+    from `searched_stores()` would make this check report "outside every store"
+    about a directory that is already right, with the answer changing according
+    to which directory the adopter happened to run doctor from.
+    """
+    path = _store_config(profile, stores=["personal", "project"], gate="elsewhere")
+    corpus = profile / "stores" / "project" / "search"
+    _memory(corpus, "kept.md", "sprocket backlash after the rebuild")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    machine = _machine(profile, monkeypatch, path)
+    cfg = machine.config()
+    assert cfg is not None
+    assert [s.id for s in cfg.searched_stores()] == ["personal"], "not gated out"
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert "is inside a store's corpus root" in row.detail
+
+
+def test_a_directory_outside_every_store_is_named_with_what_it_costs(
+    profile, monkeypatch
+) -> None:
+    """The silent state: the setting is doing exactly what it says, the
+    memories are being written, and nothing retrieves them. INFO rather than
+    FAIL because it is a choice an adopter may have made — and the remedy names
+    the key and a value rather than describing one."""
+    path = _store_config(profile, stores=["personal"])
+    stray = profile / "elsewhere"
+    stray.mkdir()
+    _settings(profile, autoMemoryDirectory=str(stray))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert doctor._ROLE["user"] in row.detail
+    assert "nothing retrieves what lands there" in row.detail
+    assert "autoMemoryDirectory" in row.remedy
+    assert "directory under a store's search tree" in row.remedy
+    # The section by name and no `#` fragment: the anchor is not in the shipped
+    # copy of that page yet, and a link to one that does not exist reads as an
+    # assurance the detail is somewhere.
+    assert "Where your agent's own memories land" in row.remedy
+    assert "STORE.md" not in row.remedy
+    assert row.actor == doctor.USER
+
+
+def test_with_no_setting_the_report_names_the_derived_role_and_what_is_in_it(
+    profile, monkeypatch
+) -> None:
+    """The state almost every adopter is in, and the one the old check could
+    not describe: no setting at all, so the harness derives a path per project
+    and has been filling it for months.
+
+    The count is the argument for doing anything about it, so it is stated
+    across the whole config dir rather than for this project alone — an adopter
+    whose current checkout is new has no idea how much is elsewhere.
+    """
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    for key, names in (
+        ("-home-u-git-app", ("one.md", "two.md", "MEMORY.md")),
+        ("-home-u", ("note.md",)),
+        ("-home-u-empty", ()),
+    ):
+        (projects / key / "memory").mkdir(parents=True)
+        for name in names:
+            (projects / key / "memory" / name).write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    default = harness_memory.default_dir(
+        str(profile / "claude-config"), os.getcwd()
+    )
+    assert default not in row.detail
+    assert "derives from the git root" in row.detail
+    assert "2 project directories hold 3 memories outside every store" in row.detail
+    # THE COUNT AND NEVER THE KEYS: a project key is an absolute path with its
+    # separators replaced.
+    assert "-home-u-git-app" not in row.detail and "-home-u (1)" not in row.detail
+
+    # And once the directory exists, the sentence is in the present tense: the
+    # difference between "this is where it would go" and "this is where your
+    # memories are" is the whole reason an adopter reads this row.
+    os.makedirs(default, exist_ok=True)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "the harness writes this project's memories to" in row.detail
+    assert "derives from the git root" in row.detail
 
 
 def test_auto_memory_reports_whether_a_consolidation_actually_ran(
@@ -2194,7 +2529,11 @@ def test_auto_memory_reports_whether_a_consolidation_actually_ran(
     path = _store_config(profile, stores=["personal"])
     _settings(profile, autoDreamEnabled=True)
     project = (
-        profile / "claude-config" / "projects" / doctor._sanitized_cwd() / "memory"
+        profile
+        / "claude-config"
+        / "projects"
+        / harness_memory.project_key(os.getcwd())
+        / "memory"
     )
     project.mkdir(parents=True)
     (project / doctor.CONSOLIDATE_LOCK).touch()
@@ -2203,6 +2542,1831 @@ def test_auto_memory_reports_whether_a_consolidation_actually_ran(
         "auto-memory",
     )
     assert "consolidation ran" in row.detail
+
+
+def test_a_consolidation_lock_dated_in_the_future_is_said_rather_than_counted(
+    profile, monkeypatch
+) -> None:
+    """Clocks disagree, and `now - mtime` on a lock written by another machine
+    or before a time step is negative. Rendered through the same arithmetic it
+    read as "a consolidation ran -41s ago", which is a number nobody can act on
+    and the row's own evidence that it is guessing.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoDreamEnabled=True)
+    project = (
+        profile
+        / "claude-config"
+        / "projects"
+        / harness_memory.project_key(os.getcwd())
+        / "memory"
+    )
+    project.mkdir(parents=True)
+    lock = project / doctor.CONSOLIDATE_LOCK
+    lock.touch()
+    ahead = time.time() + 7200
+    os.utime(lock, (ahead, ahead))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "consolidation lock is dated in the future" in row.detail
+    assert "-" not in row.detail.split("consolidation lock")[1].split(";")[0]
+
+    # And a lock older than the window still reports in hours: the future
+    # clause is a third answer beside the two, not a replacement for either.
+    behind = time.time() - 7200
+    os.utime(lock, (behind, behind))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "last consolidation 2h ago" in row.detail
+
+
+def test_a_config_this_run_could_not_read_is_not_a_directory_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """"outside every store" is a claim about every store on the machine, and
+    a run that could not parse the config has not read one of them.
+
+    The empty relation `_store_relation` returns for an unreadable config is
+    byte-identical to the one it returns for a directory it looked at and
+    found outside — so the row asserted the state it exists to warn about,
+    from something the process never opened.
+    """
+    broken = profile / "memkit.json"
+    broken.write_text("{ not json", encoding="utf-8")
+    elsewhere = profile / "notes"
+    elsewhere.mkdir()
+    _settings(profile, autoMemoryDirectory=str(elsewhere))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, str(broken))),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert "config" in row.detail
+
+
+def test_consolidation_is_read_from_the_directory_the_harness_actually_uses(
+    profile, monkeypatch
+) -> None:
+    """The lock was stat'd beside the DERIVED directory whatever the settings
+    said, so with `autoMemoryDirectory` set the row reported the recency of a
+    directory the harness had stopped writing to — and stayed silent about the
+    one it writes to now.
+    """
+    path = _store_config(profile, stores=["personal"])
+    elsewhere = profile / "elsewhere"
+    elsewhere.mkdir()
+    _settings(profile, autoMemoryDirectory=str(elsewhere))
+    derived = (
+        profile
+        / "claude-config"
+        / "projects"
+        / harness_memory.project_key(os.getcwd())
+        / "memory"
+    )
+    derived.mkdir(parents=True)
+    (derived / doctor.CONSOLIDATE_LOCK).touch()
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "consolidation ran" not in row.detail
+    assert "last consolidation" not in row.detail
+
+    (elsewhere / doctor.CONSOLIDATE_LOCK).touch()
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "consolidation ran" in row.detail
+
+
+def test_a_project_key_too_long_to_name_does_not_print_the_raw_session_path(
+    profile, monkeypatch
+) -> None:
+    """The refusal interpolates the session's own cwd, which is a path under
+    the adopter's home like every other path this report shortens."""
+    path = _store_config(profile, stores=["personal"])
+    home = pathlib.Path(os.path.expanduser("~"))
+    deep = home.joinpath(*[f"segment{n:02d}" for n in range(24)])
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "where the harness writes for this project is unknown" in row.detail
+    assert str(home) not in row.detail
+
+
+def test_a_relative_config_dir_is_not_named_as_though_it_resolved_anywhere(
+    profile, monkeypatch
+) -> None:
+    """`$CLAUDE_CONFIG_DIR` is taken as spelled, and a relative value names a
+    directory that resolves only from where this session happens to stand.
+
+    `..`-relative is the case the containment guard does not cover: it lands
+    outside the session's own directory, so the row read as an ordinary
+    machine's and could PASS.
+    """
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, os.path.join(os.pardir, "claude-config"))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status != doctor.PASS
+    assert "resolves only from the directory this session stands in" in row.detail
+
+
+def test_within_is_containment_rather_than_a_prefix_match() -> None:
+    """`/store/search-old` starts with every character of `/store/search`, and
+    a prefix test calls it retrieved. The separator is the whole of what makes
+    containment containment, and this predicate decides whether a row claims
+    the harness's memories are indexed.
+
+    An unresolvable path answers "outside". `realpath` raises `ValueError`
+    rather than `OSError` on the embedded NUL a settings file may legally
+    carry, so catching only `OSError` lets the exception escape and demotes the
+    whole check to UNKNOWN.
+    """
+    assert doctor._within("/a/search", "/a/search") is True
+    assert doctor._within("/a/search/deep/x", "/a/search") is True
+    assert doctor._within("/a/search-old", "/a/search") is False
+    assert doctor._within("/a/searchling/x", "/a/search") is False
+    assert doctor._within("/a", "/a/search") is False
+    assert doctor._within("/a/x\x00y", "/a") is False
+
+
+def test_a_directory_the_indexer_prunes_is_in_the_store_and_not_retrieved(
+    profile, monkeypatch
+) -> None:
+    """Inside a corpus root is not the same as retrieved. `hot/` and
+    `archive/` are pruned by the indexing walk wherever they sit under one, so
+    a setting pointing into either is a directory the harness fills and the
+    index never reads — and containment alone reports it as the state this
+    check exists to send adopters to.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "gearbox shimming after a rebuild")
+    pruned = corpus / "hot"
+    pruned.mkdir()
+    _settings(profile, autoMemoryDirectory=str(pruned))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+    assert "inside a store's corpus root but under a name" in row.detail
+    # The remedy names a directory of the harness's own under the corpus root,
+    # rather than the "outside every store" advice for a directory that is not
+    # outside anything — and rather than the corpus root, which is its own
+    # hazard.
+    assert "directory under a store's search tree" in row.remedy
+    assert row.actor == doctor.USER
+
+    # A directory whose name merely CONTAINS an excluded one is not pruned.
+    ordinary = corpus / "hotel"
+    ordinary.mkdir()
+    _settings(profile, autoMemoryDirectory=str(ordinary))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+    # SEVERAL components down, which is the shape one guarding test on a
+    # one-component fixture could not tell from a basename comparison.
+    nested = corpus / "hot" / "am"
+    nested.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(nested))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+
+    # And through a LINK, because the harness writes to what the path resolves
+    # to and the walk never descends into a symlinked directory at all.
+    link = corpus / "linked-am"
+    link.symlink_to(nested)
+    _settings(profile, autoMemoryDirectory=str(link))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+
+
+def test_a_corpus_root_under_a_pruned_name_indexes_nothing_at_all(
+    profile, monkeypatch
+) -> None:
+    """Doctor's pruning question is the INDEXER's, asked of the absolute path.
+
+    `_fts_scan` calls `_excluded` on the path it built from the store's own
+    root, so a corpus root that itself sits under `archive/` has nothing
+    indexed anywhere inside it. Asked of the corpus-RELATIVE path, doctor
+    answered "retrieved" about the one directory an adopter is being told to
+    point the harness at — doctor disagreeing with the module it reports on.
+
+    Whether the indexer's own absolute test is right is a question about a file
+    this unit did not touch: doctor reports what it does.
+    """
+    path = _store_config(
+        profile, stores=["personal"], dirs={"personal": "archive/notes/personal"}
+    )
+    corpus = profile / "archive" / "notes" / "personal" / "search"
+    _memory(corpus, "kept.md", "brake bleed order after the caliper swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    # The hook's own answer about a file in that directory, which is what
+    # decides whether anything there is ever indexed.
+    assert hook._excluded(str(mine / "note.md")) is True
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "nothing written there is indexed" in row.detail
+    assert "inside a store's corpus root but under a name" in row.detail
+
+    # A corpus root under no pruned component keeps the PASS: the rule is the
+    # walk's, not a blanket refusal.
+    other = _store_config(
+        profile, stores=["personal"], dirs={"personal": "notes/personal"}
+    )
+    plain = profile / "notes" / "personal" / "search"
+    _memory(plain, "kept.md", "torque sequence after the head swap")
+    theirs = plain / harness_memory.SAFE_SUBDIR
+    theirs.mkdir()
+    _settings(profile, autoMemoryDirectory=str(theirs))
+    assert hook._excluded(str(theirs / "note.md")) is False
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, other)),
+        "auto-memory",
+    )
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_a_pair_that_stops_resolving_is_answered_as_reaching_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    """Which way this predicate fails is the whole of its safety.
+
+    The pair resolved a moment ago — containment said so — so an exception
+    here means the tree moved under the run, and the two answers are not
+    symmetric: "nothing there is retrieved" sends an adopter to look, while
+    "it is retrieved" closes the question on a walk that never happened. Only
+    the raising path is left to a test, because reaching it through a real
+    filesystem means racing the removal.
+    """
+
+    def _gone(_path: str) -> str:
+        raise OSError("the pair stopped resolving under the run")
+
+    monkeypatch.setattr(os.path, "realpath", _gone)
+    assert doctor._pruned(str(tmp_path / "under"), str(tmp_path)) is True
+
+
+def test_a_store_configured_and_not_on_disk_retrieves_nothing(
+    profile, monkeypatch
+) -> None:
+    """One envelope may not carry a PASS and a FAIL about the same store.
+
+    `realpath` does not require existence, so a corpus root that is not there
+    still "contains" the configured directory — and the row said what the
+    harness writes into it is retrieved while `corpus-root` said the store is
+    configured and not on disk. The reassuring one was the wrong one.
+    """
+    path = _store_config(profile, stores=["personal"])
+    mine = profile / "stores" / "personal" / "search" / harness_memory.SAFE_SUBDIR
+    _settings(profile, autoMemoryDirectory=str(mine))
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    (corpus_row,) = _only(doctor._PRODUCERS["corpus-root"](machine), "corpus-root")
+    assert corpus_row.status == doctor.FAIL
+    assert row.status == doctor.INFO
+    assert "is not on disk" in row.detail
+    assert row.actor == doctor.USER
+
+    # The same directory once the store is there: the PASS is about the store
+    # existing, not about the setting changing.
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "shim stack after the fork rebuild")
+    mine.mkdir()
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_nested_stores_answer_the_same_whichever_is_declared_first(
+    profile, monkeypatch
+) -> None:
+    """A store that merely CONTAINS the directory must not shadow the store the
+    directory contains.
+
+    `_store_relation` returned from the first store with any relation at all,
+    so `memkit.json`'s declaration order decided PASS against INFO over one
+    filesystem — and the PASS was the case where the configured directory holds
+    another store's whole corpus root, every memory in it handed to the
+    harness's serialiser.
+    """
+    inner = "stores/personal/search/team"
+    for order in (["personal", "team"], ["team", "personal"]):
+        path = _store_config(profile, stores=order, dirs={"team": inner})
+        corpus = profile / "stores" / "personal" / "search"
+        _memory(corpus, "kept.md", "damper settings after the spring swap")
+        team_corpus = profile / inner / "search"
+        _memory(team_corpus, "theirs.md", "release order for the payments cut")
+        _settings(profile, autoMemoryDirectory=str(profile / inner))
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+        assert row.status == doctor.INFO, order
+        assert "holds a store's corpus root" in row.detail, order
+        assert "re-serialises" in row.detail, order
+
+    # And a directory that is only ever `inside` still passes, whichever store
+    # answers for it: the rule is that harm dominates, not that nesting does.
+    path = _store_config(profile, stores=["personal", "team"], dirs={"team": inner})
+    mine = profile / inner / "search" / harness_memory.SAFE_SUBDIR
+    mine.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_a_flat_store_does_not_settle_a_directory_a_search_dir_would_unretrieve(
+    profile, monkeypatch
+) -> None:
+    """Containment is decided against the corpus root the store WILL have.
+
+    `_search_root` falls back to the store root while `search/` is absent, so
+    `<store>/auto-memory` read as inside and passed, in the same run whose
+    remedy for a directory outside every store recommends a place under
+    `search/`. Creating `search/` later flips the row to INFO and `corpus-root`
+    to FAIL, which this file elsewhere calls the single most expensive silent
+    state in the field log.
+    """
+    path = _store_config(profile, stores=["personal"])
+    flat = profile / "stores" / "personal"
+    _memory(flat, "kept.md", "chain wear limit after the sprocket change")
+    mine = flat / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "has no search tree yet" in row.detail
+    assert "directory under a store's search tree" in row.remedy
+    assert row.actor == doctor.USER
+
+    # The directory that survives a `search/` appearing is the one that passes,
+    # and it passes before the directory exists.
+    _settings(profile, autoMemoryDirectory=str(flat / "search" / "auto-memory"))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_a_memory_directory_linked_into_a_store_is_already_wired(
+    profile, monkeypatch
+) -> None:
+    """The wiring docs/STORE.md recommends, and the state the count read as a
+    problem: with no setting at all, a project's memory directory symlinked
+    into a corpus root has the harness writing straight into the store.
+
+    Counted as "outside every store" it alarms about a correctly configured
+    machine — the inverse of the excluded-directory error, and the one an
+    adopter who followed the documentation would meet first.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "flywheel balance after the swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    _memory(mine, "written.md", "what the harness wrote after the swap")
+    project = (
+        profile / "claude-config" / "projects" / harness_memory.project_key(os.getcwd())
+    )
+    project.mkdir(parents=True)
+    (project / "memory").symlink_to(mine)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert "outside every store" not in row.detail
+    assert "is retrieved" in row.detail
+
+    # Another project still writing outside every store is still counted, and
+    # the wired one is not counted with it. The bound is lifted for this half
+    # alone: a pytest tmpdir key is twice the length of a real one, so the two
+    # counts fall off the end of a detail that fits on any real machine, and
+    # what is under test here is the split rather than the truncation.
+    stray = profile / "claude-config" / "projects" / "-home-u-other" / "memory"
+    stray.mkdir(parents=True)
+    (stray / "one.md").write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "1 project directory holds 1 memory outside every store" in row.detail
+    assert "1 project directory is already linked into a store" in row.detail
+    assert "-home-u-other" not in row.detail
+    assert "2 project directories" not in row.detail
+
+
+def test_the_adoption_offer_is_a_command_this_channel_can_actually_run(
+    profile, monkeypatch
+) -> None:
+    """The row that meets an adopter with two memory systems now has something
+    to run, and the command has to be one their channel ships: skills live in
+    the plugin payload, so `/memkit:init` is a command a nix or pip install's
+    harness does not have.
+
+    The flag rides BOTH turns of the binary form. The digest binds the request
+    as well as the tree, so a confirm carrying different flags from the dry-run
+    that produced it is refused as stale — a remedy that showed the flag once
+    would send the adopter into that refusal.
+    """
+    path = _store_config(profile, stores=["personal"])
+    stray = profile / "claude-config" / "projects" / "-home-u-other" / "memory"
+    stray.mkdir(parents=True)
+    (stray / "one.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "outside every store" in row.detail
+    assert "memkit init --dry-run --adopt-auto-memory" in row.remedy
+    assert "memkit init --confirm <digest> --adopt-auto-memory" in row.remedy
+    assert "/memkit:" not in row.remedy
+    # And the by-hand route survives beside it: the flag is an offer, not the
+    # only way to reach the state.
+    assert harness_memory.DIRECTORY_KEY in row.remedy
+    assert "STORE guide" in row.remedy
+
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "/memkit:init --adopt-auto-memory" in row.remedy
+    assert "memkit init --dry-run" not in row.remedy
+
+
+def test_only_false_turns_the_switches_off(profile, monkeypatch) -> None:
+    """JSON `null`, `0`, `""`, `[]` and `{}` are every one of them a value the
+    harness goes on writing under, and every one of them is falsy in Python. A
+    truthiness test reads all five as off and returns this row's most confident
+    sentence — "memkit is the only memory system here" — over a machine with
+    two of them.
+
+    The value is quoted back, because a settings file that says `null` was
+    hand-edited by somebody who meant `false`.
+    """
+    path = _store_config(profile, stores=["personal"])
+    for value in (0, "", [], {}, "false"):
+        _settings(profile, autoMemoryEnabled=value)
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+        assert row.status == doctor.INFO, value
+        assert "only memory system here" not in row.detail
+        assert "neither true nor false" in row.detail
+        # THE VALUE IS NOT QUOTED BACK. It is adopter-written text of any
+        # shape and this row renders none.
+        assert json.dumps(value) not in row.detail
+
+    # An explicit `null` is the one that is ABSENCE rather than a bad value:
+    # the harness's own resolver skips a null and reads the scope below, so
+    # quoting it back would report a value nothing acted on.
+    _settings(profile, autoMemoryEnabled=None)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "neither true nor false" not in row.detail
+
+    _settings(profile, autoMemoryEnabled=False)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert f"auto-memory is off in {doctor._ROLE['user']}" in row.detail
+
+    # The same rule for the consolidation switch, whose off-line is the only
+    # thing a non-boolean silently removed.
+    _settings(profile, autoDreamEnabled=0)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "no background consolidation" not in row.detail
+    assert f'"{harness_memory.DREAM_KEY}" holds a value' in row.detail
+
+
+def test_an_environment_variable_that_forces_the_feature_on_never_settles_the_row(
+    profile, monkeypatch
+) -> None:
+    """`CLAUDE_CODE_DISABLE_AUTO_MEMORY=0` turns auto-memory ON before the
+    harness reads a settings file, so the one state that used to earn this
+    row's most confident sentence — "memkit is the only memory system here" —
+    is a machine with two of them.
+
+    Read from the 2.1.258 code: the gate takes the falsy word list as an
+    instruction to run, and returns before the settings are consulted.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "only memory system here" not in row.detail
+    assert harness_memory.DISABLE_ENV in row.detail
+    assert row.actor == doctor.USER
+
+    # The other direction is INFO for a different reason: the variable turns
+    # the feature off in every process that CARRIES it, and the environment
+    # doctor was started with need not be the one the adopter's sessions run
+    # in — so it is reported rather than passed on.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "yes")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert harness_memory.DISABLE_ENV in row.detail
+
+    # A word in neither list decides nothing, and the settings answer again.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "banana")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert f"auto-memory is off in {doctor._ROLE['user']}" in row.detail
+
+
+def test_an_environment_override_stops_the_row_naming_a_directory(
+    profile, monkeypatch
+) -> None:
+    """Three variables outrank every settings scope for where the harness
+    writes, and memkit reads none of them. A row that passed a directory while
+    one was in effect is naming a directory that is not the one being written
+    to — which is the defect this whole module exists to close."""
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(mine))
+    monkeypatch.setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", "/u/elsewhere")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE" in row.detail
+    assert "does not resolve" in row.detail
+
+    # And on the branch that never names a configured directory at all, where
+    # the row's PASS rests on the DERIVED default instead.
+    monkeypatch.delenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE")
+    monkeypatch.setenv("CLAUDE_CODE_PROJECT_DIR_NAME", "not-the-key")
+    _settings(profile)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "CLAUDE_CODE_PROJECT_DIR_NAME" in row.detail
+
+
+def test_an_override_leaves_the_derived_row_a_remedy_and_somebody_to_act_on_it(
+    profile, monkeypatch
+) -> None:
+    """The derived-default branch over a machine that is otherwise settled.
+
+    Naming the variable is not the disclosure. That sentence rides in the same
+    tuple whichever way the branch goes, so a row that concluded anyway would
+    carry it too — what separates the two answers is that one hands the adopter
+    something to do and addresses it to them, and the other closes the question
+    on a directory nobody here resolved.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "gearbox shim stack after the rebuild")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    _memory(mine, "written.md", "what the harness wrote after the rebuild")
+    project = (
+        profile / "claude-config" / "projects" / harness_memory.project_key(os.getcwd())
+    )
+    project.mkdir(parents=True)
+    (project / "memory").symlink_to(mine)
+    (settled,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert settled.remedy == ""
+    assert settled.actor == doctor.AGENT
+
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE_MEMORY_DIR", "/u/elsewhere")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "CLAUDE_CODE_REMOTE_MEMORY_DIR" in row.detail
+    assert row.remedy
+    assert row.actor == doctor.USER
+
+
+def test_every_adopter_controlled_value_in_this_row_is_bounded(profile, monkeypatch):
+    """One rule for the whole row rather than a fix per call site, which is
+    what #14 got and why the class came back twice.
+
+    Three values in this detail have a length the adopter's own machine or a
+    clone decides — the session's cwd, the configured directory, and the
+    config directory — and `_bound` cuts from the END. Each of them alone was
+    enough to take this row's verdict out of the row while leaving a report
+    that reads as complete.
+    """
+    path = _store_config(profile, stores=["personal"])
+
+    # 1. The cwd, through the key refusal: the reason survives the path.
+    deep = profile / "deep"
+    while len(str(deep)) <= harness_memory.KEY_MAX:
+        deep = deep / "a-directory-with-a-long-enough-name"
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert f"over {harness_memory.KEY_MAX}" in row.detail
+    assert "has not measured" in row.detail
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+
+    # 2. The configured directory, which a CHECKED-IN file decides: the value
+    # is 560 characters and the three sentences that judge it are shorter than
+    # what they were cut for.
+    monkeypatch.chdir(profile / "project")
+    checked_in = profile / "project" / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    stray = str(profile / ("s" * 560))
+    checked_in.write_text(
+        json.dumps({harness_memory.DIRECTORY_KEY: stray}), encoding="utf-8"
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "outside every store" in row.detail
+    assert "travels with every clone" in row.detail
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+    checked_in.unlink()
+
+    # 3. The config directory, whose length is an environment variable's.
+    # Nested rather than one component: a 400-character NAME is longer than
+    # any filesystem here allows, and the value this guards against is a long
+    # PATH.
+    long_config = profile / ("c" * 120) / ("c" * 120) / ("c" * 120)
+    long_config.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(long_config))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "the harness would write this project's memories to" in row.detail
+    assert len(row.detail.encode("utf-8")) <= doctor.DETAIL_MAX_BYTES
+
+
+def test_a_switch_holding_a_whole_object_is_reported_and_never_quoted(
+    profile, monkeypatch
+):
+    """`json.dumps(value)[:20]` on a dict prints a torn fragment that reads as
+    the whole value. What an adopter has to act on is that the key holds
+    something that is not true or false, so the quotation says it was cut."""
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled={"enabled": True, "for": ["everything"]})
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "neither true nor false" in row.detail
+    quoted = f'"{harness_memory.ENABLED_KEY}" is {{"enabled": true,... in user'
+    assert quoted not in row.detail
+
+
+def test_the_session_directory_is_walked_once_and_read_off_the_machine(
+    profile, monkeypatch
+) -> None:
+    """`project_key`'s own contract: doctor resolved where it stands once, for
+    the settings scopes, and a second walk here answers differently if the
+    directory moved between the two — a row naming a project no scope was read
+    from.
+    """
+    path = _store_config(profile, stores=["personal"])
+    machine = _machine(profile, monkeypatch, path)
+    moved = profile / "moved"
+    moved.mkdir()
+    monkeypatch.setattr(os, "getcwd", lambda: str(moved))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.INFO
+    # ASSERTED WHERE THE ROW READS IT. The derived directory is not rendered,
+    # so the walk is observed at the function the row asks for it.
+    derived, why = doctor._default_memory_dir(machine, str(profile / "claude-config"))
+    assert why == ""
+    assert harness_memory.project_key(machine.cwd) in derived
+    assert harness_memory.project_key(str(moved)) not in derived
+
+
+def test_a_session_whose_directory_is_gone_says_so_rather_than_naming_a_path(
+    profile, monkeypatch
+) -> None:
+    """An agent's workdir can be removed underneath the process, and the key
+    derived from `""` collapses: `os.path.join` swallows the empty component
+    and the row names `<config dir>/projects/memory`, a path that reads as
+    derived and is nowhere.
+
+    The other twenty-five checks still have to answer, so this is a sentence
+    rather than a traceback.
+    """
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv(hook.CONFIG_ENV, path)
+    hook._use_config(None)
+    hook._cwd_in_root.cache_clear()
+
+    def gone():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "getcwd", gone)
+    machine = doctor.Machine()
+    assert machine.cwd == ""
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "session directory was removed underneath this run" in row.detail
+    assert "projects/memory" not in row.detail
+
+
+def test_a_settings_path_the_os_will_not_resolve_is_not_an_unknown_row(
+    profile, monkeypatch
+) -> None:
+    """A JSON string may carry an embedded NUL, `realpath` raises `ValueError`
+    rather than `OSError` on one, and an exception escaping this check demotes
+    it to UNKNOWN — the one status the row's own contract does not have.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryDirectory="/u/no\x00where")
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.INFO
+    (row,) = _only(doctor.collect(machine), "auto-memory")
+    assert row.status in (doctor.PASS, doctor.INFO)
+
+
+def test_the_corpus_root_itself_is_named_as_a_rewrite_rather_than_a_pass(
+    profile, monkeypatch
+) -> None:
+    """The value memkit's own documentation used to recommend, and the one
+    thing measurement took away from it.
+
+    On every Write or Edit of a `.md` file whose path merely STARTS WITH the
+    configured directory, the harness re-serialises a parseable frontmatter
+    block: `name` slugified, every other top-level key moved under `metadata`,
+    comments and key order gone. Pointed at the corpus root, that is memkit's
+    entire corpus, rewritten one file at a time as an agent touches it.
+
+    So the corpus root is INFO with the cost named, and the remedy is a
+    directory of the harness's own inside it — retrieval recurses, and the
+    prefix test then reaches only what the harness itself put there.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "clutch free play after the rebuild")
+    _settings(profile, autoMemoryDirectory=str(corpus))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "is a store's corpus root itself" in row.detail
+    assert "re-serialises" in row.detail
+    assert "directory under a store's search tree" in row.remedy
+    assert row.actor == doctor.USER
+
+    # An ANCESTOR of the corpus root covers it just as completely, and the
+    # store root is the spelling an adopter reaches for first.
+    store_root = profile / "stores" / "personal"
+    _settings(profile, autoMemoryDirectory=str(store_root))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "holds a store's corpus root" in row.detail
+    assert "directory under a store's search tree" in row.remedy
+
+
+def test_a_checked_in_settings_file_decides_and_is_reported_not_passed(
+    profile, monkeypatch
+) -> None:
+    """Measured on 2.1.258: a checked-in `.claude/settings.json` DOES redirect
+    auto-memory, whatever the shipped schema text says, and the trust gate that
+    is supposed to hold it back returns true unconditionally in every
+    non-interactive run — `claude -p`, a hook, the SDK, a subagent.
+
+    So the value travels with every clone, and a repository decides where an
+    agent writes its memories. Even pointed somewhere retrievable that is a
+    fact an adopter is told rather than one this check passes over, which is
+    the same rule `repository_option` applies to `memkitConfig`.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    _memory(mine, "written.md", "torque spec after the recall")
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text(
+        json.dumps({"autoMemoryDirectory": str(mine)}), encoding="utf-8"
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    # Retrievable, and still not a PASS: what decided it is the thing being
+    # reported.
+    assert "is retrieved" in row.detail
+    assert row.status == doctor.INFO
+    assert f"in {doctor._ROLE['project']}" in row.detail
+    assert "travels with every clone" in row.detail
+    assert "claude -p" in row.remedy
+    # NOT "set it in your user settings", which is the obvious advice and does
+    # nothing: user settings rank below the checked-in file in the measured
+    # order, so a value there is masked for as long as that file sets the key.
+    assert "the local settings file of this checkout, which outranks it" in row.remedy
+    assert "Your own settings rank below both" in row.remedy
+    assert row.actor == doctor.USER
+
+    # `.claude/settings.local.json` OUTRANKS it and is not the adopter's file
+    # either. It is untracked by convention, and a bare `git add` tracks it:
+    # nothing here enforces the convention, and doctor may not pass a value on
+    # the strength of one. Reported, with what to check.
+    local = pathlib.Path(os.getcwd()) / ".claude" / doctor.LOCAL_SETTINGS_NAME
+    local.write_text(json.dumps({"autoMemoryDirectory": str(mine)}), encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert doctor._ROLE["local"] in row.detail
+    assert "untracked" in row.remedy
+    assert row.actor == doctor.USER
+    # And the sentence that was never true of this file is gone: what travels
+    # with a clone is the checked-in one.
+    assert "checked into this repository" not in row.detail
+
+    # The adopter's OWN settings file decides it and passes: the rule is who
+    # wrote the file, not which key it holds.
+    local.unlink()
+    checked_in.unlink()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert doctor._ROLE["user"] in row.detail
+
+
+def test_a_checkout_that_turns_the_feature_on_is_reported_the_same_way(
+    profile, monkeypatch
+) -> None:
+    """The disclosure is about WHO DECIDED, not about which way they decided.
+
+    Living inside `if enabled is False`, it fired for a clone that turned the
+    feature off and never for the one that turned it back on over an adopter
+    who had switched it off — which is the direction that leaves two memory
+    systems running on a machine whose owner believes there is one.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "travels with every clone" in row.detail
+    assert "memkit is the only memory system here" not in row.detail
+    assert "the local settings file of this checkout" in row.remedy
+    assert row.actor == doctor.USER
+
+    # The adopter's own file turning it on is the ordinary armed state, with no
+    # disclosure to make.
+    checked_in.unlink()
+    _settings(profile, autoMemoryEnabled=True)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "travels with every clone" not in row.detail
+
+
+def test_off_is_information_when_a_lower_scope_declares_it_otherwise(
+    profile, monkeypatch
+) -> None:
+    """The one case the boolean scope order decides, and that order is INFERRED.
+
+    The directory key's precedence was measured — the resolver returns the
+    scope it came from — but the two booleans go through a plain merged-settings
+    accessor that reports no source, so which file wins when two disagree is
+    read from one code path and applied to another. With a single declaring
+    scope every candidate order picks it and the answer is safe; with two, the
+    inference is load-bearing for this row's most confident sentence.
+    """
+    path = _store_config(profile, stores=["personal"])
+    managed = profile / "managed"
+    managed.mkdir()
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    _settings(profile, autoMemoryEnabled=True)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert f"{doctor._ROLE['user']} declares it otherwise" in row.detail
+    assert row.actor == doctor.USER
+
+    # One declaring scope, and every candidate order picks it: PASS.
+    _settings(profile, autoDreamEnabled=True)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert f"auto-memory is off in {doctor._ROLE['managed']}" in row.detail
+
+
+def test_a_zero_under_a_false_is_two_answers_and_not_one(profile, monkeypatch) -> None:
+    """`False == 0` in Python, and the harness reads the two as opposites.
+
+    A lower scope holding `0` under one holding `false` is the disagreement
+    this row exists to report — `0` is a value the harness goes on writing
+    under. Compared with `==` the two files agree, and the row then states the
+    settings' answer as though one file held it, which is the most confident
+    sentence here resting on an order that decided something after all.
+    """
+    path = _store_config(profile, stores=["personal"])
+    managed = profile / "managed"
+    managed.mkdir()
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    _settings(profile, autoMemoryEnabled=0)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert f"{doctor._ROLE['user']} declares it otherwise" in row.detail
+    assert "memkit is the only memory system here" not in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_a_config_directory_this_tree_chose_does_not_pass_its_own_inventory(
+    profile, monkeypatch
+) -> None:
+    """`$CLAUDE_CONFIG_DIR` is the same variable `settings_scopes` guards.
+
+    Pointed inside the session's own directory it is the project scope under
+    another name: what it enumerates decides PASS over INFO, it is printed as
+    the derived default, and it lands in the remedy — so a repository that
+    redirects it moves this row to the reassuring answer.
+    """
+    path = _store_config(profile, stores=["personal"], dirs={"personal": "project/s"})
+    corpus = profile / "project" / "s" / "search"
+    _memory(corpus, "kept.md", "valve lash after the top end")
+    steered = corpus / "claude-config"
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(steered))
+    written = steered / "projects" / harness_memory.project_key(os.getcwd()) / "memory"
+    written.mkdir(parents=True)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "this session stands in" in row.detail
+    # And the remedy does not send the adopter to edit a file the tree chose.
+    assert str(steered) not in row.remedy
+    assert row.actor == doctor.USER
+
+
+def test_a_checkout_that_turns_the_feature_off_is_reported_not_believed(
+    profile, monkeypatch
+) -> None:
+    """"memkit is the only memory system here" is this row's most consequential
+    sentence, and a cloned repository must not be the thing that produced it.
+
+    The state is real — while that file says so, the harness writes nothing —
+    but it is one `git pull` from changing, and the adopter did not choose it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "auto-memory is off" in row.detail
+    assert doctor._ROLE["project"] in row.detail
+    assert row.actor == doctor.USER
+
+    # The adopter's own file says the same thing and is a PASS.
+    checked_in.unlink()
+    _settings(profile, autoMemoryEnabled=False)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert f"auto-memory is off in {doctor._ROLE['user']}" in row.detail
+
+
+def test_a_project_key_too_long_to_derive_is_said_rather_than_guessed(
+    profile, monkeypatch
+) -> None:
+    """Over 200 characters the harness truncates the key and appends a hash of
+    the untruncated path, and that hash is not measured — so the derived path
+    would be a directory that is not there, which is what the removed-cwd
+    branch already refuses to print.
+    """
+    path = _store_config(profile, stores=["personal"])
+    deep = pathlib.Path(os.getcwd())
+    while len(str(deep)) <= harness_memory.KEY_MAX:
+        deep = deep / "a-directory-with-a-long-enough-name"
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert row.status == doctor.INFO
+    assert "is unknown" in row.detail
+    assert str(harness_memory.KEY_MAX) in row.detail
+    assert "projects/memory" not in row.detail
+
+
+def test_a_settings_file_that_will_not_parse_is_named_by_the_rows_that_read_it(
+    profile, monkeypatch
+) -> None:
+    """One stray comma and `Settings.data` is `{}` — the same value a scope
+    that declares nothing has.
+
+    Every row that walks the scopes then answers from a file nobody read, and
+    the parser's own message had been recorded and printed by nothing since
+    the class was written. The auto-memory row is where it became load-bearing:
+    three of its keys come out of these files.
+    """
+    path = _store_config(profile, stores=["personal"])
+    broken = profile / "claude-config" / "settings.json"
+    broken.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    named = [c for c in checks if doctor._ROLE["user"] in c.detail]
+    assert named, [c.id for c in checks]
+    for row in named:
+        assert "could not be parsed" in row.detail
+        assert "keys read as unset" in row.detail
+        # The parser's own words, not a paraphrase of them.
+        assert "double quotes" in row.detail
+        assert row.actor == doctor.USER
+        assert row.status != doctor.PASS
+
+    # Every row whose verdict came out of those files, not merely one of them.
+    assert {"auto-memory", "config-route", "plugin-enabled",
+            "registrations-count"} <= {c.id for c in named}
+
+
+def test_a_settled_row_never_stands_on_a_scope_that_would_not_parse(
+    profile, monkeypatch
+) -> None:
+    """The state the wrapper exists for: the scopes that DID parse agree, and
+    the one that did not is the one that outranks them.
+
+    `.claude/settings.json` in the session's own directory declares nothing
+    while it is malformed, so the user scope decides and the row answers
+    "memkit is the only memory system here" — over a file that may set the same
+    key the other way and that a `git checkout` repairs. What the wrapper adds
+    is the file's name and the reason, on a row that would otherwise read as an
+    answer.
+    """
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text('{"autoMemoryEnabled": true,,}', encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert doctor._ROLE["project"] + " could not be parsed" in row.detail
+    # By role and not by path: the note reaches four producers' details, and
+    # the raw settings path was reaching the report through all of them.
+    assert str(checked_in) not in row.detail
+    assert row.actor == doctor.USER
+
+    # Repair the file and the row answers from what it says, PASS or not.
+    checked_in.write_text('{"autoMemoryEnabled": false}', encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert row.status == doctor.INFO  # a checkout decided it; disclosed, not passed
+    assert "could not be parsed" not in row.detail
+    checked_in.unlink()
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_the_wrapper_downgrades_a_pass_and_leaves_every_other_status(
+    profile, monkeypatch
+) -> None:
+    """The wrapper's own rule, asked of the wrapper.
+
+    Which of the producers it wraps can reach a PASS is not a fixed fact — a
+    row that stops passing for reasons of its own takes the only exercise of
+    this rule with it, and the downgrade goes unguarded while every one of
+    those producers still depends on it. So the rows here are built rather
+    than produced.
+    """
+    (profile / "claude-config" / "settings.json").write_text(
+        '{"autoMemoryEnabled": false,,}', encoding="utf-8"
+    )
+    passed, failed = doctor._with_unparsed(
+        [
+            doctor.Check("plugin-enabled", doctor.PASS, "what it read"),
+            doctor.Check("corpus-root", doctor.FAIL, "what it read", "the repair"),
+        ],
+        doctor.settings_scopes(),
+    )
+    assert passed.status == doctor.INFO
+    assert passed.remedy
+    # Every other status is the producer's to keep: a FAIL that became INFO
+    # because some other file would not parse is a defect reported as a note.
+    assert failed.status == doctor.FAIL
+    assert failed.remedy.endswith("the repair")
+    for row in (passed, failed):
+        assert "could not be parsed" in row.detail
+        assert "what it read" in row.detail
+        assert row.actor == doctor.USER
+
+
+def test_no_remedy_sends_an_adopter_to_set_a_key_in_a_file_that_does_not_parse(
+    profile, monkeypatch
+) -> None:
+    """The half of that finding that is worse than the missing diagnostic.
+
+    `autoMemoryEnabled: false` in an unparseable file reads as unset, so the
+    row reached its "the feature is running" branch and told the adopter to
+    set — in that same file — the key it already sets. The next read discards
+    the edit with everything else in it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    broken = profile / "claude-config" / "settings.json"
+    broken.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
+    # THE BOUND LIFTED, because it would answer this for the wrong reason: the
+    # two remedies together overrun 600 bytes on a tmpdir path, so a build that
+    # kept the offending sentence would have it truncated away and pass. What
+    # is under test is the rule that drops it, not `_bound` hiding it.
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "parse as JSON before setting any key in it" in row.remedy
+    assert 'set "autoMemoryEnabled": false in' not in row.remedy
+    assert str(broken) not in row.remedy.split("Keep a copy first")[-1]
+
+    # A remedy that names some OTHER file is kept: the rule is about the file
+    # this process could not read, not about remedies in general.
+    broken.write_text(json.dumps({"autoMemoryDirectory": "/u/elsewhere"}), encoding="utf-8")
+    checked_in = pathlib.Path(os.getcwd()) / ".claude" / doctor.SETTINGS_NAME
+    checked_in.parent.mkdir(parents=True, exist_ok=True)
+    checked_in.write_text('{"autoDreamEnabled": false,,}', encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert doctor._ROLE["project"] + " could not be parsed" in row.detail
+    assert "the STORE guide" in row.remedy
+
+
+def test_a_file_this_process_may_not_open_is_not_a_file_that_will_not_parse(
+    profile, monkeypatch
+) -> None:
+    """One `except (OSError, ValueError)` made three failures one string, and
+    the sentence written for the commonest of them was then asserted over the
+    other two.
+
+    The managed scope is the one where it bites: a root-owned policy file that
+    parses perfectly is described as unparseable, and the adopter is told to
+    edit it — and then to keep a copy of a file they were just refused.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    managed = profile / "managed"
+    managed.mkdir()
+    policy = managed / doctor.MANAGED_SETTINGS_NAME
+    policy.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    policy.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        policy.chmod(0o600)
+    assert row.status == doctor.INFO
+    assert row.actor == doctor.USER
+    # The claim is about what happened, and what happened is a refused open.
+    assert "could not be parsed" not in row.detail
+    assert doctor._ROLE["managed"] + " could not be read" in row.detail
+    assert str(policy) not in row.detail
+    # And the repair is not an edit of somebody else's policy file.
+    assert "parse as JSON" not in row.remedy
+    assert "administrator" in row.remedy
+    assert "Keep a copy" not in row.remedy
+
+    # A file that really is malformed keeps the sentence written for it.
+    policy.write_text('{"autoMemoryEnabled": false,,}', encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert doctor._ROLE["managed"] + " could not be parsed" in row.detail
+    assert "parse as JSON" in row.remedy
+
+
+def test_the_parsers_own_message_carries_no_second_unredacted_copy_of_the_path(
+    profile, monkeypatch
+) -> None:
+    """`str(exc)` for an `OSError` ends in the absolute path it failed on, and
+    the note printed it immediately after the same path went through the
+    re-speller. One sentence, the path twice, the second copy raw.
+
+    NOT REDACTED — NOT QUOTED. The message a row passes on is the PARSER's, and
+    `json` writes a line and a column; an open that was refused or that failed
+    answers with the file, which is the fact this note no longer renders by any
+    route. The caps stay where the tree ships them, because there is nothing
+    left here for a cut to be the thing that saved.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    home = pathlib.Path(os.path.expanduser("~"))
+    under_home = home / ".claude"
+    under_home.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(under_home))
+    path = _store_config(profile, stores=["personal"])
+    refused = under_home / doctor.SETTINGS_NAME
+    refused.write_text(json.dumps({"autoMemoryEnabled": False}), encoding="utf-8")
+    refused.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        refused.chmod(0o600)
+    assert doctor._ROLE["user"] + " could not be read" in row.detail
+    assert str(home) not in row.detail
+    assert "~/.claude/settings.json" not in row.detail
+    assert "Permission denied" not in row.detail
+
+
+@pytest.mark.parametrize("shape", ["real", "symlinked", "equal", "sibling"])
+def test_no_row_of_the_envelope_spells_the_home_directory_out(
+    profile, monkeypatch, shape
+) -> None:
+    """The rule, once, over the whole report rather than per branch.
+
+    Home has reached a detail by four routes now — a path built here, a path
+    inside a string this report was handed, a project key carrying it in the
+    middle with its separators replaced, and the session's own cwd in a
+    refusal — and each was closed where it was found. What that leaves is a
+    rule nothing states: doctor's output is what an adopter pastes into an
+    issue, so no row of it spells the home directory — as a path or as the key
+    spelling of one — whichever branch of whichever check produced the row.
+
+    FOUR SHAPES, because a fixture that builds home real and points nothing at
+    it answers this for one of them. A symlinked `$HOME` separates the path the
+    environment spells from the path a project key is built out of; a
+    configured directory that IS home is where home is a prefix of nothing; and
+    a `<home>_old` sibling is where a rule that redacts too much names a
+    directory nobody can open.
+
+    THE CAPS ARE LIFTED, because on a fixture home a hundred characters deep
+    they answer this for the wrong reason: a raw copy cut off before the path
+    is reached is not a redaction, and a real `/Users/someone` is not cut off.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 8000)
+    monkeypatch.setattr(doctor, "PATH_SHOWN", 2000)
+    monkeypatch.setattr(doctor, "PARSER_SHOWN", 2000)
+    if shape == "symlinked":
+        resolved = profile / "resolved-home"
+        resolved.mkdir()
+        home = profile / "linked-home"
+        home.symlink_to(resolved)
+        monkeypatch.setenv("HOME", str(home))
+    else:
+        home = profile / "home"
+    config = home / ".claude"
+    config.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
+    # THE SESSION STANDS BESIDE HOME in one shape and under it in the rest: a
+    # key built from a directory whose name merely starts with home's is what a
+    # rule matching characters rather than components rewrites.
+    work = (profile / "home_old" if shape == "sibling" else home / "work") / "acme"
+    work.mkdir(parents=True)
+    monkeypatch.chdir(work)
+    path = _store_config(home, stores=["personal"])
+    _memory(home / "stores" / "personal" / "search", "kept.md", "clutch free play")
+    projects = config / "projects"
+    (projects / "-home-u-git-app" / "memory").mkdir(parents=True)
+    (projects / "-home-u-git-app" / "memory" / "one.md").write_text(
+        "x\n", encoding="utf-8"
+    )
+    # And one the harness would have written for a session under home. The
+    # inventory prints these keys raw, so the key rule at the choke point is the
+    # only thing between this name and the report.
+    mine = harness_memory.key_spelling(os.path.realpath(home)) + "-work-acme"
+    (projects / mine / "memory").mkdir(parents=True)
+    (projects / mine / "memory" / "two.md").write_text("x\n", encoding="utf-8")
+    settings = config / doctor.SETTINGS_NAME
+
+    def _write(**blob) -> None:
+        settings.write_text(json.dumps(blob), encoding="utf-8")
+
+    if shape == "equal":
+        elsewhere = str(home)
+    elif shape == "sibling":
+        # BESIDE HOME, because the configured value is the one the row prints
+        # back whole: a rule with no component boundary rewrites this into a
+        # directory that is nowhere on the machine.
+        elsewhere = str(profile / "home_old" / "memories")
+    else:
+        elsewhere = str(home / "elsewhere")
+    branches = {
+        "on": lambda: _write(),
+        "off": lambda: _write(autoMemoryEnabled=False),
+        "redirected": lambda: _write(autoMemoryDirectory=elsewhere),
+        "unparsed": lambda: settings.write_text(
+            '{"autoMemoryEnabled": false,,}', encoding="utf-8"
+        ),
+        "forbidden": lambda: (_write(autoMemoryEnabled=False), settings.chmod(0o000)),
+        "unreadable": lambda: (_write(), projects.chmod(0o000)),
+    }
+    spellings = (str(home), os.path.realpath(home))
+    keys = tuple(harness_memory.key_spelling(one) for one in spellings)
+    for name, arrange in branches.items():
+        try:
+            arrange()
+            checks = doctor.collect(_machine(home, monkeypatch, path))
+        finally:
+            settings.chmod(0o600)
+            projects.chmod(0o700)
+        spoken = " ".join(f"{c.detail} {c.remedy}" for c in checks)
+        # THE CONTROL FIRST: an absence over a report that never named a path
+        # under home is a green about the fixture. `~` in it says the paths
+        # were there and were re-spelled.
+        assert "~/" in spoken, name
+        for check in checks:
+            for text in (check.detail, check.remedy):
+                # ON A COMPONENT BOUNDARY, which is the only form of the claim
+                # the sibling shape can satisfy: `<home>_old/x` contains
+                # `str(home)` and has to, because that is its name.
+                for spelling in spellings:
+                    assert not re.search(re.escape(spelling) + r"(?![\w.-])", text), (
+                        shape, name, check.id, text
+                    )
+                for key in keys:
+                    assert not re.search(re.escape(key) + r"(?!\w)", text), (
+                        shape, name, check.id, text
+                    )
+                # And the other direction: a sibling re-spelled as a child.
+                assert "~_old" not in text, (shape, name, check.id, text)
+
+def test_a_directory_beside_home_keeps_the_name_it_has(profile, monkeypatch) -> None:
+    """`~_old/x` names a directory that is not there.
+
+    The rule was already "on a component boundary", and the lookahead spelling
+    it read was `[^\\W_]` — word characters except the underscore — so a name
+    starting with home's and continuing with `_` was the one shape the boundary
+    did not hold for. What the report then printed was a path an adopter cannot
+    open, in the sentence whose whole purpose is naming the file to repair.
+
+    ASKED OF THE ROWS THAT STILL RENDER ONE: the auto-memory row names its files
+    by role, so what reaches a reader beside home is a store — which is a path
+    an adopter chose the name of, through the re-speller, in a report they paste
+    somewhere.
+    """
+    for tail in ("_old", "-old", "old"):
+        beside = profile / f"home{tail}"
+        corpus = beside / "stores" / "personal" / "search"
+        _memory(corpus / harness_memory.SAFE_SUBDIR, "kept.md", "clutch free play")
+        path = _store_config(beside, stores=["personal"])
+        monkeypatch.chdir(beside)
+        checks = doctor.collect(_machine(profile, monkeypatch, path))
+        spoken = " ".join(f"{c.detail} {c.remedy}" for c in checks)
+        # THE PATH ROUTE, and only it: a project key is a lossy spelling, so
+        # `<home>-old` and `<home>/old` really do key to one directory name and
+        # an absence asserted over the key would be unsatisfiable.
+        assert f"~{tail}/" not in spoken, tail
+        # AND THE CONTROL, after it: a directory beside home is not under it, so
+        # it is spelled the way it is named, and an absence over a report that
+        # never mentioned it is a green about the fixture.
+        assert str(beside) in spoken, tail
+
+
+def test_the_note_about_an_unread_scope_cannot_eat_the_rows_own_verdict(
+    profile, monkeypatch
+) -> None:
+    """Each erroring scope contributes prose, a path capped at 300 and a parser
+    message capped at 120 — and the note as a whole was capped at nothing.
+
+    Two scopes therefore filled the budget on their own, and `_bound`, which
+    cuts from the end, took the row's answer with them: what was left read as a
+    disclosure with no verdict attached to it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    deep = pathlib.Path(os.getcwd()).joinpath(*[f"segment{n:02d}" for n in range(20)])
+    (deep / ".claude").mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    for name in (doctor.SETTINGS_NAME, doctor.LOCAL_SETTINGS_NAME):
+        (deep / ".claude" / name).write_text('{"autoDreamEnabled": true,,}', "utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "could not be parsed" in row.detail
+    # The row still says what it found, which is the whole point of the row.
+    assert "where the harness writes for this project is unknown" in row.detail
+
+
+def test_a_settings_directory_that_cannot_be_reached_is_reported_not_silence(
+    profile, monkeypatch
+) -> None:
+    """`os.path.isfile` answers False for a file whose DIRECTORY is unreadable,
+    and the whole mechanism is keyed on a message that guard prevents.
+
+    So the one unreadable state the wrapper does not detect is the one where a
+    row goes on to PASS on settings nobody read — which is the harm the
+    wrapper exists to stop, reached through its own precondition.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    _settings(profile, autoMemoryEnabled=False)
+    hidden = pathlib.Path(os.getcwd()) / ".claude"
+    hidden.mkdir(parents=True, exist_ok=True)
+    (hidden / doctor.SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    hidden.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        hidden.chmod(0o755)
+    assert row.status != doctor.PASS
+    assert doctor._ROLE["project"] + " could not be read" in row.detail
+    assert row.actor == doctor.USER
+
+
+def test_the_remedy_dropped_for_naming_the_unread_file_is_dropped_however_spelled(
+    profile, monkeypatch
+) -> None:
+    """The suppression compared two ABSOLUTE spellings, and the remedy that
+    most needed dropping names its file relatively.
+
+    So one remedy told the adopter both to make `.claude/settings.local.json`
+    parse and to set a key in it — the contradiction the suppression exists to
+    prevent, walking through a spelling it did not match.
+    """
+    path = _store_config(profile, stores=["personal"])
+    claude = pathlib.Path(os.getcwd()) / ".claude"
+    claude.mkdir(parents=True, exist_ok=True)
+    (claude / doctor.SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    (claude / doctor.LOCAL_SETTINGS_NAME).write_text(
+        '{"autoDreamEnabled": false,,}', encoding="utf-8"
+    )
+    monkeypatch.setattr(doctor, "DETAIL_MAX_BYTES", 4000)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert doctor._ROLE["local"] + " could not be parsed" in row.detail
+    assert doctor.LOCAL_SETTINGS_NAME not in row.remedy.split("Keep a copy first")[-1]
+
+
+def test_the_off_switch_counts_what_the_harness_wrote_before_it_was_thrown(
+    profile, monkeypatch
+) -> None:
+    """"memkit is the only memory system here" is present-tense true over a
+    config directory holding nineteen memories nothing retrieves, and it is
+    the sentence that stops an adopter looking for them.
+
+    Off is still off, so this stays the settled answer — what changes is that
+    it carries the count and where to read about moving them.
+    """
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    for key, count in (("-home-u-work-acme", 10), ("-home-u-work-beta", 9)):
+        (projects / key / "memory").mkdir(parents=True)
+        for i in range(count):
+            (projects / key / "memory" / f"m{i}.md").write_text("x\n", encoding="utf-8")
+    _settings(profile, autoMemoryEnabled=False)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert f"auto-memory is off in {doctor._ROLE['user']}" in row.detail
+    assert "2 project directories hold 19 memories outside every store" in row.detail
+    assert "the STORE guide" in row.detail
+    # And the claim the count contradicts is not made beside it.
+    assert "only memory system here" not in row.detail
+
+    # With nothing left behind, the claim is true and the row makes it.
+    for key, _ in (("-home-u-work-acme", 10), ("-home-u-work-beta", 9)):
+        shutil.rmtree(projects / key)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert (row.status, row.remedy) == SETTLED, row.detail
+    assert "memkit is the only memory system here" in row.detail
+
+
+def test_a_projects_directory_nobody_could_read_never_reads_as_nothing_written(
+    profile, monkeypatch
+) -> None:
+    """The count and the claim of absence come from one walk, so a walk that
+    FAILED must not produce either.
+
+    An unreadable `projects/` enumerates as an empty list, which is the same
+    answer a machine that has never written a memory gives — and the off
+    branch's own sentence, "memkit is the only memory system here", is then an
+    assertion about a directory this process could not open.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a directory whatever its mode says")
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    (projects / "-home-u-work-acme" / "memory").mkdir(parents=True)
+    (projects / "-home-u-work-acme" / "memory" / "one.md").write_text(
+        "x\n", encoding="utf-8"
+    )
+    _settings(profile, autoMemoryEnabled=False)
+    projects.chmod(0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+        # The feature being ON reads the same walk for the same claim, so the
+        # guard belongs to both branches rather than to the one it was found in.
+        _settings(profile, autoMemoryEnabled=True)
+        (armed,) = _only(
+            doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory"
+        )
+    finally:
+        projects.chmod(0o755)
+    for reported in (row, armed):
+        assert reported.status != doctor.PASS
+        assert "could not be read" in reported.detail
+        assert str(projects) not in reported.detail
+        assert "only memory system here" not in reported.detail
+        assert "outside every store" not in reported.detail
+
+
+def test_a_store_that_would_not_resolve_is_not_a_directory_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """"Outside every store" is a claim about every store on the machine, and
+    a store naming a root the config does not define is one this run compared
+    nothing with.
+
+    The config parsed, so the emptiness the loop fell out with looked like a
+    completed comparison — and the row told an adopter to point the key at a
+    corpus root about a directory already inside one.
+    """
+    blob = {
+        "schema": 1,
+        "interpreter": sys.executable,
+        "roots": {"home": {"kind": "path", "path": str(profile)}},
+        "stores": [
+            {
+                "id": "personal",
+                "role": "personal",
+                "dir": "stores/personal",
+                "live_root": "home",
+            },
+            {
+                "id": "team",
+                "role": "project",
+                "dir": "stores/team",
+                "live_root": "shared",
+            },
+        ],
+    }
+    path = profile / "memkit.json"
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    mine = profile / "stores" / "team" / "search" / harness_memory.SAFE_SUBDIR
+    mine.mkdir(parents=True)
+    _settings(profile, autoMemoryDirectory=str(mine))
+    machine = _machine(profile, monkeypatch, str(path))
+    assert machine.config() is not None, "the config itself must still parse"
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert "outside every store" not in row.detail
+    assert "could not read every configured store" in row.detail
+    # And the repair is the row that says why a store would not resolve, not
+    # a directory change decided from stores nobody read.
+    assert row.remedy == doctor._UNCOMPARED_REMEDY
+    assert "store-roots" in row.remedy
+
+
+def test_project_directories_no_store_was_compared_with_are_not_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """The count, asked through the same predicate the sentence beside it uses.
+
+    Bucketed on the raw relation, every project directory a failed comparison
+    left unplaced arrived in the caller as one more memory outside every
+    store — this row's loudest number, made from a comparison that never
+    happened.
+    """
+    broken = profile / "memkit.json"
+    broken.write_text("{ not json", encoding="utf-8")
+    projects = profile / "claude-config" / "projects"
+    for key, names in (
+        ("-home-u-git-app", ("one.md", "two.md")),
+        ("-home-u", ("note.md",)),
+    ):
+        (projects / key / "memory").mkdir(parents=True)
+        for name in names:
+            (projects / key / "memory" / name).write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, str(broken))),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert (
+        "2 project directories hold 3 memories nothing was compared with"
+        in row.detail
+    )
+    assert row.remedy == doctor._UNCOMPARED_REMEDY
+
+
+def test_the_derived_branch_advises_nothing_over_a_corpus_it_could_not_count(
+    profile, monkeypatch
+) -> None:
+    """The branch every adopter without the key lands on, and the only one
+    that never consulted the repair its own disclosure owns.
+
+    Adopting the corpus and switching the feature off are both instructions
+    about memories whose number this run does not know — the two things
+    `_unreadable_remedy` exists to say instead.
+    """
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    (projects / "-home-u-app" / "memory").mkdir(parents=True)
+    (projects / "-home-u-app" / "memory" / "one.md").write_text("x\n", encoding="utf-8")
+    os.chmod(projects, 0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        os.chmod(projects, 0o700)
+    assert "cannot be counted" in row.detail
+    assert row.remedy == doctor._unreadable_remedy()
+    assert "copies, never moves" not in row.remedy
+    assert "To run memkit alone" not in row.remedy
+
+
+def test_a_derived_directory_this_run_cannot_stat_is_not_reported_as_not_there_yet(
+    profile, monkeypatch
+) -> None:
+    """`os.path.isdir` answers False to two different questions, and every
+    sentence hung off that False is a positive claim about a read that never
+    happened."""
+    path = _store_config(profile, stores=["personal"])
+    projects = profile / "claude-config" / "projects"
+    projects.mkdir(parents=True)
+    os.chmod(projects, 0o000)
+    try:
+        (row,) = _only(
+            doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+            "auto-memory",
+        )
+    finally:
+        os.chmod(projects, 0o700)
+    assert "could not read whether it is there" in row.detail
+    assert "not there yet" not in row.detail
+
+    # A directory that is genuinely absent keeps the sentence that says so.
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "that directory is not there yet" in row.detail
+
+
+def test_a_corpus_root_spelled_in_another_case_is_the_same_directory(
+    profile, monkeypatch
+) -> None:
+    """Where the filesystem folds case, two spellings of one corpus root are
+    one directory — and compared character by character, a directory already
+    inside a store is reported as outside every one of them.
+
+    Skipped rather than asserted on a case-sensitive filesystem: whether the
+    fold is real is a fact about the volume the test runs on, which is the
+    same thing the predicate itself probes.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "chain tension after the sprocket swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    flipped = str(mine).replace("/stores/", "/STORES/")
+    if not os.path.isdir(flipped):
+        pytest.skip("this filesystem does not fold case")
+    _settings(profile, autoMemoryDirectory=flipped)
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert "is inside a store's corpus root" in row.detail
+    assert (row.status, row.remedy) == SETTLED, row.detail
+
+
+def test_the_branch_that_could_not_settle_names_how_many_and_never_which(
+    profile, monkeypatch
+) -> None:
+    """How many memories are where nothing retrieves them, and by role where
+    the count came from — never a file on disk and never a directory.
+
+    A project key is an absolute path with its separators replaced, so a list
+    of them is a list of paths and longer than everything else in this row put
+    together.
+    """
+    path = _store_config(profile, stores=["personal"])
+    stray = profile / "elsewhere"
+    stray.mkdir()
+    _settings(profile, autoMemoryDirectory=str(stray))
+    projects = profile / "claude-config" / "projects"
+    for key, names in (
+        ("-home-u-git-app", ("one.md", "two.md")),
+        ("-home-u", ("note.md",)),
+    ):
+        (projects / key / "memory").mkdir(parents=True)
+        for name in names:
+            (projects / key / "memory" / name).write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "2 project directories hold 3 memories outside every store" in row.detail
+    for named in ("-home-u-git-app", "-home-u ", "one.md", "two.md", "note.md"):
+        assert named not in row.detail, named
+
+
+def test_a_project_directory_inside_a_corpus_root_is_not_outside_every_store(
+    profile, monkeypatch
+) -> None:
+    """The relation was asked only of directories reached through a link.
+
+    Being linked is how a project directory comes to be somewhere other than
+    under the config directory, but it is not the only way: point
+    `$CLAUDE_CONFIG_DIR` inside a corpus root and every project directory
+    under it is in the store, with no symlink anywhere. Counted as outside
+    every store, this row's loudest number is a miscount.
+    """
+    path = _store_config(profile, stores=["personal"], dirs={"personal": "s"})
+    corpus = profile / "s" / "search"
+    _memory(corpus, "kept.md", "valve lash after the top end")
+    inside = corpus / "claudecfg"
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(inside))
+    written = inside / "projects" / "-home-u-work-acme-payments" / "memory"
+    written.mkdir(parents=True)
+    for i in range(3):
+        (written / f"m{i}.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "outside every store" not in row.detail
+    assert "1 project directory is already inside a store's corpus root" in row.detail
+    # And "linked into a store" is kept for the directories that are.
+    assert "linked into a store" not in row.detail
+
+
+def test_a_project_directory_a_store_holds_and_never_retrieves_is_neither(
+    profile, monkeypatch
+) -> None:
+    """Inside a corpus root and under a name the indexing walk never descends
+    into: the memories are in the store and nothing reads them there.
+
+    "Outside every store" is false about it and "already inside a store" is
+    the sentence that would send an adopter away satisfied, so it is neither.
+    """
+    path = _store_config(profile, stores=["personal"], dirs={"personal": "s"})
+    corpus = profile / "s" / "search"
+    _memory(corpus, "kept.md", "the one memory retrieval reaches")
+    pruned = corpus / sorted(doctor.EXCLUDE_DIRS)[0] / "cfg"
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(pruned))
+    written = pruned / "projects" / "-home-u-work-acme" / "memory"
+    written.mkdir(parents=True)
+    (written / "one.md").write_text("x\n", encoding="utf-8")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert "outside every store" not in row.detail
+    assert (
+        "1 project directory is inside a store and not retrieved from where it is"
+        in row.detail
+    )
 
 
 def test_the_measured_harness_stamp_is_the_one_ci_measures_on() -> None:
@@ -4305,3 +6469,952 @@ def test_an_unreadable_error_log_is_restarted_rather_than_grown_forever(profile)
         log.chmod(0o600)
     assert len(lines) < 500, len(lines)
     assert lines[-1].startswith("memkit-hook: ")
+
+
+# One directory, two spellings. `harness_dir` normalises what it reads out of
+# a settings file to NFC; nothing normalises what `memkit.json` spells.
+_NFD_STORE = "cafe\u0301-notes"
+_NFC_STORE = "caf\u00e9-notes"
+
+
+def test_a_store_root_and_a_configured_directory_are_normalised_alike(
+    profile, monkeypatch
+) -> None:
+    """A composed character is two strings and one directory.
+
+    The configured value arrives NFC because the harness normalises it, and a
+    corpus root out of `memkit.json` arrives however that file spells it. With
+    the normalisation on one side of the containment test, a directory sitting
+    inside a store was reported as outside every store on the machine — the
+    row's most alarming sentence, produced by an encoding.
+    """
+    assert _NFD_STORE != _NFC_STORE
+    path = _store_config(
+        profile, stores=["personal"], dirs={"personal": f"stores/{_NFD_STORE}"}
+    )
+    corpus = profile / "stores" / _NFD_STORE / "search"
+    _memory(corpus, "kept.md", "the gearbox oil interval")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "is inside a store's corpus root" in row.detail
+    assert "outside every store" not in row.detail
+
+    # THE SPELLINGS THE FUNCTION IS PASSED, whatever the volume does with them:
+    # APFS answers a lookup for either, so an assertion about a directory on
+    # disk would measure the filesystem rather than the comparison.
+    nfd_root = str(profile / "stores" / _NFD_STORE)
+    nfc_child = str(profile / "stores" / _NFC_STORE / "search")
+    assert doctor._within(nfc_child, nfd_root) is True
+
+
+def test_one_settings_file_is_one_scope_however_many_scopes_name_it(
+    profile, monkeypatch
+) -> None:
+    """Run doctor from your own home directory and `.claude/settings.json`
+    under the session's cwd IS the user scope.
+
+    Read a second time as `project`, the adopter's own configuration file was
+    reported as checked into a repository and travelling with every clone —
+    two false statements about a file nothing but that machine had ever
+    written, and both of them from one file counted twice.
+    """
+    home = profile / "home"
+    config = home / ".claude"
+    config.mkdir(parents=True, exist_ok=True)
+    settings = config / "settings.json"
+    settings.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
+    monkeypatch.chdir(home)
+
+    named = [scope for scope in doctor.settings_scopes() if scope.path]
+    assert len({os.path.realpath(scope.path) for scope in named}) == len(named)
+
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "checked into this repository" not in row.detail
+    assert "checked-in .claude" not in row.detail
+
+    # THE CONTROL. A session standing in a checkout, where the file under the
+    # cwd really is one the repository carries.
+    settings.unlink()
+    work = profile / "work" / ".claude"
+    work.mkdir(parents=True)
+    (work / "settings.json").write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    monkeypatch.chdir(work.parent)
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "checked into this repository" in row.detail
+
+
+def test_the_row_is_steered_only_by_a_variable_this_process_carries(
+    profile, monkeypatch
+) -> None:
+    """An adopter standing in their own home directory has no checkout
+    redirecting anything.
+
+    `~/.claude` is under the cwd there for the same reason every other
+    directory in home is, so a containment test asked of the DERIVED default
+    told them a tree had moved their harness and handed them a remedy for a
+    variable that is not in their environment.
+    """
+    monkeypatch.delenv(doctor.CONFIG_DIR_ENV, raising=False)
+    home = profile / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(home)
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    named = set(re.findall(r"\$([A-Z_]+)", f"{row.detail} {row.remedy}"))
+    assert all(os.environ.get(one) for one in named), (named, row.detail, row.remedy)
+    assert "$CLAUDE_CONFIG_DIR points inside" not in row.detail
+
+    # THE CONTROL. Set, and set inside the session's own directory: the
+    # sentence is true of that machine and the row still says it.
+    inside = home / "checkout" / ".claude"
+    inside.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(inside))
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "$CLAUDE_CONFIG_DIR points inside" in row.detail
+
+
+def test_a_scope_with_no_file_is_not_a_scope_that_failed(
+    profile, monkeypatch
+) -> None:
+    """An empty scope path is an ORDINARY state, not a read that went wrong.
+
+    It is what a session whose own directory was removed leaves behind, and
+    what the project scopes hold once one file is read once as the scope it
+    is. Recorded as a failure it would put "could not be read", and the remedy
+    that goes with it, under every row of a report about a machine with
+    nothing wrong.
+    """
+    home = profile / "home"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(home / ".claude"))
+    monkeypatch.chdir(home)
+    scopes = doctor.settings_scopes()
+    fileless = [scope for scope in scopes if not scope.path]
+    assert fileless, [scope.scope for scope in scopes]
+    assert not [scope.scope for scope in fileless if scope.failure]
+
+    path = _store_config(profile, stores=["personal"])
+    rows = doctor.collect(_machine(profile, monkeypatch, path))
+    said = [row.id for row in rows if "could not be read" in f"{row.detail}{row.remedy}"]
+    assert not said, said
+
+
+def test_a_path_that_will_not_resolve_is_inside_nothing(profile) -> None:
+    """A settings file may legally carry an embedded NUL, and `realpath`
+    raises `ValueError` rather than `OSError` on one.
+
+    The safe answer here is the one that claims no retrieval — this predicate
+    decides whether a directory is reported as reached by a store, and a path
+    nothing could resolve is one no store was compared with.
+    """
+    store = str(profile / "stores" / "personal" / "search")
+    assert doctor._within(f"{store}/no\x00where", store) is False
+    assert doctor._within(store, f"{store}/no\x00where") is False
+
+
+def test_a_config_dir_inside_the_session_is_remedied_by_the_file_that_set_it(
+    profile, monkeypatch
+) -> None:
+    """The remedy names the file the value is in, and that file is per scope.
+
+    One paragraph served two scopes. "Check that settings.local.json is
+    untracked" is the right second half for a value a checkout's own
+    `settings.local.json` set, and it is about a file that is not involved at
+    all once `$CLAUDE_CONFIG_DIR` puts the trusted scope inside the session's
+    directory: there the deciding file is that directory's own settings.json,
+    and an adopter sent to the wrong file finds the key absent from it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "clutch bleed order after the master swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    theirs = profile / "project" / ".config" / "claude"
+    theirs.mkdir(parents=True)
+    (theirs / doctor.SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryDirectory": str(mine)}), encoding="utf-8"
+    )
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(theirs))
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert row.status == doctor.INFO
+    assert doctor._ROLE["user"] in row.remedy, row.remedy
+    assert doctor.LOCAL_SETTINGS_NAME not in row.remedy, row.remedy
+    assert row.actor == doctor.USER
+
+    # THE CONTROL. A `local` scope is still told about the convention that
+    # keeps its file out of a clone, because there that file is what set the
+    # key.
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(profile / "claude-config"))
+    local = pathlib.Path(os.getcwd()) / ".claude" / doctor.LOCAL_SETTINGS_NAME
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(json.dumps({"autoMemoryDirectory": str(mine)}), encoding="utf-8")
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](doctor.Machine()), "auto-memory")
+    assert "untracked" in row.remedy, row.remedy
+    assert doctor._ROLE["user"] not in row.remedy, row.remedy
+
+
+# --- the row's own rule ------------------------------------------------------
+
+# `_auto_memory` and every helper only it calls. Frozen here rather than walked
+# for from the producer: a helper added to the row falls under the rule below
+# once it is named here, and naming it is the cheaper half of adding it.
+_ROW_PRODUCERS = (
+    "_auto_memory",
+    "_auto_memory_rows",
+    "_placed",
+    "_how_inside",
+    "_odd_switch",
+    "_checkout_remedy",
+    "_checkout_source",
+    "_env_switch_note",
+    "_env_switch_remedy",
+    "_override_note",
+    "_declared_below",
+    "_default_memory_dir",
+    "_consolidation_recency",
+    "_inventoried",
+    "_unreadable_remedy",
+    "_already_placed",
+    "_left_behind",
+    "_adopter_owns",
+)
+
+# The tables a sentence may look a word up in. Each is module-level and closed,
+# so a value off the machine decides which entry is read and never what it says.
+_ROW_TABLES = ("_ROLE", "_TRAVELS", "_TAKE", "_DECIDE", "_NAMED", "_PLACEMENT")
+
+# The only bare names the row may interpolate: the two integers the elapsed-time
+# clause binds. `_count` is the other renderer, and it is a call.
+_ROW_INT_NAMES = ("age", "hours")
+
+# Everything that turns a path into a string, by any spelling it is called by.
+_ROW_FORBIDDEN = (
+    "_display_path",
+    "_display_cap",
+    "_cut",
+    "_shown",
+    "_resolved",
+    "_relative_to_cwd",
+    "_redacted",
+    "_redact",
+    "key_spelling",
+    "harness_dir",
+    "expanduser",
+    "realpath",
+    "fsdecode",
+)
+
+# Where a display cap may live at all. Each of these bounds a string an
+# adopter's own settings file or its path decides the length of, and none of
+# them is reachable from the row. `_with_unparsed` is here because the note it
+# assembles has two halves now: each is bounded on its own and two bounded
+# halves are not a bounded note, so the join is capped once where it happens.
+_CAP_HOLDERS = ("_shown", "_unparsed_settings", "_with_unparsed")
+
+
+def test_the_auto_memory_row_renders_no_path() -> None:
+    """The rule the row is now built to, asserted against the syntax.
+
+    Six rounds closed this class one rendered path at a time, and each fix was
+    a sentence: the next branch added its own path back, because nothing said
+    the row may not have one. What says it here is the shape of the code —
+    every word the row puts in front of an adopter is a literal, a count, or an
+    entry read out of a closed table, so there is no expression left for a path
+    to arrive through.
+
+    A LITERAL IS FREE, and that is deliberate: a remedy naming `settings.json`
+    under the checkout's `.claude` directory is a repair an adopter can act on
+    and is not a path off this machine. What is refused is INTERPOLATION — a
+    name, an attribute, a call — because that is the half a value can reach.
+    """
+    import ast
+
+    source = (REPO / "src" / "memkit" / "cli_doctor.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert [n for n in _ROW_PRODUCERS if n not in functions] == []
+    assert [t for t in _ROW_TABLES if f"\n{t} = {{" not in source] == []
+
+    def called(node: ast.Call) -> str:
+        return getattr(node.func, "id", "") or getattr(node.func, "attr", "")
+
+    def renders(node: ast.AST) -> bool:
+        """May the row put this value in front of an adopter?"""
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, ast.Call):
+            return called(node) == "_count"
+        if isinstance(node, ast.Name):
+            return node.id in _ROW_INT_NAMES
+        if isinstance(node, ast.Subscript):
+            return isinstance(node.value, ast.Name) and node.value.id in _ROW_TABLES
+        return False
+
+    broken = []
+    for name in _ROW_PRODUCERS:
+        for node in ast.walk(functions[name]):
+            if isinstance(node, ast.JoinedStr):
+                for part in node.values:
+                    if isinstance(part, ast.FormattedValue) and not renders(part.value):
+                        broken.append((name, node.lineno, ast.unparse(part.value)))
+            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+                broken.append((name, node.lineno, ast.unparse(node)))
+            elif isinstance(node, ast.Call):
+                spelling = called(node)
+                first = node.args[0] if node.args else None
+                literal = isinstance(first, (ast.Tuple, ast.List)) and all(
+                    isinstance(element, ast.Constant) for element in first.elts
+                )
+                # `os.path.join` needs no entry of its own: what is refused is
+                # a join over anything but literals, and a path is built out of
+                # values.
+                if (
+                    (spelling == "format" and isinstance(node.func, ast.Attribute))
+                    or (spelling == "join" and not literal)
+                    or (spelling == "str" and not isinstance(first, ast.Constant))
+                    or spelling in _ROW_FORBIDDEN
+                ):
+                    broken.append((name, node.lineno, ast.unparse(node)))
+    assert broken == [], broken
+
+    # ANTI-VACUITY, both directions: the walk reads f-strings in these functions,
+    # and the rule refuses the one shape every round of this class arrived as.
+    assert any(
+        isinstance(node, ast.JoinedStr)
+        for node in ast.walk(functions["_consolidation_recency"])
+    )
+    assert renders(ast.parse("_ROLE[scope.scope]", mode="eval").body)
+    assert not renders(ast.parse("scope.path", mode="eval").body)
+
+    # AND NO EIGHTH CAP SITE. A cap is what a rendered path was bounded by, so
+    # the file-wide half of the rule is which functions may hold one: the row
+    # calls neither, and a new caller of `_display_cap` is a new renderer.
+    holders = set()
+
+    def scan(node: ast.AST, holder: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scan(child, child.name)
+                continue
+            if isinstance(child, ast.Call) and called(child) == "_display_cap":
+                holders.add(holder)
+            scan(child, holder)
+
+    scan(tree, "<module>")
+    assert holders == set(_CAP_HOLDERS), holders
+
+
+
+
+def _strings(blob) -> list:
+    """Every string in a nested envelope entry, keys as well as values."""
+    if isinstance(blob, str):
+        return [blob]
+    if isinstance(blob, dict):
+        return [
+            text
+            for key, value in blob.items()
+            for text in _strings(key) + _strings(value)
+        ]
+    if isinstance(blob, (list, tuple)):
+        return [text for item in blob for text in _strings(item)]
+    return []
+
+
+def test_the_auto_memory_row_names_no_path_at_the_shipped_caps(monkeypatch) -> None:
+    """The behavioural half of the rule above, at the caps the tree ships.
+
+    THE CAPS ARE NOT LIFTED, and that is the case rather than an incidental of
+    it: what this closes was a raw home spelling that reached the report for a
+    twenty-two-character band of config-directory lengths and for no other,
+    because all that stood between the path and the reader was a cut. Lift the
+    cap and a different question is being answered; lower it and the answer is
+    only that a cut happened.
+
+    THREE HOMES AND A SWEEP. Two lengths, because where the cut lands is a
+    function of how long the strings before it are; and one home spelled
+    decomposed, because the harness composes what it derives and the two
+    spellings are then different byte sequences for one directory.
+
+    The settings file is unreadable on purpose: a refused open is the route that
+    carried the path, through the note every settings-reading row wears.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode says")
+    # AS SHIPPED. Asserted here rather than monkeypatched, so a change to any of
+    # them arrives with this case rather than through it.
+    assert (doctor.DETAIL_MAX_BYTES, doctor.PATH_SHOWN) == (600, 300)
+    assert (doctor.PARSER_SHOWN, doctor.NOTE_SHOWN) == (120, 300)
+
+    # A SHORT ROOT is a requirement and not a convenience: home has to fit
+    # inside a 300-byte cap for a cut to be able to leave it whole, and pytest's
+    # own temporary directory is a hundred characters deep.
+    short = os.path.realpath("/tmp")
+    if not os.path.isdir(short) or len(short) > 24:
+        pytest.skip("no temporary directory short enough for a 33-character home")
+    root = tempfile.mkdtemp(dir=short)
+    reports = 0
+    monkeypatch.setattr(doctor, "__file__", "/opt/under-test/src/memkit/cli_doctor.py")
+    for name in (
+        hook.PLUGIN_ENV,
+        hook.PLUGIN_DATA_ENV,
+        "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
+        "CLAUDE_PLUGIN_ROOT",
+        harness_memory.DISABLE_ENV,
+        *harness_memory.OVERRIDE_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        for shape, width in (("plain", 33), ("plain", 60), ("decomposed", 33)):
+            leaf = "alice" if shape == "plain" else unicodedata.normalize("NFD", "café")
+            leaf += "x" * (width - len(root) - 1 - len(leaf))
+            home = pathlib.Path(root) / leaf
+            assert len(str(home)) == width, str(home)
+            project = home / "project"
+            project.mkdir(parents=True)
+            corpus = home / "stores" / "personal" / "search"
+            _memory(corpus / harness_memory.SAFE_SUBDIR, "kept.md", "clutch free play")
+            config_path = _store_config(home, stores=["personal"])
+            monkeypatch.setenv("HOME", str(home))
+            monkeypatch.chdir(project)
+            spellings = {str(home), os.path.realpath(str(home)), str(corpus)}
+            spellings |= {
+                unicodedata.normalize(form, str(home)) for form in ("NFC", "NFD")
+            }
+            for pad in range(140):
+                config = home / ("d" * pad or "cfg") / "cfg"
+                memory = config / "projects" / "-x-y" / "memory"
+                memory.mkdir(parents=True)
+                (memory / "one.md").write_text("x\n", encoding="utf-8")
+                settings = config / doctor.SETTINGS_NAME
+                settings.write_text('{"autoMemoryEnabled": false}', encoding="utf-8")
+                settings.chmod(0o000)
+                monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(config))
+                machine = _machine(home, monkeypatch, config_path)
+                # THE ROW AT EVERY LENGTH and the whole report at a few: what
+                # the sweep is for is where the note's cut lands, and that is
+                # this row's own entry. The other rows render paths the cap
+                # cannot cut a home out of, because the substitution runs
+                # before the cut — so a raw one there is asserted often enough
+                # to catch a redaction that stopped running.
+                try:
+                    (row,) = [c.as_dict() for c in doctor._PRODUCERS["auto-memory"](machine)]
+                    blob = (
+                        doctor.envelope(doctor.collect(machine))
+                        if pad % 20 == 0 or pad == 139
+                        else {}
+                    )
+                finally:
+                    settings.chmod(0o600)
+                where = (shape, width, pad)
+                named = spellings | {str(config), leaf} | {
+                    harness_memory.key_spelling(one)
+                    for one in (str(home), os.path.realpath(str(home)), str(config))
+                }
+                for text in _strings(row):
+                    # NO SEPARATOR AT ALL is the whole of the claim: a sentence
+                    # with no `/` and no `~` in it carries no path, whatever
+                    # this machine's directories happen to be called.
+                    assert "/" not in text, (where, text)
+                    assert "~" not in text, (where, text)
+                    for spelling in named:
+                        assert spelling not in text, (where, spelling, text)
+                # AND THE WHOLE ENVELOPE, for the raw spellings only: the other
+                # rows do render paths, re-spelled `~`, which is what makes a
+                # raw one there a redaction that did not run.
+                for text in _strings(blob):
+                    for spelling in spellings:
+                        assert spelling not in text, (where, spelling, text)
+                reports += 1 if blob else 0
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    # Anti-vacuity: the whole-report half really ran, on every home.
+    assert reports == 24, reports
+
+
+# --- the states this row answers in, and what a remedy may name --------------
+
+
+def _named_roles(text: str) -> list:
+    """Every scope whose ROLE sentence appears in `text`."""
+    return [name for name, role in doctor._ROLE.items() if name and role in text]
+
+
+def _remedy_rests_on_what_was_read(row, machine, where) -> None:
+    """The class-4 rule, asserted of one row in one state.
+
+    Every file a remedy names is a scope this run had a file for, every
+    variable it names is one this process carries, and every value it tells an
+    adopter to write is one that would change the answer. A remedy is rendered
+    from the state that decided the verdict or it is a template with free
+    variables in it, and a template is what put a checkout's file, an unset
+    variable and a value that changes nothing in front of readers.
+    """
+    by_name = {scope.scope: scope for scope in machine.settings}
+    for name in _named_roles(row.remedy):
+        assert by_name[name].path, (where, name, row.remedy)
+    for variable in set(re.findall(r"\$([A-Z_]+)", row.remedy)):
+        assert os.environ.get(variable), (where, variable, row.remedy)
+    if f'"{harness_memory.ENABLED_KEY}": false' in row.remedy:
+        held = harness_memory.switch(machine.settings, harness_memory.ENABLED_KEY)[0]
+        # THE VALUE HAS TO DIFFER FROM THE HELD ONE IN EFFECT, not only in
+        # spelling: a variable the harness reads before it opens a settings
+        # file at all makes this key's value moot, which the row's own detail
+        # says two clauses earlier.
+        assert held is not False, (where, row.remedy)
+        assert harness_memory.env_switch()[0] is not True, (where, row.remedy)
+    # AND THE DISCLOSURE THE REMEDY ANSWERS survived into the detail: a repair
+    # for a directory nothing could list, beside no statement that anything was
+    # unlistable, reads as advice about a machine this run measured.
+    if row.remedy == doctor._unreadable_remedy():
+        assert "cannot be counted" in row.detail, (where, row.detail)
+
+
+def test_every_state_the_auto_memory_row_answers_in_rests_on_a_file_it_read(
+    profile, monkeypatch
+) -> None:
+    """The row's reachable states, enumerated, with one rule asserted over all.
+
+    The branches were tested one at a time and the rule was in none of them,
+    so each round closed the instance it was shown and left the shape behind:
+    a sentence naming a file the process is without, a variable the environment
+    does not carry, or a value that changes nothing. Enumerated here, a branch
+    added later is covered the day it is written rather than a round later.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "clutch bleed order after the master swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    config = profile / "claude-config"
+    checkout = pathlib.Path(os.getcwd()) / ".claude"
+    projects = config / "projects"
+
+    def _write(path, **blob) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(blob), encoding="utf-8")
+
+    def _sealed() -> None:
+        projects.mkdir(parents=True, exist_ok=True)
+        projects.chmod(0o000)
+
+    def forced_off(ctx) -> None:
+        ctx.setenv(harness_memory.DISABLE_ENV, "1")
+
+    def forced_on(ctx) -> None:
+        ctx.setenv(harness_memory.DISABLE_ENV, "0")
+
+    def off_in_user(ctx) -> None:
+        _write(config / doctor.SETTINGS_NAME, autoMemoryEnabled=False)
+
+    def off_in_checkout(ctx) -> None:
+        _write(checkout / doctor.SETTINGS_NAME, autoMemoryEnabled=False)
+
+    def off_and_disputed(ctx) -> None:
+        _write(config / doctor.SETTINGS_NAME, autoMemoryEnabled=False)
+        _write(checkout / doctor.SETTINGS_NAME, autoMemoryEnabled=True)
+
+    def off_and_unlistable(ctx) -> None:
+        _write(config / doctor.SETTINGS_NAME, autoMemoryEnabled=False)
+        _sealed()
+
+    def off_in_the_local_file_at_home(ctx) -> None:
+        ctx.delenv(doctor.CONFIG_DIR_ENV, raising=False)
+        home = profile / "home"
+        _write(home / ".claude" / doctor.LOCAL_SETTINGS_NAME, autoMemoryEnabled=False)
+        ctx.chdir(home)
+
+    def configured_and_retrieved(ctx) -> None:
+        _write(config / doctor.SETTINGS_NAME, autoMemoryDirectory=str(mine))
+
+    def configured_by_checkout(ctx) -> None:
+        _write(checkout / doctor.SETTINGS_NAME, autoMemoryDirectory=str(mine))
+
+    def configured_outside(ctx) -> None:
+        elsewhere = profile / "elsewhere"
+        elsewhere.mkdir(exist_ok=True)
+        _write(config / doctor.SETTINGS_NAME, autoMemoryDirectory=str(elsewhere))
+
+    def configured_and_unlistable(ctx) -> None:
+        _write(config / doctor.SETTINGS_NAME, autoMemoryDirectory=str(mine))
+        _sealed()
+
+    def derived(ctx) -> None:
+        return None
+
+    def derived_and_unlistable(ctx) -> None:
+        _sealed()
+
+    def unrooted(ctx) -> None:
+        ctx.setenv(doctor.CONFIG_DIR_ENV, "relative-config")
+
+    def steered(ctx) -> None:
+        inside = checkout / "config"
+        inside.mkdir(parents=True, exist_ok=True)
+        ctx.setenv(doctor.CONFIG_DIR_ENV, str(inside))
+
+    states = (
+        forced_off,
+        forced_on,
+        off_in_user,
+        off_in_checkout,
+        off_and_disputed,
+        off_and_unlistable,
+        off_in_the_local_file_at_home,
+        configured_and_retrieved,
+        configured_by_checkout,
+        configured_outside,
+        configured_and_unlistable,
+        derived,
+        derived_and_unlistable,
+        unrooted,
+        steered,
+    )
+    remedied = 0
+    for state in states:
+        with monkeypatch.context() as ctx:
+            state(ctx)
+            try:
+                machine = _machine(profile, ctx, path)
+                (row,) = _only(
+                    doctor._PRODUCERS["auto-memory"](machine), "auto-memory"
+                )
+            finally:
+                if projects.exists():
+                    projects.chmod(0o755)
+            # INSIDE the context: what the remedy may name is a question about
+            # the environment the row was collected in, and this one is undone
+            # on the way out.
+            _remedy_rests_on_what_was_read(row, machine, state.__name__)
+        remedied += 1 if row.remedy else 0
+        for stale in (
+            config / doctor.SETTINGS_NAME,
+            checkout / doctor.SETTINGS_NAME,
+            profile / "home" / ".claude" / doctor.LOCAL_SETTINGS_NAME,
+        ):
+            if stale.exists():
+                stale.unlink()
+        shutil.rmtree(projects, ignore_errors=True)
+    # Anti-vacuity: most of these states really do carry a remedy, so the rule
+    # above was asserted about sentences rather than about empty strings.
+    assert remedied >= len(states) - 4, remedied
+
+
+def test_the_local_settings_file_of_this_checkout_is_a_scope_of_its_own(
+    profile, monkeypatch
+) -> None:
+    """`settings.local.json` is not the user scope under another name.
+
+    One file is one scope emptied BOTH entries built from the session's own
+    `.claude`, and the local one reads a different file: it outranks every
+    scope an adopter can edit, so a switch written only there is the switch
+    that decided. Emptied, the row never opened it, reported a machine with no
+    answer in it, and went on to say where the harness would write.
+    """
+    monkeypatch.delenv(doctor.CONFIG_DIR_ENV, raising=False)
+    home = profile / "home"
+    config = home / ".claude"
+    config.mkdir(parents=True, exist_ok=True)
+    (config / doctor.LOCAL_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    monkeypatch.chdir(home)
+    assert [
+        scope.path for scope in doctor.settings_scopes() if scope.scope == "local"
+    ] == [str(config / doctor.LOCAL_SETTINGS_NAME)]
+
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert f"auto-memory is off in {doctor._ROLE['local']}" in row.detail
+    # AND NOTHING ABOUT WHERE IT WOULD WRITE: the feature is off, so a sentence
+    # naming the directory it derives is about a machine this one is not.
+    assert "would write" not in row.detail
+    assert "derives from the git root" not in row.detail
+
+
+def test_the_user_scope_is_untrusted_only_where_a_variable_moved_it(
+    profile, monkeypatch
+) -> None:
+    """`~/.claude` is under the cwd for every adopter standing in home.
+
+    Asked of the DIRECTORY rather than of the variable, the containment test
+    reported the adopter's own settings file as one their machine did not
+    place — and answered it with a repair addressed to somebody else's file.
+    """
+    monkeypatch.delenv(doctor.CONFIG_DIR_ENV, raising=False)
+    home = profile / "home"
+    config = home / ".claude"
+    config.mkdir(parents=True, exist_ok=True)
+    (config / doctor.SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    monkeypatch.chdir(home)
+    assert [s.adopter_owned for s in doctor.settings_scopes() if s.scope == "user"] == [
+        True
+    ]
+
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "not one your own machine placed" not in row.detail
+    assert "not one your own machine placed" not in row.remedy
+    assert "this checkout says so" not in row.detail
+
+    # THE CONTROL. A variable pointing the trusted scope inside the session's
+    # own directory is somebody's choice, and there the sentence is true.
+    theirs = home / "checkout" / ".claude"
+    theirs.mkdir(parents=True)
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(theirs))
+    monkeypatch.chdir(theirs.parent)
+    assert [s.adopter_owned for s in doctor.settings_scopes() if s.scope == "user"] == [
+        False
+    ]
+
+
+def test_a_settings_file_nested_past_the_parser_is_unparsed_and_not_a_traceback(
+    profile, monkeypatch
+) -> None:
+    """A thousand open brackets in a settings file is a file that will not
+    parse, and `json` says so by raising `RecursionError`.
+
+    Caught nowhere, it came out of `Settings.__init__` through
+    `settings_scopes` and `Machine()`: `memkit init` printed a traceback and
+    exited 1 — the code its published table reads as "memkit could not start
+    at all" — and `memkit doctor` lost all twenty rows to one `UNKNOWN`
+    install row whose remedy named a directory that was never missing.
+
+    HOW DEEP IS NOT THE INTERPRETER'S `sys.getrecursionlimit()`: the C scanner
+    keeps its own allowance and 3.9 gave up at a thousand brackets where 3.12
+    read five thousand. Written well past both, so the parser gives up on
+    every interpreter this suite runs on — and where some future one does not,
+    an unterminated array is still a document that will not parse, which is
+    the state this case is about.
+    """
+    config = pathlib.Path(os.environ[doctor.CONFIG_DIR_ENV])
+    settings = config / doctor.SETTINGS_NAME
+    settings.write_text("[" * 20000, encoding="utf-8")
+
+    scope = doctor.Settings("user", str(settings))
+    assert scope.failure == doctor.UNPARSED
+    assert scope.error
+
+    scopes = doctor.settings_scopes()
+    assert [s.scope for s in scopes] == ["managed", "user", "project", "local"]
+    assert [s.failure for s in scopes if s.scope == "user"] == [doctor.UNPARSED]
+
+    # AND THE ROWS SURVIVE IT. The note names the file by role and quotes the
+    # parser, and the remedy is the one repair that comes before any other.
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert doctor._ROLE["user"] + " could not be parsed" in row.detail
+    assert "Make " + doctor._ROLE["user"] + " parse as JSON" in row.remedy
+
+
+def test_a_parser_that_gives_up_on_depth_leaves_a_scope_unparsed(
+    profile, monkeypatch
+) -> None:
+    """The same state as the case above, asked of the handler directly.
+
+    `RecursionError` is not a `ValueError` and not an `OSError`, so which
+    interpreter this runs on decides whether the document above reaches the
+    branch at all. This one puts the exception where the parser raises it, so
+    the handler is exercised wherever these tests run.
+    """
+    config = pathlib.Path(os.environ[doctor.CONFIG_DIR_ENV])
+    settings = config / doctor.SETTINGS_NAME
+    settings.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+
+    def gives_up(*_a, **_kw):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(doctor.json, "load", gives_up)
+    scope = doctor.Settings("user", str(settings))
+    assert scope.failure == doctor.UNPARSED
+    assert "maximum recursion depth exceeded" in scope.error
+    assert scope.data == {}
+
+
+def test_a_scope_whose_path_will_not_resolve_is_reported_and_not_assumed(
+    profile, monkeypatch
+) -> None:
+    """`realpath` raises on a long enough chain of symbolic links, and both
+    resolutions in `settings_scopes` sit on an adopter-set variable.
+
+    Guarded, each takes the side that claims less — a scope whose containment
+    could not be tested is not the adopter's, and two directories that could
+    not be compared are not one directory — and NEITHER is silent about it.
+    The silent versions are a row concluding from a scope nobody located: the
+    user scope trusted because the test that would have distrusted it never
+    ran, and the checked-in scope dropped as absent when nothing said it was.
+    """
+    config = os.environ[doctor.CONFIG_DIR_ENV]
+    real_under_cwd = doctor._under_cwd
+    real_resolved = doctor._resolved
+
+    # THE PATH THE CHAIN IS ON AND NO OTHER: every other caller of these two
+    # is left answering, so what the row below reports is this defect rather
+    # than a module with both of its path helpers broken.
+    def under_cwd(path):
+        if path == os.path.join(config, doctor.SETTINGS_NAME):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_under_cwd(path)
+
+    def resolved(path):
+        if path == config:
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_resolved(path)
+
+    # SCOPED TO THE WALK THAT READS THE SCOPES. `Machine` resolves them once
+    # and every producer reads that answer, so the row below is produced by a
+    # module whose path helpers work — which is the real shape of this: one
+    # unresolvable directory, not a broken resolver.
+    path = _store_config(profile, stores=["personal"])
+    with pytest.MonkeyPatch.context() as adrift:
+        adrift.setattr(doctor, "_under_cwd", under_cwd)
+        adrift.setattr(doctor, "_resolved", resolved)
+        scopes = {scope.scope: scope for scope in doctor.settings_scopes()}
+        machine = _machine(profile, monkeypatch, path)
+
+    assert sorted(scopes) == ["local", "managed", "project", "user"]
+    assert scopes["user"].unresolved == "RecursionError"
+    assert scopes["user"].adopter_owned is False
+    assert scopes["project"].unresolved == "RecursionError"
+    assert scopes["project"].path == ""
+
+    # THE ROW SAYS SO, and names the scope, the class, and the variable the
+    # path comes from.
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert "could not resolve where " + doctor._ROLE["user"] in row.detail
+    assert "RecursionError" in row.detail
+    assert "$" + doctor.CONFIG_DIR_ENV in row.remedy
+    assert row.status != doctor.PASS
+
+
+def test_a_config_dir_reached_through_a_long_symlink_chain_is_not_a_traceback(
+    profile, monkeypatch, tmp_path
+) -> None:
+    """The unguarded half of the same defect, through the real filesystem.
+
+    `$CLAUDE_CONFIG_DIR` is adopter-set, so the chain arrives at `_under_cwd`
+    from outside this process. Whether `realpath` answers by raising is the
+    interpreter's business — it recursed per link until 3.13 — and what this
+    asks is the part that is not: that a settings scope list comes back either
+    way, with every scope named.
+    """
+    chain = tmp_path / "chain"
+    (chain / "real" / ".claude").mkdir(parents=True)
+    os.symlink("real", chain / "l0")
+    for index in range(1, 1200):
+        os.symlink(f"l{index - 1}", chain / f"l{index}")
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(chain / "l1199" / ".claude"))
+
+    scopes = doctor.settings_scopes()
+    assert [s.scope for s in scopes] == ["managed", "user", "project", "local"]
+    # Where this interpreter's `realpath` did give up, the scope it gave up on
+    # is named rather than quietly answered.
+    for scope in scopes:
+        assert scope.unresolved in ("", "RecursionError"), scope.unresolved
+    assert doctor.Machine().settings
+
+
+def test_every_scope_is_told_what_to_do_about_the_file_it_names(profile) -> None:
+    """One role table for what were two per-scope tables with different defaults.
+
+    `_checkout_source` fell through to the `user` text and `_checkout_remedy`
+    to the `local` one, so `managed` — the one scope an adopter genuinely
+    cannot edit — was described as a file in the session's own directory by one
+    and told to keep `settings.local.json` untracked by the other.
+    """
+    answers = set()
+    for scope in harness_memory.SCOPE_ORDER:
+        role, travels = doctor._checkout_source(scope)
+        remedy = doctor._checkout_remedy("value", scope)
+        assert role and travels, scope
+        answers.add((role, travels, remedy))
+    assert len(answers) == len(harness_memory.SCOPE_ORDER), sorted(answers)
+    # The one file nothing an adopter writes outranks is not answered with an
+    # instruction to edit it.
+    managed = doctor._checkout_remedy("value", "managed")
+    assert "administers" in managed, managed
+    assert doctor.LOCAL_SETTINGS_NAME not in managed, managed
+    assert "take the key out of it" not in managed, managed
+
+
+def test_a_variable_that_forces_the_feature_on_gets_the_remedy_that_stops_it(
+    profile, monkeypatch
+) -> None:
+    """The row that needs the forced-on remedy is the one that never got it.
+
+    Its only call site sat under `enabled is False`, where `forced` is False by
+    construction, so the branch a forced-on machine reaches closed with "set
+    `autoMemoryEnabled`: false" — the one thing its own detail had just said
+    changes nothing.
+    """
+    path = _store_config(profile, stores=["personal"])
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert "reads as an instruction to RUN" in row.detail
+    assert f"Unset ${harness_memory.DISABLE_ENV}" in row.remedy
+    assert f'"{harness_memory.ENABLED_KEY}": false in ' not in row.remedy
+
+
+def test_the_configured_branch_reports_the_inventory_that_refused_to_settle_it(
+    profile, monkeypatch
+) -> None:
+    """A row whose remedy exists because of a count it never printed.
+
+    The silent-settle gate reads the walk — a project directory in a store and
+    not retrieved, or outside every store, keeps the row from settling — and
+    the branch it falls to listed neither, so the remedy arrived over an
+    inventory the reader was never shown.
+    """
+    path = _store_config(profile, stores=["personal"])
+    corpus = profile / "stores" / "personal" / "search"
+    _memory(corpus, "kept.md", "clutch bleed order after the master swap")
+    mine = corpus / harness_memory.SAFE_SUBDIR
+    mine.mkdir()
+    _settings(profile, autoMemoryDirectory=str(mine))
+    projects = profile / "claude-config" / "projects"
+    (projects / "-home-u-work-acme" / "memory").mkdir(parents=True)
+    (projects / "-home-u-work-acme" / "memory" / "m.md").write_text(
+        "x\n", encoding="utf-8"
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert (row.status, row.remedy) != SETTLED, row.detail
+    assert "1 project directory holds 1 memory outside every store" in row.detail

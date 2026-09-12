@@ -13,12 +13,31 @@ ordering.
 
 ### Added
 
+- **`memkit init` adopts the harness's own auto-memory.** `--adopt-auto-memory`
+  copies the memories the harness wrote into the store and sends the next ones
+  there; `--auto-memory-off` stops that writing instead; and `memkit doctor`
+  grows an `auto-memory` row counting both sides and naming the deciding scope.
+- **The mutation sweep runs in CI over the whole corpus**, in a job of its own
+  — no module list, and so the 662 probes `tools/mutation_sweep.py --list`
+  counts in this tree rather than a subset somebody keeps in step by hand. The
+  two `--module` runs it replaces covered 114 of them, which is how an anchor
+  that had slipped off the code it was written for sat dead for twenty-three
+  commits with every gate green.
 - **"Keep your store in git" in `docs/STORE.md`** — the store as a private
   repository, which findings need history to say anything at all, and where
-  Claude Code's own agent-written memories land. They default to a per-project
-  directory outside every store; `memoryDir` redirects them, and pointing it at
-  `<store>/search` rather than the store root is what keeps the harness's flat
-  writes inside the corpus root.
+  Claude Code's own agent-written memories land. They default to a directory
+  keyed by the git repository root and outside every store;
+  `autoMemoryDirectory` — measured on 2.1.258, matching the documentation page —
+  redirects them, and pointing it at `<store>/search/auto-memory` rather than
+  the store root is what keeps them inside the corpus root: the harness writes
+  every project's memories into that one directory, with no per-project
+  directory under it. On a flat store — one with no `search/` — the same value
+  is `<store>/auto-memory`. Two corrections to advice given while this page was
+  in review: a checked-in `.claude/settings.json` is honored, so a clone can
+  redirect where an agent writes, and the value is that harness-owned
+  subdirectory rather than the corpus root itself, because the harness rewrites
+  the frontmatter of any `.md` file that already carries it, written or edited
+  under the directory it is pointed at.
 
 ## [0.4.0] — 2026-08-31
 

@@ -24,10 +24,11 @@ import stat
 import subprocess
 import sys
 import time
+import unicodedata
 
 import pytest
 
-from memkit import _exec
+from memkit import _exec, harness_memory
 from memkit import cli_doctor as doctor
 from memkit import cli_init as init
 from memkit import memory_prompt_recall as hook
@@ -51,6 +52,12 @@ def profile(tmp_path, monkeypatch):
         "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
         "CLAUDE_PLUGIN_ROOT",
     ):
+        monkeypatch.delenv(name, raising=False)
+    # AND THE VARIABLES THE HARNESS DECIDES AUTO-MEMORY FROM. The preflight
+    # refuses both auto-memory flags on them, so a runner that exported one
+    # would turn every adoption case in this file into that refusal — a suite
+    # whose answer depends on the shell it was started from.
+    for name in (harness_memory.DISABLE_ENV, *harness_memory.OVERRIDE_ENV):
         monkeypatch.delenv(name, raising=False)
     yield tmp_path
     # `_use_config` sets module globals and clears caches; a case that pointed
@@ -79,6 +86,8 @@ def _args(**kw) -> argparse.Namespace:
         config=None,
         wire_claude_md=False,
         auto_dream_off=False,
+        adopt_auto_memory=False,
+        auto_memory_off=False,
         subcommand="init",
     )
     for key, value in kw.items():
@@ -173,6 +182,42 @@ def test_the_manifest_shows_where_a_symlink_actually_lands(profile) -> None:
     rendered = _plan(profile, store=str(link)).render()
     assert "resolves to" in rendered
     assert hook._display_path(str(real)) in rendered
+
+
+def test_the_grouped_copies_each_say_where_they_actually_land(profile) -> None:
+    """AND THE GROUPED BRANCH TOO, which is the branch every adopted memory
+    goes through.
+
+    A store on an external volume, in a dotfiles tree or under a synced
+    directory is the common shape this is for, and there the summary line
+    ("2 files from ... -> ~/notes/search/projects/-k/") names a path that is
+    not where a single byte lands. The count folds the copies together; the
+    resolution is per file, so it is asserted per file.
+    """
+    _harness(profile, "-home-u", {"one.md": TRAP, "two.md": TRAP})
+    real = profile / "external-volume" / "notes"
+    real.mkdir(parents=True)
+    store = profile / "home" / "notes"
+    store.symlink_to(real)
+    lines = _plan(
+        profile, store=str(store), adopt_auto_memory=True
+    ).render().splitlines()
+    grouped = [
+        i for i, line in enumerate(lines)
+        if line.strip().startswith("create-file") and "files from" in line
+    ]
+    assert len(grouped) == 1, lines
+    for name in ("one.md", "two.md"):
+        member = next(
+            i for i in range(grouped[0], len(lines))
+            if lines[i].strip() == str(store / "search" / "projects" / "-home-u" / name)
+            or lines[i].strip() == hook._display_path(
+                str(store / "search" / "projects" / "-home-u" / name)
+            )
+        )
+        assert lines[member + 1].strip() == "-> resolves to " + hook._display_path(
+            str(real / "search" / "projects" / "-home-u" / name)
+        ), lines[member : member + 2]
 
 
 # --- the digest --------------------------------------------------------------
@@ -438,13 +483,18 @@ def test_nothing_that_can_refuse_runs_before_the_guard(profile, monkeypatch) -> 
     # And behaviourally, at both sites, so the shape above is not the only
     # thing standing.
     for target in ("_resolve_config", "build_plan"):
+        # PUT BACK BY NAME. `monkeypatch.undo()` here would also undo the
+        # `profile` fixture's HOME and config directory — it is the same
+        # monkeypatch — and the next iteration's unpatched half would plan
+        # against the developer's real machine.
+        real = getattr(init, target)
         monkeypatch.setattr(
             init,
             target,
             lambda *a, **k: (_ for _ in ()).throw(init.Refusal("synthetic", "no")),
         )
         assert init.run(_args()) == init.EXIT_REFUSED
-        monkeypatch.undo()
+        monkeypatch.setattr(init, target, real)
 
 
 def test_init_requires_a_mode_rather_than_defaulting_to_one(profile) -> None:
@@ -852,6 +902,54 @@ def test_a_store_that_already_has_search_is_not_a_flat_store(profile) -> None:
     assert plan.writes
 
 
+
+def test_a_temporary_stranded_inside_the_store_is_named_and_left_alone(
+    profile,
+) -> None:
+    """BYTES IN THE STORE THAT NO LEDGER ROW NAMES is what this unit promises
+    not to leave, and a SIGKILL between a write's temporary and its rename
+    leaves exactly that: a complete 0600 copy of a memory at
+    `<name>.<pid>.tmp`. Two clean recovery turns, the integrity checker and
+    doctor all pass over it without a word.
+
+    The disclosure is the whole fix. Deleting it would be a write inside
+    somebody's store — it would have to enter the manifest and the digest, and
+    destroying inside a store is the one thing adoption never does — so the
+    stray is named and left where it is.
+    """
+    store = profile / "notes"
+    landing = store / "search" / "projects" / "-home-u"
+    landing.mkdir(parents=True)
+    (landing / "alpha.md").write_text(TRAP, encoding="utf-8")
+    stranded = landing / "alpha.md.99999.tmp"
+    stranded.write_text(TRAP, encoding="utf-8")
+    manifest = _dry(profile, "--store", str(store))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "1 stranded temporary file" in manifest.stdout, manifest.stdout
+    assert f"stranded: {stranded}" in manifest.stdout, manifest.stdout
+    # A disclosure, not a refusal and not a write: no action in the manifest
+    # touches it, and it is still there afterwards.
+    out = _confirm(profile, _digest_of(manifest), "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert stranded.read_text(encoding="utf-8") == TRAP
+
+
+def test_a_store_with_no_stranded_temporaries_says_nothing_about_them(
+    profile,
+) -> None:
+    """The control. A store nobody was killed in the middle of writing carries
+    no such line, and the ordinary `.tmp` names a real memory could be called
+    are not it — the suffix a write leaves is a pid.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "search" / "notes.tmp").write_text("not a leftover\n", encoding="utf-8")
+    (store / "search" / "alpha.md").write_text(TRAP, encoding="utf-8")
+    manifest = _dry(profile, "--store", str(store))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "stranded temporary" not in manifest.stdout, manifest.stdout
+    assert "stranded: " not in manifest.stdout, manifest.stdout
+
 def test_a_config_no_journal_claims_is_never_overwritten(profile) -> None:
     """init converges on its own work. That file decides which directories the
     every-prompt hook reads, and a setup command that silently replaced a
@@ -908,7 +1006,9 @@ def test_the_only_settings_key_init_may_write_is_an_allowlist(profile) -> None:
     key with the same power has not been named yet and a denylist only catches
     the ones somebody thought of."""
     target = str(profile / "claude-config" / "settings.json")
-    assert frozenset({"autoDreamEnabled"}) == init.SETTINGS_KEYS_INIT_MAY_WRITE
+    assert frozenset(
+        {"autoDreamEnabled", "autoMemoryDirectory", "autoMemoryEnabled"}
+    ) == init.SETTINGS_KEYS_INIT_MAY_WRITE
     with pytest.raises(init.Refusal) as caught:
         init._settings_with(target, {"enabledPlugins": {"memkit@memkit": True}})
     assert caught.value.name == "enabled-plugins"
@@ -990,6 +1090,15 @@ def test_every_refusal_in_the_inventory_is_reachable() -> None:
         "unreadable-machine": (
             "test_a_session_directory_removed_underfoot_is_an_exit_code_"
             "not_a_traceback"
+        ),
+        "escapes-store": (
+            "test_a_link_planted_after_the_plan_never_lands_outside_the_store"
+        ),
+        # The write's half of the length rule. Adoption's planner skips such a
+        # name before it can be planned, so this is reached by calling the
+        # write rather than by building a plan — which is the point of it.
+        "name-too-long": (
+            "test_the_write_refuses_a_name_it_could_not_create_a_temporary_for"
         ),
     }
     for name, case in apply_time.items():
@@ -1203,11 +1312,11 @@ def test_a_crash_between_two_mutations_leaves_a_journal_that_describes_it(
     real = init._write_atomically
     calls = []
 
-    def explode(path, content, mode=0o600, expect=None):
+    def explode(path, content, mode=0o600, expect=None, confine=""):
         calls.append(path)
         if len(calls) == 2:
             raise OSError("no space left on device")
-        return real(path, content, mode, expect)
+        return real(path, content, mode, expect, confine)
 
     monkeypatch.setattr(init, "_write_atomically", explode)
     config = init._resolve_config(machine, None)
@@ -1227,11 +1336,11 @@ def test_a_partial_run_converges_when_it_is_run_again(profile, monkeypatch) -> N
     real = init._write_atomically
     calls = []
 
-    def explode(path, content, mode=0o600, expect=None):
+    def explode(path, content, mode=0o600, expect=None, confine=""):
         calls.append(path)
         if len(calls) == 2:
             raise OSError("no space left on device")
-        return real(path, content, mode, expect)
+        return real(path, content, mode, expect, confine)
 
     monkeypatch.setattr(init, "_write_atomically", explode)
     assert init.apply_plan(machine, _plan(profile), config) == init.EXIT_INCOMPLETE
@@ -1780,27 +1889,248 @@ def test_an_unreadable_claude_md_is_refused_rather_than_truncated(profile):
     assert "could not be read" in refusal.message
 
 
-def test_the_settings_write_re_reads_under_the_lock(profile) -> None:
-    """init is invoked from inside a live session, so the harness owns and
-    actively writes that file for the whole run — and the settings write is the
-    LAST action, after an integrity-checker subprocess that may take minutes.
-    Anything the harness wrote in between was silently lost."""
+def test_a_settings_file_that_moved_under_the_manifest_is_not_written(
+    profile,
+) -> None:
+    """THE SIBLING'S QUESTION, ASKED HERE TOO. init is invoked from inside a
+    live session, so the harness owns that file for the whole run — and the
+    settings write is the LAST action, after an integrity-checker subprocess
+    that may take minutes. Setting one key into whatever is there by then
+    re-writes the rest of the file as well, under a digest taken against the
+    file the adopter actually read: content nobody saw, published as theirs.
+    The config merge beside it has refused that shape since it was written.
+    """
     machine = doctor.Machine()
     settings = profile / "claude-config" / "settings.json"
     settings.write_text('{"theme": "dark"}', encoding="utf-8")
     plan = _plan(profile, auto_dream_off=True, store=str(profile / "notes"))
     (action,) = [a for a in plan.actions if a.op == init.SETTINGS_WRITE]
-    # The harness writes while the plan is in flight.
-    settings.write_text(
-        json.dumps({"theme": "dark", "enabledPlugins": {"other@x": True}}),
-        encoding="utf-8",
-    )
+    # Something writes while the plan is in flight.
+    moved = json.dumps({"theme": "dark", "enabledPlugins": {"other@x": True}})
+    settings.write_text(moved, encoding="utf-8")
     journal = init.Journal(str(machine.state_dir), plan.digest)
     os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
-    init._perform(machine, journal, action, init._resolve_config(machine, None))
+    with pytest.raises(init.Refusal) as refusal:
+        init._perform(
+            machine, journal, action, init._resolve_config(machine, None)
+        )
+    assert refusal.value.name == "changed-underfoot", refusal.value.name
+    assert settings.read_text(encoding="utf-8") == moved, "it wrote anyway"
+
+
+def test_the_settings_write_lands_when_nothing_moved_under_it(profile) -> None:
+    """The other half, and the case a run with two flags is: one settings file,
+    two writes, and the second must be able to tell its predecessor's landing
+    from somebody else's edit — or a plain `--auto-dream-off
+    --adopt-auto-memory` refuses itself.
+    """
+    machine = doctor.Machine()
+    settings = profile / "claude-config" / "settings.json"
+    settings.write_text('{"theme": "dark"}', encoding="utf-8")
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    plan = _plan(
+        profile,
+        auto_dream_off=True,
+        adopt_auto_memory=True,
+        store=str(profile / "notes"),
+    )
+    writes = [a for a in plan.pending if a.op == init.SETTINGS_WRITE]
+    assert len({a.path for a in writes}) == 1 and len(writes) == 2, writes
+    code = init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert code == init.EXIT_OK, code
     blob = json.loads(settings.read_text())
-    assert blob["autoDreamEnabled"] is False
-    assert blob["enabledPlugins"] == {"other@x": True}, blob
+    assert blob["theme"] == "dark", blob
+    assert blob["autoDreamEnabled"] is False, blob
+    assert blob[harness_memory.DIRECTORY_KEY], blob
+
+
+def test_a_confined_directory_is_made_where_the_guard_judged_it(
+    profile, monkeypatch
+) -> None:
+    """ONE RESOLUTION, JUDGED AND THEN WRITTEN.
+
+    `os.makedirs` re-traverses every component of the name it is given, so a
+    guard that answers about `action.path` and then hands `action.path` to the
+    write has asked the question twice: the link swapped in between the two
+    answers is the one the directory is made through. Every confined
+    CREATE_DIR goes this way — `search/`, `hot/`, and adoption's base and
+    per-key directories, which is where the memories then land.
+
+    Driven, not raced: the flip happens inside the guard's own return, so the
+    window is the same one every time and the assertion is about all 25.
+    """
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    real = profile / "real"
+    real.mkdir()
+    elsewhere = profile / "elsewhere"
+    elsewhere.mkdir()
+    store = profile / "notes"
+    store.symlink_to(real)
+    journal = init.Journal(str(machine.state_dir), "judged-digest")
+    guard = init._refuse_escape
+
+    def flipping(path, confine):
+        judged = guard(path, confine)
+        store.unlink()
+        store.symlink_to(elsewhere)
+        return judged
+
+    monkeypatch.setattr(init, "_refuse_escape", flipping)
+    for n in range(25):
+        action = init.Action(
+            init.CREATE_DIR,
+            str(store / "search" / "projects" / f"-home-{n}"),
+            confine=str(store),
+        )
+        init._perform(machine, journal, action, config)
+        store.unlink()
+        store.symlink_to(real)
+        assert (real / "search" / "projects" / f"-home-{n}").is_dir(), n
+        assert not (elsewhere / "search").exists(), n
+
+    # CONTROL ONE: a link that is already there when the guard looks is still a
+    # refusal, and still creates nothing outside. `_refuse_escape` is put back
+    # by name rather than with `monkeypatch.undo()`, which would also undo the
+    # profile fixture's own patches — the two share one instance.
+    monkeypatch.setattr(init, "_refuse_escape", guard)
+    (real / "linked").symlink_to(elsewhere)
+    with pytest.raises(init.Refusal) as raised:
+        init._perform(
+            machine,
+            journal,
+            init.Action(
+                init.CREATE_DIR,
+                str(store / "linked" / "projects"),
+                confine=str(store),
+            ),
+            config,
+        )
+    assert raised.value.name == "escapes-store", raised.value.name
+    assert not (elsewhere / "projects").exists()
+    # CONTROL TWO: an ordinary confined directory under an ordinary store is
+    # still made, at its own name.
+    plain = profile / "plain"
+    plain.mkdir()
+    init._perform(
+        machine,
+        journal,
+        init.Action(init.CREATE_DIR, str(plain / "search"), confine=str(plain)),
+        config,
+    )
+    assert (plain / "search").is_dir()
+
+
+# The modules that meet a failed read and have to decide what to say about it,
+# each with the handler count this lint was reading when the entry was written.
+# One test over three, because it is one rule: the copies this replaced said
+# the same thing about one module each, and the two that had no copy are the
+# two where a silent handler had gone unread longest.
+_SWALLOW_MODULES = (
+    ("cli_init.py", 27),
+    ("memory_integrity.py", 4),
+    ("harness_memory.py", 8),
+)
+
+
+@pytest.mark.parametrize(
+    "module, handler_floor",
+    _SWALLOW_MODULES,
+    ids=[name for name, _count in _SWALLOW_MODULES],
+)
+def test_no_oserror_handler_swallows_silently(module, handler_floor) -> None:
+    """A READ THAT COULD NOT LOOK NEVER ANSWERS WITH THE EMPTY COLLECTION.
+
+    An `except OSError` whose whole body is `pass`, `continue` or an empty
+    return spends a failed read as "nothing here", and every reader downstream
+    — the count, the manifest, the adopter deciding whether to type `--confirm`
+    — reads a healthy empty directory. So a silent body is admitted only with
+    a `# swallow:` comment on its own line naming the check or the line that
+    does report the failure, and this prints the allowlist so a reviewer reads
+    the reasons rather than trusting they exist.
+
+    It stays in this file, parametrized rather than moved, because it is one
+    module's lint widened to the two modules that hold the same class.
+
+    The per-module floor is the handler count measured when the module joined:
+    a lint whose set has quietly emptied passes everything.
+    """
+    import ast
+
+    catches = {
+        "OSError",
+        "IOError",
+        "FileNotFoundError",
+        "PermissionError",
+        "IsADirectoryError",
+        "NotADirectoryError",
+        "Exception",
+    }
+    path = pathlib.Path(init.__file__).parent / module
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines()
+
+    def caught(handler) -> set:
+        # A bare `except:` catches every OSError there is.
+        if handler.type is None:
+            return {"Exception"}
+        parts = (
+            handler.type.elts
+            if isinstance(handler.type, ast.Tuple)
+            else [handler.type]
+        )
+        return {getattr(n, "id", getattr(n, "attr", "")) for n in parts}
+
+    def silent(body) -> str:
+        if len(body) != 1:
+            return ""
+        one = body[0]
+        if isinstance(one, (ast.Pass, ast.Continue, ast.Break)):
+            return type(one).__name__.lower()
+        if not isinstance(one, ast.Return):
+            return ""
+        if one.value is None:
+            return "return"
+        value = one.value
+        if isinstance(value, ast.Constant) and (
+            value.value is None or value.value is False or value.value == ""
+        ):
+            return f"return {value.value!r}"
+        for kind, spelling in ((ast.List, "[]"), (ast.Tuple, "()")):
+            if isinstance(value, kind) and not value.elts:
+                return f"return {spelling}"
+        if isinstance(value, ast.Dict) and not value.keys:
+            return "return {}"
+        return ""
+
+    handlers = [
+        handler
+        for node in ast.walk(ast.parse(source, str(path)))
+        for handler in getattr(node, "handlers", [])
+        if caught(handler) & catches
+    ]
+    assert len(handlers) >= handler_floor, (module, len(handlers))
+    allowlisted, offenders = [], []
+    for handler in handlers:
+        body = silent(handler.body)
+        if not body:
+            continue
+        first = handler.body[0].lineno
+        # The comment block the statement carries, read upwards: the reason a
+        # silent body is allowed is usually longer than one line.
+        above, cursor = [], first - 2
+        while cursor >= 0 and lines[cursor].strip().startswith("#"):
+            above.insert(0, lines[cursor].strip())
+            cursor -= 1
+        where = f"{module}:{first}  except {'/'.join(sorted(caught(handler)))}"
+        excuse = [line for line in above if line.startswith("# swallow:")]
+        if excuse:
+            allowlisted.append(f"{where}  {body}  {excuse[0]}")
+        else:
+            offenders.append(f"{where}  {body}")
+    print("\n".join([f"silent handlers in {module}, allowlisted:", *allowlisted]))
+    assert offenders == [], offenders
 
 
 def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
@@ -1820,6 +2150,60 @@ def test_the_claude_md_append_re_reads_under_the_lock(profile) -> None:
     assert "something they added meanwhile" in body, body
     assert body.rstrip().endswith(init._import_line(str(profile / "notes")))
 
+
+
+def test_a_journal_append_that_failed_is_not_reported_as_the_write_failing(
+    profile, capsys
+) -> None:
+    """ONE HANDLER SPOKE FOR TWO FAILURES AND NAMED THE WRONG ONE.
+
+    The write and the record of it sit under one `except OSError`, so a journal
+    the process cannot append to was reported as the store file failing — with
+    the store file on disk holding the right bytes, and the journal's own errno
+    in the parenthesis to prove the sentence contradicts itself. An adopter
+    reading it goes looking for a write that happened.
+    """
+    machine = doctor.Machine()
+    os.makedirs(machine.state_dir, mode=0o700, exist_ok=True)
+    # A directory where the append expects a file: the record cannot be
+    # written and the write ahead of it is untouched.
+    os.mkdir(os.path.join(machine.state_dir, init.INIT_JOURNAL_NAME))
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    target = store / "search" / "m1.md"
+    body = "---\nname: m1\ndescription: the one that landed\n---\n\nbody\n"
+    action = init.Action(
+        init.CREATE_FILE, str(target), content=body, confine=str(store)
+    )
+    code = init.apply_plan(
+        machine, init.Plan([action], []), init._resolve_config(machine, None)
+    )
+    assert code == init.EXIT_INCOMPLETE
+    err = capsys.readouterr().err
+    # The journal is named as the thing that failed...
+    assert init.INIT_JOURNAL_NAME in err, err
+    assert "the journal record of it was not written" in err, err
+    # ...and the store write is not, because it succeeded.
+    assert f"{init.CREATE_FILE} {init._display_path(str(target))} failed" not in (
+        err
+    ), err
+    assert target.read_text(encoding="utf-8") == body
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    # And the recovery it offers is sound: the next manifest re-plans a write
+    # that is already done, and performing it again changes nothing.
+    os.rmdir(os.path.join(machine.state_dir, init.INIT_JOURNAL_NAME))
+    again = init.Action(
+        init.CREATE_FILE, str(target), content=body, confine=str(store)
+    )
+    assert again.redundant
+    assert (
+        init.apply_plan(
+            machine, init.Plan([again], []), init._resolve_config(machine, None)
+        )
+        == init.EXIT_OK
+    )
+    assert target.read_text(encoding="utf-8") == body
 
 def test_a_refusal_raised_after_a_write_is_never_reported_as_refused(
     profile, monkeypatch
@@ -2004,6 +2388,48 @@ def test_a_write_keeps_the_mode_and_the_link_of_a_file_that_is_already_there(
     fresh = profile / "fresh.json"
     init._write_atomically(str(fresh), "{}\n", mode=0o644)
     assert stat.S_IMODE(os.stat(fresh).st_mode) == 0o644
+
+
+def test_a_write_judges_and_writes_one_resolution_of_the_name_it_was_given(
+    profile, monkeypatch
+) -> None:
+    """ONE NAME, ONE ANSWER.
+
+    The containment guard resolved the name to decide whether the write lands
+    where its manifest line says, and the write then resolved the same name
+    again to decide where to put the bytes. Two questions, two answers, and
+    only the first one was looked at: a link swapped between them — the window
+    is real, the confirm turn re-plans and then writes — sends the bytes to a
+    path nothing judged, under a guard that has already said yes.
+
+    `os.path.realpath` is made to answer differently the second time it is
+    asked about this name, which is what a swap looks like from inside the
+    process. The assertion is the call count as much as the landing place: a
+    fix that resolved twice and happened to agree would pass the second and
+    not the first.
+    """
+    store = profile / "store"
+    (store / "search").mkdir(parents=True)
+    target = store / "search" / "note.md"
+    elsewhere = profile / "elsewhere.md"
+
+    real = os.path.realpath
+    answers = []
+
+    def counting(path):
+        resolved = real(path)
+        if os.fspath(path) == str(target):
+            answers.append(resolved)
+            if len(answers) > 1:
+                return str(elsewhere)
+        return resolved
+
+    monkeypatch.setattr(os.path, "realpath", counting)
+    init._write_atomically(str(target), "hello\n", confine=str(store))
+
+    assert len(answers) == 1, f"the name was resolved {len(answers)} times"
+    assert target.read_text() == "hello\n"
+    assert not elsewhere.exists(), "the bytes went to the unjudged answer"
 
 
 def test_both_consented_writes_leave_a_file_a_person_can_still_read(
@@ -2305,3 +2731,3396 @@ def test_no_digest_in_init_dies_on_a_lone_surrogate() -> None:
     assert _unhandled_encodes(source) == []
     # And the scan still sees its subject in this file's own text.
     assert _unhandled_encodes(source + '\ndef f(t):\n    return t.encode("utf-8")\n')
+
+
+# --- adopting the harness's own auto-memory ----------------------------------
+
+
+TRAP = "---\nname: app trap\ndescription: app trap one\n---\n# t\nbody\n"
+BARE = "# Home note\n\nno frontmatter here\n"
+
+
+def _harness(profile, key: str, files: dict) -> pathlib.Path:
+    """One harness auto-memory directory under the profile's own config dir.
+
+    Where the harness writes, and where the inventory looks: flat, one
+    directory per project key, `<config dir>/projects/<key>/memory`.
+    """
+    memory = profile / "claude-config" / "projects" / key / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (memory / name).write_text(text, encoding="utf-8")
+    return memory
+
+
+def _rows_of(text: str) -> dict:
+    """{link: description} for every row in a generated ledger."""
+    out = {}
+    for line in text.splitlines():
+        if not line.startswith("- ["):
+            continue
+        link = line[line.index("(") + 1 : line.index(")")]
+        out[link] = line.split(" — ", 1)[1]
+    return out
+
+
+def test_a_memory_the_walk_could_not_list_is_named_in_the_manifest(
+    profile,
+) -> None:
+    """WHAT THE INVENTORY DROPS IS WHAT THE ADOPTER CANNOT SEE.
+
+    The walk stats every entry in a memory directory and keeps the ones it can
+    take as regular files. An entry that raises — a symlink loop, a chain past
+    the kernel's limit — and an entry that is merely not a regular file, a
+    named pipe or a directory called `note.md`, are each dropped on their own
+    and were named nowhere: they left the count, the copy plan and every line
+    of the manifest, so a directory holding three `.md` entries read as one
+    holding two to whoever is deciding whether to type `--confirm`.
+
+    THE REST OF THE DIRECTORY IS STILL ADOPTED, which is why each drop needs
+    its own line: the memories beside the dropped entry do land in the store,
+    and a manifest that named neither the drop nor the landing would be
+    describing a directory the adopter does not have.
+    """
+    looped = _harness(profile, "-home-loop", {"alpha.md": TRAP, "beta.md": BARE})
+    (looped / "loop.md").symlink_to(looped / "loop.md")
+    piped = _harness(
+        profile,
+        "-home-pipe",
+        {"gamma.md": "---\nname: gamma\ndescription: an ordinary one\n---\n\nb\n"},
+    )
+    os.mkfifo(piped / "note.md")
+    (piped / "dead.md").symlink_to(piped / "nowhere-at-all")
+    _harness(
+        profile,
+        "-home-ok",
+        {"delta.md": "---\nname: delta\ndescription: the control\n---\n\nb\n"},
+    )
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    # The entry that raises, named on the dry run rather than silently absent.
+    assert "'-home-loop': `loop.md` is a symlink resolving to no file" in (
+        manifest.stdout
+    ), manifest.stdout
+    # And an entry that is simply the wrong kind, named for what it is.
+    assert "'-home-pipe': `note.md` is a named pipe" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "'-home-pipe': `dead.md` is a symlink resolving to no file" in (
+        manifest.stdout
+    ), manifest.stdout
+    # The control: a directory with nothing odd in it is named by no gap line.
+    assert "'-home-ok': the walk" not in manifest.stdout, manifest.stdout
+    assert "'-home-ok': `" not in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    # What the walk did list is adopted, entry by entry, and what it dropped is
+    # left where it is — which is exactly what the lines above disclose.
+    assert (adopted / "-home-pipe" / "gamma.md").is_file()
+    assert (adopted / "-home-ok" / "delta.md").is_file()
+    assert (adopted / "-home-loop" / "alpha.md").is_file()
+    assert (adopted / "-home-loop" / "beta.md").is_file()
+    assert sorted(p.name for p in (adopted / "-home-loop").iterdir()) == [
+        "alpha.md", "beta.md",
+    ]
+    assert not (adopted / "-home-pipe" / "note.md").exists()
+    assert not (adopted / "-home-pipe" / "dead.md").exists()
+    assert (looped / "alpha.md").read_text(encoding="utf-8") == TRAP
+
+
+
+def test_a_memory_directory_that_cannot_be_listed_is_named(profile) -> None:
+    """A DIRECTORY NOBODY CAN OPEN IS NOT AN EMPTY DIRECTORY.
+
+    The walk answers a `scandir` that raised with no project at all, and the
+    reconciliation beside it answered the same way, so a memory directory whose
+    mode this process cannot read reached the adopter as "No harness
+    auto-memory to adopt" — the one line they have to decide on.
+    """
+    _harness(profile, "-home-ok", {"delta.md": TRAP})
+    shut = _harness(profile, "-home-shut", {"alpha.md": TRAP})
+    os.chmod(shut, 0o000)
+    try:
+        manifest = _dry(
+            profile, "--store", str(profile / "notes"), "--adopt-auto-memory"
+        )
+    finally:
+        os.chmod(shut, 0o700)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-shut': this directory could not be listed" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "Permission denied" in manifest.stdout, manifest.stdout
+    # The control: a directory this process can read is named by no gap line,
+    # and is adopted.
+    assert "'-home-ok': this directory could not be listed" not in (
+        manifest.stdout
+    ), manifest.stdout
+    assert "1 project memory directory holds" in manifest.stdout, manifest.stdout
+
+
+def test_a_harness_projects_directory_that_cannot_be_listed_is_named(
+    profile,
+) -> None:
+    """The same question one level up: an unreadable `projects/` is not a
+    machine with no harness memories on it, and only the reconciliation can say
+    so — the walk it reconciles against returns the same empty inventory for
+    both.
+    """
+    _harness(profile, "-home-ok", {"delta.md": TRAP})
+    base = profile / "claude-config" / "projects"
+    os.chmod(base, 0o000)
+    try:
+        manifest = _dry(
+            profile, "--store", str(profile / "notes"), "--adopt-auto-memory"
+        )
+    finally:
+        os.chmod(base, 0o700)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "the harness project directory could not be listed" in (
+        manifest.stdout
+    ), manifest.stdout
+    assert "Permission denied" in manifest.stdout, manifest.stdout
+
+
+def test_a_machine_with_no_harness_projects_directory_is_named_by_no_gap_line(
+    profile,
+) -> None:
+    """Absence is not a failed look: nothing was dropped, because there was
+    nothing to list. The control for both disclosures above.
+    """
+    manifest = _dry(profile, "--store", str(profile / "notes"), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "could not be listed" not in manifest.stdout, manifest.stdout
+    assert "No harness auto-memory to adopt." in manifest.stdout, manifest.stdout
+
+def test_a_harness_already_pointed_somewhere_else_refuses_by_name(profile) -> None:
+    """Where an agent writes its memories is a decision somebody has already
+    made, and a setup command that overwrote it would be making it again.
+
+    Named per scope rather than as "your settings", because the harness reads
+    four of them: measured on 2.1.258 a checked-in `.claude/settings.json`
+    really does redirect auto-memory, so the file to edit is a fact the
+    refusal has to carry.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    (profile / "claude-config" / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": "/elsewhere"}), encoding="utf-8"
+    )
+    refusal = _refuses(profile, "auto-memory-redirected", adopt_auto_memory=True)
+    assert "/elsewhere" in refusal.message
+    assert "in user settings" in refusal.message
+    # And the scope init would write is named too, so the sentence says what
+    # it would have done as well as what it found.
+    assert "user scope" in refusal.message
+
+    # A CHECKED-IN settings file outranks the adopter's own, so it is the one
+    # named — the whole reason this is per-scope.
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True)
+    (checkout / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": "/from-the-clone"}), encoding="utf-8"
+    )
+    refusal = _refuses(profile, "auto-memory-redirected", adopt_auto_memory=True)
+    assert "in project settings" in refusal.message
+    assert "/from-the-clone" in refusal.message
+
+    # AND `settings.local.json` OUTRANKS BOTH — measured on 2.1.258, and the
+    # everyday instance of this: an uncommitted file in somebody's own checkout
+    # that the harness reads before the settings they think they are editing.
+    (checkout / "settings.local.json").write_text(
+        json.dumps({"autoMemoryDirectory": "/my-own-untracked-choice"}),
+        encoding="utf-8",
+    )
+    refusal = _refuses(profile, "auto-memory-redirected", adopt_auto_memory=True)
+    assert "in local settings" in refusal.message
+    assert "/my-own-untracked-choice" in refusal.message
+
+
+def test_adoption_refuses_while_the_harness_feature_is_switched_off(
+    profile, monkeypatch
+) -> None:
+    """Copying what is there and then pointing a switched-off feature at the
+    store would leave an adopter with a redirect nothing acts on and a
+    directory to clean up.
+
+    EVERY SCOPE THAT OUTRANKS THE ONE INIT WRITES. `managed` and `local` both
+    outrank `user`, so a switch read from either of them is the one deciding
+    whether the harness writes anything at all — and each is asserted here by
+    name, because a loop that skipped one would leave that adopter's memories
+    copied and a redirect written under a feature nobody turned on.
+
+    The USER scope is not one of them: that is the scope `--auto-memory-off`
+    writes, and its case is the convergence test below.
+
+    The flag that turns it off is not refused by the same rule: it writes one
+    boolean and has to stay idempotent.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    # `settings.local.json` in the checkout, which the harness reads ahead of
+    # user settings.
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True)
+    (checkout / "settings.local.json").write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
+    assert "local settings" in refusal.message
+    # AND THE FILE THE BOOLEAN IS IN. "Turn it back on" is an instruction to
+    # open something, and the value is not in the directory the memories are
+    # under — it is in one of several settings files, and which one is the
+    # whole content of the answer.
+    assert str(checkout / "settings.local.json") in refusal.message, refusal.message
+    assert init._display_path(init._harness_config_dir()) not in refusal.message, (
+        refusal.message
+    )
+    # Neither refusal is evaluated for the other flag, and neither is
+    # evaluated for a plain init.
+    assert _plan(profile, auto_memory_off=True).actions
+    assert _plan(profile).actions
+    (checkout / "settings.local.json").unlink()
+
+    # And managed settings, the administrator's — the one scope the adopter in
+    # front of the terminal cannot answer for.
+    managed = profile / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    refusal = _refuses(profile, "auto-memory-off", adopt_auto_memory=True)
+    assert "managed settings" in refusal.message
+    assert str(managed / doctor.MANAGED_SETTINGS_NAME) in refusal.message, (
+        refusal.message
+    )
+
+
+def test_the_off_flag_is_refused_under_a_variable_that_runs_the_feature(
+    profile, monkeypatch
+) -> None:
+    """A settings scope cannot answer a question the environment already did.
+
+    `$CLAUDE_CODE_DISABLE_AUTO_MEMORY` is read before the harness opens a
+    settings file, so a value it reads as "run it" outranks every scope this
+    write reaches. Accepted, the manifest printed "the harness then neither
+    reads nor writes auto-memory" and offered a digest for it, over a boolean
+    that changes nothing while that value is in the environment.
+
+    THE VARIABLE IS THREE-VALUED and only one of the three is a conflict: a
+    value spelling off agrees with the write, and one spelling neither leaves
+    the settings to decide. Both are asserted here, because a guard that
+    refused on the variable being SET would take the flag away from the
+    adopter it works for.
+    """
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    refusal = _refuses(profile, "auto-memory-forced-on", auto_memory_off=True)
+    assert harness_memory.DISABLE_ENV in refusal.message
+    # The spelling, because what has to be changed is what was written.
+    assert "'0'" in refusal.message, refusal.message
+    # And a remedy for the variable rather than for a settings key: the
+    # harness reads this one first, so a repair naming the key repairs nothing.
+    assert "wherever it is exported" in refusal.message, refusal.message
+    assert harness_memory.ENABLED_KEY + '": false' not in refusal.message.split(
+        "Unset"
+    )[1], refusal.message
+    # The other two values decide nothing here.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "1")
+    assert _plan(profile, auto_memory_off=True).actions
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "maybe")
+    assert _plan(profile, auto_memory_off=True).actions
+    # And the variable is never a refusal for a plain init.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "0")
+    assert _plan(profile).actions
+
+
+def test_adoption_is_refused_while_a_variable_chooses_the_directory(
+    profile, monkeypatch
+) -> None:
+    """The redirect half of the flag claims to know where every project
+    writes next, and under one of these variables memkit does not.
+
+    Each of the three takes a resolver of its own — a cowork path, a remote
+    projects root, a literal project key — and memkit resolves none of them,
+    which is the whole reason this is a refusal rather than a note: the
+    manifest's own sentence says every project's new memories land in the
+    store, and a directory a variable chose first makes that false.
+
+    Asserted for every name in the tuple, because a loop that skipped one
+    would write that adopter's redirect under a directory nobody could name.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    for name in harness_memory.OVERRIDE_ENV:
+        monkeypatch.setenv(name, str(profile / "elsewhere"))
+        refusal = _refuses(profile, "auto-memory-overridden", adopt_auto_memory=True)
+        assert "$" + name in refusal.message, refusal.message
+        assert "does not resolve it" in refusal.message, refusal.message
+        # Never resolved: the directory the variable names is not in the
+        # sentence, because memkit did not work out that it is the one.
+        assert str(profile / "elsewhere") not in refusal.message, refusal.message
+        # The other flag writes a boolean and is not about a directory.
+        assert _plan(profile, auto_memory_off=True).actions
+        monkeypatch.delenv(name)
+    # An empty value is not a variable the harness reads.
+    monkeypatch.setenv(harness_memory.OVERRIDE_ENV[0], "")
+    assert _plan(profile, adopt_auto_memory=True).actions
+
+
+def test_adoption_under_a_variable_that_switched_the_feature_off_says_so(
+    profile,
+    monkeypatch,
+) -> None:
+    """DISCLOSED, NOT REFUSED, and the direction is what decides which.
+
+    A variable that turns auto-memory off leaves the copy half of this flag
+    worth running — the files are there — and makes the redirect half a
+    setting no session carrying that value will act on. memkit reads one
+    environment and the adopter's sessions need not carry it, so refusing
+    would take away a copy that works; the manifest says the state instead,
+    beside the settings-scope sentence that says the same thing.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "yes")
+    rendered = _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    ).render()
+    assert "Auto-memory is switched off by the environment" in rendered, rendered
+    assert harness_memory.DISABLE_ENV in rendered
+    assert "'yes'" in rendered, rendered
+    assert "need not be the one your sessions run in" in rendered
+    # The copy is still planned: that is what makes this a note.
+    assert "Adoption: 1 files" in rendered, rendered
+    # And a value the harness reads as "run it" says nothing of the kind.
+    monkeypatch.setenv(harness_memory.DISABLE_ENV, "off")
+    assert "switched off by the environment" not in _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    ).render()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_switching_auto_memory_off_first_still_leaves_adoption_a_path(
+    profile,
+) -> None:
+    """NO STATE MEMKIT WROTE MAKES A MEMKIT FLAG UNRECOVERABLE.
+
+    `--auto-memory-off` writes `"autoMemoryEnabled": false` into user settings.
+    Refusing `--adopt-auto-memory` on that same boolean made the second flag
+    unusable because of the first, and the two are mutually exclusive — so no
+    invocation undoes it and the only way back was hand-editing the settings
+    file. Both orders converge instead, and the manifest discloses the off
+    state it adopts under.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    off = _dry(profile, "--store", str(store), "--auto-memory-off")
+    assert off.returncode == init.EXIT_OK, off.stdout + off.stderr
+    landed = _confirm(
+        profile, _digest_of(off), "--store", str(store), "--auto-memory-off"
+    )
+    assert landed.returncode == init.EXIT_OK, landed.stdout + landed.stderr
+    settings = profile / "claude-config" / "settings.json"
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "autoMemoryEnabled": False
+    }
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "switched off" in manifest.stdout, manifest.stdout
+    assert "BEFORE it was switched off" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    copied = store / "search" / init.ADOPT_DIRNAME / "-home-u" / "note.md"
+    assert copied.is_file(), out.stdout
+    written = json.loads(settings.read_text(encoding="utf-8"))
+    assert written["autoMemoryEnabled"] is False
+    assert written[harness_memory.DIRECTORY_KEY], written
+
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+    # The other order was never broken, and stays that way.
+    other = _dry(profile, "--store", str(store), "--auto-memory-off")
+    assert other.returncode == init.EXIT_OK, other.stdout + other.stderr
+    assert "Nothing to write" in other.stdout, other.stdout
+
+
+def test_the_adoption_manifest_names_every_directory_and_every_file(profile) -> None:
+    """Consent is given to the paths, so the paths are what the manifest
+    lists: the directories it would make, the files it would copy into them,
+    the ledger it would regenerate and the one settings key it would set.
+    """
+    _harness(
+        profile,
+        "-home-u-git-app",
+        {"trap.md": TRAP, "MEMORY.md": "# idx\n- trap\n"},
+    )
+    _harness(profile, "-home-u", {"note.md": BARE})
+    store = profile / "notes"
+    before = _snapshot(profile)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    base = store / "search" / "projects"
+    order = [a.path for a in plan.actions]
+    ops = [a.op for a in plan.actions]
+    dirs = [a.path for a in plan.actions if a.op == init.CREATE_DIR]
+    for path in (base, base / "-home-u-git-app", base / "-home-u"):
+        assert str(path) in dirs, path
+    files = [a.path for a in plan.actions if a.op == init.CREATE_FILE]
+    for rel in ("-home-u-git-app/trap.md", "-home-u-git-app/MEMORY.md",
+                "-home-u/note.md"):
+        assert str(base / rel) in files, rel
+    # A directory before the files that go in it, so the preflight meets a
+    # type clash before anything is written rather than at `os.makedirs`.
+    assert order.index(str(base)) < order.index(str(base / "-home-u"))
+    assert order.index(str(base / "-home-u")) < order.index(
+        str(base / "-home-u" / "note.md")
+    )
+    # And every copy and the ledger AHEAD of the verification: a memory whose
+    # row landed after the check is an orphan the check could not have seen.
+    assert order.index(str(base / "-home-u" / "note.md")) < ops.index(init.VERIFY)
+    assert order.index(str(store / "SEARCH.md")) < ops.index(init.VERIFY)
+    # ONE settings write, and it is the redirect.
+    (settings,) = [a for a in plan.actions if a.op == init.SETTINGS_WRITE]
+    assert json.loads(settings.content) == {
+        "autoMemoryDirectory": str(store / "search" / "auto-memory")
+    }
+    # The ledger rows the two memories and not the index that travelled with
+    # them: a `MEMORY.md` at any depth is a ledger, never a memory.
+    (ledger,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    rows = _rows_of(ledger.content)
+    assert rows["search/projects/-home-u-git-app/trap.md"] == "app trap one"
+    assert rows["search/projects/-home-u/note.md"] == "Home note"
+    assert "search/projects/-home-u-git-app/MEMORY.md" not in rows
+    assert _snapshot(profile) == before
+
+
+def test_the_confirm_turn_copies_the_memories_and_leaves_the_originals(
+    profile,
+) -> None:
+    """COPY, NEVER MOVE. The worst outcome of a wrong guess here has to be a
+    file to delete, so the originals are still there afterwards and the
+    settings file gained exactly one key.
+    """
+    app = _harness(
+        profile,
+        "-home-u-git-app",
+        {"trap.md": TRAP, "MEMORY.md": "# idx\n- trap\n"},
+    )
+    home = _harness(profile, "-home-u", {"note.md": BARE})
+    (profile / "claude-config" / "settings.json").write_text(
+        json.dumps({"theme": "dark"}), encoding="utf-8"
+    )
+    store = profile / "home" / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stderr
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    base = store / "search" / "projects"
+    assert (base / "-home-u-git-app" / "trap.md").read_text() == TRAP
+    assert (base / "-home-u-git-app" / "MEMORY.md").read_text() == "# idx\n- trap\n"
+    landed = (base / "-home-u" / "note.md").read_text()
+    assert "description: Home note" in landed
+    assert landed.endswith(BARE)
+    # The originals, byte for byte.
+    assert (app / "trap.md").read_text() == TRAP
+    assert (home / "note.md").read_text() == BARE
+    # `~/`-form under HOME, and the one key added to what was already there.
+    settings = json.loads(
+        (profile / "claude-config" / "settings.json").read_text(encoding="utf-8")
+    )
+    assert settings == {
+        "theme": "dark",
+        "autoMemoryDirectory": "~/notes/search/auto-memory",
+    }
+    # A SECOND RUN IS A NO-OP: every action redundant, the count said back,
+    # and no settings write left to make.
+    again = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert again.writes == []
+    assert any("3 already adopted" in note for note in again.notes)
+    (settings_action,) = [a for a in again.actions if a.op == init.SETTINGS_WRITE]
+    assert settings_action.redundant
+
+
+def test_a_destination_that_differs_is_named_and_never_written_over(profile) -> None:
+    """A file already at the destination is somebody's, whoever put it there.
+    It is named, left exactly as it is, and the row the ledger carries comes
+    from ITS text — a plan that rowed the source would describe a file that is
+    not on disk.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    dest = store / "search" / "projects" / "-home-u" / "note.md"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(
+        "---\nname: mine\ndescription: mine already\n---\n\nkeep me\n",
+        encoding="utf-8",
+    )
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if a.path == str(dest)]
+    assert any("diverged" in note and "note.md" in note for note in plan.notes)
+    (ledger,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    rows = _rows_of(ledger.content)
+    assert rows["search/projects/-home-u/note.md"] == "mine already"
+    assert dest.read_text() == (
+        "---\nname: mine\ndescription: mine already\n---\n\nkeep me\n"
+    )
+
+
+def test_a_destination_that_cannot_be_read_is_diverged_and_not_a_traceback(
+    profile,
+) -> None:
+    """`--dry-run` is the pre-approved turn, so it has one contract above every
+    other: it answers. A destination this process cannot decode or open is a
+    file that was not compared, which is what `diverged` means — reaching the
+    adopter as a traceback out of `read()` leaves them a refusal name they
+    cannot act on and no manifest at all.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP, "blob.md": TRAP})
+    store = profile / "notes"
+    base = store / "search" / "projects" / "-home-u"
+    base.mkdir(parents=True)
+    (base / "blob.md").write_bytes(b"\xff\xfe not utf-8\n")
+    shut = base / "note.md"
+    shut.write_text("something\n", encoding="utf-8")
+    shut.chmod(0)
+    try:
+        plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+        diverged = [n for n in plan.notes if "diverged" in n]
+        assert any("blob.md" in n for n in diverged), diverged
+        assert any("cannot be read" in n and "note.md" in n for n in diverged), (
+            diverged
+        )
+        assert not [a for a in plan.actions if a.path in (str(shut), str(base / "blob.md"))]
+    finally:
+        shut.chmod(0o644)
+
+
+def test_every_description_adoption_writes_is_one_the_checker_can_read(
+    profile,
+) -> None:
+    """FOUR CLASSES, ONE FILE EACH, and the property over all of them is the
+    same: the file that lands carries a description the store's own checker
+    reads, because a memory it cannot read a description for is what fails the
+    VERIFY step init runs on its own work.
+
+    Bodies are never touched. The only edit is the frontmatter's description
+    line, and only where there was nothing usable on it.
+    """
+    _harness(
+        profile,
+        "-classes",
+        {
+            # No description at all: the first heading stands in for one.
+            "heading.md": "---\nname: h\n---\n\n## The heading line\n\nbody\n",
+            # Over the checker's cap: truncated, with the ellipsis counted.
+            "toolong.md": "---\nname: t\ndescription: " + "L" * 200 + "\n---\n\nb\n",
+            # A description the checker's own reader rejects, replaced by a
+            # value that needs quoting to survive the round trip.
+            "colon.md": (
+                "---\nname: c\ndescription: a thing: with a colon\n---\n\n"
+                "# a thing: with a colon\n\nbody\n"
+            ),
+            # No frontmatter block at all: one is prepended.
+            "bare.md": BARE,
+        },
+    )
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    base = store / "search" / "projects" / "-classes"
+    landed = {
+        os.path.basename(a.path): a.content
+        for a in plan.actions
+        if a.op == init.CREATE_FILE and a.path.startswith(str(base))
+    }
+    assert set(landed) == {"heading.md", "toolong.md", "colon.md", "bare.md"}
+    read_back = {}
+    for name, text in landed.items():
+        raw = init._frontmatter_of(text).get("description", "")
+        value = init._scalar_of(raw)
+        assert value is not None, (name, raw)
+        assert len(value) <= init._MAX_DESC_CHARS, name
+        read_back[name] = value
+    assert read_back["heading.md"] == "The heading line"
+    truncated = read_back["toolong.md"]
+    assert len(truncated) == init._MAX_DESC_CHARS and truncated.endswith("…")
+    assert read_back["colon.md"] == "a thing: with a colon"
+    assert landed["colon.md"].count('description: "a thing: with a colon"') == 1
+    assert landed["bare.md"].startswith("---\n")
+    assert landed["bare.md"].endswith(BARE)
+    # The two files that already had a readable description are unchanged
+    # bytes, which is the rule the other four are the exception to.
+    _harness(profile, "-kept", {"fine.md": TRAP})
+    kept = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (copied,) = [a for a in kept.actions if a.path.endswith("-kept/fine.md")]
+    assert copied.content == TRAP
+    assert copied.note == ""
+
+
+def test_what_adoption_will_not_carry_is_named_rather_than_dropped(profile) -> None:
+    """One file per class, and every one of them named in the manifest: a
+    count an adopter cannot reconcile against their own `ls` is the number the
+    list exists to make checkable.
+    """
+    memory = _harness(profile, "-skips", {"keep.md": TRAP})
+    (memory / "binary.md").write_bytes(
+        b"---\nname: b\ndescription: d\n---\n\n\xff\xfe\n"
+    )
+    (memory / "huge.md").write_text(
+        "x" * (init.ADOPT_MAX_BYTES + 1), encoding="utf-8"
+    )
+    (memory / "tiered.md").write_text(
+        "---\nname: t\ndescription: d\n---\n\ntier: hot\n", encoding="utf-8"
+    )
+    outside = profile / "outside.md"
+    outside.write_text(TRAP, encoding="utf-8")
+    (memory / "linked.md").symlink_to(outside)
+
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    skipped = " ".join(n for n in plan.notes if "skipped" in n)
+    assert "binary.md: is not UTF-8" in skipped
+    assert "huge.md: is" in skipped and "byte cap" in skipped
+    assert "tiered.md: carries a `tier:` line" in skipped
+    assert "linked.md: the file is a symlink" in skipped
+    copied = [
+        a.path for a in plan.actions
+        if a.op == init.CREATE_FILE and "projects" in a.path
+    ]
+    assert copied == [str(store / "search" / "projects" / "-skips" / "keep.md")]
+
+
+
+
+def test_only_a_memory_directory_wired_into_a_store_is_already_redirected(
+    profile, monkeypatch
+) -> None:
+    """A LINK IS AN ANSWER ONLY WHERE IT LANDS.
+
+    Adoption skipped every symlinked memory directory as "already redirected"
+    while doctor counted the ones landing nowhere as outside every store — so
+    a memory directory linked to an ordinary directory was reported as handled
+    on one command and as unadopted on the other, and never chased on either.
+    The two now ask one predicate, and this asserts the numbers as well as the
+    predicate.
+    """
+    # A store and a config first: "inside a store" is not a question that can
+    # be asked before one exists.
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    # The route the hook and doctor read it by. Without one, no store is
+    # configured and nothing can be inside one — which both commands already
+    # agree about.
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+
+    wired_at = store / "search" / "wired-memories"
+    wired_at.mkdir()
+    (wired_at / "wired.md").write_text(TRAP, encoding="utf-8")
+    wired = profile / "claude-config" / "projects" / "-wired"
+    wired.mkdir(parents=True)
+    (wired / "memory").symlink_to(wired_at)
+
+    # The PROJECT directory reached through a link, rather than its `memory/`:
+    # `harness_memory` carries three link flags and each needs its own answer.
+    wired_project = store / "search" / "wired-project"
+    (wired_project / "memory").mkdir(parents=True)
+    (wired_project / "memory" / "p.md").write_text(TRAP, encoding="utf-8")
+    (profile / "claude-config" / "projects" / "-wired-project").symlink_to(
+        wired_project
+    )
+
+    nowhere = profile / "linked-memories"
+    nowhere.mkdir()
+    (nowhere / "loose.md").write_text(TRAP, encoding="utf-8")
+    loose = profile / "claude-config" / "projects" / "-linked-outside"
+    loose.mkdir(parents=True)
+    (loose / "memory").symlink_to(nowhere)
+
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    notes = " ".join(plan.notes)
+    assert "'-wired': already redirected, skipped" in notes
+    assert "'-wired-project': already redirected, skipped" in notes
+    assert "-linked-outside: already redirected" not in notes
+    assert "1 project memory directory holds 1 memory outside every store" in notes
+    # And doctor, over the same machine, counts the same one.
+    machine = doctor.Machine()
+    known = harness_memory.inventory(init._harness_config_dir())[0]
+    outside = [p for p in known if init._adoptable(machine, str(store), p)]
+    assert [p.key for p in outside] == ["-linked-outside"]
+    (row,) = [
+        check for check in doctor.collect(machine) if check.id == "auto-memory"
+    ]
+    assert "1 project directory holds 1 memory outside every store" in row.detail
+
+
+def test_a_hot_memory_no_index_rows_is_named_before_the_confirm(profile) -> None:
+    """The checker walks `hot/` as well as `search/` and generates rows for
+    neither: a hot memory's row lives in MEMORY.md, which is hand-written.
+
+    So a store holding one gets an `ORPHAN` from the VERIFY step init runs on
+    its own work — after the store is on disk, with exit 6 and nothing in the
+    manifest that saw it coming. Rowing them in SEARCH.md instead is worse:
+    the checker answers `MISROWED`.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    (store / "hot" / "h.md").write_text(
+        "---\nname: h\ndescription: a hot memory\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    plan = _plan(profile, store=str(store))
+    assert any("hot/h.md" in note and "no row" in note for note in plan.notes), (
+        plan.notes
+    )
+    # And it is not answered by rowing it in the generated ledger.
+    (ledger,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    assert "hot/h.md" not in ledger.content
+    # And a store whose MEMORY.md DOES row it never reaches this: an index
+    # somebody wrote is refused outright, because nothing else records those
+    # rows. So the note above covers every store init will actually plan.
+    (store / "MEMORY.md").write_text(
+        (store / "MEMORY.md").read_text() + "\n- [h](hot/h.md) — a hot memory\n",
+        encoding="utf-8",
+    )
+    _refuses(profile, "adopted-memory-index", store=str(store))
+
+
+def test_a_memory_whose_row_cannot_be_read_is_named_and_not_dropped(
+    profile,
+) -> None:
+    """A blanket suppress produced no row, no note and no refusal — and the
+    checker that reads the tree rather than the ledger calls a memory with no
+    row an ORPHAN, on a store init has just declared correct.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    shut = store / "search" / "shut.md"
+    shut.write_text("---\nname: s\ndescription: shut\n---\n\nb\n", encoding="utf-8")
+    shut.chmod(0)
+    try:
+        plan = _plan(profile, store=str(store))
+        assert any(
+            "shut.md" in note and "no row" in note and "PermissionError" in note
+            for note in plan.notes
+        ), plan.notes
+    finally:
+        shut.chmod(0o644)
+
+
+
+
+def test_the_managed_scope_is_asked_about_the_redirect_like_every_other(
+    profile, monkeypatch
+) -> None:
+    """MANAGED SETTINGS ARE THE ADMINISTRATOR'S, and the highest-precedence
+    scope the harness reads. A hole there is init redirecting where an agent
+    writes against site policy — the one scope whose answer the adopter in
+    front of the terminal cannot give.
+    """
+    managed = profile / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryDirectory": "/site/policy/memories"}),
+        encoding="utf-8",
+    )
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    refusal = _refuses(profile, "auto-memory-redirected", adopt_auto_memory=True)
+    assert "in managed settings" in refusal.message
+    assert "/site/policy/memories" in refusal.message
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_description_cap_is_the_checkers_own(profile) -> None:
+    """The truncation arithmetic is pinned and the constant it depends on was
+    not. One character of drift is a `DESC-LONG` at the VERIFY step, on a store
+    init has just built and just truncated a description for.
+    """
+    from memkit import memory_integrity as checker
+
+    assert init._MAX_DESC_CHARS == checker.MAX_DESC_CHARS
+    assert set(init._LEDGER_NAMES) == set(checker.LEDGER_NAMES)
+    assert init._INDEX_HEADING == checker.INDEX_HEADING
+
+
+def test_a_replaced_description_takes_the_lines_under_it(profile) -> None:
+    """A `description:` whose value continued onto indented lines is one value,
+    and replacing the first line alone leaves the rest of somebody else's
+    sentence attached to the new one — which is why this is not a regex.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {"c.md": (
+            "---\nname: c\ndescription: >\n  a folded value\n"
+            "  that runs on\nkeep: me\n---\n\nbody\n"
+        )},
+    )
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (copy,) = [a for a in plan.actions if a.path.endswith("c.md")]
+    block = copy.content.split("\n---", 1)[0]
+    assert "a folded value" not in block, block
+    assert "that runs on" not in block, block
+    # And nothing else in the block is touched.
+    assert "keep: me" in block
+    assert "a folded value" not in copy.content.split("\n---", 1)[1]
+
+
+def test_a_memory_a_sub_index_already_rows_is_not_rowed_again(profile) -> None:
+    """A sub-index owns its members' rows. Generating a second one in SEARCH.md
+    is the checker's `DOUBLE-LEDGER`, and the members are read from the
+    sub-index's own text because membership is data rather than convention.
+
+    THREE SHAPES, and the second is the one the halves disagreed about: a
+    plain member, a member reached through a symlinked FILE — where the
+    checker resolves the link and this must too — and a symlinked DIRECTORY,
+    which neither walk descends.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    search = store / "search"
+    domain = search / "domain"
+    domain.mkdir()
+    (domain / "plain.md").write_text(
+        "---\nname: plain\ndescription: a plain member\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (domain / "real.md").write_text(
+        "---\nname: real\ndescription: reached through a link\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (search / "link.md").symlink_to(domain / "real.md")
+    elsewhere = profile / "outside-tree"
+    elsewhere.mkdir()
+    (elsewhere / "never.md").write_text(
+        "---\nname: never\ndescription: below a linked directory\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (search / "linked-dir").symlink_to(elsewhere)
+    (domain / "INDEX.md").write_text(
+        "## Index\n\n- [plain](plain.md) — a plain member\n"
+        "- [real](../link.md) — reached through a link\n",
+        encoding="utf-8",
+    )
+    config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["sub_indexes"] = ["search/domain/INDEX.md"]
+    config.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+
+    plan = _plan(profile, store=str(store))
+    (ledger,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    rows = _rows_of(ledger.content)
+    # The member the sub-index rows is NOT rowed again...
+    assert "search/domain/plain.md" not in rows
+    assert "search/domain/real.md" not in rows
+    # ...the link the sub-index resolved through is rowed, because that is the
+    # row the checker's own --write generates for it...
+    assert "search/link.md" in rows
+    # ...and nothing under a symlinked directory is rowed, because neither
+    # walk descends one.
+    assert not [link for link in rows if "linked-dir" in link]
+
+
+def test_an_adopted_memory_a_sub_index_rows_is_not_rowed_again(profile) -> None:
+    """The exclusion above is applied where the rows are read off disk, and
+    the adoption rows were merged in after it without going through it. So the
+    one path that writes NEW rows was the one that skipped the guard: an
+    adopter who moved an adopted memory's row into a sub-index of their own
+    got it put back on the next run, and the store then failed the check init
+    runs on its own work with DOUBLE-LEDGER.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    out = _confirm(
+        profile,
+        _digest_of(_dry(profile, "--store", str(store), "--adopt-auto-memory")),
+        "--store", str(store), "--adopt-auto-memory",
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    link = "search/projects/-home-u/note.md"
+    search = store / "SEARCH.md"
+    assert link in search.read_text(encoding="utf-8")
+
+    # The adopter moves the row into a sub-index of their own and declares it.
+    adopted = store / "search" / "projects" / "-home-u"
+    (adopted / "INDEX.md").write_text(
+        "## Index\n\n- [app trap](note.md) — app trap one\n", encoding="utf-8"
+    )
+    search.write_text(
+        "".join(
+            line for line in search.read_text(encoding="utf-8").splitlines(True)
+            if link not in line
+        ),
+        encoding="utf-8",
+    )
+    config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["sub_indexes"] = ["search/projects/-home-u/INDEX.md"]
+    config.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (ledger,) = [a for a in plan.actions if a.path == str(search)]
+    assert link not in _rows_of(ledger.content), ledger.content
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_ledger_over_a_sub_index_is_still_the_one_write_would_leave(
+    profile,
+) -> None:
+    """The fixpoint over the shape the two halves are read differently on: a
+    sub-index rowing a memory through a symlink. `--write` regenerates every
+    generated ledger, so a store where it changes nothing is a store whose
+    SEARCH.md init got right.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    search = store / "search"
+    domain = search / "domain"
+    domain.mkdir()
+    (domain / "real.md").write_text(
+        "---\nname: real\ndescription: reached through a link\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    (search / "link.md").symlink_to(domain / "real.md")
+    (domain / "INDEX.md").write_text(
+        "## Index\n\n- [real](../link.md) — reached through a link\n",
+        encoding="utf-8",
+    )
+    config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["sub_indexes"] = ["search/domain/INDEX.md"]
+    config.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+
+    plan = _plan(profile, store=str(store))
+    (action,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    (store / "SEARCH.md").write_text(action.content, encoding="utf-8")
+    mine = (store / "SEARCH.md").read_text()
+    written = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config),
+         "--write"],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert (store / "SEARCH.md").read_text() == mine
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_ledger_init_writes_is_the_one_the_checker_would_generate(
+    profile,
+) -> None:
+    """THE FIXPOINT, and the reason the checker's rules may be restated here at
+    all: `memory_integrity` requires 3.12 and this module answers to the 3.9
+    floor the dispatcher runs on, so the two cannot share one definition of
+    what a ledger row is. What closes the gap is evidence — the checker's own
+    generator, over the tree init made, has to produce the bytes init wrote.
+    """
+    from memkit import memory_integrity as checker
+
+    _harness(
+        profile,
+        "-home-u-git-app",
+        {
+            "trap.md": TRAP,
+            # A CAPITAL LABEL, deliberately: the rows are sorted case-
+            # insensitively and an ASCII sort puts this one first, so a fixture
+            # of lower-case names alone would agree with either rule and prove
+            # neither.
+            "upper.md": (
+                "---\nname: Zeta note\ndescription: a capital label\n---\n\nbody\n"
+            ),
+        },
+    )
+    _harness(profile, "-home-u", {"note.md": BARE})
+    # A DUPLICATE LABEL, which is what makes the ORDER a claim. Two rows
+    # carrying one label are ordered by whatever each side built its list in,
+    # and the two lists are built differently: the checker walks every memory
+    # path in order, this module walks the inventory, which puts the directory
+    # holding the most memories first. So `-home-zz` is planned before
+    # `-home-aa` and the checker generates them the other way round.
+    dup = "---\nname: dup label\ndescription: two files, one label\n---\n\nb\n"
+    _harness(
+        profile,
+        "-home-zz",
+        {
+            "dup.md": dup,
+            "extra.md": (
+                "---\nname: zz extra\ndescription: the second memory\n---\n\nb\n"
+            ),
+        },
+    )
+    _harness(profile, "-home-aa", {"dup.md": dup})
+    # AND ONE PAIR WHOSE KEYS ORDER DIFFERENTLY AS STRINGS AND AS PATHS: `-`
+    # sorts after `/`, so `-home-a-b/pair.md` precedes `-home-a/pair.md` as a
+    # string and follows it as a path — and the checker sorts paths.
+    pair = "---\nname: pair label\ndescription: one label, two paths\n---\n\nb\n"
+    _harness(profile, "-home-a-b", {"pair.md": pair})
+    _harness(profile, "-home-a", {"pair.md": pair})
+    store = profile / "home" / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    ledger = store / "SEARCH.md"
+    entries = []
+    for path in sorted((store / "search").rglob("*.md")):
+        if path.name in checker.LEDGER_NAMES:
+            continue
+        front = checker._frontmatter(path)
+        value, error = checker._scalar(front.get("description", ""))
+        assert error is None, (path, error)
+        entries.append(
+            (front.get("name") or path.stem, os.path.relpath(path, store), value)
+        )
+    assert len(entries) == 9, entries
+    # Non-vacuity for the tie-break: the two rows really do share a label, and
+    # the one the ledger names first is not the one adoption planned first.
+    rows = [line for line in ledger.read_text(encoding="utf-8").splitlines()
+            if line.startswith("- [dup label]")]
+    assert len(rows) == 2, rows
+    assert "-home-aa" in rows[0] and "-home-zz" in rows[1], rows
+    pairs = [line for line in ledger.read_text(encoding="utf-8").splitlines()
+             if line.startswith("- [pair label]")]
+    assert len(pairs) == 2, pairs
+    assert "/-home-a/" in pairs[0] and "-home-a-b" in pairs[1], pairs
+    # Non-vacuity: the labels really do sort differently under the two rules,
+    # so the equality below is a claim about the ordering as well as the text.
+    assert sorted(e[0] for e in entries) != sorted(
+        (e[0] for e in entries), key=str.lower
+    )
+    assert checker._generate(ledger, entries) == ledger.read_text(encoding="utf-8")
+
+
+
+
+def test_a_destination_that_is_a_link_is_named_and_never_written_through(
+    profile,
+) -> None:
+    """A DANGLING SYMLINK AT A DESTINATION READS AS ABSENT.
+
+    `state_token` opens the path, so a link pointing at nothing answers
+    "absent" exactly as an empty directory entry does — the copy was planned,
+    and the write followed the link, created the directories it named and put
+    somebody's memory outside the store. Nothing in the manifest said so.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    dest = store / "search" / "projects" / "-home-u" / "note.md"
+    dest.parent.mkdir(parents=True)
+    outside = profile / "elsewhere" / "deep" / "planted.md"
+    dest.symlink_to(outside)
+    # And one that lands back INSIDE the store: containment says nothing about
+    # it, and it is still a write at a path the manifest does not name — into
+    # `hot/`, whose ledger is hand-written and rows nothing new.
+    _harness(profile, "-home-v", {"note.md": TRAP})
+    inward = store / "search" / "projects" / "-home-v" / "note.md"
+    inward.parent.mkdir(parents=True)
+    inward.symlink_to(store / "hot" / "smuggled.md")
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if a.path in (str(dest), str(inward))]
+    diverged = [note for note in plan.notes if "diverged" in note]
+    assert any(str(outside) in note for note in diverged), diverged
+    assert any(str(store / "hot" / "smuggled.md") in note for note in diverged), (
+        diverged
+    )
+    assert any("0 files" in note and "2 diverged" in note for note in plan.notes)
+    machine = doctor.Machine()
+    assert init.apply_plan(
+        machine, plan, init._resolve_config(machine, None)
+    ) in (init.EXIT_OK, init.EXIT_INCOMPLETE)
+    assert not outside.exists(), "a copy landed outside the store"
+    assert not outside.parent.exists(), "a directory was made outside the store"
+    assert not (store / "hot" / "smuggled.md").exists(), "a copy went through a link"
+
+
+
+
+def test_a_linked_destination_directory_takes_the_whole_project_with_it(
+    profile,
+) -> None:
+    """THE LINK THAT MOVES A WRITE IS AS OFTEN A DIRECTORY AS THE LEAF.
+
+    `os.makedirs` follows a linked component exactly as `open` does, so a
+    linked `search/projects/` sends every copy under it somewhere the manifest
+    does not name — with no leaf a link and nothing else to notice it. Both
+    shapes are here: one landing outside the store, where containment is the
+    only test that answers, and one landing back inside it, where the link
+    itself is.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    outside = profile / "elsewhere"
+    outside.mkdir()
+    (store / "search").mkdir(parents=True)
+    (store / "search" / "projects").symlink_to(outside)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if a.op == init.CREATE_FILE
+                and "-home-u" in a.path]
+    assert any(str(outside) in note and "diverged" in note for note in plan.notes), (
+        plan.notes
+    )
+    machine = doctor.Machine()
+    init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert list(outside.iterdir()) == [], "a copy landed outside the store"
+
+    # And the project's OWN directory as a link, landing back inside the
+    # store: containment says yes and the link is still a path the manifest
+    # does not name, so this is the clause that answers.
+    (store / "search" / "projects").unlink()
+    (store / "search" / "projects").mkdir()
+    inward = store / "search" / "somewhere-else"
+    inward.mkdir()
+    (store / "search" / "projects" / "-home-u").symlink_to(inward)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if a.op == init.CREATE_FILE
+                and "-home-u" in a.path]
+    assert any(str(inward) in note and "diverged" in note for note in plan.notes), (
+        plan.notes
+    )
+    assert list(inward.iterdir()) == []
+
+
+@pytest.mark.parametrize("shape", ("linked-projects-dir", "linked-key-dir"))
+def test_a_link_that_lands_back_inside_the_store_still_never_converges(
+    profile, shape
+) -> None:
+    """CONTAINED IS NOT THE SAME AS CONVERGENT, and containment was the only
+    question the guard used to ask.
+
+    A link BELOW the store that resolves back INSIDE it passes every
+    containment test there is: no leaf is a link, and the resolved path is in
+    the store. The row init writes is `relpath(dest, store)`, spelled
+    lexically — `search/projects/<key>/note.md` — while the bytes land where
+    the link points, which is the name the checker enumerates. Init then exits
+    6 on its own LEDGER-DRIFT every run; `memory-integrity --write` repairs the
+    row and the next init puts it back. Two tools each undoing the other is
+    worse than a refusal, so the project is named and left alone instead.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "home" / f"notes-{shape}"
+    projects = store / "search" / "projects"
+    elsewhere = store / "search" / "elsewhere"
+    elsewhere.mkdir(parents=True)
+    landing = elsewhere
+    if shape == "linked-projects-dir":
+        # No leaf is a link and nothing is outside the store: the whole
+        # `projects/` directory is one, pointing at a sibling.
+        projects.symlink_to(elsewhere)
+    else:
+        projects.mkdir()
+        (projects / "-home-u").symlink_to(elsewhere)
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "diverged" in manifest.stdout, manifest.stdout
+    assert hook._display_path(str(landing)) in manifest.stdout, manifest.stdout
+    assert "0 files" in manifest.stdout, manifest.stdout
+
+    # The confirm runs the integrity check on the store it just built, so an
+    # exit 0 here is the checker's answer as well as init's.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert list(landing.iterdir()) == [], "a copy went through the link"
+
+    # AND IT CONVERGES. The oscillation this guards is only visible on the
+    # second turn: the first one wrote a row for a path nothing is at, and the
+    # second one is where init and the checker start undoing each other.
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
+def test_a_store_that_is_itself_a_symlink_is_still_adopted_into(profile) -> None:
+    """The other side of the same test, and the reason it compares the landing
+    place against the store's OWN realpath rather than against `abspath`.
+
+    A store on an external volume, in a dotfiles tree or under a synced
+    directory is a store reached through a link, so EVERY destination in it
+    resolves somewhere other than the path it is spelled as — and every one of
+    them still lands exactly where its row says. A guard that only asked
+    "did anything resolve?" would refuse to adopt into any of them.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    real = profile / "external-volume" / "notes"
+    real.mkdir(parents=True)
+    store = profile / "home" / "notes"
+    store.symlink_to(real)
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert any("1 files" in note and "0 diverged" in note for note in plan.notes), (
+        plan.notes
+    )
+    assert [
+        a.path for a in plan.actions
+        if a.op == init.CREATE_FILE and a.path.endswith("-home-u/note.md")
+    ] == [str(store / "search" / "projects" / "-home-u" / "note.md")]
+
+    # END TO END, because the claim is about the ledger and not the plan: the
+    # confirm runs the integrity checker over the store it just built, so an
+    # exit 0 is the checker agreeing that the row and the bytes are the same
+    # file — reached one way through the link and the other way around it.
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert (real / "search" / "projects" / "-home-u" / "note.md").is_file()
+    rows = _rows_of((store / "SEARCH.md").read_text(encoding="utf-8"))
+    assert "search/projects/-home-u/note.md" in rows, rows
+
+
+def test_a_link_planted_after_the_plan_never_lands_outside_the_store(
+    profile,
+) -> None:
+    """The plan proves containment against the tree it was built over, and a
+    link planted after that proves nothing. Every write the adoption plan makes
+    carries the root it has to land inside, and the write itself is where that
+    is enforced — the two moments are different and only the second one is the
+    one that writes.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    base = store / "search" / "projects"
+    copy = next(
+        a for a in plan.pending if a.path.endswith("-home-u/note.md")
+    )
+    assert copy.confine == str(store)
+    # Between the plan and the write: the directory the copies go in becomes a
+    # link out of the store.
+    outside = profile / "elsewhere"
+    outside.mkdir()
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.symlink_to(outside)
+    machine = doctor.Machine()
+    code = init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert code == init.EXIT_INCOMPLETE
+    assert list(outside.iterdir()) == [], "the write followed the planted link"
+
+
+def test_a_link_planted_after_the_plan_never_lands_off_its_own_row(
+    profile,
+) -> None:
+    """AND STAYING INSIDE THE STORE IS NOT LANDING WHERE THE ROW SAYS. The plan
+    proves the destination resolves to the name it is spelled as; a link
+    planted after it that resolves back into the store passes containment and
+    still moves every copy off the row written for it. The write has to ask the
+    plan's question rather than a weaker one, or the guard is only as strong as
+    where the planted link happens to point.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    base = store / "search" / "projects"
+    landing = store / "search" / "landing"
+    landing.mkdir(parents=True)
+    base.symlink_to(landing)
+    machine = doctor.Machine()
+    code = init.apply_plan(machine, plan, init._resolve_config(machine, None))
+    assert code == init.EXIT_INCOMPLETE
+    assert list(landing.iterdir()) == [], "the write followed the planted link"
+
+
+def test_the_manifest_names_every_file_the_copy_would_write(profile) -> None:
+    """A COUNT IS NOT A LIST. Doctor's remedy for this command promises it
+    "names every file first", and consent for a command whose named harm is a
+    wrong copy has to be given against the destinations rather than against
+    their number. The summary line stays: it is what keeps a hundred copies
+    from burying the writes that are not copies.
+    """
+    _harness(profile, "-home-u-git-app", {"trap.md": TRAP, "MEMORY.md": "# idx\n"})
+    _harness(profile, "-home-u", {"note.md": BARE})
+    store = profile / "notes"
+    rendered = _plan(profile, store=str(store), adopt_auto_memory=True).render()
+    base = store / "search" / "projects"
+    for rel in ("-home-u-git-app/trap.md", "-home-u-git-app/MEMORY.md",
+                "-home-u/note.md"):
+        assert str(base / rel) in rendered, rel
+    # And the summary line each of them hangs under.
+    assert "2 files from" in rendered
+    assert "1 file from" in rendered
+
+
+
+
+def test_a_name_that_would_end_its_own_row_is_rewritten_in_the_copy(profile) -> None:
+    """A ROW IS `- [label](link) — description` AND THE LABEL IS THE RAW HALF.
+
+    A `name:` carrying `](` closes the link early: what follows is markdown
+    the adopter never wrote — here a row pointing at a file that does not
+    exist — and the real memory is left with no usable row at all. The COPY is
+    what gets the safe name, not init's row, because the checker regenerates
+    that row from this file and the two have to keep agreeing.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "evil.md": (
+                "---\nname: x](hot/forged.md) — forged row\n"
+                "description: real desc\n---\n\nbody\n"
+            )
+        },
+    )
+    store = profile / "notes"
+    out = _confirm(
+        profile,
+        _digest_of(_dry(profile, "--store", str(store), "--adopt-auto-memory")),
+        "--store", str(store), "--adopt-auto-memory",
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    copied = (store / "search" / "projects" / "-home-u" / "evil.md").read_text()
+    assert "](" not in copied.split("\n---", 1)[0]
+    ledger = (store / "SEARCH.md").read_text()
+    # ONE row for it, it points at the memory rather than at the file the name
+    # named, and the description is still the file's own.
+    (row,) = [line for line in ledger.splitlines() if "evil.md" in line]
+    assert row.endswith("(search/projects/-home-u/evil.md) — real desc"), row
+    # The name's text survives as TEXT; what it may not be is a link.
+    assert "](hot/forged.md)" not in ledger
+
+
+def test_a_file_name_no_manifest_line_can_carry_is_skipped(profile) -> None:
+    """POSIX admits a newline in a filename. Rendered raw it forged two
+    correctly indented action lines into the surface a human reads before
+    typing `--confirm`; sanitised, the note is honest and the destination path
+    line beside it still cannot be — a path has to keep its spacing byte for
+    byte to name a file that exists. So the file is not copied, and the one
+    line that names it is cleaned.
+    """
+    memory = _harness(profile, "-home-u", {"ok.md": TRAP})
+    forged = "a\n  create-file    ~-.claude-settings.json\nb.md"
+    (memory / forged).write_text("body\n", encoding="utf-8")
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    assert not [a for a in plan.actions if ".claude-settings" in a.path]
+    assert any(
+        "no manifest line and no ledger row could carry" in note
+        and "skipped:" in note
+        for note in plan.notes
+    ), plan.notes
+    rendered = plan.render()
+    # NOT ONE forged line: every line of the manifest that looks like an action
+    # is one the plan holds.
+    ops = {init.CREATE_DIR, init.CREATE_FILE, init.SETTINGS_WRITE,
+           init.MERGE_CONFIG, init.VERIFY, init.APPEND_LINE, init.REWRITE_FILE}
+    printed = [
+        line for line in rendered.splitlines()
+        if line[:2] == "  " and line[2:3] != " " and line.split()[0] in ops
+    ]
+    assert len(printed) == len([
+        a for a in plan.pending if not a.group
+    ]) + len({a.group for a in plan.pending if a.group})
+
+
+def test_a_file_name_no_row_could_point_at_is_skipped(profile) -> None:
+    """The file name is the OTHER half of the path a generated row points at,
+    and a space in it is not a character a link destination can carry: the
+    reader ends the link at the space, so `al pha.md` rows a link to
+    `search/projects/-home-u/al`, a path that is not there. Copied, the store
+    init has just built fails init's own integrity check with DEAD-LINK.
+
+    A sound file beside it still adopts: this refuses a file, not a run.
+    """
+    _harness(profile, "-home-u", {"al pha.md": TRAP, "beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert any(
+        "al pha.md" in line
+        and "no manifest line and no ledger row could carry" in line
+        for line in manifest.stdout.splitlines()
+    ), manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == ["beta.md"]
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "search/projects/-home-u/beta.md" in ledger
+    assert "al pha" not in ledger
+    # The store init just built still passes the check it will be measured by.
+    from memkit import memory_integrity as checker
+
+    entries = []
+    for path in sorted((store / "search").rglob("*.md")):
+        if path.name in checker.LEDGER_NAMES:
+            continue
+        front = checker._frontmatter(path)
+        value, error = checker._scalar(front.get("description", ""))
+        assert error is None, (path, error)
+        entries.append(
+            (front.get("name") or path.stem, os.path.relpath(path, store), value)
+        )
+    assert checker._generate(store / "SEARCH.md", entries) == ledger
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["-home-u with spaces", "-home-u\ttab", "key(paren)", "key)close"],
+)
+def test_a_project_key_no_row_could_point_at_is_skipped(profile, key) -> None:
+    """The key is half of the path a row points at, and the harness is not the
+    only writer of it — `inventory` reads directory NAMES off disk and never
+    re-derives them, so the key is whatever any process running as the adopter
+    put under `projects/`. Taken raw it lands between the `(` and `)` of a
+    generated row: `key)close` ends its own link at `search/projects/key`, a
+    space ends it at the space, and a tab is a character no line can carry.
+    Each one left the copies on disk and the store failing its own check.
+
+    A sound key beside it still adopts: this refuses a project, not a run.
+    """
+    _harness(profile, key, {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "no manifest line and no ledger row could carry" in manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert not (adopted / key).exists(), sorted(p.name for p in adopted.iterdir())
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "search/projects/-home-ok/beta.md" in ledger
+    assert key not in ledger
+    # The store init just built still passes the check it will be measured by.
+    from memkit import memory_integrity as checker
+
+    entries = []
+    for path in sorted((store / "search").rglob("*.md")):
+        if path.name in checker.LEDGER_NAMES:
+            continue
+        front = checker._frontmatter(path)
+        value, error = checker._scalar(front.get("description", ""))
+        assert error is None, (path, error)
+        entries.append(
+            (front.get("name") or path.stem, os.path.relpath(path, store), value)
+        )
+    assert checker._generate(store / "SEARCH.md", entries) == ledger
+
+
+@pytest.mark.parametrize(
+    ("key", "spelled"),
+    [("-home-u\ttab", "'-home-u\\ttab'"), ("-home-u\nnl", "'-home-u\\nnl'")],
+)
+def test_a_skipped_key_is_named_in_a_spelling_the_disk_holds(
+    profile, key, spelled
+) -> None:
+    """A skip line is an instruction to go look at something, so the name it
+    prints has to be one `ls` will match. Deleting the byte that made the key
+    unusable named `-home-utab`, a directory nobody has.
+    """
+    _harness(profile, key, {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert spelled in manifest.stdout, manifest.stdout
+    # The escaping is what keeps the byte on one line: still not one forged
+    # action line, and still no raw control character in the surface.
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    rendered = plan.render()
+    assert "\t" not in rendered and "\r" not in rendered
+    ops = {init.CREATE_DIR, init.CREATE_FILE, init.SETTINGS_WRITE,
+           init.MERGE_CONFIG, init.VERIFY, init.APPEND_LINE, init.REWRITE_FILE}
+    printed = [
+        line for line in rendered.splitlines()
+        if line[:2] == "  " and line[2:3] != " " and line.split()[0] in ops
+    ]
+    assert len(printed) == len([
+        a for a in plan.pending if not a.group
+    ]) + len({a.group for a in plan.pending if a.group})
+
+
+def test_an_already_redirected_key_is_named_in_a_spelling_the_disk_holds(
+    profile, monkeypatch
+) -> None:
+    """The sibling skip line, for the same reason: it tells the adopter which
+    project directory was passed over, so it has to spell one that is there.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+    wired_at = store / "search" / "wired-memories"
+    wired_at.mkdir()
+    (wired_at / "wired.md").write_text(TRAP, encoding="utf-8")
+    wired = profile / "claude-config" / "projects" / "-home-u\tdone"
+    wired.mkdir(parents=True)
+    (wired / "memory").symlink_to(wired_at)
+
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    notes = "\n".join(plan.notes)
+    assert "'-home-u\\tdone': already redirected, skipped" in notes, notes
+
+
+def test_a_key_over_the_harness_limit_adopts_and_says_it_is_hashed(
+    profile,
+) -> None:
+    """`KEY_MAX` governs DERIVING a key from a cwd; adoption reads names the
+    harness already chose. A directory the harness wrote over the limit holds
+    real memories, so refusing it would leave them behind — but its name is a
+    truncated path with an unmeasured hash after it, which is the one thing
+    the adopter cannot tell by looking, so the manifest says it.
+    """
+    at_limit = "-home-u" + "a" * (harness_memory.KEY_MAX - 7)
+    over_limit = "-home-u" + "b" * (harness_memory.KEY_MAX + 43)
+    assert len(at_limit) == harness_memory.KEY_MAX
+    _harness(profile, at_limit, {"alpha.md": TRAP})
+    _harness(profile, over_limit, {"beta.md": TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert f"'{over_limit}': over 200 characters, so the harness truncated" in (
+        manifest.stdout
+    ), manifest.stdout
+    # The control: a key AT the limit is one the harness spelled out in full.
+    assert f"'{at_limit}': over" not in manifest.stdout
+    # Both adopt, and the store init just built passes its own VERIFY.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert (adopted / at_limit / "alpha.md").read_text(encoding="utf-8") == TRAP
+    assert (adopted / over_limit / "beta.md").read_text(encoding="utf-8") == TRAP
+    assert "Adoption: 2 files" in out.stdout, out.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_project_key_the_check_would_read_as_a_memory_is_skipped(
+    profile,
+) -> None:
+    """A KEY IS A DIRECTORY ENTRY THIS STORE IS GETTING, and the check init
+    runs over its own work enumerates memories by suffix. A harness project
+    key ending in `.md` — the harness derives keys from a path, and a path
+    can end in a file name — became `search/projects/<key>.md/`, which every
+    rule in the checker then opened as a file. `--write` opens it too, so the
+    documented recovery could not clear it either.
+    """
+    over_limit = "-home-u" + "b" * (harness_memory.KEY_MAX + 43)
+    _harness(profile, "-home-u-notes.md", {"note.md": TRAP})
+    _harness(profile, "-home-u", {"ok.md": BARE})
+    _harness(
+        profile,
+        over_limit,
+        {"far.md": "---\nname: far\ndescription: over the key limit\n---\n\nb\n"},
+    )
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    # Said on the DRY RUN, where the adopter reads it before consenting.
+    assert "'-home-u-notes.md': the project key ends in `.md`" in manifest.stdout, (
+        manifest.stdout
+    )
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert not (adopted / "-home-u-notes.md").exists(), sorted(
+        p.name for p in adopted.iterdir()
+    )
+    # The controls, in the same run: an ordinary key and one over the harness's
+    # own limit both adopt, and the over-limit one still says it is hashed.
+    assert "no frontmatter here" in (
+        (adopted / "-home-u" / "ok.md").read_text(encoding="utf-8")
+    )
+    assert (adopted / over_limit / "far.md").is_file()
+    assert f"'{over_limit}': over 200 characters, so the harness truncated" in (
+        manifest.stdout
+    ), manifest.stdout
+    # And the store init just built passes the check it runs over it, rather
+    # than dying inside it.
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "IsADirectoryError" not in checked.stderr, checked.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_name_the_check_reads_a_shorter_path_out_of_is_skipped(
+    profile,
+) -> None:
+    """A `#` IN A NAME IS A PERMANENT DEAD LINK, and it passed every rule.
+
+    The checker's link parser cuts a destination at the first `#` — everything
+    after one is an anchor into a document — so `issue#123.md` was copied, a
+    row was generated pointing at it, and the check init runs over its own
+    work read that row as pointing at `search/projects/<key>/issue`, which is
+    nothing. Exit 6 out of the command that built the store, and no re-run
+    repairs it: the file is there, the row is regenerated byte for byte, and
+    the only way out is hand-editing a ledger memkit wrote.
+
+    The rule the label test applies is not this one — `#` is printable, is not
+    link syntax and is not whitespace — which is why this is a clause of its
+    own. The control in the same run is the same memory named `issue123.md`.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "issue#123.md": (
+                "---\nname: n1\ndescription: a harness memory about widgets\n"
+                "---\n\nbody\n"
+            ),
+            "issue123.md": (
+                "---\nname: n2\ndescription: the control, same memory\n"
+                "---\n\nbody\n"
+            ),
+        },
+    )
+    # A key carrying one is the other half of the same path, and skips whole.
+    _harness(profile, "-home-u#2", {"ok.md": BARE})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    # Said on the DRY RUN, and it NAMES THE CHARACTER: an adopter who has to
+    # rename a file has to be told what in the name is the problem.
+    assert "-home-u/issue#123.md: the file name holds a `#`" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "'-home-u#2': the project key holds a `#`" in manifest.stdout, (
+        manifest.stdout
+    )
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert not (adopted / "-home-u" / "issue#123.md").exists()
+    assert not (adopted / "-home-u#2").exists()
+    # The control adopted, and the tally counts the two skips.
+    assert (adopted / "-home-u" / "issue123.md").is_file()
+    assert "Adoption: 1 files" in out.stdout, out.stdout
+    assert "2 skipped" in out.stdout, out.stdout
+    # And the row the run did write survives the parser that reads it.
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "search/projects/-home-u/issue123.md" in ledger, ledger
+    assert "#" not in "".join(
+        line for line in ledger.splitlines() if line.startswith("- [")
+    ), ledger
+    # The whole of the claim: the store passes the check that used to fail.
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "DEAD-LINK" not in checked.stdout, checked.stdout
+
+
+def test_the_destination_a_row_would_carry_is_read_back_before_it_is_written(
+    profile,
+) -> None:
+    """The two halves are tested where they are read; the PATH is what the
+    check opens.
+
+    `_checker_link` is the parser restated, and the rule below it is asked of
+    the composed destination as well — a part tested and a whole never tested
+    is how the next part gets through. Asserted here as the parser's own
+    contract, because the composed rule is otherwise unreachable while both
+    halves hold.
+    """
+    assert init._checker_link("search/projects/-home-u/ok.md") == (
+        "search/projects/-home-u/ok.md"
+    )
+    # The cut, which is the whole defect.
+    assert init._checker_link("search/projects/-home-u/issue#123.md") == (
+        "search/projects/-home-u/issue"
+    )
+    # And the two rules `_dest` applies before it, which the name test above
+    # already refuses on but which this restatement has to carry to be the
+    # same parser: the first whitespace token, and the angle-bracket strip.
+    assert init._checker_link("  a/b.md  c/d.md ") == "a/b.md"
+    assert init._checker_link("<a/b.md>") == "a/b.md"
+    assert init._checker_link("   ") == ""
+
+
+def test_the_manifest_says_where_a_linked_source_directory_resolves(
+    profile,
+) -> None:
+    """A symlinked `memory/` is SUPPORTED, so this is a disclosure and not a
+    refusal — and a copy has two ends. The manifest already says where a
+    destination really lands; reading through a link is the same question
+    asked of the bytes going in, and the group line is the only one that
+    names the source at all.
+    """
+    elsewhere = profile / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "alpha.md").write_text(TRAP, encoding="utf-8")
+    linked = profile / "claude-config" / "projects" / "-home-linked"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(elsewhere)
+    _harness(profile, "-home-plain", {"beta.md": TRAP})
+
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    (group,) = [
+        line for line in manifest.stdout.splitlines()
+        if "-home-linked" in line and " -> " in line
+    ]
+    assert f"(resolves to {elsewhere})" in group, group
+    # The control: nothing resolves anywhere else, so nothing is said.
+    (plain,) = [
+        line for line in manifest.stdout.splitlines()
+        if "-home-plain" in line and " -> " in line
+    ]
+    assert "resolves to" not in plain, plain
+    # Supported, not refused: the copy still happens.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    assert (adopted / "-home-linked" / "alpha.md").read_text() == TRAP
+    assert (elsewhere / "alpha.md").read_text() == TRAP
+
+
+def test_the_stores_own_writes_answer_to_the_stores_containment_root(
+    profile,
+) -> None:
+    """Adoption's copies carried a containment root and init's own writes did
+    not, so the guard covered the actions a reviewer looks at and not the ones
+    that build the store. A directory swapped for a link to another directory
+    is `dir` before and after, so the digest binds nothing about it and the
+    write is the first thing that can see it — which is what a containment
+    root is for.
+    """
+    outside = profile / "outside"
+    (outside / "search").mkdir(parents=True)
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    manifest = _dry(profile, "--store", str(store))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    (store / "search").rmdir()
+    (store / "search").symlink_to(outside / "search")
+    out = _confirm(profile, _digest_of(manifest), "--store", str(store))
+    # 6, not 5: the link is only visible to the write, so earlier actions have
+    # already landed — "started and did not finish" is what happened.
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    assert "refused mid-apply (escapes-store)" in out.stderr, out.stderr
+    assert sorted(p.name for p in (outside / "search").iterdir()) == []
+
+
+def test_a_store_built_over_no_link_at_all_is_written_and_checks_green(
+    profile,
+) -> None:
+    """The control for the containment root: the root itself carries none, and
+    cannot — `_refuse_escape` names a path against `relpath(path, confine)`,
+    which for the root is `.` and never equals its own resolution. Confining
+    it to itself refuses every run there is.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert (store / "search").is_dir() and not (store / "search").is_symlink()
+    assert (store / "hot").is_dir()
+    assert (store / "MEMORY.md").exists() and (store / "SEARCH.md").exists()
+    # Exit 0 IS the checker's answer: VERIFY is the last action in the plan and
+    # a red one is exit 6.
+    assert any(a.op == init.VERIFY for a in _plan(profile, store=str(store)).actions)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_adoption_never_lands_an_index_for_a_directory_it_left_behind(
+    profile,
+) -> None:
+    """WHATEVER ADOPTION LANDS IS GREEN. `MEMORY.md` is a ledger name, so it is
+    copied byte for byte and nothing regenerates it — rows and all, including
+    the rows it carries for siblings adoption itself declined to copy. Landing
+    it put a row for a file that is not there into the store, and the integrity
+    check init runs over its own work then went red on adoption's own skip
+    rules: a failure the feature manufactured out of nothing but its own
+    correctness.
+
+    The mechanism is the smallest one that holds it: a ledger is decided after
+    the files it indexes, and it is copied only when every one of them was.
+    """
+    memory = _harness(profile, "-home-u", {
+        "MEMORY.md": "# index\n\n- [gone](gone.md) — a row for a file "
+                     "adoption skips\n",
+        "note.md": TRAP,
+    })
+    outside = profile / "outside.md"
+    outside.write_text("# gone\n\noutside the directory being copied\n",
+                       encoding="utf-8")
+    (memory / "gone.md").symlink_to(outside)
+    # The control, beside it: a directory copied whole keeps its index.
+    _harness(profile, "-home-ok", {"MEMORY.md": "# idx\n", "beta.md": BARE})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-u/gone.md: the file is a symlink" in manifest.stdout
+    assert "-home-u/MEMORY.md: it is an index" in manifest.stdout, manifest.stdout
+    assert "gone.md was left behind" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    whole = store / "search" / init.ADOPT_DIRNAME / "-home-ok"
+    assert sorted(p.name for p in whole.iterdir()) == ["MEMORY.md", "beta.md"]
+    # The check init just ran on its own work, run again by hand.
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+def test_a_named_pipe_in_the_store_does_not_hold_the_dry_run_open(
+    profile,
+) -> None:
+    """A PLANNER READS REGULAR FILES AND NOTHING ELSE.
+
+    `search/` is walked for `*.md` and each one is opened to read its
+    frontmatter, and `open` on a FIFO blocks until somebody writes to the other
+    end. The dry-run is the turn that exists to be read before anything is
+    written, and one that never returns has no turn after it: no manifest, no
+    digest, no output at all, and only a signal ends it.
+
+    The 15-second cap is the assertion. A regression here does not fail a
+    comparison, it stops returning — so the case has to be able to fail rather
+    than hang the suite behind it.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    store = profile / "notes"
+    first = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert first.returncode == init.EXIT_OK, first.stdout + first.stderr
+    out = _confirm(
+        profile, _digest_of(first), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+
+    pipe = store / "search" / "pipe.md"
+    os.mkfifo(pipe, 0o600)
+    assert stat.S_ISFIFO(os.lstat(pipe).st_mode)
+    again = subprocess.run(
+        [sys.executable, "-m", "memkit.cli", "init", "--dry-run",
+         "--store", str(store), "--adopt-auto-memory"],
+        capture_output=True, text=True, timeout=15,
+        env=dict(
+            os.environ,
+            HOME=str(profile / "home"),
+            XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+            CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+        ),
+    )
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert f"no row: {pipe} is not a regular file" in again.stdout, again.stdout
+    # And it is still a pipe: nothing opened it for writing either.
+    assert stat.S_ISFIFO(os.lstat(pipe).st_mode)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_file_the_store_already_holds_is_not_called_one_left_behind(
+    profile,
+) -> None:
+    """A SKIP LINE NAMES A FILE BY WHAT ACTUALLY HAPPENED TO IT.
+
+    The index rule asks what the copy loop left outside the store, and it read
+    that off the actions the loop produced — so a destination that DIVERGED,
+    which produces no action because adoption declines to overwrite, counted as
+    a file left behind. It is not: it is in the store, under bytes the adopter
+    put there. The line named a state the file was not in, and it withheld an
+    index every one of whose rows resolves.
+    """
+    _harness(profile, "-home-u", {
+        "MEMORY.md": "# index\n\n- [beta](beta.md) — the second memory\n",
+        "alpha.md": TRAP,
+        "beta.md": BARE,
+    })
+    store = profile / "notes"
+    first = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert first.returncode == init.EXIT_OK, first.stdout + first.stderr
+    out = _confirm(
+        profile, _digest_of(first), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == [
+        "MEMORY.md", "alpha.md", "beta.md"
+    ]
+
+    # The adopter edits what landed, so the next run declines to overwrite it.
+    beta = adopted / "beta.md"
+    beta.write_text(beta.read_text(encoding="utf-8") + "\ntheirs\n", "utf-8")
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert f"diverged: {beta} exists and differs" in again.stdout, again.stdout
+    assert "left behind" not in again.stdout, again.stdout
+    assert "-home-u/MEMORY.md: it is an index" not in again.stdout, again.stdout
+    assert beta.read_text(encoding="utf-8").endswith("theirs\n")
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_adoption_never_lands_an_index_rowing_a_memory_that_is_not_there(
+    profile,
+) -> None:
+    """AN INDEX IS ITS ROWS, not the directory listing beside it. A row for a
+    memory the adopter deleted by hand names a file the inventory walk never
+    enumerated, so a rule computed from the walk's leftovers was satisfied by
+    it vacuously: the index landed, the copies and the settings write landed,
+    and the run exited 6 with the store failing its own checker. Every re-run
+    then said `Nothing to write.` on the dry-run and exited 6 on the confirm —
+    a store only a hand-edit of a file memkit itself copied could clear.
+
+    The dry-run and the confirm are asked of the same tree twice here, because
+    "nothing left to do" followed by "this did not finish" is the wedge, and
+    one turn cannot see it.
+    """
+    _harness(profile, "-home-u", {
+        "MEMORY.md": "# index\n\n- [gone](gone.md) — a memory deleted by hand\n",
+        "note.md": TRAP,
+    })
+    # The control, beside it: an index whose every row resolves is copied.
+    _harness(profile, "-home-ok", {
+        "MEMORY.md": "# idx\n\n- [beta](beta.md) — a row that resolves\n",
+        "beta.md": BARE,
+    })
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-u/MEMORY.md: it is an index" in manifest.stdout, manifest.stdout
+    assert "gone.md points at no file this store is getting" in manifest.stdout, (
+        manifest.stdout
+    )
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    whole = store / "search" / init.ADOPT_DIRNAME / "-home-ok"
+    assert sorted(p.name for p in whole.iterdir()) == ["MEMORY.md", "beta.md"]
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    # And it converges: what the dry-run says is left is what the confirm does.
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
+def _folds_case(where) -> bool:
+    """Whether this filesystem hands the same directory to two spellings."""
+    probe = where / "case-probe"
+    probe.mkdir(exist_ok=True)
+    (probe / "a").write_text("", encoding="utf-8")
+    return (probe / "A").exists()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_key_the_store_already_holds_another_spelling_of_diverges(
+    profile,
+) -> None:
+    """A ROW MAY NOT NAME A SPELLING THE DISK DOES NOT HOLD. The destination
+    guard is made of path strings, and APFS — the default on macOS — hands the
+    same directory to `-home-U` and `-home-u`: every comparison passes, the
+    copy lands in the directory that is there and the row names the one that
+    is not. The checker calls that an orphan, `memory-integrity --write`
+    repairs the row to the on-disk name, and the next init writes the key's
+    spelling back — the two rewriting each other every run, which is the
+    failure the guard's own reasoning is about, reached with no link at all.
+
+    Three turns, because one is not enough to see it: init, the repair, and a
+    dry-run that has to have nothing left to say.
+    """
+    if not _folds_case(profile):
+        pytest.skip("a case-sensitive filesystem tells the two keys apart")
+    _harness(profile, "-home-U", {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": BARE})
+    store = profile / "notes"
+    adopted = store / "search" / init.ADOPT_DIRNAME
+    (adopted / "-home-u").mkdir(parents=True)
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "already holds as `-home-u`" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    assert list((adopted / "-home-u").iterdir()) == [], "the copy went in anyway"
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert "-home-U" not in ledger, ledger
+    assert "alpha.md" not in ledger, ledger
+    # The control, in the same run: a key the disk holds as itself adopts.
+    assert "search/projects/-home-ok/beta.md" in ledger, ledger
+
+    # Turn two: the repair the exit code advertises has nothing to repair.
+    config = init._resolve_config(doctor.Machine(), None)
+    written = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config),
+         "--write"],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert (store / "SEARCH.md").read_text(encoding="utf-8") == ledger
+
+    # Turn three: and init has nothing to put back.
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_file_the_store_already_holds_another_spelling_of_diverges(
+    profile,
+) -> None:
+    """THE SAME RULE, ONE LEVEL DOWN. A row points at a memory by writing the
+    project key and the file name into one path, and only the key was being
+    asked which spelling the disk really holds. A memory renamed `alpha.md` ->
+    `Alpha.md` in the harness directory therefore opened the `alpha.md` this
+    store already had — read as "already adopted", so nothing was copied —
+    while the generated row named `Alpha.md`. Two rows for one file on disk,
+    STALE out of the checker, exit 6, and every re-run the same.
+
+    Three turns, because the wedge is what the second and third do: the store
+    stays as it is, the ledger carries one row, and the dry-run that follows
+    has nothing left to say.
+    """
+    if not _folds_case(profile):
+        pytest.skip("a case-sensitive filesystem tells the two names apart")
+    memory = _harness(profile, "-home-u", {"alpha.md": TRAP})
+    _harness(profile, "-home-ok", {"beta.md": BARE})
+    store = profile / "notes"
+    seed = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert seed.returncode == init.EXIT_OK, seed.stdout + seed.stderr
+    out = _confirm(
+        profile, _digest_of(seed), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert [p.name for p in adopted.iterdir()] == ["alpha.md"]
+
+    # The rename the adopter does by hand, in the harness's own directory.
+    (memory / "alpha.md").rename(memory / "Alpha.md")
+    assert [p.name for p in memory.iterdir()] == ["Alpha.md"]
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "already holds as `alpha.md`" in manifest.stdout, manifest.stdout
+    # The control, in the same run: an untouched memory is still already adopted.
+    assert "1 already adopted" in manifest.stdout, manifest.stdout
+    again = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert again.returncode == init.EXIT_OK, again.stdout + again.stderr
+    assert [p.name for p in adopted.iterdir()] == ["alpha.md"], "the copy went in"
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    rows = [line for line in ledger.splitlines() if "projects/-home-u/" in line]
+    assert len(rows) == 1, ledger
+    assert "Alpha.md" not in ledger, ledger
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    settled = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in settled.stdout, settled.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_store_membership_is_asked_of_the_config_being_written(profile) -> None:
+    """ONE CONFIG DECIDES MEMBERSHIP, and it is the one this run is writing.
+    The predicate that keeps adoption off a memory directory already pointed
+    INTO a store was asked of the config the session resolved, while `--config`
+    named another — so it answered "outside every store" about a directory
+    inside the store being written, adoption followed the link, and a second
+    copy of every memory landed under a second project key. The store then
+    failed its own check with LEDGER-DRIFT, out of the command that made it.
+
+    The same input with the environment aligned was always answered correctly,
+    which is the control the two dry-runs below compare: the answer may not
+    depend on a variable that names no config this run touches.
+    """
+    _harness(profile, "-home-real", {"alpha.md": TRAP})
+    store = profile / "notes"
+    config = profile / "named-by-the-flag.json"
+    named = ("--config", str(config), "--store", str(store), "--adopt-auto-memory")
+    seed = _dry(profile, *named)
+    assert seed.returncode == init.EXIT_OK, seed.stdout + seed.stderr
+    out = _confirm(profile, _digest_of(seed), *named)
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+
+    # The harness directory an adopter has already pointed into the store.
+    linked = profile / "claude-config" / "projects" / "-home-linked"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(store / "search" / init.ADOPT_DIRNAME / "-home-real")
+    base = dict(
+        os.environ,
+        HOME=str(profile / "home"),
+        XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+        CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+    )
+    base.pop("MEMKIT_CONFIG", None)
+    manifest = _run("--dry-run", *named, env=base)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-linked': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    # The control: the same request with the environment naming that config.
+    aligned = _run("--dry-run", *named, env=dict(base, MEMKIT_CONFIG=str(config)))
+    assert aligned.stdout == manifest.stdout, manifest.stdout
+    applied = _run("--confirm", _digest_of(manifest), *named, env=base)
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-linked").exists()
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300, env=base,
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+def _green(profile, store, config=None) -> subprocess.CompletedProcess:
+    """The real integrity checker over `store`, through the config init wrote."""
+    if config is None:
+        config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    return subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+
+
+def _canaries(store) -> list:
+    return sorted(
+        str(p.relative_to(store))
+        for p in store.rglob(doctor.CANARY_NAME)
+    )
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_directory_linked_at_a_corpus_root_is_already_redirected(
+    profile, monkeypatch
+) -> None:
+    """THE WIRING THE DOCS PRESCRIBE IS AN ANSWER TOO. `docs/STORE.md` tells an
+    adopter to move their memories into the store's `search/` and link the
+    harness directory AT it — which makes the relation "at", not "inside", so a
+    predicate that skipped only "inside" walked back in through the link and
+    copied the store's whole corpus, canary included, under a project key. The
+    manifest invited it: the same run called a directory that IS the corpus
+    root "outside every store".
+
+    Asserted against the disk and the checker rather than the sentence: no
+    project directory, one canary, and a store still green.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+    for name in ("wired1.md", "wired2.md"):
+        (store / "search" / name).write_text(
+            f"---\nname: {name[:-3]}\ndescription: one the store already holds\n"
+            "---\n# w\nbody\n",
+            encoding="utf-8",
+        )
+    rowed = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--write",
+         "--config", str(profile / "home" / ".config" / "memkit" / "memkit.json")],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert rowed.returncode == 0, rowed.stdout + rowed.stderr
+    # The control: the store is green BEFORE adoption, so any red below is
+    # adoption's own.
+    base = _green(profile, store)
+    assert base.returncode == 0, base.stdout + base.stderr
+
+    wired = profile / "claude-config" / "projects" / "-home-wired"
+    wired.mkdir(parents=True)
+    (wired / "memory").symlink_to(store / "search")
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-wired': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-wired").exists()
+    assert _canaries(store) == [f"search/{doctor.CANARY_NAME}"], _canaries(store)
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_store_this_run_creates_is_a_store_the_membership_guard_can_see(
+    profile,
+) -> None:
+    """MEMBERSHIP IS ABOUT THE STORE, NOT ABOUT THE CONFIG THAT NAMES IT. On the
+    run that CREATES the config, no configured store contains anything yet, so a
+    memory directory already linked into the store being written answered
+    "outside every store" and every memory landed a second time — green, silent,
+    and doubled, one row each for two copies of one file.
+
+    The store root, not the corpus root, because a directory under the store but
+    outside `search/` is somebody's answer as well.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    for name in ("alpha.md", "beta.md", "gamma.md"):
+        (store / "search" / name).write_text(
+            f"---\nname: {name[:-3]}\ndescription: already where it lands\n"
+            "---\n# a\nbody\n",
+            encoding="utf-8",
+        )
+    linked = profile / "claude-config" / "projects" / "-home-first"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(store / "search")
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-first': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-first").exists()
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    for name in ("alpha.md", "beta.md", "gamma.md"):
+        assert ledger.count(f"(search/{name})") == 1, ledger
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_directory_linked_under_a_store_but_outside_search_is_skipped(
+    profile, monkeypatch
+) -> None:
+    """A TIER IS NOT THE CORPUS ROOT AND IS STILL THE STORE. `_store_relation`
+    only ever measures against `search/`, so it answers "" — no relation at all
+    — about `<store>/hot`, and the manifest said a directory inside the store
+    held memories outside every store.
+    """
+    store = profile / "notes"
+    out = _confirm(profile, _digest_of(_dry(profile, "--store", str(store))),
+                   "--store", str(store))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    monkeypatch.setenv(
+        hook.CONFIG_ENV, str(profile / "home" / ".config" / "memkit" / "memkit.json")
+    )
+    tier = store / "hot"
+    tier.mkdir(parents=True, exist_ok=True)
+    (tier / "note.md").write_text(TRAP, encoding="utf-8")
+    linked = profile / "claude-config" / "projects" / "-home-hot"
+    linked.mkdir(parents=True)
+    (linked / "memory").symlink_to(tier)
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-hot': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    # The dry run carries the whole assertion here. A memory under a tier with
+    # no row for it leaves the store red before adoption runs, so a confirm's
+    # exit code would be the fixture's verdict rather than this rule's.
+    assert str(store / "search" / init.ADOPT_DIRNAME / "-home-hot") not in (
+        manifest.stdout
+    ), manifest.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_directory_landing_in_another_store_is_not_copied_into_this_one(
+    profile,
+) -> None:
+    """ANY STORE'S ANSWER IS AN ANSWER, AND THE CONFIG BEING WRITTEN IS WHO IS
+    ASKED. Containment in the store this run writes is not the whole question: a
+    machine can have two, and a memory directory the adopter already wired into
+    the other one is somewhere retrieval already reaches. Copying it here would
+    duplicate that store's corpus into this one, under a project key, with a row
+    for each copy and nothing saying so.
+
+    Through `--config`, because the second store is only in the config this run
+    is writing: asked of the session's instead, the answer is "outside every
+    store" about a directory that is inside one.
+    """
+    config = profile / "named-by-the-flag.json"
+    kept = profile / "archive"
+    store = profile / "notes"
+    env = dict(
+        os.environ,
+        HOME=str(profile / "home"),
+        XDG_CACHE_HOME=str(profile / "home" / ".cache"),
+        CLAUDE_CONFIG_DIR=str(profile / "claude-config"),
+    )
+    env.pop("MEMKIT_CONFIG", None)
+    for path in (kept, store):
+        named = ("--config", str(config), "--store", str(path))
+        seed = _run("--dry-run", *named, env=env)
+        assert seed.returncode == init.EXIT_OK, seed.stdout + seed.stderr
+        out = _run("--confirm", _digest_of(seed), *named, env=env)
+        assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    (kept / "search" / "kept.md").write_text(TRAP, encoding="utf-8")
+    rowed = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--write",
+         "--config", str(config)],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert rowed.returncode == 0, rowed.stdout + rowed.stderr
+    elsewhere = profile / "claude-config" / "projects" / "-home-elsewhere"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "memory").symlink_to(kept / "search")
+
+    named = ("--config", str(config), "--store", str(store), "--adopt-auto-memory")
+    manifest = _run("--dry-run", *named, env=env)
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "'-home-elsewhere': already redirected, skipped" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "outside every store" not in manifest.stdout, manifest.stdout
+    applied = _run("--confirm", _digest_of(manifest), *named, env=env)
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-elsewhere").exists()
+    assert sorted(p.name for p in (kept / "search").iterdir()) == sorted(
+        [doctor.CANARY_NAME, "kept.md"]
+    )
+
+DESC_LINK = (
+    "---\nname: desc link\ndescription: see [the plan](plan.md) for the rest\n"
+    "---\n# d\nbody\n"
+)
+BODY_LINK = (
+    "---\nname: body link\ndescription: a plain one\n---\n# b\n\n"
+    "see [the plan](plan.md)\n"
+)
+PLAN = "---\nname: plan\ndescription: the plan itself\n---\n# p\nbody\n"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_description_linking_nowhere_is_skipped_before_the_confirm(
+    profile,
+) -> None:
+    """A DESCRIPTION IS LIFTED INTO A ROW VERBATIM, so a markdown link in one
+    becomes a live link in the ledger memkit generates — and the checker
+    resolves that link against the STORE ROOT, where it points at nothing. The
+    run exited 6 on a store it had just built, `memory-integrity --write`
+    regenerated the same row, and every later run said `Nothing to write.` and
+    exited 6 again.
+
+    The rule is asked of the plan, so the adopter reads it before consenting.
+    """
+    _harness(profile, "-home-d", {"note.md": DESC_LINK})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-d/note.md: its description carries a link" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "plan.md" in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-d").exists()
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_description_linking_a_sibling_that_is_adopted_is_still_skipped(
+    profile,
+) -> None:
+    """THE ROW IS NOT WHERE THE MEMORY IS. The description's link resolves
+    beautifully beside the memory — and the row carrying it sits in SEARCH.md at
+    the store root, three directories up, so the checker reads it from there and
+    finds nothing. A rule that asked the question against the destination
+    answered yes and left the store red.
+
+    The sibling still lands: only the memory whose description cannot be carried
+    is left behind.
+    """
+    _harness(profile, "-home-s", {"note.md": DESC_LINK, "plan.md": PLAN})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-s/note.md: its description carries a link" in manifest.stdout, (
+        manifest.stdout
+    )
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-s"
+    assert sorted(p.name for p in adopted.iterdir()) == ["plan.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_body_link_pointing_at_no_adopted_file_is_skipped(profile) -> None:
+    """A relative link in the BODY resolves against the destination, and the
+    memory it names stayed in the harness directory: the copy landed, nothing
+    was skipped, nothing was said, and the checker called the store broken.
+
+    The control beside it is the one that makes the rule narrow: the same link
+    with its target adopted alongside is copied, both files.
+    """
+    _harness(profile, "-home-b", {"note.md": BODY_LINK})
+    _harness(profile, "-home-ok", {"note.md": BODY_LINK, "plan.md": PLAN})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-b/note.md: plan.md points at no file" in manifest.stdout, (
+        manifest.stdout
+    )
+    assert "-home-ok/note.md" not in manifest.stdout.split("skipped:")[-1], (
+        manifest.stdout
+    )
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-b").exists()
+    whole = store / "search" / init.ADOPT_DIRNAME / "-home-ok"
+    assert sorted(p.name for p in whole.iterdir()) == ["note.md", "plan.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_wiki_links_in_a_description_and_a_body_are_still_adopted(profile) -> None:
+    """WHAT THE CHECKER WARNS ABOUT IS NOT WHAT IT FAILS ON. A dangling
+    `[[wikilink]]` is a WARN and leaves the store green, so refusing to adopt a
+    memory carrying one would cost the adopter a real memory for nothing.
+    """
+    _harness(profile, "-home-w", {
+        "note.md": (
+            "---\nname: wiki\ndescription: see [[the plan]] for the rest\n"
+            "---\n# w\n\nand [[another one]] here\n"
+        ),
+    })
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "0 skipped" in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-w"
+    assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+FENCE_OPEN = (
+    "---\nname: fenced\ndescription: a note about shell commands\n---\n# f\n\n"
+    "run this:\n\n```bash\nmemkit doctor\n"
+)
+FENCE_CLOSED = (
+    "---\nname: fenced\ndescription: a note about shell commands\n---\n# f\n\n"
+    "run this:\n\n```bash\nmemkit doctor\nsee [the plan](plan.md)\n```\n\ndone.\n"
+)
+FENCE_LONGER = (
+    "---\nname: fenced\ndescription: a note quoting a fence\n---\n# f\n\n"
+    "````\n```\nnot a close\n````\n\ndone.\n"
+)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_memory_that_ends_mid_example_is_skipped_before_the_confirm(
+    profile,
+) -> None:
+    """A CODE FENCE OPENED AND NOT CLOSED IS AN ERROR TO THE CHECKER, and it
+    needs no link anywhere in the memory: a note about shell commands that ends
+    mid-example was copied, the confirm exited 6 on the store it had just built,
+    and every re-run said there was nothing to write and exited 6 again.
+
+    The skip chain had the text in hand and asked it about `tier:` lines, name
+    length and link syntax — this is the same question, asked where those are.
+    """
+    _harness(profile, "-home-f", {"note.md": FENCE_OPEN})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "-home-f/note.md: it opens a code fence on line 9" in manifest.stdout, (
+        manifest.stdout
+    )
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    assert not (store / "search" / init.ADOPT_DIRNAME / "-home-f").exists()
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    again = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert "Nothing to write" in again.stdout, again.stdout
+    settled = _confirm(
+        profile, _digest_of(again), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert settled.returncode == init.EXIT_OK, settled.stdout + settled.stderr
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_closed_fence_is_adopted_and_so_is_the_example_link_inside_it(
+    profile,
+) -> None:
+    """WHAT THE CHECKER MASKS, ADOPTION MAY NOT REFUSE A MEMORY FOR. A closed
+    fence is ordinary prose, and the checker blanks every line inside one before
+    it reads links — so a memory quoting `[the plan](plan.md)` in an example is
+    a memory with no dead link in it, whatever a rule reading the raw bytes
+    would say.
+
+    Beside it, a fence closed by a LONGER run of the same character: a close is
+    at least as long as its opening, so the shorter run inside this one opens
+    nothing and closes nothing.
+    """
+    _harness(profile, "-home-c", {"note.md": FENCE_CLOSED})
+    _harness(profile, "-home-l", {"note.md": FENCE_LONGER})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "0 skipped" in manifest.stdout, manifest.stdout
+    applied = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    for key in ("-home-c", "-home-l"):
+        adopted = store / "search" / init.ADOPT_DIRNAME / key
+        assert sorted(p.name for p in adopted.iterdir()) == ["note.md"]
+    checked = _green(profile, store)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+def test_an_adopted_copy_is_never_more_readable_than_its_original(
+    profile,
+) -> None:
+    """A COPY OF A PRIVATE NOTE IS AS PRIVATE AS THE NOTE. The copy path asked
+    for `0644` while the function it asked has its own `0600`, so a memory the
+    adopter had deliberately chmod'd `0600` came back readable by everyone on
+    the machine — published by the command whose whole subject is where private
+    memories live, and disclosed nowhere: the only mode the manifest named was
+    `0700` for the cache directory.
+
+    Both sources are here because the widening was invisible from the `0644`
+    one: they land at the same mode now, and it is the narrower one.
+    """
+    memory = _harness(profile, "-home-u", {"open.md": TRAP, "private.md": BARE})
+    (memory / "open.md").chmod(0o644)
+    (memory / "private.md").chmod(0o600)
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert "Each copy lands mode 0600" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    for name in ("open.md", "private.md"):
+        assert stat.S_IMODE(os.stat(adopted / name).st_mode) == 0o600, name
+    assert stat.S_IMODE(os.stat(store / "SEARCH.md").st_mode) == 0o600
+    # The originals are not touched on any path, mode included.
+    assert stat.S_IMODE(os.stat(memory / "open.md").st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(memory / "private.md").st_mode) == 0o600
+
+
+def test_the_write_refuses_a_name_it_could_not_create_a_temporary_for(
+    tmp_path,
+) -> None:
+    """ONE RULE, ASKED WHERE THE LONGER NAME IS ACTUALLY MADE. Adoption's
+    planner skips a name this long before it can be planned, so nothing memkit
+    builds reaches this — and that is what it is for: a caller that grew a path
+    the planner never measured gets a decision rather than an ENAMETOOLONG
+    traceback out of the middle of an apply.
+    """
+    room = init._NAME_MAX_BYTES - init._TMP_SUFFIX_BYTES
+    over = tmp_path / ("o" * (room - len(".md") + 1) + ".md")
+    with pytest.raises(init.Refusal) as raised:
+        init._write_atomically(str(over), "body\n")
+    assert raised.value.name == "name-too-long", raised.value
+    assert not list(tmp_path.iterdir()), "something was written anyway"
+    fits = tmp_path / ("f" * (room - len(".md")) + ".md")
+    init._write_atomically(str(fits), "body\n")
+    assert fits.read_text(encoding="utf-8") == "body\n"
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_name_the_write_could_not_land_is_skipped_at_the_dry_run(profile) -> None:
+    """NO NAME THE DRY-RUN APPROVES FAILS TO LAND FOR ITS LENGTH. The write
+    creates `<name>.<pid>.tmp` beside the file and renames over it, so the
+    name the plan measured is not the longest name the write makes. A memory
+    name a little under the limit therefore passed the dry-run, failed at
+    apply time, and left a store the checker called broken with nothing copied
+    into it — and every re-run did the same.
+
+    The lengths here are derived from the rule's own constants, because a
+    literal would pass whatever the rule became.
+    """
+    room = init._NAME_MAX_BYTES - init._TMP_SUFFIX_BYTES
+    longest = "n" * (room - len(".md")) + ".md"
+    over = "o" * (room - len(".md") + 1) + ".md"
+    # Chars comfortably under the bound, bytes over it: the rule counts bytes.
+    wide = "é" * (room // 2) + ".md"
+    assert len(wide) < room < len(wide.encode()), (len(wide), len(wide.encode()))
+    _harness(profile, "-home-u", {longest: TRAP, over: TRAP, wide: TRAP})
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    assert f"{over}: the file name is" in manifest.stdout, manifest.stdout
+    assert f"{wide}: the file name is" in manifest.stdout, manifest.stdout
+    assert f"{longest}: the file name is" not in manifest.stdout, manifest.stdout
+    assert "2 skipped" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+    adopted = store / "search" / init.ADOPT_DIRNAME / "-home-u"
+    assert [p.name for p in adopted.iterdir()] == [longest]
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+def test_a_red_integrity_check_still_redirects_the_harness(
+    profile, monkeypatch, capsys
+) -> None:
+    """VERIFY is not the last action and its answer is about a store that is
+    already on disk. Returning the moment the checker is unhappy left the
+    memories copied into the store AND the harness still writing outside it —
+    the half-state the redirect exists to end, and reachable from any of the
+    inputs that turn the check red. The code is still INCOMPLETE, the
+    checker's own output is still printed, and the manifest order is
+    untouched: what changed is only when the code is returned.
+    """
+    _harness(profile, "-home-u", {"ok.md": TRAP})
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(
+        profile, store=str(profile / "notes"), adopt_auto_memory=True
+    )
+    ops = [a.op for a in plan.pending]
+    assert ops.index(init.VERIFY) < ops.index(init.SETTINGS_WRITE), ops
+    monkeypatch.setattr(
+        init,
+        "_run_checker",
+        lambda m, c: (1, "ORPHAN: ./hot/x.md — no row in MEMORY.md"),
+    )
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    assert "ORPHAN: ./hot/x.md" in capsys.readouterr().err
+    settings = json.loads(
+        (profile / "claude-config" / "settings.json").read_text(encoding="utf-8")
+    )
+    assert settings["autoMemoryDirectory"].startswith(str(profile / "notes"))
+
+
+def test_the_two_shapes_of_exit_six_say_in_their_output_which_one_they_are(
+    profile, monkeypatch, capsys
+) -> None:
+    """EVERY EXIT CODE'S SENTENCE HAS TO BE TRUE OF EVERY RUN THAT RETURNS IT.
+
+    Deferring the red checker's code to the end of the loop made 6 the answer
+    for a run that performed every action in its manifest as well as for one
+    that genuinely stopped partway, and the published table said only the
+    second. The code cannot tell them apart — one number, two states — so the
+    output has to, and it does: the finished run says so and names the files
+    the check is red on, the stopped run names the refusal that stopped it and
+    says nothing about a finished manifest.
+    """
+    _harness(profile, "-home-u", {"ok.md": TRAP})
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    store = profile / "notes"
+
+    # Shape one: everything performed, and then the check is red — on a file
+    # this run wrote and on one it did not.
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    mine = next(a.path for a in plan.pending if a.path.endswith("memkit-canary.md"))
+    theirs = store / "search" / "not-from-here.md"
+
+    def red(_machine, _config):
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "search").mkdir(parents=True, exist_ok=True)
+        theirs.write_text("# theirs\n", encoding="utf-8")
+        return 1, (
+            # THE LINE THAT SAYS WHICH STORE THE BLOCK IS ABOUT. Attribution
+            # resolves a finding against the root announced for its own block,
+            # so a stub without it is a stub of an output the checker does not
+            # produce — and one that would attribute nothing.
+            f"notes store: verified in {store}  (configured path)\n"
+            "[FAIL] ./ (0 hot, 2 search, hot ledger 248b)\n"
+            "  DESC-BAD: ./search/memkit-canary.md — description empty\n"
+            "  ORPHAN: ./search/not-from-here.md — no row in SEARCH.md"
+        )
+
+    monkeypatch.setattr(init, "_run_checker", red)
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    finished = capsys.readouterr().err
+    assert "every action in the manifest was performed" in finished, finished
+    assert f"{mine} — this run wrote it" in finished, finished
+    assert f"{theirs} — this run did not write it" in finished, finished
+    assert "no re-run will change" in finished, finished
+    assert "refused mid-apply" not in finished, finished
+    # And it really did finish: the last action is the settings write.
+    assert json.loads(
+        (profile / "claude-config" / "settings.json").read_text(encoding="utf-8")
+    )[harness_memory.DIRECTORY_KEY]
+
+    # Shape two: a run that stopped partway. Same exit code, and its output
+    # claims nothing about a manifest it did not finish. `_run_checker` is put
+    # back by name rather than with `monkeypatch.undo()`, which would also undo
+    # the profile fixture's own patches — the two share one instance, and a
+    # case that lost `$CLAUDE_CONFIG_DIR` halfway through would plan against
+    # the machine running the suite.
+    monkeypatch.setattr(init, "_run_checker", lambda _m, _c: (0, ""))
+    settings = profile / "claude-config" / "settings.json"
+    stopped = _plan(profile, auto_dream_off=True, store=str(profile / "other"))
+    settings.write_text('{"theme": "moved under it"}', encoding="utf-8")
+    assert init.apply_plan(machine, stopped, config) == init.EXIT_INCOMPLETE
+    partway = capsys.readouterr().err
+    assert "refused mid-apply (changed-underfoot)" in partway, partway
+    assert "every action in the manifest was performed" not in partway, partway
+    assert settings.read_text(encoding="utf-8") == '{"theme": "moved under it"}'
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_red_finding_that_carries_a_line_number_is_attributed_too(
+    profile,
+) -> None:
+    """THE PARSER IS FED THE CHECKER'S OWN BYTES, not a hand-typed line.
+
+    The two cases above stub the checker out and hand it a block spelled the
+    way no line-numbered rule spells one. Every rule with a line to point at
+    writes the path as `file.md:8`, which resolves to nothing on disk, so the
+    finding fell out of the attribution and took the recovery paragraph with
+    it — on DEAD-LINK, the canonical red an adoption run earns. A store the
+    real checker really is red about is the only thing that pins the spelling.
+    """
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "alpha.md": (
+                "---\nname: alpha\ndescription: one adopted memory\n---\n\n"
+                "See [[not-a-memory-anywhere]] for the rest.\n"
+            )
+        },
+    )
+    store = profile / "notes"
+    theirs = store / "search" / "not-from-here.md"
+    theirs.parent.mkdir(parents=True)
+    theirs.write_text(
+        "---\nname: theirs\ndescription: a file this run does not write\n---\n\n"
+        "See [the other one](./nowhere-at-all.md) for the rest.\n",
+        encoding="utf-8",
+    )
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    err = out.stderr
+    mine = store / "search" / init.ADOPT_DIRNAME / "-home-u" / "alpha.md"
+    assert mine.is_file(), err
+    # The checker's own spelling, line number and all, on both files.
+    assert "DEAD-LINK: ./search/not-from-here.md:" in err, err
+    assert "DANGLING-WIKILINK: ./search/" in err, err
+    # And the attribution, which is what the spelling used to cost.
+    assert f"{mine} — this run wrote it" in err, err
+    assert f"{theirs} — this run did not write it" in err, err
+    assert "what landed has moved the old one" in err, err
+    assert "no re-run will change" in err, err
+
+    # A rule that puts no em dash after the path is attributed as well, again
+    # on the checker's own bytes: a ledger row for a file that is not there.
+    ledger = store / "SEARCH.md"
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + "- [gone](search/gone.md) — a row for a file that is not there\n",
+        encoding="utf-8",
+    )
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    stale = [
+        line
+        for line in checked.stdout.splitlines()
+        if line.strip().startswith("STALE:")
+    ]
+    assert stale, checked.stdout + checked.stderr
+    # THE LINES THAT PLACE IT TRAVEL WITH IT. A finding is resolved against the
+    # root announced for its own block, so the announcement and the block
+    # header are part of what the parser is fed — and nothing else is, because
+    # a report carrying the DEAD-LINK as well names this same file through the
+    # rule that DOES put an em dash after its path.
+    opening = [
+        line
+        for line in checked.stdout.splitlines()
+        if " store: verified in " in line or line.startswith("[FAIL]")
+    ]
+    assert len(opening) == 2, checked.stdout
+    assert init._files_the_checker_names("\n".join(opening + stale)) == [str(ledger)]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_second_stores_red_is_named_against_the_store_it_came_from(
+    profile,
+) -> None:
+    """ONE CONFIG, TWO STORES, AND THE CHECKER VERIFIES BOTH.
+
+    Every path the checker prints is relative to the root of the store whose
+    block it is in. Joined instead onto the root of the store this run just
+    created, an older store's `DEAD-LINK` was reported against a file of the
+    same name under the NEW store — whose own block said `[OK]` — purely
+    because something is there at that path, and the sentence under it sent
+    the adopter at a re-run that cannot touch the broken file.
+
+    The two `SEARCH.md` are what make this a real confusion rather than a
+    contrived one: every store has one, so the wrong root always resolves.
+    """
+    first = profile / "notes"
+    manifest = _dry(profile, "--store", str(first))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(profile, _digest_of(manifest), "--store", str(first))
+    assert out.returncode == init.EXIT_OK, out.stdout + out.stderr
+
+    # A dead row put into the FIRST store by hand, after it was built.
+    ledger = first / "SEARCH.md"
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + "- [gone](search/gone.md) — a row for a file that is not there\n",
+        encoding="utf-8",
+    )
+
+    second = profile / "second"
+    manifest = _dry(profile, "--store", str(second))
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+    out = _confirm(profile, _digest_of(manifest), "--store", str(second))
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    err = out.stderr
+    # The checker really is red about the first store and happy with the
+    # second — the state the attribution has to survive.
+    assert "DEAD-LINK: ./SEARCH.md" in err, err
+    assert "[OK]" in err, err
+    # Named against the store it came out of, and as a file this run did not
+    # write, which is the half that decides the recovery.
+    assert f"{ledger} — this run did not write it" in err, err
+    assert str(second / "SEARCH.md") not in err, err
+    assert "no re-run will change" in err, err
+    # Nothing this run wrote is red, so it is not offered the other recovery.
+    assert "what landed has moved the old one" not in err, err
+
+
+def test_a_finding_no_block_places_is_left_unattributed(profile) -> None:
+    """A FILE NAMED ON A GUESS IS WORSE THAN A FILE NOT NAMED, because the
+    sentence under it tells the adopter what to do about it.
+
+    Findings before any block, and findings in a block past the last root the
+    report announced, are ones nothing can place. The old rule placed them
+    under the store it was handed and the file was there, so the guess always
+    succeeded.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "SEARCH.md").write_text("# index\n", encoding="utf-8")
+    block = (
+        "[FAIL] ./ (0 hot, 0 search, hot ledger 0b)\n"
+        "  DEAD-LINK: ./SEARCH.md:9 — [gone](search/gone.md) points at no file"
+    )
+    # No store was announced, so no root was announced either.
+    assert init._files_the_checker_names(block) == []
+    # One announced, two blocks: the second is past the end.
+    announced = f"notes store: verified in {store}  (configured path)\n"
+    assert init._files_the_checker_names(announced + block) == [
+        str(store / "SEARCH.md")
+    ]
+    assert init._files_the_checker_names(
+        announced + "[OK]   ./ (0 hot, 0 search, hot ledger 0b)\n" + block
+    ) == []
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_destination_the_adopter_edited_is_named_as_one_this_run_left_alone(
+    profile,
+) -> None:
+    """The contract case, end to end: adoption copies and never overwrites, so
+    a destination the adopter has edited is `diverged` and nothing is written
+    for it — and a memory with no frontmatter is exactly what the integrity
+    checker calls an orphan. The run therefore does everything it said it
+    would and exits 6 anyway.
+
+    Re-running the two turns cannot clear that, because the next manifest has
+    nothing to say about a file adoption declined. The output has to say so, or
+    the recovery the exit code advertises sends the adopter round a loop.
+    """
+    _harness(profile, "-home-u", {"note.md": BARE})
+    store = profile / "notes"
+    first = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert first.returncode == init.EXIT_OK, first.stdout + first.stderr
+    landed = _confirm(
+        profile, _digest_of(first), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert landed.returncode == init.EXIT_OK, landed.stdout + landed.stderr
+    dest = store / "search" / init.ADOPT_DIRNAME / "-home-u" / "note.md"
+    dest.write_text("# Home note\n\nedited, and still no frontmatter\n", "utf-8")
+
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout
+    assert f"diverged: {dest}" in manifest.stdout, manifest.stdout
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_INCOMPLETE, out.stdout + out.stderr
+    assert "the integrity checker is not happy" in out.stderr, out.stderr
+    assert "every action in the manifest was performed" in out.stderr, out.stderr
+    assert f"{dest} — this run did not write it" in out.stderr, out.stderr
+    assert "no re-run will change" in out.stderr, out.stderr
+    # The file the run declined to write is byte-unchanged, and the source too.
+    assert dest.read_text(encoding="utf-8").endswith("still no frontmatter\n")
+    source = profile / "claude-config" / "projects" / "-home-u" / "memory" / "note.md"
+    assert source.read_text(encoding="utf-8") == BARE
+
+
+def test_a_description_taken_from_a_file_name_cannot_end_its_own_line(
+    profile,
+) -> None:
+    """The stem feeds two frontmatter lines and only one of them was cleaned.
+    A newline in it split the copied block, gave the checker `description: foo`
+    and put a literal line break inside the ledger row's link.
+
+    Asked of the normaliser directly: the planner skips such a file outright
+    now, and a guard nothing reaches is a guard that stops being true.
+    """
+    written, rule = init._normalise("plain body\n", "foo\nbar")
+    assert "\n" not in written.split("\n---", 1)[0].partition("description:")[2]
+    assert "description: foobar" in written
+    assert "name: foobar" in written
+    assert "the file name" in rule
+
+
+def test_an_unclosed_frontmatter_opener_still_has_a_first_heading(
+    profile,
+) -> None:
+    """`---` with no closer opens nothing. Read as an unterminated block it
+    left the body empty, so a file whose next line is a heading took its
+    description from the file name instead — with the heading right there.
+    """
+    _harness(profile, "-home-u", {"u.md": "---\nname: u\n\n# A Real Heading\n\nb\n"})
+    store = profile / "notes"
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (copy,) = [a for a in plan.actions if a.path.endswith("u.md")]
+    assert "its first heading" in copy.note
+    assert "description: A Real Heading" in copy.content
+
+
+@pytest.mark.parametrize(
+    "name,files",
+    [
+        (
+            "a-name-that-would-end-its-own-link",
+            {"ok.md": TRAP, "evil.md": (
+                "---\nname: x](hot/forged.md) — forged\n"
+                "description: real desc\n---\n\nbody\n"
+            )},
+        ),
+        (
+            "a-name-that-is-quoted-and-hostile",
+            {"ok.md": TRAP, "q.md": (
+                '---\nname: "x](y) z"\ndescription: quoted and hostile\n'
+                "---\n\nbody\n"
+            )},
+        ),
+        (
+            "a-name-of-nothing-but-link-syntax",
+            {"ok.md": TRAP,
+             "n.md": "---\nname: ()[]\ndescription: only syntax\n---\n\nbody\n"},
+        ),
+        (
+            "a-file-named-with-link-syntax-and-no-frontmatter",
+            {"ok.md": TRAP, "x](y).md": "body with no frontmatter\n"},
+        ),
+        (
+            "a-continued-description-being-replaced",
+            {"ok.md": TRAP, "c.md": (
+                "---\nname: c\ndescription: >\n  a folded value\n"
+                "  that runs on\n---\n\nbody\n"
+            )},
+        ),
+    ],
+)
+def test_the_ledger_is_still_the_checkers_on_a_hostile_name(
+    profile, name, files
+) -> None:
+    """THE FIXPOINT, over the inputs the sanitising was added for.
+
+    `memory_integrity` needs 3.12 and this module answers to the 3.9 floor, so
+    the rules are restated rather than shared — and what makes the restatement
+    safe is evidence: the checker's own generator, over the tree init made,
+    produces the bytes init wrote. A label init cleaned in its own row and not
+    in the file would pass every assertion above and diverge at the next
+    `--write`.
+    """
+    from memkit import memory_integrity as checker
+
+    _harness(profile, "-home-u", files)
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    assert out.returncode == init.EXIT_OK, name + out.stdout + out.stderr
+    ledger = store / "SEARCH.md"
+    entries = []
+    for path in sorted((store / "search").rglob("*.md")):
+        if path.name in checker.LEDGER_NAMES:
+            continue
+        front = checker._frontmatter(path)
+        value, error = checker._scalar(front.get("description", ""))
+        assert error is None, (path, error)
+        entries.append(
+            (front.get("name") or path.stem, os.path.relpath(path, store), value)
+        )
+    assert checker._generate(ledger, entries) == ledger.read_text(encoding="utf-8")
+    # Non-vacuity: the hostile file really is in the ledger this compared.
+    assert len(entries) >= 2, entries
+
+
+def test_an_existing_search_ledger_keeps_the_preamble_somebody_wrote(profile) -> None:
+    """SEARCH.md was written from the canary alone, so an init over a store
+    that already held memories replaced a ledger of their rows with a ledger of
+    one — every one of them an orphan at the next check and unreachable from
+    the file that indexes them. The preamble is kept for the same reason
+    `--write` keeps it: a sentence somebody wrote is not a setup command's to
+    replace.
+    """
+    store = profile / "notes"
+    (store / "search").mkdir(parents=True)
+    (store / "search" / "mine.md").write_text(
+        "---\nname: mine\ndescription: a memory that was here first\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    (store / "SEARCH.md").write_text(
+        "# my own words\n\nkeep this line.\n\n## Index\n\n- [stale](search/gone.md) — x\n",
+        encoding="utf-8",
+    )
+    plan = _plan(profile, store=str(store))
+    (ledger,) = [a for a in plan.actions if a.path == str(store / "SEARCH.md")]
+    assert ledger.content.startswith("# my own words\n\nkeep this line.\n\n## Index")
+    rows = _rows_of(ledger.content)
+    assert rows["search/mine.md"] == "a memory that was here first"
+    assert "search/gone.md" not in rows
+    assert "search/" + doctor.CANARY_NAME in rows
+
+
+def test_auto_memory_off_writes_one_boolean_and_then_has_nothing_to_do(
+    profile,
+) -> None:
+    """The switch that really stops the harness writing — `--auto-dream-off`
+    stops background consolidation and nothing else. Idempotent, so a second
+    run over a machine already set this way is an empty manifest rather than a
+    refusal.
+    """
+    plan = _plan(profile, auto_memory_off=True)
+    (action,) = [a for a in plan.actions if a.op == init.SETTINGS_WRITE]
+    assert json.loads(action.content) == {"autoMemoryEnabled": False}
+    (profile / "claude-config" / "settings.json").write_text(
+        action.content, encoding="utf-8"
+    )
+    again = _plan(profile, auto_memory_off=True)
+    (second,) = [a for a in again.actions if a.op == init.SETTINGS_WRITE]
+    assert second.redundant
+    assert not [a for a in again.writes if a.op == init.SETTINGS_WRITE]
+
+
+@pytest.mark.parametrize(
+    "flag", ["adopt_auto_memory", "auto_memory_off"]
+)
+def test_a_settings_scope_that_will_not_parse_is_not_a_scope_saying_nothing(
+    profile, flag
+) -> None:
+    """Every gate around auto-memory asks a scope what it declares, and reads
+    the answer out of `scope.data` — which a file that would not parse arrives
+    with empty, exactly as a file declaring nothing does. So one trailing
+    comma in `settings.local.json` turned off the refusals that stand between
+    an adopter and a redirect they did not ask for, and init planned the
+    settings write anyway. The harness cannot read that file either.
+    """
+    _harness(profile, "-home-u", {"note.md": TRAP})
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True)
+    local = checkout / "settings.local.json"
+    # What the gates would have refused, one comma short of parsing.
+    local.write_text(
+        '{"autoMemoryDirectory": "~/elsewhere", "autoMemoryEnabled": true,}',
+        encoding="utf-8",
+    )
+    refusal = _refuses(profile, "settings-unreadable", **{flag: True})
+    assert "local settings" in refusal.message
+    assert str(local) in refusal.message
+    # A plain init reads no scope for these keys and is not refused by it.
+    assert _plan(profile).actions
+
+
+def test_auto_memory_off_will_not_promise_what_a_higher_scope_overrules(
+    profile, monkeypatch
+) -> None:
+    """The flag writes the ONE scope every other scope outranks, and the
+    manifest line under it says the harness will then neither read nor write
+    auto-memory. With `true` declared in a scope the harness reads first, that
+    promise is one the write cannot keep: the adopter would get exit 0 and a
+    harness still writing. Refused by name instead, naming the scope and its
+    file, which is the rule `--adopt-auto-memory` has been asked in this file
+    since it was written.
+
+    `false` up there is a different case: the feature really is off, so the
+    write converges the user scope and a note says which scope decided it.
+    """
+    checkout = profile / "project" / ".claude"
+    checkout.mkdir(parents=True)
+    local = checkout / "settings.local.json"
+    local.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+    refusal = _refuses(profile, "auto-memory-outranked", auto_memory_off=True)
+    assert "local settings" in refusal.message
+    assert str(local) in refusal.message
+
+    # The administrator's scope, the one the adopter cannot answer for.
+    local.unlink()
+    managed = profile / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(doctor, "_managed_dir", lambda: str(managed))
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": True}), encoding="utf-8"
+    )
+    assert "managed settings" in _refuses(
+        profile, "auto-memory-outranked", auto_memory_off=True
+    ).message
+
+    # Already off above: not a refusal, and the note says who decided it.
+    (managed / doctor.MANAGED_SETTINGS_NAME).write_text(
+        json.dumps({"autoMemoryEnabled": False}), encoding="utf-8"
+    )
+    plan = _plan(profile, auto_memory_off=True)
+    assert [a for a in plan.writes if a.op == init.SETTINGS_WRITE]
+    assert any(
+        "managed settings" in note and "already off" in note
+        for note in plan.notes
+    ), plan.notes
+
+
+def test_adopting_and_switching_off_are_not_one_request(profile) -> None:
+    """Opposite answers to one question, so argparse refuses the pair as the
+    usage error it is — exit 2, which is the code the dispatcher and the
+    published table already promise for one."""
+    out = _dry(profile, "--adopt-auto-memory", "--auto-memory-off")
+    assert out.returncode == init.EXIT_USAGE, out.stdout + out.stderr
+    assert "not allowed with" in out.stderr
+    assert out.stdout == ""
+
+
+def test_the_auto_dream_flag_no_longer_claims_to_stop_the_writing(profile) -> None:
+    """It stops BACKGROUND CONSOLIDATION only: memories are still written,
+    which is why it is not the switch that turns the feature off. The help and
+    the note said otherwise, and an adopter who read either of them came away
+    with two memory systems and a flag they thought had closed one.
+    """
+    parser = argparse.ArgumentParser()
+    init.add_arguments(parser)
+    help_text = parser.format_help()
+    assert "--auto-memory-off" in help_text
+    assert "--adopt-auto-memory" in help_text
+    dream = [
+        line for line in help_text.splitlines() if "BACKGROUND CONSOLIDATION" in line
+    ]
+    assert dream, help_text
+    note = " ".join(_plan(profile, auto_dream_off=True).notes)
+    assert "BACKGROUND CONSOLIDATION" in note
+    assert "--auto-memory-off is the flag that stops the writing" in note
+
+    # The page an agent reads before it ever runs the command. The help and the
+    # note were corrected while this bullet went on saying the flag "stops
+    # writing and consolidating memories", which is the sentence that produced
+    # the two memory systems in the first place.
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    page = (repo / "skills" / "init" / "SKILL.md").read_text(encoding="utf-8")
+    named = [c for c in page.split("\n- ") if c.startswith("`--auto-dream-off`")]
+    assert named, "the skill documents no --auto-dream-off flag"
+    bullet = named[0].split("\n\n", 1)[0].split("\n- ", 1)[0]
+    assert "consolidation only" in bullet, bullet
+    # And it does not claim the writing among what it stops, which is the half
+    # that was false.
+    assert "writing" not in bullet.split("consolidation only")[0], bullet
+
+
+def test_the_redirect_is_spelled_the_way_the_harness_will_spell_it(tmp_path) -> None:
+    """The harness NFC-normalizes `autoMemoryDirectory` before it uses it. A
+    store path handed over in NFD — the spelling macOS `listdir` gives a
+    composed character — was recorded as init spelled it and used as the
+    harness spells it: one directory on APFS, two on a normalization-sensitive
+    filesystem. The redirect is recorded in the harness's spelling.
+    """
+    nfd = unicodedata.normalize("NFD", str(tmp_path / "José" / "store"))
+    nfc = unicodedata.normalize("NFC", nfd)
+    assert nfd != nfc
+    redirect = init._redirect_dir(nfd)
+    assert redirect == unicodedata.normalize("NFC", redirect)
+    assert redirect.startswith(nfc)
+
+
+def test_a_refusal_after_a_red_check_still_reports_the_red_check(
+    profile, monkeypatch, capsys
+) -> None:
+    """A settings file that moved between the manifest and the last write
+    refuses, by contract. When VERIFY had already gone red, the refusal
+    returned before the deferred red-check report, so the run named the
+    refusal and lost the files the check was red on. Both are reported.
+    """
+    _harness(profile, "-home-u", {"ok.md": TRAP})
+    machine = doctor.Machine()
+    config = init._resolve_config(machine, None)
+    plan = _plan(profile, store=str(profile / "notes"), adopt_auto_memory=True)
+    settings = profile / "claude-config" / "settings.json"
+
+    def red_and_moved(_machine, _config):
+        current = (
+            json.loads(settings.read_text(encoding="utf-8"))
+            if settings.exists()
+            else {}
+        )
+        current["movedBySession"] = True
+        settings.write_text(json.dumps(current), encoding="utf-8")
+        return 1, "ORPHAN: ./hot/x.md — no row in MEMORY.md"
+
+    reported: list = []
+    monkeypatch.setattr(init, "_run_checker", red_and_moved)
+    monkeypatch.setattr(
+        init, "_report_red_verify", lambda journal: reported.append(journal)
+    )
+    assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
+    assert "changed-underfoot" in capsys.readouterr().err
+    assert len(reported) == 1

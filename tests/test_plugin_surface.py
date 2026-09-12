@@ -17,6 +17,9 @@ what it decides is what it exports into the process it replaces itself with.
 
 from __future__ import annotations
 
+import argparse
+import ast
+import hashlib
 import json
 import os
 import pathlib
@@ -65,6 +68,11 @@ PAYLOAD = [
     # and answers nothing.
     "src/memkit/cli_doctor.py",
     "src/memkit/cli_init.py",
+    # Where the harness's own memory feature writes, which `doctor` reads at
+    # module scope. On the 3.9 floor and in the payload for the same reason as
+    # its importer: a plugin whose dispatcher cannot import is one that installs
+    # and answers nothing.
+    "src/memkit/harness_memory.py",
     "src/memkit/__init__.py",
     # The checker `bin/memkit` routes to when a local python meets the 3.12
     # floor: `MEMKIT_CHECKER_CMD` is `<python> -m memkit.memory_integrity`, run
@@ -637,6 +645,38 @@ def test_the_admission_notes_recipe_returns_the_number_it_states() -> None:
     assert "marketplace.json" in recipe, "no recipe for the tree an install gets"
 
 
+def test_the_changelog_probe_counts_come_from_the_corpora_they_describe() -> None:
+    """Two counts of the same kind, each asked of its own tree.
+
+    The released entry described the corpus that shipped with 0.4.0 and the
+    corpus has grown by three hundred probes since, so a reader had no way to
+    tell a figure that is still true of that release from one nobody had
+    updated. Neither number was read by anything.
+
+    The sweep's own `--list` answers for this tree, and the tag answers for the
+    release, so the entry that describes a frozen tree stays frozen and the one
+    that describes this tree moves with it.
+    """
+    _needs_checkout()
+    log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    listing = subprocess.run(
+        [sys.executable, str(REPO / "tools" / "mutation_sweep.py"), "--list"],
+        cwd=REPO, capture_output=True, text=True, timeout=120,
+    )
+    assert listing.returncode == 0, listing.stderr
+    here = re.search(r"^(\d+) probes$", listing.stdout, re.M)
+    assert here, listing.stdout[-200:]
+    assert f"{here.group(1)} probes" in log, (
+        here.group(1), "not the probe count the changelog states for this tree"
+    )
+
+    released = _git("show", "v0.4.0:tools/mutation_probes.json")
+    assert released.returncode == 0, released.stderr
+    then = len(json.loads(released.stdout)["probes"])
+    assert f"{then} probes" in log, (
+        then, "not the probe count the changelog states for the 0.4.0 tree"
+    )
 
 
 def test_the_manifest_and_the_marketplace_entry_agree_on_the_version() -> None:
@@ -3241,6 +3281,2269 @@ def test_the_worked_memory_in_the_docs_really_surfaces(tmp_path) -> None:
     assert claimed.groups() == actual.groups(), (claimed.groups(), actual.groups())
 
 
+# --- the git-store section, executed rather than read ------------------------
+#
+# Two commands on that page are the whole of what an adopter types by hand: the
+# block that derives the harness's project key, and the one line that repoints
+# a memory directory that an earlier revision of the page left as a symlink to
+# the corpus root. Prose nobody executes is prose nobody checks, so both are
+# extracted from the committed markdown and run on real filesystems, under
+# every shell an adopter is likely to paste them into. The rules the section
+# states in English are read out of it too, rather than restated below: a rule
+# stated twice is a rule the page can contradict with every case still green.
+
+
+def _store_in_git_section(text: str) -> str:
+    """The "Keep your store in git" section, sliced by HEADING.
+
+    By content and never by line number, for the reason `_worked_memory_block`
+    gives: an extraction anchored to a position goes on passing about whatever
+    text moved into that position. A heading that is renamed or removed takes
+    the section with it, and every case below then fails to extract — which is
+    the failure this wants, not a silent pass over the wrong prose.
+    """
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("## Keep your store in git")]
+    assert len(starts) == 1, f"{len(starts)} sections named 'Keep your store in git'"
+    start = starts[0]
+    ends = [i for i, ln in enumerate(lines) if i > start and ln.startswith("## ")]
+    return "".join(lines[start : ends[0] if ends else len(lines)])
+
+
+def _key_derivation_block(section: str) -> str:
+    """The one ```bash fence in that section: the project-key derivation."""
+    blocks = re.findall(r"```bash\n(.*?)```", section, re.S)
+    assert len(blocks) == 1, f"{len(blocks)} bash fences in the git-store section"
+    assert "tr -c" in blocks[0], blocks[0]
+    return blocks[0]
+
+
+def _section_blocks(section: str) -> list:
+    """Every block of the section, in the order a reader meets them.
+
+    Two spellings: a fence, and a paragraph that is one inline code span. The
+    third element says whether a reader pastes it into a shell; a fence in
+    another language is listed all the same, so a block cannot slip past the
+    reading below by carrying an info string this file does not know.
+    """
+    blocks = []
+    for found in re.finditer(
+        r"^\s*```(\S*)\n(.*?)^\s*```|^(`[^`]+`)\s*$", section, re.S | re.M
+    ):
+        info, fence, span = found.groups()
+        if span is None:
+            blocks.append((f"the ```{info} fence", fence, info == "bash"))
+        else:
+            blocks.append((span, span.strip("`"), True))
+    assert blocks, "the section prints nothing to paste"
+    return blocks
+
+
+def _inline_command(section: str, opens: str) -> str:
+    """The command the section prints as inline code, not a fence.
+
+    Found by what it opens with, and the count of lines carrying `ln -sn` is
+    asserted: a SECOND is either a worked example the cells would run in place
+    of the instruction, or a link command with no cell behind it.
+    """
+    carriers = [ln for ln in section.splitlines() if "ln -sn" in ln]
+    assert len(carriers) == 1, f"{len(carriers)} lines carry `ln -sn`"
+    lines = [ln for ln in carriers if ln.startswith(f"`{opens}")]
+    assert len(lines) == 1, f"{len(lines)} lines open with `{opens}`"
+    spans = re.findall(r"`([^`]+)`", lines[0])
+    assert len(spans) == 1, (len(spans), lines[0])
+    return spans[0]
+
+
+def _repoint_line(section: str) -> str:
+    """The repoint command, which the page prints as inline code, not a fence."""
+    return _inline_command(section, '[ -L "$dir" ]')
+
+
+def _dir_line(section: str) -> str:
+    """The command the page gives for `$dir`, printed as inline code too.
+
+    `$dir` is the one variable of the three the cells could build for
+    themselves, and building it here is what let the page define it as
+    something else — a reader following that definition reaches a silent no-op
+    the page's own next sentence misexplains. So it comes off the page.
+    """
+    lines = [ln for ln in section.splitlines() if ln.startswith("`dir=")]
+    assert len(lines) == 1, f"{len(lines)} lines define `$dir`"
+    spans = re.findall(r"`([^`]+)`", lines[0])
+    assert len(spans) == 1, (len(spans), lines[0])
+    return spans[0]
+
+
+# The page states its rules in English. These are the spellings this file
+# knows how to run: a rule read out of the page and looked up here fails
+# loudly the moment the page starts saying something else, which a rule
+# restated in Python cannot do — page and test would just disagree in silence.
+_KEY_RULES = {"every character that is not a letter or digit": r"[^A-Za-z0-9]"}
+_NOT_A_LINK_OUTCOMES = {"the first test fails and nothing after it runs": "stops"}
+_PATH_KINDS = {"physical": True, "logical": False}
+_OUTSIDE_HOMES = {"the cwd": "cwd", "the home directory": "home"}
+_SUBDIR_HOMES = {"shares one directory": "repository", "gets its own directory": "subdir"}
+_WORKTREE_SHARING = {"so a repository's worktrees share that directory too": "shared"}
+_COMMON_DIRS = {
+    "the main checkout's `.git` from a linked worktree": "main-checkout",
+    "the linked worktree's own `.git`": "itself",
+}
+_CORPUS_ROOTS = {"`$store` itself for a corpus root": "$store"}
+_SEARCH_ORDERS = {
+    "takes that directory back out of retrieval, so making `search/` first is "
+    "the simpler order": "search-first"
+}
+_FLAT_MEMORY_OUTCOMES = {"stay where they are and stay retrievable": "kept"}
+_RM_REACHES = {
+    "removes the link and never what it points at": "link-only",
+    "removes the link and what it points at with it": "through",
+}
+_LINK_NAME_FORMS = {
+    "the directory's own absolute path": "absolute",
+    "the name it was handed": "verbatim",
+}
+_DIR_SHAPES = {"symlink": "link"}
+_VARIABLE_COUNTS = {"both": 2, "all three": 3, "all four": 4}
+_RECREATED_DIR_OUTCOMES = {
+    "leaves the link inside `$dir` rather than in its place": "inside",
+    "leaves the link where it belongs": "in-place",
+}
+_DIR_LINE_PURPOSES = {"the harness's memory directory for this repository": "harness-dir"}
+_RACE_END_CODES = {"rc 0": 0, "rc 1": 1}
+_RACED_DIR_ROUTES = {"move that link up into `$dir`'s own place": "move-link-up"}
+_PRINTED_MOVE_COMMANDS = {"prints no command for the move": "none"}
+_EARLY_STOP_STREAMS = {
+    "a status, and nothing to read": "silent",
+    "the shell's own message all the same": "loud",
+}
+_RACED_DIR_DETECTIONS = {
+    "a directory holding one link named for `$target`": "raced",
+    "a symlink": "done",
+}
+_STOPPED_LINE_STREAMS = {
+    "a status and nothing on stderr": "silent",
+    "a message on stderr": "loud",
+}
+_UNSET_TARGET_STREAMS = {
+    "does say so on stderr": "loud",
+    "says nothing on stderr": "silent",
+}
+# What a shell under `set -u` says when it reaches a name nothing set: the
+# wording is the shell's, and it is the half a message that merely mentions
+# the variable does not have. bash says the first, zsh the second.
+_NOUNSET_MESSAGE = r"\b{name}: (?:unbound variable|parameter not set)\b"
+_NOUNSET_STREAMS = {
+    "the shell's own message instead where the line reaches that name, and it "
+    "stops there rather than on a test": "shell",
+    "no different, and the line stops on the same test": "unchanged",
+}
+_OWN_FILE_OUTCOMES = {
+    "gets them rewritten": "rewritten",
+    "gets them rewritten too": "rewritten",
+}
+_LINK_CASES = {
+    "the setting is not yours to set and no settings file of yours outranks "
+    "the one that carries it": "outranked",
+    "that setting is not yours to set": "any-scope",
+}
+_LINK_REACHES = {
+    "reaches nothing: the harness writes where that file sends it, not to the "
+    "directory the key names": "unreachable",
+    "is the route left: the harness still writes to the directory the key "
+    "names": "reachable",
+}
+# The case the link is offered for and what the paragraph then says the link
+# reaches are one claim in two sentences, so they are read as a pair: a page
+# that offers the link for every carrying scope while its own reason sentence
+# says a carrying scope leaves the link reaching nothing contradicts itself,
+# and each sentence apart is still a spelling the tables above know.
+_LINK_OFFERS = {
+    ("outranked", "unreachable"),
+    ("any-scope", "reachable"),
+}
+
+
+def _prose(section: str) -> str:
+    """The section on one line, so a claim matches whatever wrapping it has."""
+    return " ".join(section.split())
+
+
+def _stated(section: str, pattern: str, table: dict, what: str):
+    """One claim of the page's, in the spellings this file knows how to run.
+
+    The lookup IS the assertion. A sentence reworded is a sentence nobody has
+    decided is still runnable; a sentence inverted is not in the table at all.
+    Where a table carries more than one spelling the cells run whichever the
+    page states, so the page's claim is executed rather than only recognised.
+    """
+    found = re.search(pattern, _prose(section))
+    assert found, f"the page no longer says {what}"
+    assert found.group(1) in table, (found.group(1), sorted(table))
+    return table[found.group(1)]
+
+
+def _key_rule(section: str) -> str:
+    """What the page says the harness replaces in a project key, as a pattern."""
+    return _stated(
+        section,
+        r"the key, matching the documentation page, is the git repository root "
+        r"with (.+?) replaced by `-`",
+        _KEY_RULES,
+        "how the project key is spelled",
+    )
+
+
+def _path_kind(section: str) -> bool:
+    """Whether the page says the key is derived from the physical path."""
+    return _stated(
+        section,
+        r"The path is the ([a-z]+) one, so a checkout reached through a symlink",
+        _PATH_KINDS,
+        "which of a symlinked checkout's two paths is keyed",
+    )
+
+
+def _outside_home(section: str) -> str:
+    """Which directory the page says is keyed outside a repository."""
+    return _stated(
+        section,
+        r"outside a repository (.+?) is used instead",
+        _OUTSIDE_HOMES,
+        "what is keyed outside a repository",
+    )
+
+
+def _subdir_home(section: str) -> str:
+    """Whether the page says a subdirectory keys on its repository."""
+    return _stated(
+        section,
+        r"so every subdirectory of one repository ([^;]+);",
+        _SUBDIR_HOMES,
+        "what a subdirectory of a repository keys on",
+    )
+
+
+def _common_dir(section: str) -> str:
+    """Whose `.git` the page says the common dir is from a linked worktree."""
+    return _stated(
+        section,
+        r"The common dir is ([^,]+), which is why it is read first",
+        _COMMON_DIRS,
+        "whose `.git` the common dir is",
+    )
+
+
+def _key_homes(section: str) -> dict:
+    """Which root the page says a linked worktree and a submodule key on.
+
+    The clause between the two halves is read rather than skipped over: a free
+    `.*?` here let the page say worktrees each get their own directory in the
+    same breath as saying they map to the main checkout.
+    """
+    found = re.search(
+        r"A (linked worktree|submodule) maps to its main checkout's root, "
+        r"([^;]+); a (linked worktree|submodule) keys on itself\.",
+        _prose(section),
+    )
+    assert found, "the page no longer says where a worktree and a submodule key"
+    assert found.group(2) in _WORKTREE_SHARING, found.group(2)
+    homes = {found.group(1): "main-checkout", found.group(3): "itself"}
+    assert len(homes) == 2, homes
+    return homes
+
+
+def _shared_dir_outcome(section: str) -> str:
+    """What the page says becomes of a reader's own files under `$target`.
+
+    Stated twice — once as the reason the setting wants a directory of the
+    harness's own, once as the reason the link does — and the two have to say
+    the same runnable thing, since the whole `$target` rule rests on it.
+    """
+    said = re.findall(
+        r"directory that also holds your own memory files ([^.]+)\.", _prose(section)
+    )
+    assert len(said) == 2, said
+    assert {_OWN_FILE_OUTCOMES.get(one) for one in said} == {"rewritten"}, said
+    return "rewritten"
+
+
+def _harness_dir(section: str) -> str:
+    """The directory of the harness's own that the page recommends.
+
+    The settings example is the page's one literal spelling of it, and the
+    paragraph above the example insists the value sits under the corpus root.
+    """
+    found = re.search(r'"autoMemoryDirectory": "([^"]+)"', section)
+    assert found, "the page no longer shows a value for the setting"
+    parts = found.group(1).rstrip("/").split("/")
+    assert len(parts) > 2 and parts[-2] == "search", found.group(1)
+    return parts[-1]
+
+
+def _target_rule(section: str) -> tuple:
+    """The page's two branches for `$target`, read off the page.
+
+    `$target` is the one variable the page tells the reader to set themselves,
+    so its definition is prose rather than a command — and a definition the
+    cells restated in Python was one the page could contradict with every case
+    green. Both halves of the page's own reason for the setting, twenty lines
+    up, are checked: the directory is one of the HARNESS'S OWN, named the same
+    as the settings example names it, and it is under the corpus root without
+    being the corpus root. Shape alone let the page name `search/hot`, a
+    directory holding the reader's memories — the exact harm the setting has.
+    """
+    found = re.search(
+        r"`\$target` is the harness's directory under the corpus root: "
+        r"`(\$store/[^`]+)` where `search/` exists, `(\$store/[^`]+)` where it "
+        r"does not",
+        _prose(section),
+    )
+    assert found, "the page no longer defines `$target`"
+    with_search, without_search = found.groups()
+    # The rule exists because of one stated harm. A page that stops claiming
+    # the harm has stopped giving a reason for the directory these cells build.
+    # The call is the assertion — it raises on a page that no longer says it.
+    _shared_dir_outcome(section)
+    leaf = _harness_dir(section)
+    assert with_search.startswith("$store/search/"), with_search
+    assert with_search.count("/") == 2, with_search
+    assert without_search.count("/") == 1, without_search
+    assert not without_search.startswith("$store/search"), without_search
+    assert with_search.rsplit("/", 1)[-1] == leaf, (with_search, leaf)
+    assert without_search.rsplit("/", 1)[-1] == leaf, (without_search, leaf)
+    return with_search, without_search
+
+
+def _flat_corpus_root(section: str) -> str:
+    """What the page says the corpus root of a store with no `search/` is."""
+    return _stated(
+        section,
+        r"a store with no `search/` has ([^.]+)\.",
+        _CORPUS_ROOTS,
+        "what a store with no `search/` has for a corpus root",
+    )
+
+
+def _search_order(section: str) -> str:
+    """What the page says making `search/` after `$target` does to retrieval."""
+    return _stated(
+        section,
+        r"Creating `search/` afterwards ([^.]+)\.",
+        _SEARCH_ORDERS,
+        "what creating `search/` afterwards does",
+    )
+
+
+def _flat_memories_outcome(section: str) -> str:
+    """What the page says the repoint leaves memories lying in the corpus root."""
+    return _stated(
+        section,
+        r"so memories already lying flat in the corpus root ([^.]+)\.",
+        _FLAT_MEMORY_OUTCOMES,
+        "what becomes of memories lying flat in the corpus root",
+    )
+
+
+def _rm_reach(section: str) -> str:
+    """How far the page says its `rm` reaches, which is a claim about flags."""
+    return _stated(
+        section,
+        r"`rm` ([^,]+), so memories already lying flat in the corpus root",
+        _RM_REACHES,
+        "how far the page's `rm` reaches",
+    )
+
+
+def _link_name_form(section: str) -> str:
+    """Which path the page says the line stores in the link it makes.
+
+    `ln` stores the name it is handed, and `$dir` lives under `projects/`: a
+    relative `$store` reaches the store from where the reader pasted the line
+    and nothing from there, so the two spellings are a working link and a
+    dangling one at the same rc.
+    """
+    return _stated(
+        section,
+        r"so the line links to (.+?) rather than to",
+        _LINK_NAME_FORMS,
+        "which path the repoint line stores in the link",
+    )
+
+
+def _dir_shape(section: str) -> str:
+    """The shape of `$dir` the page tells the reader to repoint."""
+    return _stated(
+        section,
+        r'Where `ls -ld "\$dir"` shows a ([a-z]+), repoint it',
+        _DIR_SHAPES,
+        "which `$dir` it is telling the reader to repoint",
+    )
+
+
+def _dir_line_purpose(section: str) -> str:
+    """Whose directory the page says its `$dir` line names.
+
+    The line derives that path from `$key` two blocks up, so the sentence
+    introducing it is the only place the page says whose directory it is. A
+    page that starts calling it something else is describing a path other than
+    the one the cases below build.
+    """
+    return _stated(
+        section,
+        r"still set by the block above, this names ([^:]+) and shows what is "
+        r"there",
+        _DIR_LINE_PURPOSES,
+        "whose directory the `$dir` line names",
+    )
+
+
+def _named_variable_count(section: str) -> int:
+    """How many variables the page tells the reader to set before the line."""
+    return _stated(
+        section,
+        r"(all \w+|both) (?:are|is) yours to set before the",
+        _VARIABLE_COUNTS,
+        "how many variables the reader sets",
+    )
+
+
+def _recreated_dir_outcome(section: str) -> str:
+    """What the page says a `$dir` recreated between `rm` and `ln` gets.
+
+    The section's one safety instruction. It is the reason the reader is told
+    to quit the harness, so the cell that builds that race takes its expected
+    outcome from the sentence rather than from a comment beside it.
+    """
+    return _stated(
+        section,
+        r"a recreation between `rm` and `ln` ([^.]+)\.",
+        _RECREATED_DIR_OUTCOMES,
+        "what a `$dir` recreated between the two commands does",
+    )
+
+
+def _raced_dir_detection(section: str) -> str:
+    """What the page says `ls -ld "$dir"` shows once the harness won that race.
+
+    The raced chain ends at rc 0 and leaves a directory, which the page's other
+    sentence describes as the state it does not repoint — so without this the
+    reader reads a damaged `$dir` as a repoint there was never anything to do.
+    """
+    return _stated(
+        section,
+        r"Where it shows ([^,]+), the harness recreated `\$dir`",
+        _RACED_DIR_DETECTIONS,
+        "what `ls -ld` shows once the harness recreated `$dir`",
+    )
+
+
+def _raced_line_rc(section: str) -> int:
+    """The status the page says the line ends at when the harness wins the race.
+
+    "all the same" is the whole of the warning: the reader gets the status of a
+    repoint that worked, and only `ls -ld` tells them otherwise.
+    """
+    return _stated(
+        section,
+        r"That race ends at (rc \d+) all the same",
+        _RACE_END_CODES,
+        "what the raced line ends at",
+    )
+
+
+def _raced_dir_route(section: str) -> str:
+    """The way out of the race the page gives, which is a move and not a command.
+
+    The page prints no command for it, so the cell that drives the state makes
+    the move itself — and this is what says the move it makes is the one the
+    reader is told to make.
+    """
+    return _stated(
+        section,
+        r"Quit the harness and ([^:]+): it already points where the line above "
+        r"was taking it",
+        _RACED_DIR_ROUTES,
+        "the way out of the race it gives the reader",
+    )
+
+
+def _printed_move_command(section: str) -> str:
+    """The page's claim about itself: that the move above has no command here.
+
+    A reader who is told to move a link by hand and then finds a line for it
+    pastes the line. So the promise is read where the section's blocks are, and
+    a block that removes or moves anything else fails there.
+    """
+    return _stated(
+        section,
+        r"This page ([^—]+?) — `ls -ld` prints one line about a directory",
+        _PRINTED_MOVE_COMMANDS,
+        "whether it prints a command for the move",
+    )
+
+
+def _stopped_line_streams(section: str) -> str:
+    """What the page says a line stopped by an unset `$store` or `$dir` prints."""
+    return _stated(
+        section,
+        r"so the line stops with ([^,;.]+)[,;.]",
+        _STOPPED_LINE_STREAMS,
+        "what a line stopped by an empty test prints",
+    )
+
+
+def _unset_target_streams(section: str) -> str:
+    """What the page says an unset `$target` prints, which is the other case."""
+    return _stated(
+        section,
+        r"an unset `\$target` fails `mkdir`, which ([^.]+)\.",
+        _UNSET_TARGET_STREAMS,
+        "what an unset `$target` prints",
+    )
+
+
+def _link_case(section: str) -> str:
+    """The case the page offers the symlink for.
+
+    The paragraph names two states in which the setting is not the reader's to
+    set and rules the link out of both, so the sentence that opens it has to
+    name the state that is left rather than promise the whole class.
+    """
+    return _stated(
+        section,
+        r"(?:^|\. )A symlink does the same job where ([^.]+)\.",
+        _LINK_CASES,
+        "which case the symlink is the route for",
+    )
+
+
+def _blocked_link_reach(section: str) -> str:
+    """What the page says the link reaches where a checked-in setting blocks it.
+
+    Read rather than skipped over: the sentence sat between two anchors of the
+    precedence case's regex, so the paragraph could be returned to offering the
+    link as the route out of the one state the link cannot reach. The match
+    starts at the sentence boundary because `_stated` searches the section as
+    one line: anchored on the clause alone, a false clause inserted anywhere
+    earlier in the same sentence sits inside the span and is never read.
+    """
+    return _stated(
+        section,
+        r"(?:^|\. )Where a checkout's checked-in `\.claude/settings\.json` "
+        r"declares `autoMemoryDirectory` already, the flag below refuses "
+        r"\(`auto-memory-redirected`\) and this link ([^.]+)\.",
+        _LINK_REACHES,
+        "what the link reaches where a checked-in setting declares the value",
+    )
+
+
+def _link_offer(section: str) -> tuple:
+    """The case the link is offered for, with what the page says it reaches.
+
+    Either sentence alone can be reworded into the other spelling the tables
+    know and stay green on its own lookup, so the two are read together and
+    the pair has to be one the page can mean.
+    """
+    offer = (_link_case(section), _blocked_link_reach(section))
+    assert offer in _LINK_OFFERS, (offer, sorted(_LINK_OFFERS))
+    return offer
+
+
+def _nounset_streams(section: str) -> str:
+    """What the page says an unset variable does under `set -u`.
+
+    The two sentences above it are true only under the options a shell starts
+    with, and the reader this page is written for pastes `set -euo pipefail`
+    before anything: under it the shell reports the unset name itself, which is
+    a different account of both streams and of where the line stops. It reports
+    it at EXPANSION, though, and the line is an AND-list — so the claim holds
+    only where the line reaches the name, and the qualifier saying so is part
+    of what is looked up here.
+    """
+    return _stated(
+        section,
+        r"Under `set -u` all three are ([^.]+)\.",
+        _NOUNSET_STREAMS,
+        "what an unset variable does under `set -u`",
+    )
+
+
+def _nounset_early_stop(section: str) -> str:
+    """What the page says `set -u` costs a line that stops before the unset name.
+
+    The sentence above this one holds only where the line REACHES the name.
+    This is the other half — an earlier test fails, the later name is never
+    expanded, and the option changes nothing a reader can see — and it is the
+    half that had no table of its own.
+    """
+    return _stated(
+        section,
+        r"never expands the later name, so that line stops exactly as it does "
+        r"without the option: ([^.]+)\.",
+        _EARLY_STOP_STREAMS,
+        "what a line stopped before the unset name prints",
+    )
+
+
+def _settings_precedence(section: str) -> list:
+    """The settings scopes the page lists, highest first."""
+    # The scope names carry periods of their own, so the list is delimited by
+    # the "then" the page puts before its last item rather than by a full stop.
+    found = re.search(
+        r"the precedence among settings scopes, highest first, is (.+?), then ([a-z ]+)\.",
+        _prose(section),
+    )
+    assert found, "the page no longer lists the settings scopes in precedence order"
+    scopes = [one.strip() for one in found.group(1).split(",")] + [found.group(2).strip()]
+    assert len(scopes) > 2 and len(set(scopes)) == len(scopes), scopes
+    return scopes
+
+
+def _not_a_link_outcome(section: str) -> str:
+    """What the page says the line does where `$dir` is not a link."""
+    outcome = _stated(
+        section,
+        r"Where `\$dir` is not a link ([^.]+)\.",
+        _NOT_A_LINK_OUTCOMES,
+        "what a `$dir` that is not a link does",
+    )
+    # "the first test" names a position in the command, so the command has to
+    # open with that test for the sentence to be about anything.
+    line = _repoint_line(section)
+    assert line.startswith('[ -L "$dir" ]'), line
+    # And it has to name one command: `_stated` reads the first match and never
+    # counts, so a second sentence using the phrase for another line would be
+    # read as this one.
+    said = re.findall(r"the first test", _prose(section), re.I)
+    assert len(said) == 1, said
+    return outcome
+
+
+# What pins the page's prose is the regexes this file states: a claim no regex
+# reads is a claim the page can reverse with every case below still green. The
+# inventory is collected off this file's own source rather than listed a second
+# time, so an extractor added later brings its anchor with it, and one whose
+# regex is edited pins the sentence it now matches instead of the old one.
+_PAGE_READERS = ("_stated", "re.search", "re.findall", "re.finditer", "re.fullmatch")
+
+_CLAIM_VERBS = (
+    "does", "never", "always", "refuses", "refuse", "fails", "stops", "ends",
+    "removes", "writes", "reads", "ignores", "must",
+)
+
+
+def _suite_functions() -> list:
+    """This file's own top-level functions, as syntax."""
+    parsed = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    return [node for node in parsed.body if isinstance(node, ast.FunctionDef)]
+
+
+def _claim_anchors() -> tuple:
+    """Every page-reading regex in this file, as `(extractor, regex)` pairs.
+
+    A function whose first argument is the section is reading the page, and the
+    literal it hands `_stated` or `re` is what it pins. Only patterns carrying
+    prose are counted: one that matches any code span at all would anchor every
+    sentence that prints one, which is the reverse of what the lint is for.
+    """
+    rows = []
+    for node in _suite_functions():
+        if not node.args.args or node.args.args[0].arg != "section":
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            reader = ast.unparse(call.func)
+            if reader not in _PAGE_READERS:
+                continue
+            at = 1 if reader == "_stated" else 0
+            if len(call.args) <= at:
+                continue
+            pattern = call.args[at]
+            if not isinstance(pattern, ast.Constant) or not isinstance(pattern.value, str):
+                continue
+            if len(re.findall(r"[a-z]{3,}", pattern.value)) >= 3:
+                rows.append((node.name, pattern.value))
+    assert rows, "this file reads the page with no stated pattern at all"
+    return tuple(rows)
+
+
+def _stated_callers() -> set:
+    """Every extractor that looks a rule of the page's up in a table."""
+    return {
+        node.name
+        for node in _suite_functions()
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and ast.unparse(call.func) == "_stated"
+    }
+
+
+def _paragraphs(section: str) -> list:
+    """The section's prose: a list of sentences per paragraph.
+
+    Fences and headings go out, and every inline span is held aside while the
+    sentences are split — the page's spans carry `.` in paths and in settings
+    keys, and a split that reads those as sentence ends cuts claims in half. A
+    paragraph that is nothing but a span is a command rather than a claim.
+    """
+    body = re.sub(r"```.*?```", " ", section, flags=re.S)
+    body = re.sub(r"^#+ .*$", " ", body, flags=re.M)
+    out = []
+    for para in re.split(r"\n\s*\n", body):
+        held = re.findall(r"`[^`]+`", para)
+        masked = " ".join(re.sub(r"`[^`]+`", "\x00", para).split())
+        if not masked.replace("\x00", " ").strip(" :.-"):
+            continue
+        said = []
+        for one in re.split(r"(?<=[.?!])(?=\s|$)", masked):
+            one = one.strip()
+            if not one:
+                continue
+            while "\x00" in one:
+                one = one.replace("\x00", held.pop(0), 1)
+            said.append(one)
+        if said:
+            out.append(said)
+    return out
+
+
+def _makes_a_claim(sentence: str) -> bool:
+    """Whether a sentence states something a reader can act on and be wrong about.
+
+    A backticked span naming a command, a path, a variable or a settings key; a
+    number; or one of the verbs the page states outcomes with. Prose that has
+    none of the three is describing rather than promising.
+    """
+    if re.search(r"\d", re.sub(r"`[^`]+`", " ", sentence)):
+        return True
+    if any(re.search(rf"\b{verb}\b", sentence) for verb in _CLAIM_VERBS):
+        return True
+    return any(
+        re.search(r"[/$]|^[a-z]+ -|^[a-z]{2,}$", span)
+        for span in re.findall(r"`([^`]+)`", sentence)
+    )
+
+
+def _hand_repoint_prose(section: str) -> list:
+    """The prose of the one procedure the page leaves to the reader's hands.
+
+    Bounded by the names the section's own pasteable lines CREATE — `$root`,
+    `$key`, `$dir` — rather than by position: the prose that explains those
+    lines is the prose a reader acts on, and a paragraph that never names them
+    is about the harness instead. `$CLAUDE_CONFIG_DIR` and `$HOME` are not
+    among them; the lines read those two, they do not make them.
+    """
+    made = set()
+    for _label, body, pasted in _section_blocks(section):
+        if pasted:
+            made |= set(re.findall(r"(?:^|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=", body, re.M))
+    assert made, "the section's pasteable lines create no name of their own"
+    made_re = re.compile(r"\$\{?(?:" + "|".join(sorted(made)) + r")\b")
+    paragraphs = _paragraphs(section)
+    holds = [
+        at
+        for at, para in enumerate(paragraphs)
+        if any(made_re.search(span) for one in para for span in re.findall(r"`[^`]+`", one))
+    ]
+    assert holds, (sorted(made), "no paragraph names what the section's lines create")
+    return [one for para in paragraphs[holds[0] : holds[-1] + 1] for one in para]
+
+
+def _needs_zsh() -> str:
+    """zsh, or a failure — and a skip only where a context declares it.
+
+    Half the cells below are the zsh half. A `shutil.which` skip made a machine
+    without zsh report the same green as a run, under `python` — a required
+    context — which is the failure `_needs_checkout` exists to prevent one
+    definition at a time. `MEMKIT_NO_ZSH` is the same kind of declaration:
+    nothing in CI sets it, so it cannot make a required check green.
+    """
+    zsh = shutil.which("zsh")
+    if zsh is None and os.environ.get("MEMKIT_NO_ZSH") == "1":
+        pytest.skip("this context declared it has no zsh")
+    assert zsh, (
+        "no zsh on PATH, and this context did not declare itself without one. "
+        "The nix suites carry `pkgs.zsh` and the python job installs it, so a "
+        "skip here would report green under the same check name as a run."
+    )
+    return zsh
+
+
+def _shell_argv(shell: str) -> list:
+    return ["bash", "-c"] if shell == "bash" else [_needs_zsh(), "-f", "-c"]
+
+
+# `config_dir=None` means `$HOME/.claude`, which is what the variable holds on
+# a machine that has set it to the default. This is the other state: the
+# variable ABSENT, which is the branch of `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`
+# every reader who has never set it takes, and the one no cell reached while
+# `_sealed_env` set the name unconditionally.
+_NO_CONFIG_DIR = "CLAUDE_CONFIG_DIR is not in the environment at all"
+
+
+def _sealed_env(
+    home: Path, pwd: str | None = None, config_dir: Path | str | None = None
+) -> dict:
+    """The environment wholesale, so nothing of the developer's leaks in.
+
+    An inherited `GIT_CONFIG_GLOBAL`, `init.defaultBranch` or `CLAUDE_CONFIG_DIR`
+    would make these cases pass or fail for a reason belonging to the machine.
+    `pwd` is the logical path an interactive shell carries after a `cd` through
+    a symlink, and the only state in which `pwd` and `pwd -P` differ.
+
+    `config_dir` is the harness's config directory, and one cell puts it
+    somewhere that is NOT `$HOME/.claude`: the page derives `$dir` under
+    `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, and where the two spellings name one
+    path the page can lose the variable without a case noticing. Passing
+    `_NO_CONFIG_DIR` leaves the name out of the environment entirely, which is
+    the other branch of that expansion and the one most readers are on.
+
+    `GIT_CEILING_DIRECTORIES` stops `rev-parse` walking out of the tmpdir: the
+    cases that assert what the block prints OUTSIDE a repository would key on
+    whatever repository the tmpdir happened to sit under, and pass or fail on
+    where the machine puts `TMPDIR`.
+    """
+    return {
+        **({"PWD": pwd} if pwd is not None else {}),
+        "GIT_CEILING_DIRECTORIES": str(home.parent),
+        "HOME": str(home),
+        "PATH": os.environ["PATH"],
+        **(
+            {}
+            if config_dir == _NO_CONFIG_DIR
+            else {
+                "CLAUDE_CONFIG_DIR": str(
+                    config_dir if config_dir is not None else home / ".claude"
+                )
+            }
+        ),
+        "LC_ALL": "C",
+        "TERM": "dumb",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+
+
+def _in_fixture(args: list, cwd: Path, home: Path) -> None:
+    out = subprocess.run(
+        ["git", *args], cwd=str(cwd), env=_sealed_env(home),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, (args, out.stdout, out.stderr)
+
+
+def _fixture_repo(path: Path, home: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    _in_fixture(["init", "-q", "-b", "main"], path, home)
+    (path / "f.txt").write_text("x\n", encoding="utf-8")
+    _in_fixture(["add", "f.txt"], path, home)
+    _in_fixture(["commit", "-qm", "c"], path, home)
+    return path
+
+
+def _harness_key(path: Path, pattern: str, physical: bool = True) -> str:
+    """What the harness derives for a path, under the rule the page states.
+
+    What gets replaced comes from `_key_rule` and whether the path is resolved
+    comes from `_path_kind`; neither is decided here.
+    """
+    return re.sub(pattern, "-", os.path.realpath(str(path)) if physical else str(path))
+
+
+def _shell_out(
+    shell: str, script: str, cwd: Path, home: Path,
+    pwd: str | None = None, config_dir: Path | str | None = None,
+):
+    return subprocess.run(
+        _shell_argv(shell) + [script], cwd=str(cwd),
+        env=_sealed_env(home, pwd, config_dir),
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def _file_map(root: Path) -> dict:
+    """Every entry under `root` by relative path, links unfollowed.
+
+    Directories are entries too, not just their contents: a map of files alone
+    is blind to an empty directory being created or removed, which is most of
+    what the repoint line does to the store.
+    """
+    seen: dict = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        for name in list(dirnames):
+            if (here / name).is_symlink():
+                seen[str((here / name).relative_to(root))] = "link:" + os.readlink(here / name)
+                dirnames.remove(name)
+            else:
+                seen[str((here / name).relative_to(root))] = "dir"
+        for name in filenames:
+            entry = here / name
+            seen[str(entry.relative_to(root))] = (
+                "link:" + os.readlink(entry) if entry.is_symlink()
+                else hashlib.sha256(entry.read_bytes()).hexdigest()
+            )
+    return seen
+
+
+def _derivation_fixture(cell: str, home: Path, section: str) -> tuple:
+    """(the directory to run in, the key the harness would derive for it, the
+    logical `$PWD` to run under or None for the physical path).
+
+    Every `key-` cell is named here and an unnamed one raises: a cell added to
+    the list without a fixture would otherwise fall through to another cell's
+    directory, and since `want` comes from the same fixture it would assert
+    nothing and go green — the silent pass this whole section exists to stop.
+    """
+    pattern = _key_rule(section)
+    homes = _key_homes(section)
+    if cell == "key-non-git":
+        # The directory carries the two characters the key rewrites and a
+        # shell would split on, and it carries two of them ADJACENT: `tr`'s
+        # squeezing form collapses a run to one `-`, which is a different key
+        # for every dotfile directory and a rewrite no other fixture path can
+        # tell apart. Which directory is keyed comes from the page.
+        outside = home / "no_git .dir"
+        outside.mkdir()
+        keyed = outside if _outside_home(section) == "cwd" else home
+        return outside, _harness_key(keyed, pattern), None
+    if cell == "key-non-git-through-a-symlink":
+        # A shell that reached this directory through a link carries the
+        # logical path in `$PWD`, which is the only state where `pwd -P` and
+        # `pwd` differ at all — so which of the two the page claims is keyed
+        # is the whole of what this cell decides.
+        physical = home / "physical dir"
+        physical.mkdir()
+        logical = home / "logical-link"
+        os.symlink(physical, logical)
+        key = _harness_key(logical, pattern, physical=_path_kind(section))
+        return logical, key, str(logical)
+    main = _fixture_repo(home / "repo", home)
+    if cell == "key-main-checkout":
+        return main, _harness_key(main, pattern), None
+    if cell == "key-main-subdir":
+        deep = main / "a" / "b"
+        deep.mkdir(parents=True)
+        # Whether a subdirectory keys on the repository or on itself is the
+        # page's claim, not this fixture's.
+        keyed = main if _subdir_home(section) == "repository" else deep
+        return deep, _harness_key(keyed, pattern), None
+    if cell == "key-linked-worktree":
+        linked = home / "wt"
+        _in_fixture(["worktree", "add", "-q", "-b", "wtb", str(linked)], main, home)
+        # Two sentences say which root this keys on — the one naming the home
+        # and the one explaining why the common dir is read first. They have
+        # to agree with each other before either of them is run.
+        assert _common_dir(section) == homes["linked worktree"], "the page contradicts itself"
+        keyed = main if homes["linked worktree"] == "main-checkout" else linked
+        return linked, _harness_key(keyed, pattern), None
+    if cell == "key-submodule":
+        inner = _fixture_repo(home / "inner", home)
+        sup = _fixture_repo(home / "super", home)
+        _in_fixture(
+            ["-c", "protocol.file.allow=always", "submodule", "add", "-q", str(inner), "sub"],
+            sup, home,
+        )
+        _in_fixture(["commit", "-qm", "add sub"], sup, home)
+        # A submodule's common dir sits under the superproject, so the `case`
+        # falls through to `--show-toplevel`. Run from a subdirectory of the
+        # submodule so that fallthrough is distinguishable from the cwd, which
+        # is the other thing the arm could return.
+        deep = sup / "sub" / "deep"
+        deep.mkdir()
+        keyed = sup / "sub" if homes["submodule"] == "itself" else sup
+        return deep, _harness_key(keyed, pattern), None
+    raise ValueError(f"no derivation fixture for {cell!r}")
+
+
+# Every cell runs under both shells the page is pasted into. That axis is
+# insurance, not differential coverage: across 46 mutations of the page not one
+# has ever distinguished bash from zsh — every flip took both halves together.
+# It is kept because the page really is pasted into both and a shell-specific
+# regression is the kind nobody predicts; it costs about a second. Anyone
+# trimming it should know it has caught nothing bash did not, and decide on
+# that rather than on the appearance of 31 redundant pairs.
+_STORE_IN_GIT_CELLS = (
+    "key-main-checkout",
+    "key-main-subdir",
+    "key-linked-worktree",
+    "key-submodule",
+    "key-non-git",
+    "key-non-git-through-a-symlink",
+    "repoint-link-to-corpus-root",
+    "repoint-dir-from-the-page",
+    "repoint-flat-store",
+    "repoint-link-outside-the-store",
+    "repoint-target-is-a-link",
+    "repoint-relative-store",
+    "repoint-harness-recreated-dir",
+    "guard-dir-is-a-directory",
+    "guard-store-missing",
+    "guard-store-unset",
+    "guard-dir-unset",
+    "guard-target-unset",
+    "guard-store-not-a-directory",
+    "guard-target-is-a-file",
+    "guard-target-cannot-be-entered",
+)
+
+# The cells where the page's line is meant to run to the end. Everything else
+# in the list is a state where it must stop, and stop having changed nothing.
+_REPOINT_SUCCEEDS = (
+    "repoint-link-to-corpus-root",
+    "repoint-dir-from-the-page",
+    "repoint-flat-store",
+    "repoint-link-outside-the-store",
+    "repoint-target-is-a-link",
+    "repoint-relative-store",
+)
+
+
+# The key block is run under the options an agent's shell already carries as
+# well as under none. `set -e` turns a status the block handles into an abort,
+# and the page's stated reader runs `set -euo pipefail` as a matter of course:
+# under it the block used to stop at its first line with no key, no message and
+# rc 128, which is the documented fallback never running.
+#
+# The repoint line is on an axis of its own, and only for the three cells about
+# an unset variable: `set -u` makes an unset name a message from the shell
+# before any test of the line runs, which is a different outcome from the one
+# the page's sentence gives for default options — so the page states both and
+# each is run where it applies.
+_SHELL_OPTIONS = ("", "set -euo pipefail")
+_UNSET_OPTIONS = ("", "set -u")
+_OPTION_IDS = {"": "", "set -euo pipefail": "-errexit", "set -u": "-nounset"}
+_STORE_IN_GIT_CASES = tuple(
+    (cell, opts)
+    for cell in _STORE_IN_GIT_CELLS
+    for opts in (
+        _SHELL_OPTIONS if cell.startswith("key-")
+        else _UNSET_OPTIONS if cell.endswith("-unset")
+        else ("",)
+    )
+)
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+@pytest.mark.parametrize(
+    "cell,opts",
+    _STORE_IN_GIT_CASES,
+    # The default-options run keeps the cell's own name, so what a case is
+    # called does not change with the axis it gained.
+    ids=[f"{cell}{_OPTION_IDS[opts]}" for cell, opts in _STORE_IN_GIT_CASES],
+)
+def test_the_store_in_git_section_runs_where_it_is_pasted(tmp_path, cell, opts, shell) -> None:
+    """The page's two commands, run on real filesystems.
+
+    The six derivation cells cover what the prose claims about the key: a
+    subdirectory and a linked worktree resolve to the main checkout, a
+    submodule to itself, and a directory outside any repository to itself —
+    including one whose path has an underscore and a space, since `tr` maps
+    bytes and the paste is unquoted prose, and one reached through a symlink,
+    since the page names which of a symlink's two paths is keyed. Each runs
+    twice, once under the shell options an agent sets before pasting anything.
+
+    The repoint cells cover the line and its guard. The state the
+    previous revision of this page left behind — `$dir` a symlink to the
+    corpus root — repoints cleanly with every stored file where it was, in a
+    store with `search/` and in a flat one; an ordinary directory, a `$store`
+    that is not there, is unset, or is not a directory, a `$target` already
+    taken by a file, and a `$target` that is there and cannot be entered all
+    change nothing at all. Two cells are states the page does not speak for
+    and does not stop: a `$dir` linking out of the store, and a `$target`
+    that is itself a link out of it.
+
+    What is asserted is exit status and the filesystem, never a utility's
+    message: `mv` and `mkdir` word their failures differently under bash and
+    zsh and between GNU and BSD coreutils, and a test that reads them is a
+    test of the machine.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+
+    if cell.startswith("key-"):
+        block = _key_derivation_block(section)
+        where, want, logical = _derivation_fixture(cell, home, section)
+        script = f"{opts}\n{block}" if opts else block
+        out = _shell_out(shell, script, where, home, logical)
+        assert out.returncode == 0, (script, out.stdout, out.stderr)
+        printed = out.stdout.strip().splitlines()
+        # Empty output would otherwise be an IndexError, which says nothing
+        # about what the block was expected to print.
+        assert printed, (script, out.stdout, out.stderr)
+        assert printed[-1] == want, (script, out.stdout, want)
+        return
+    assert not opts or cell.endswith("-unset"), (cell, opts)
+
+    pattern = _key_rule(section)
+    with_search, without_search = _target_rule(section)
+    # The shape the page tells the reader to look for before repointing, and
+    # the order it tells them to make `search/` in: read here so a page that
+    # stops saying either takes these cells with it. Each call is the
+    # assertion, and each raises where the page no longer states the claim.
+    _dir_shape(section)
+    _search_order(section)
+    # A reader who sets the number of variables the page counts and no more
+    # gets a line that stops on an empty test, which is what `guard-store-
+    # unset` measures: the count has to be the line's own.
+    named = set(re.findall(r"\$(\w+)", _repoint_line(section)))
+    assert _named_variable_count(section) == len(named), (named, _repoint_line(section))
+    repo = _fixture_repo(home / "repo", home)
+    store = home / "notes"
+    flat = cell == "repoint-flat-store"
+    # Which directory retrieval reads as a flat store's corpus root is the
+    # page's claim, and it is what the second `$target` branch is for.
+    flat_root = Path(_flat_corpus_root(section).replace("$store", str(store)))
+    corpus = flat_root if flat else store / "search"
+    corpus.mkdir(parents=True)
+    if not flat:
+        (corpus / "hot").mkdir()
+        (corpus / "hot" / "keep.md").write_text("---\nname: k\n---\nk\n", encoding="utf-8")
+    # A memory lying flat in the corpus root: what the page promises `rm`
+    # leaves where it is and retrievable.
+    (corpus / "top.md").write_text("---\nname: t\n---\nt\n", encoding="utf-8")
+
+    named_store = store
+    if cell == "guard-store-missing":
+        # What a mistyped `$store` looks like: the link is good, the name is not.
+        named_store = home / "wrong-notes"
+    if cell == "guard-store-not-a-directory":
+        named_store = home / "notes.md"
+        named_store.write_text("not a store\n", encoding="utf-8")
+    target = Path(
+        (without_search if flat else with_search).replace("$store", str(named_store))
+    )
+
+    outside = home / "elsewhere"
+    if cell == "repoint-link-outside-the-store":
+        # A link the page never instructs, which the line repoints into the
+        # store all the same, leaving what it pointed at unreferenced.
+        outside.mkdir()
+        (outside / "stray.md").write_text("---\nname: s\n---\ns\n", encoding="utf-8")
+    if cell == "repoint-target-is-a-link":
+        outside.mkdir()
+        os.symlink(outside, target)
+    if cell == "guard-target-is-a-file":
+        # `mkdir` fails here, and it runs BEFORE `rm`: that order is why the
+        # reader's link survives a `$target` that is already taken.
+        target.write_text("in the way\n", encoding="utf-8")
+    if cell == "guard-target-cannot-be-entered":
+        # The one staged failure that reaches PAST `mkdir`: the directory is
+        # there, so `mkdir -p` is content, and it is reading the path back
+        # that fails. Every command the line runs before that point it has
+        # run for nothing, so this cell is about what is left of `$dir`.
+        target.mkdir()
+
+    # The cell that runs the page's own `$dir` definition runs with the config
+    # dir somewhere the default never names, so the `${CLAUDE_CONFIG_DIR:-...}`
+    # the page writes has two branches here rather than one path twice.
+    config_dir = home / ("cfg" if cell == "repoint-dir-from-the-page" else ".claude")
+    dir_ = config_dir / "projects" / _harness_key(repo, pattern) / "memory"
+    dir_.parent.mkdir(parents=True)
+    if cell == "guard-dir-is-a-directory":
+        dir_.mkdir()
+        (dir_ / "a.md").write_text("---\nname: a\n---\na\n", encoding="utf-8")
+    elif cell == "repoint-link-outside-the-store":
+        os.symlink(outside, dir_)
+    else:
+        os.symlink(corpus, dir_)
+
+    before = _file_map(store)
+    outside_before = _file_map(outside) if outside.is_dir() else None
+    dir_before = _file_map(dir_) if dir_.is_dir() and not dir_.is_symlink() else None
+    target_existed = target.exists() or target.is_symlink()
+
+    assignments = [
+        f"store={shlex.quote(str(named_store))}",
+        f"dir={shlex.quote(str(dir_))}",
+        f"target={shlex.quote(str(target))}",
+    ]
+    if cell == "repoint-relative-store":
+        # The page requires no absolute `$store`, and the reader who spells it
+        # relative is the case the line's own wording has to survive: a name
+        # stored as it was handed over is read back from `$dir`'s parent, which
+        # is a dangling link at the rc of a repoint that worked.
+        assignments = [
+            f"store={shlex.quote(os.path.relpath(named_store, repo))}",
+            f"dir={shlex.quote(str(dir_))}",
+            f"target={shlex.quote(os.path.relpath(target, repo))}",
+        ]
+    # One cell per variable the line reads. The page's sentence rests on an
+    # asymmetry — two of the three stop a test and one stops a command — and
+    # an asymmetry with one case measured is an asymmetry nobody has measured.
+    for unset in ("store", "dir", "target"):
+        if cell == f"guard-{unset}-unset":
+            assignments = [ln for ln in assignments if not ln.startswith(f"{unset}=")]
+    prelude = []
+    if cell == "repoint-dir-from-the-page":
+        # `$dir` from the page's own definition, run: everywhere else these
+        # cells build that path themselves, which is what let the page define
+        # it as something the reader cannot repoint.
+        assignments = [ln for ln in assignments if not ln.startswith("dir=")]
+        prelude = [_key_derivation_block(section), _dir_line(section)]
+    line = _repoint_line(section)
+    if cell == "repoint-harness-recreated-dir":
+        # The race the page's safety instruction is about, made deterministic:
+        # the harness recreating `$dir` between the two commands.
+        halves = line.split("&& ln -sn")
+        assert len(halves) == 2, line
+        line = '&& mkdir "$dir" && ln -sn'.join(halves)
+    script = "\n".join([*([opts] if opts else []), *prelude, *assignments, line])
+    denied = cell == "guard-target-cannot-be-entered"
+    if denied and os.geteuid() == 0:
+        # The rule `needs_permissions` states for this file, and this cell
+        # cannot carry the marker because its axis is one parametrized id.
+        # Under root the directory IS enterable, so the line runs to the end
+        # and the shared status assertion below would fail for a reason about
+        # the runner rather than about the page.
+        pytest.skip("root enters mode-000 directories, so nothing is unenterable")
+    if denied:
+        target.chmod(0o000)
+    try:
+        out = _shell_out(shell, script, repo, home, config_dir=config_dir)
+    finally:
+        # Unenterable for the line's own run and no longer: the assertions
+        # below and pytest's own cleanup both walk this directory afterwards.
+        if denied:
+            target.chmod(0o700)
+
+    if cell == "repoint-dir-from-the-page":
+        # The page's line ends by SHOWING what is there, and the next paragraph
+        # tells the reader to act on what it shows: a definition that stops at
+        # the assignment leaves that instruction pointing at nothing.
+        shown = [ln for ln in out.stdout.splitlines() if str(dir_) in ln]
+        assert len(shown) == 1, (script, out.stdout)
+        # `ls -ld` runs before the repoint, so what it shows is the shape the
+        # page tells the reader to look for.
+        assert shown[0].startswith("l"), (script, shown[0])
+
+    if cell == "repoint-harness-recreated-dir":
+        assert out.returncode == _raced_line_rc(section), (script, out.stdout, out.stderr)
+        assert _recreated_dir_outcome(section) == "inside", "the page claims otherwise"
+        assert dir_.is_dir() and not dir_.is_symlink(), (script, "`$dir` is still a link")
+        assert os.path.islink(dir_ / target.name), (script, _file_map(dir_))
+        assert os.readlink(dir_ / target.name) == str(target), (script, _file_map(dir_))
+        # The way back. The chain reported rc 0 and `ls -ld` now shows what the
+        # page elsewhere calls a `$dir` it will not repoint, so the state has to
+        # be told apart from a repoint already done — and the exit has to be run
+        # rather than described, since the cell has the state in hand.
+        assert _raced_dir_detection(section) == "raced", "the page claims otherwise"
+        assert [entry.name for entry in dir_.iterdir()] == [target.name], _file_map(dir_)
+        assert _raced_dir_route(section) == "move-link-up", "the page claims otherwise"
+        # The move is the cell's own because the page prints no command for it.
+        # What the page owes the reader is that the link already inside `$dir`
+        # is the one they were after, so moving it up is the whole way out.
+        aside = home / "aside"
+        (dir_ / target.name).rename(aside)
+        dir_.rmdir()
+        aside.rename(dir_)
+        assert os.path.islink(dir_), _file_map(dir_.parent)
+        assert os.readlink(dir_) == str(target), os.readlink(dir_)
+        # And the reader is back in the state the page's own line is for, which
+        # is run rather than described — under the same options the first half
+        # ran under, so a case id that names an option cannot lie about it.
+        again = _shell_out(
+            shell, "\n".join([*([opts] if opts else []), *assignments, _repoint_line(section)]),
+            repo, home, config_dir=config_dir,
+        )
+        assert again.returncode == 0, (again.stdout, again.stderr)
+        assert os.readlink(dir_) == str(target), os.readlink(dir_)
+        # And it costs the store nothing: everything is where it was, plus the
+        # directory `mkdir -p` was asked for.
+        assert _file_map(store) == {
+            **before, str(target.relative_to(store)): "dir"
+        }, (script, _file_map(store))
+        return
+
+    if cell in _REPOINT_SUCCEEDS:
+        assert out.returncode == 0, (script, out.stdout, out.stderr)
+        # Two assertions rather than one: `os.readlink` in the message of a
+        # combined assert is evaluated when the condition is FALSE, which is
+        # exactly when `$dir` is not a link and reading it raises — so the one
+        # state this line exists to report came back as a traceback.
+        assert os.path.islink(dir_), (script, _file_map(dir_.parent))
+        assert os.readlink(dir_) == str(target), (script, os.readlink(dir_))
+        # Everything already in the store is where it was, and the only thing
+        # added is the directory `mkdir -p` was asked for.
+        _flat_memories_outcome(section)
+        expected = dict(before)
+        if not target_existed:
+            expected[str(target.relative_to(store))] = "dir"
+        assert _file_map(store) == expected, (script, _file_map(store))
+        if cell == "repoint-link-outside-the-store":
+            assert _file_map(outside) == outside_before, (script, _file_map(outside))
+        if cell == "repoint-relative-store":
+            # Reaching the store is the whole of it: the assertions above read
+            # the link's name, and only this one reads what it arrives at.
+            assert _link_name_form(section) == "absolute", "the page claims otherwise"
+            assert dir_.is_dir(), (script, os.readlink(dir_))
+        if cell == "repoint-target-is-a-link":
+            # Nothing on the page stops this one, and the cell records why it
+            # matters: what the harness writes now lands outside the corpus.
+            assert os.path.realpath(dir_) == str(outside), (script, os.path.realpath(dir_))
+        return
+
+    if cell == "guard-dir-is-a-directory":
+        _not_a_link_outcome(section)
+    assert out.returncode != 0, (script, out.stdout, out.stderr)
+    assert _file_map(store) == before, (script, _file_map(store))
+    if cell == "guard-dir-is-a-directory":
+        assert dir_.is_dir() and not dir_.is_symlink(), "the directory became a link"
+        assert _file_map(dir_) == dir_before, (script, _file_map(dir_))
+    else:
+        assert os.path.islink(dir_), "the reader's link was removed"
+        assert os.readlink(dir_) == str(corpus), (script, os.readlink(dir_))
+    if opts:
+        # The options half of the page's account, run: under `set -u` the shell
+        # names the variable itself and the line stops before its first test,
+        # whichever of the three is missing.
+        assert _nounset_streams(section) == "shell", "the page claims otherwise"
+        # The shell's own wording, not the name loose in any message: a
+        # `mkdir:` failure names the same path and would satisfy a bare
+        # substring while saying nothing about `set -u`. And it names the
+        # variable THIS cell unset and neither of the other two, which is
+        # what tells the three of them apart.
+        unset = cell[len("guard-"):-len("-unset")]
+        assert re.search(_NOUNSET_MESSAGE.format(name=unset), out.stderr), (
+            script, out.stderr
+        )
+        named = [
+            one for one in ("store", "dir", "target")
+            if one != unset and re.search(_NOUNSET_MESSAGE.format(name=one), out.stderr)
+        ]
+        assert not named, (script, named, out.stderr)
+    elif cell in ("guard-store-unset", "guard-dir-unset"):
+        # Which streams the stopped line uses is the page's claim, and it is
+        # the only explanation a reader is offered for the status.
+        if _stopped_line_streams(section) == "silent":
+            assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
+        else:
+            assert out.stderr.strip(), (script, out.stdout, out.stderr)
+    elif cell == "guard-target-unset":
+        if _unset_target_streams(section) == "loud":
+            assert out.stderr.strip(), (script, out.stdout, out.stderr)
+        else:
+            assert not out.stderr, (script, out.stdout, out.stderr)
+    if cell == "guard-store-missing":
+        assert not named_store.exists(), f"{named_store} was created"
+    if not target_existed:
+        assert not target.exists(), f"{target} was created"
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+@pytest.mark.parametrize(
+    "state",
+    (
+        "dir-links-the-corpus-root",
+        "dir-links-a-target-holding-the-colliding-name",
+        "dir-is-the-directory-the-race-left",
+    ),
+)
+def test_no_shell_block_the_adoption_section_prints_removes_anything_but_the_link_it_judges(
+    tmp_path, state, shell
+) -> None:
+    """Every block the section prints, read for removals and then run.
+
+    The reading half is the cheap one: one command in the whole section removes
+    anything, it names one operand, and a test earlier in that same command
+    judges that operand. So a removal cannot arrive under a sentence still
+    promising the store is untouched, and the one that is there cannot grow a
+    flag.
+
+    The running half is what no reading does. A removal's reach comes from its
+    operand and not from its flags: a path INTO a `$dir` that is a link
+    resolves through the link into the store. The states are the two shapes
+    that makes reachable — `$dir` linking the corpus root, and `$dir` linking a
+    `$target` that already holds an entry named for it — plus the directory the
+    race leaves. The blocks run in the order the page prints them, which is the
+    order a reader pastes them in.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    blocks = _section_blocks(section)
+    listed = [label for label, _body, _pasted in blocks]
+    assert _rm_reach(section) == "link-only", "the page claims otherwise"
+    # The page says it prints no command for the move a reader makes by hand,
+    # which is a promise about the blocks below rather than about the prose.
+    _printed_move_command(section)
+
+    # A command per fragment: the section's blocks are one-liners joined by
+    # `&&`, and it is the fragment before a removal that gets to stop it.
+    read = [
+        (label, [one.strip() for one in re.split(r"&&|\|\||[;|\n]", body)])
+        for label, body, _pasted in blocks
+    ]
+    removals = [
+        (label, fragments, at)
+        for label, fragments in read
+        for at, fragment in enumerate(fragments)
+        if re.search(r"\b(?:rm|rmdir|mv)\b", fragment)
+    ]
+    assert len(removals) == 1, ([(one[0], one[1][one[2]]) for one in removals], listed)
+    _label, fragments, at = removals[0]
+    # `shlex` so a quoted operand holding a space stays one word: an `rm` with a
+    # second word is an `rm` carrying a flag, in whichever order it is written.
+    words = shlex.split(fragments[at])
+    assert words[0] == "rm" and len(words) == 2, (fragments[at], listed)
+    judged = [one for one in fragments[:at] if one.startswith("[ ") and words[1] in one]
+    assert judged, (fragments[at], fragments, listed)
+    # A redirection writes as surely as a removal deletes, and the one
+    # destination that keeps nothing is the only one the section may name.
+    written = [
+        (label, found.group(1))
+        for label, body, _pasted in blocks
+        for found in re.finditer(r"\d?>>?\s*([^\s;&|)]+)", body)
+        if found.group(1) != "/dev/null"
+    ]
+    assert not written, (written, listed)
+
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+    repo = _fixture_repo(home / "repo", home)
+    store = home / "notes"
+    with_search, _without = _target_rule(section)
+    target = Path(with_search.replace("$store", str(store)))
+    target.mkdir(parents=True)
+    (target / "MEMORY.md").write_text("---\nname: m\n---\nm\n", encoding="utf-8")
+    # A memory lying flat in the corpus root, which is what `$dir` links in the
+    # state the page is written for.
+    (target.parent / "top.md").write_text("---\nname: t\n---\nt\n", encoding="utf-8")
+    if state == "dir-links-a-target-holding-the-colliding-name":
+        # The name a removal reaching THROUGH `$dir` lands on, as a file rather
+        # than as the directory an `rm` without `-r` refuses.
+        (target / target.name).write_text("---\nname: c\n---\nc\n", encoding="utf-8")
+
+    config_dir = home / ".claude"
+    dir_ = config_dir / "projects" / _harness_key(repo, _key_rule(section)) / "memory"
+    dir_.parent.mkdir(parents=True)
+    if state == "dir-is-the-directory-the-race-left":
+        dir_.mkdir()
+        os.symlink(target, dir_ / target.name)
+        (dir_ / "session-note.md").write_text("---\nname: s\n---\ns\n", encoding="utf-8")
+    elif state == "dir-links-the-corpus-root":
+        os.symlink(target.parent, dir_)
+    else:
+        os.symlink(target, dir_)
+
+    before = _file_map(store)
+    # Only the two variables the page tells the reader to set: `$dir` comes off
+    # the page, so a block that stops defining it takes these states with it.
+    script = "\n".join([
+        f"store={shlex.quote(str(store))}",
+        f"target={shlex.quote(str(target))}",
+        *[body for _label, body, pasted in blocks if pasted],
+    ])
+    out = _shell_out(shell, script, repo, home, config_dir=config_dir)
+    assert _file_map(store) == before, (script, out.stdout, out.stderr, _file_map(store))
+    # `$target` is under `$store` and the map above covers it; asserted on its
+    # own so a failure names the directory the whole section turns on.
+    assert target.is_dir() and not target.is_symlink(), (script, _file_map(store))
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+def test_the_dir_the_page_derives_falls_back_to_home_where_the_variable_is_unset(
+    tmp_path, shell
+) -> None:
+    """The `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` fallback, executed.
+
+    Every other cell here runs with the variable set, so the branch the reader
+    who has never set it takes was the one branch of the page's own expansion
+    nothing ran — and the page could have lost it with all of them green.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    # `want` below is the directory the sentence above the line says it names.
+    _dir_line_purpose(section)
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+    repo = _fixture_repo(home / "repo", home)
+    want = (
+        home / ".claude" / "projects"
+        / _harness_key(repo, _key_rule(section)) / "memory"
+    )
+    # `ls -ld` is half the line, so the directory has to be there for the line
+    # to run to the end and print what it derived.
+    want.mkdir(parents=True)
+
+    script = "\n".join([
+        _key_derivation_block(section), _dir_line(section), 'printf \'%s\\n\' "$dir"',
+    ])
+    out = _shell_out(shell, script, repo, home, config_dir=_NO_CONFIG_DIR)
+    assert out.returncode == 0, (script, out.stdout, out.stderr)
+    printed = out.stdout.strip().splitlines()
+    assert printed, (script, out.stdout, out.stderr)
+    assert printed[-1] == str(want), (script, out.stdout, str(want))
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+def test_an_unset_name_the_line_never_reaches_is_not_the_shells_message(
+    tmp_path, shell
+) -> None:
+    """`set -u` reports at expansion, and the line is an AND-list.
+
+    Every `guard-*-unset` cell builds `$dir` as a valid symlink, so the chain
+    always reaches the unset name and the shell always speaks. This is the
+    other half: `$dir` an ordinary directory fails the first test, `$store` is
+    never expanded, and the reader gets the same status and the same silence
+    the option was supposed to replace with a message.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    assert _nounset_streams(section) == "shell", "the page claims otherwise"
+    _not_a_link_outcome(section)
+    home = Path(os.path.realpath(str(tmp_path))) / "home"
+    home.mkdir()
+    with_search, _without = _target_rule(section)
+    target = Path(with_search.replace("$store", str(home / "notes")))
+    target.mkdir(parents=True)
+    dir_ = home / "memory"
+    dir_.mkdir()
+    before = _file_map(dir_)
+
+    # `$store` unset, and nothing else: the name the line would expand second.
+    script = "\n".join([
+        "set -u",
+        f"dir={shlex.quote(str(dir_))}",
+        f"target={shlex.quote(str(target))}",
+        _repoint_line(section),
+    ])
+    out = _shell_out(shell, script, home, home)
+    assert out.returncode != 0, (script, out.stdout, out.stderr)
+    if _nounset_early_stop(section) == "silent":
+        assert not out.stdout and not out.stderr, (script, out.stdout, out.stderr)
+    else:
+        assert out.stderr.strip(), (script, out.stdout, out.stderr)
+    assert dir_.is_dir() and not dir_.is_symlink(), (script, "the directory became a link")
+    assert _file_map(dir_) == before, (script, _file_map(dir_))
+
+
+def test_a_zsh_case_fails_rather_than_skips_where_no_context_declares_it(
+    monkeypatch,
+) -> None:
+    """The skip is the thing being guarded, not the shell.
+
+    Half of the cells above ran in zsh or reported green having run in
+    nothing, and both looked the same from the check name.
+    """
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.delenv("MEMKIT_NO_ZSH", raising=False)
+    # A skip here would SKIP THIS CASE rather than fail it, which is the
+    # defect wearing the test's own clothes — so it is caught by name.
+    try:
+        _needs_zsh()
+    except pytest.skip.Exception as skipped:
+        raise AssertionError(f"skipped where it must fail: {skipped}") from None
+    except AssertionError as failed:
+        assert "did not declare itself without one" in str(failed), failed
+    else:
+        raise AssertionError("a missing zsh was accepted")
+
+    monkeypatch.setenv("MEMKIT_NO_ZSH", "1")
+    with pytest.raises(pytest.skip.Exception, match="declared it has no zsh"):
+        _needs_zsh()
+
+
+def test_a_zsh_case_fails_on_a_shell_free_path_rather_than_reporting_a_skip(
+    tmp_path,
+) -> None:
+    """The zsh half, run for real on a PATH that has no zsh.
+
+    The case above monkeypatches one function; this one composes the whole
+    context the guard exists for — the shell genuinely absent, nothing
+    declaring it absent — and looks at what the run reports. The failure worth
+    preventing is a context that reports green having executed none of these
+    cells, and only counting the outcomes of a real run tells a green that ran
+    from a green that skipped.
+    """
+    import xml.etree.ElementTree as ET
+
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    for name in ("bash", "sh", "git", "env", "mkdir", "rm", "ln", "ls", "tr",
+                 "printf", "cat", "sed", "grep", "cp", "mv", "chmod", "uname"):
+        found = shutil.which(name)
+        if found:
+            os.symlink(found, shim / name)
+    assert shutil.which("zsh", path=str(shim)) is None, "the shim PATH carries a zsh"
+
+    report = tmp_path / "report.xml"
+    env = {**os.environ, "PATH": str(shim), "PYTHONDONTWRITEBYTECODE": "1"}
+    env.pop("MEMKIT_NO_ZSH", None)
+    # By name, so this case cannot select itself: a nested run of the whole
+    # zsh selection would recurse until the timeout.
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__).resolve()),
+         "-k", "store_in_git_section_runs_where_it_is_pasted and zsh",
+         "-p", "no:cacheprovider", "--junitxml", str(report)],
+        cwd=str(REPO), env=env, capture_output=True, text=True, timeout=900,
+    )
+    assert report.exists(), (out.stdout, out.stderr)
+    root = ET.parse(report).getroot()
+    suite = root if root.tag == "testsuite" else root[0]
+    counts = suite.attrib
+    ran = int(counts["tests"])
+    failed = int(counts["failures"]) + int(counts["errors"])
+    assert ran, (out.stdout, out.stderr)
+    assert int(counts["skipped"]) == 0, (counts, out.stdout)
+    assert failed == ran, (counts, out.stdout)
+    # Counting says every case failed; it does not say they failed for the
+    # missing shell. A shim PATH short any binary the fixtures need fails them
+    # all just as completely and satisfies the count, so the reason the guard
+    # writes is read out of each case.
+    reasons = [
+        (case.attrib.get("name"), (node.get("message") or "") + "".join(node.itertext()))
+        for case in suite.iter("testcase")
+        for node in case
+        if node.tag in ("failure", "error")
+    ]
+    assert len(reasons) == failed, (len(reasons), counts)
+    unexplained = [
+        name for name, text in reasons
+        if "did not declare itself without one" not in text
+    ]
+    assert not unexplained, (unexplained, reasons[:1])
+    assert out.returncode != 0, out.stdout
+
+
+def test_every_checkable_claim_in_the_adoption_section_has_an_anchor() -> None:
+    """Every claim of the repoint procedure, and the extractor that pins it.
+
+    The cases above run the section's commands and read its rules out of it.
+    What none of them catches is a sentence NEITHER run NOR read: it can be
+    reversed, or contradict the command it sits under, with every case here
+    green. Four such sentences shipped on this page at once, so this reads the
+    procedure's prose sentence by sentence and asks which regex touches it.
+
+    The failure names the sentences, because the answer to one is a new
+    extractor and the answer to another is that the page should not say it.
+    Scoped to the procedure the page leaves to the reader's hands; the merge
+    round widens it to the page, whose measured-on claims about the harness
+    want anchors of a different kind.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    anchors = _claim_anchors()
+    # Every rule this file reads out of the page carries an anchor by
+    # construction: an extractor added with a pattern nothing collects would
+    # leave the sentence it reads looking unpinned.
+    missing = _stated_callers() - {name for name, _pattern in anchors}
+    assert not missing, sorted(missing)
+
+    said = _hand_repoint_prose(section)
+    # The extractors read the section as one line and a claim can run past a
+    # sentence end, so a match pins every sentence it touches.
+    flat = " ".join(said)
+    at, spans = 0, []
+    for one in said:
+        spans.append((at, at + len(one)))
+        at += len(one) + 1
+    pinned = set()
+    for _name, pattern in anchors:
+        for found in re.finditer(pattern, flat):
+            pinned |= {
+                at
+                for at, (opens, closes) in enumerate(spans)
+                if found.start() < closes and opens < found.end()
+            }
+    loose = [one for at, one in enumerate(said) if at not in pinned and _makes_a_claim(one)]
+    assert not loose, (f"{len(loose)} claims no extractor reads", loose)
+
+
+def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
+    """Three sentences about one ordering, checked against each other.
+
+    The page prints the precedence of settings scopes once and then reasons
+    from it twice — where the flag writes the setting, and which file to set
+    instead where a checkout already carries one. Nothing here can run the
+    harness's precedence, but a page that contradicts the list it printed four
+    paragraphs up is wrong on its own terms, and that much is checkable.
+    """
+    section = _store_in_git_section(STORE_DOC.read_text(encoding="utf-8"))
+    scopes = _settings_precedence(section)
+    prose = _prose(section)
+
+    found = re.search(
+        r"It writes the setting into your ([^,]+), the (top|bottom) of the "
+        r"precedence list above",
+        prose,
+    )
+    assert found, "the page no longer says which scope the flag writes to"
+    scope, end = found.group(1).strip(), found.group(2)
+    assert scopes[-1 if end == "bottom" else 0] == scope, (found.groups(), scopes)
+
+    found = re.search(
+        r"set (`[^`]+`) in that checkout instead: untracked, and (above|below) both",
+        prose,
+    )
+    assert found, "the page no longer routes the reader to the local settings file"
+    instead, side = found.group(1), found.group(2)
+    # "both" is the checked-in file the sentence has just named and the scope
+    # the flag writes to, which is the whole reason the reader is sent there.
+    over = [one for one in ("`.claude/settings.json`", scope) if one in scopes]
+    assert len(over) == 2, (over, scopes)
+    beats = scopes.index(instead) < min(scopes.index(one) for one in over)
+    assert beats == (side == "above"), (found.groups(), scopes)
+
+    # The reader the checked-in file blocks is routed somewhere, and a route
+    # that does not outrank what it routes around is not a route. The symlink
+    # was offered as that route while the page's own account of the setting
+    # says the harness writes where the setting sends it, which the link never
+    # touches.
+    # The link is offered for one case, and it is the one this paragraph's own
+    # two exclusions leave: a scope above the reader's carries the setting and
+    # nothing they can write outranks it. What the link reaches there is the
+    # reason the reader is routed at all, so it is read rather than spanned:
+    # the clause used to sit inside a `.*?` and could be inverted back to
+    # offering the link with every case green. The two are one claim, and a
+    # pair the page cannot mean is the failure, not either half's vocabulary.
+    assert _link_offer(section) == ("outranked", "unreachable"), (
+        "the page offers the link for cases its own next sentences rule out"
+    )
+    found = re.search(
+        r"Where a checkout's checked-in (`[^`]+`) declares `autoMemoryDirectory` "
+        r"already, (?:[^.]+)\. The route left there is that checkout's own (`[^`]+`), "
+        r"which the harness reads (above|below) it",
+        prose,
+    )
+    assert found, "the page no longer routes the reader a checked-in setting blocks"
+    blocked, route, side = found.groups()
+    assert (scopes.index(route) < scopes.index(blocked)) == (side == "above"), (
+        found.groups(), scopes
+    )
+    # And the one scope no route of the reader's reaches is the list's own top.
+    assert "Under managed policy the value is not yours to override" in prose, (
+        "the page no longer says managed policy is out of the reader's hands"
+    )
+    assert scopes[0] == "managed policy", scopes
+
+
+def _uncommented(text: str, block: bool = False) -> str:
+    """The file with everything a comment removes taken out.
+
+    A construct matched anywhere in a file is satisfied by a comment mentioning
+    it, which is exactly what deleting the thing the comment describes leaves
+    behind — so a construct is matched only in what runs. A comment on the END
+    of a code line is that same edit with the comment moved, so the cut is at
+    the `#` wherever one opens a comment, and quoted `#` is left alone because
+    both files this reads carry it inside strings.
+
+    A NAME is a different case and does not come through here: `MEMKIT_NO_ZSH`
+    is asserted absent from the raw text of both files, which no quoting shape
+    can defeat and no scanner can be wrong about. This is for the constructs —
+    the list the build reads, and the steps the runner takes.
+
+    Nix also comments with `/* ... */`, which removes a list element while the
+    file stays valid, so the nix caller asks for those too. The workflow does
+    not: `/*` is a glob there, not a comment, and cutting at one would eat a
+    path the runner takes.
+    """
+    kept = []
+    inblock = False
+    for line in text.splitlines():
+        quote = None
+        out = []
+        i = 0
+        while i < len(line):
+            char = line[i]
+            if inblock:
+                if line.startswith("*/", i):
+                    inblock = False
+                    i += 1
+            elif quote is not None:
+                out.append(char)
+                if char == "\\" and quote == '"':
+                    i += 1
+                    if i < len(line):
+                        out.append(line[i])
+                elif char == quote:
+                    quote = None
+            elif char == "#":
+                break
+            elif block and line.startswith("/*", i):
+                inblock = True
+                i += 1
+            else:
+                out.append(char)
+                if char in "\"'":
+                    quote = char
+            i += 1
+        kept.append("".join(out).rstrip())
+    return "\n".join(kept)
+
+
+def _nix_list(attrset: str, name: str) -> list:
+    """One `name = [ ... ];` binding of a nix attrset, as its elements.
+
+    Read as a list rather than searched as text: a substring assertion over the
+    attrset passes on a name that is in a comment, in a neighbouring binding,
+    or in a string, and the thing the build needs is that the name be an
+    ELEMENT. Nix separates list elements by whitespace, so splitting is the
+    whole parse this needs.
+    """
+    found = re.search(rf"\b{re.escape(name)}\s*=\s*\[(.*?)\]\s*;", attrset, re.S)
+    assert found, f"no `{name}` list in the attrset:\n{attrset}"
+    return found.group(1).split()
+
+
+def _workflow_job(workflow: str, job: str) -> str:
+    """One job's block out of `check.yml`, delimited by indentation.
+
+    Not a YAML parse and not pretending to be one: the suite has no parser and
+    a dependency for one meta-test is a poor trade. What this needs is that
+    the step be found inside the job that gates, rather than anywhere in the
+    file, and the document's own indentation says where that job ends.
+    """
+    lines = _uncommented(workflow).splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln == f"  {job}:"]
+    assert len(starts) == 1, f"{len(starts)} jobs named {job!r} in check.yml"
+    ends = [i for i in range(starts[0] + 1, len(lines)) if re.match(r"  \S", lines[i])]
+    return "\n".join(lines[starts[0] : ends[0] if ends else len(lines)]) + "\n"
+
+
+def _workflow_steps(job: str) -> list:
+    """The job's steps, in the order the runner takes them.
+
+    Order is half of what the zsh step is for: installed after the suite has
+    run it is installed for nothing, and the job's own list order is the only
+    place that fact lives.
+    """
+    return job.split("\n      - ")[1:]
+
+
+# This file, spelled the way the workflow's own steps would name it.
+_THIS_FILE = Path(__file__).resolve().relative_to(REPO).as_posix()
+
+
+def _env_map(block: str) -> dict:
+    """The first `env:` mapping in a workflow block.
+
+    A value carrying a `${{` expression is left out: nothing here expands one,
+    and the literal text is a value the runner would never hand a step.
+    """
+    lines = block.splitlines()
+    opens = [i for i, line in enumerate(lines) if re.match(r"\s*env:\s*$", line)]
+    if not opens:
+        return {}
+    at = opens[0]
+    indent = len(lines[at]) - len(lines[at].lstrip())
+    found = {}
+    for line in lines[at + 1 :]:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        key, sep, value = line.strip().partition(":")
+        value = value.strip().strip('"').strip("'")
+        if sep and "${{" not in value:
+            found[key.strip()] = value
+    return found
+
+
+def _job_env(job: str) -> dict:
+    """The job-level `env:` map, which every step of the job runs under."""
+    return _env_map(job.split("\n    steps:")[0])
+
+
+def _pytest_steps(job: str) -> list:
+    """Indices of the job's steps that run pytest, however the line is written.
+
+    No argument allowlist and no anchor on `run: `. Every earlier version of
+    this gate named the shapes a whole-suite invocation may take, and each one
+    was defeated by a shape it had not been told about — a block scalar, a
+    bare `--no-header`, an argument group that did not survive `re.M`. A step
+    either runs pytest or it does not.
+    """
+    return [
+        i for i, step in enumerate(_workflow_steps(job)) if "python -m pytest" in step
+    ]
+
+
+def _pytest_commands(step: str) -> list:
+    """Every pytest invocation in a step's script, as its argument list.
+
+    Continuations are joined first: what follows a backslash belongs to the
+    invocation as much as what precedes it.
+    """
+    joined = re.sub(r"\\\n\s*", " ", step)
+    return [
+        shlex.split(found.group(1))
+        for found in re.finditer(r"python -m pytest([^\n]*)", joined)
+    ]
+
+
+def _zsh_install_steps(job: str) -> list:
+    """Indices of the job's steps that INSTALL zsh, not the ones that prove it."""
+    return [
+        i
+        for i, step in enumerate(_workflow_steps(job))
+        if re.search(r"apt-get install[^\n]*\bzsh\b", step)
+    ]
+
+
+_COLLECTED: dict = {}
+
+
+def _collected_files(env: dict, args: list) -> dict:
+    """What `pytest <args>` collects under `env`, as {file: number of tests}.
+
+    The child environment is built key by key. Inheriting the caller's would
+    hide the very lever this measures, since a `PYTEST_ADDOPTS` in the parent
+    would then reach the child as well. `pyproject.toml` is the repo's own and
+    no `-o addopts=` suppresses it, because `addopts` there is a third lever.
+
+    Memoized on the environment and the arguments: the same pair collects the
+    same set, and the benign-rewrite cases ask for most of them twice.
+    """
+    key = (tuple(sorted(env.items())), tuple(args))
+    if key not in _COLLECTED:
+        child = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            **env,
+        }
+        # `no:cacheprovider` so the nested run leaves the cache of the run that
+        # spawned it alone.
+        done = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q",
+             "-p", "no:cacheprovider", *args],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            env=child,
+        )
+        assert done.returncode in (0, 5), (
+            f"collecting `pytest {' '.join(args)}` under {env} exited "
+            f"{done.returncode}:\n{done.stdout}\n{done.stderr}"
+        )
+        _COLLECTED[key] = {
+            name: int(count)
+            for name, count in re.findall(r"^(\S+\.py): (\d+)$", done.stdout, re.M)
+        }
+    return _COLLECTED[key]
+
+
+def _zsh_is_installed_before_pytest(workflow: str) -> None:
+    """Every pytest the gating job runs comes after the step installing zsh."""
+    job = _workflow_job(_uncommented(workflow), "python")
+    installs = _zsh_install_steps(job)
+    runs = _pytest_steps(job)
+    assert installs, "no step of the `python` job installs zsh"
+    assert runs, "no step of the `python` job runs pytest"
+    assert min(runs) > max(installs), (
+        f"the `python` job installs zsh at steps {installs} and runs pytest "
+        f"at {runs}"
+    )
+
+
+def _the_gating_job_runs_the_whole_suite(workflow: str) -> None:
+    """The gating job really collects the suite its steps read as running.
+
+    The outcome rather than the run line's arguments: `PYTEST_ADDOPTS` on
+    either `env:` map, `addopts` in `pyproject.toml`, an `--ignore=` among the
+    arguments and a filename appended to the run line each shrink what the job
+    runs while every step still reads as a whole-suite pytest. So the steps are
+    executed for their collection, under the environment the workflow text
+    builds, and what they reach is compared with what the repo collects on its
+    own. Asked of the job rather than of one step, this needs no way to tell
+    the whole-suite step from a narrower one — the narrow step reaching only
+    its own file is the ordinary case.
+    """
+    job = _workflow_job(_uncommented(workflow), "python")
+    steps = _workflow_steps(job)
+    whole = set(_collected_files({}, []))
+    assert _THIS_FILE in whole, f"{_THIS_FILE} is collected by nothing at all"
+    collected = {}
+    for i in _pytest_steps(job):
+        env = {**_job_env(job), **_env_map(steps[i])}
+        found = {}
+        for args in _pytest_commands(steps[i]):
+            found.update(_collected_files(env, args))
+        collected[i] = sorted(found)
+    seen = {name for names in collected.values() for name in names}
+    assert not whole - seen, (
+        f"the `python` job collects nothing from {sorted(whole - seen)}; its "
+        f"pytest steps reach {({i: len(v) for i, v in collected.items()})} files"
+    )
+
+
+def test_every_context_that_gates_on_these_cases_carries_a_zsh() -> None:
+    """The marker has no producer, and both gating legs install the shell.
+
+    A test that skips on an environment variable is a test anybody can turn
+    off; what makes this one honest is that no CI context sets it, so the two
+    legs where these cases are the gate cannot take the skip. The marker is
+    matched by NAME: a nix attribute, an `export` in a builder, an `env:` map
+    and a `run:` line spell the same arming five ways, and an assertion that
+    knows one spelling is an assertion that misses four.
+    """
+    flake = (REPO / "flake.nix").read_text(encoding="utf-8")
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    # Over the RAW text of both files. Neither spells the marker anywhere, not
+    # even in a comment, so any occurrence at all is an arming — which is a
+    # smaller assertion than a comment scanner and one that no quoting can get
+    # past. The price is that the name may not be written down here.
+    assert "MEMKIT_NO_ZSH" not in flake
+    assert "MEMKIT_NO_ZSH" not in workflow
+    # The nix leg: zsh among the inputs of the builder every suite is made
+    # with, as an element of the list the build reads.
+    builder = re.search(
+        r'runCommand "memkit-\$\{name\}" \{(.*?)\n\s*\} ',
+        _uncommented(flake, block=True),
+        re.S,
+    )
+    assert builder, "the shared suite builder is no longer recognisable"
+    assert "pkgs.zsh" in _nix_list(builder.group(1), "nativeBuildInputs"), builder.group(1)
+    # The python leg: the gating job installs the shell, and then runs the
+    # suite that needs it. Either one alone leaves the cells uncovered under a
+    # context branch protection requires.
+    _zsh_is_installed_before_pytest(workflow)
+    # `zsh --version` is the evidence; `apt-get install` is what makes the
+    # shell present. Keyed on the evidence, a job that stopped installing and
+    # kept the version line reads as fully armed.
+    job = _workflow_job(_uncommented(workflow), "python")
+    steps = _workflow_steps(job)
+    for i in _zsh_install_steps(job):
+        assert re.search(r"\bzsh --version\b", steps[i]), (
+            f"step {i} of the `python` job installs zsh without verifying it"
+        )
+
+
+def test_the_gating_job_collects_the_suite_it_reads_as_running() -> None:
+    """Installing the shell buys nothing if the cells are never collected.
+
+    The run line is not evidence that they are. Four levers outside it —
+    `PYTEST_ADDOPTS` on either `env:` map, `addopts` in `pyproject.toml`, an
+    `--ignore=` among the arguments, a filename appended to the line — narrow
+    what the job runs while the step still reads as a whole-suite pytest and
+    the gate stays green. So the job's own environment is rebuilt out of the
+    workflow text and the collection is executed under it.
+    """
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    _the_gating_job_runs_the_whole_suite(workflow)
+
+
+def _benign_rewrites(workflow: str) -> list:
+    """The workflow rewritten three ways that change nothing it does.
+
+    The scalar rewrite goes into whichever form the step is not written in, so
+    that a workflow already spelling the step the other way gets the same
+    three cases rather than an assertion about the form it happens to use.
+    """
+    plain = re.search(r"^([ ]*)run: (\S*python -m pytest[^\n]*)$", workflow, re.M)
+    folded = re.search(
+        r"^([ ]*)run: \|\n[ ]*(\S*python -m pytest[^\n]*)$", workflow, re.M
+    )
+    found = plain or folded
+    assert found, "no pytest `run:` in the workflow to rewrite"
+    indent, command, whole = found.group(1), found.group(2), found.group(0)
+    other = (
+        f"{indent}run: |\n{indent}  {command}" if plain else f"{indent}run: {command}"
+    )
+    rewrites = [
+        ("the other scalar form", other),
+        ("an inserted env:", f'{indent}env:\n{indent}  PYTHONHASHSEED: "0"\n{whole}'),
+        ("an added comment", f"{indent}# A line that says nothing.\n{whole}"),
+    ]
+    out = []
+    for name, replacement in rewrites:
+        rewritten = workflow.replace(whole, replacement, 1)
+        assert rewritten != workflow, f"{name} rewrote nothing"
+        out.append((name, rewritten))
+    return out
+
+
+def test_the_whole_suite_gate_survives_a_benign_rewrite_of_the_step() -> None:
+    """The direction the mutation corpus cannot express: an edit that must PASS.
+
+    A gate that recognizes spellings fails on a new one, and a corpus where
+    every probe asks for a red never notices. These three edits change how the
+    step is written and nothing about what it does, so a gate that goes red on
+    one of them is reading the text instead of the outcome.
+    """
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    for name, rewritten in _benign_rewrites(workflow):
+        try:
+            _zsh_is_installed_before_pytest(rewritten)
+            _the_gating_job_runs_the_whole_suite(rewritten)
+        except AssertionError as why:
+            raise AssertionError(f"the gate reds on {name}: {why}") from why
+
+
+def _sweep_steps(job: str) -> list:
+    """Every step of `job` that runs the mutation sweep over a corpus, by index.
+
+    `--selftest` is left out: it drives fixed cases and reads no corpus at all,
+    so counting it here would make the falsification the job runs first
+    indistinguishable from the second sweep step this file refuses.
+    """
+    return [
+        i
+        for i, step in enumerate(_workflow_steps(job))
+        if re.search(r"\bmutation_sweep\.py\b", step) and "--selftest" not in step
+    ]
+
+
+def _selftest_steps(job: str) -> list:
+    """Every step of `job` that runs the sweep against its own cases, by index."""
+    return [
+        i
+        for i, step in enumerate(_workflow_steps(job))
+        if re.search(r"\bmutation_sweep\.py\b[^\n]*\s--selftest\b", step)
+    ]
+
+
+def test_the_mutation_sweep_gate_runs_the_whole_corpus_and_asserts_its_outcome() -> None:
+    """The corpus is one list; a step that names modules is a second one.
+
+    Two `--module` runs covered 114 probes of 661 and twelve modules ran in CI
+    at all, so an anchor that had slipped off the code it was written for sat
+    dead for twenty-three commits with every gate green. An enumeration is
+    what rots — this asserts there is none.
+
+    And it asserts the OUTCOME the step gates on rather than the argv it is
+    spelled with. `mutation_sweep.py` already exits non-zero for every verdict
+    but CAUGHT, so the one hole is the selection that runs nothing and exits
+    0; the step closes it by reading back how many probes ran and that all of
+    them were caught. A gate that instead listed the verdict words it accepts
+    would go green the day a new verdict is added, which is the class this
+    replaces.
+
+    One verdict other than CAUGHT exits 0: a probe whose every paired test
+    skipped for the reason it declares, which three here do on the runner's
+    case-sensitive filesystem. So the number read back is the catches plus
+    those, and the sweep's own falsification runs before either is believed.
+    """
+    workflow = (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    live = _uncommented(workflow)
+    jobs = {
+        name: _workflow_job(live, name)
+        for name in _job_names(live)
+        if f"\n  {name}:\n" in f"\n{live}\n"
+    }
+    running = {
+        name: _sweep_steps(job) for name, job in jobs.items() if _sweep_steps(job)
+    }
+    assert running, "no job in check.yml runs the mutation sweep at all"
+    assert sum(len(steps) for steps in running.values()) == 1, (
+        f"the sweep runs in {running}; one step over the whole corpus is the "
+        "shape, because a second is a list of what the first leaves out"
+    )
+    (job_name,) = running
+    step = _workflow_steps(jobs[job_name])[running[job_name][0]]
+
+    # And the sweep is falsified before it is read. The sweep is what decides
+    # what a verdict means, so a refusal that had quietly stopped refusing
+    # would report a green corpus first and be checked afterwards.
+    falsified = _selftest_steps(jobs[job_name])
+    assert len(falsified) == 1, (
+        f"`{job_name}` runs the sweep's own falsification {len(falsified)} "
+        "times; one step, because every number this job reports rests on "
+        "verdicts only that step checks"
+    )
+    assert falsified[0] < running[job_name][0], (
+        f"in `{job_name}` the corpus is swept before the sweep is falsified, "
+        "so a sweep that had stopped refusing reports its green number first"
+    )
+
+    assert "--module" not in step, (
+        f"the sweep step in `{job_name}` names modules, so the corpus it runs "
+        "is a hand-kept list that nothing re-derives"
+    )
+    assert not re.search(r"mutation_sweep\.py[^\n]*\s-k\b", step), (
+        f"the sweep step in `{job_name}` narrows the corpus with -k"
+    )
+    # The outcome, read back out of the step: how many probes ran, and that
+    # every one was caught. Both numbers, because either alone is satisfied by
+    # `CAUGHT 0/0` — the verdict a mistyped filter produces, which the sweep
+    # exits 0 on.
+    assert "probes" in step and "CAUGHT" in step, (
+        f"the sweep step in `{job_name}` reads nothing back out of the run, so "
+        "an empty selection exits 0 and gates nothing"
+    )
+    # A probe whose every paired test skipped for the reason it declares is an
+    # exception the sweep exits 0 on, so the caught count alone stops reaching
+    # the probe count on a runner that has one. Added back rather than
+    # ignored: a step that dropped the declared ones would drop with them a
+    # probe whose declaration has stopped matching the skip it names.
+    assert "DECLARED" in step and re.search(r"done \+ declared == probes", step), (
+        f"the sweep step in `{job_name}` does not add the declared exceptions "
+        "back to the caught count, so a declared probe is either a silent pass "
+        "or a shortfall the step cannot account for"
+    )
+    # One loop in the sweep prints a probe's DECLARED line and counts it, so
+    # the names and the counter can only disagree in a log edited between the
+    # two steps. Printing the names is a reporting duty; counting what was
+    # printed is what makes the report checkable.
+    assert re.search(r"len\([^)]+\)\s*[!=]=\s*declared", step), (
+        f"the sweep step in `{job_name}` prints the declared probes by name "
+        "without asserting it printed one per declared exception, so a log "
+        "naming fewer than it counts goes green"
+    )
+    floor = re.search(r"done < (\d+)", step)
+    assert floor, f"the sweep step in `{job_name}` asserts no probe-count floor"
+    corpus = json.loads(
+        (REPO / "tools" / "mutation_probes.json").read_text(encoding="utf-8")
+    )["probes"]
+    # A floor is only a floor while it is close under the corpus. Above it the
+    # step is red on arrival; far below it — at 0, or at the 114 the two
+    # `--module` runs used to cover — a narrowed selection walks under it and
+    # the step reports a number it did not earn.
+    assert 0.9 * len(corpus) <= int(floor.group(1)) <= len(corpus), (
+        f"the step's floor is {floor.group(1)} against a corpus of "
+        f"{len(corpus)} probes"
+    )
+
+    # A job is a context, and a context nothing waits for is a gate that does
+    # not gate. `automerge.yml` is where the list of names lives.
+    automerge = (WORKFLOWS / "automerge.yml").read_text(encoding="utf-8")
+    listed = re.search(r"const requiredChecks = \[(.*?)\];", automerge, re.S)
+    assert listed, "automerge.yml no longer declares requiredChecks"
+    required = set(re.findall(r'"([^"]+)"', listed.group(1)))
+    declared = re.search(r"^    name:\s*(.+)$", jobs[job_name], re.MULTILINE)
+    context = declared.group(1).strip() if declared else job_name
+    assert context in required, (
+        f"`{context}` runs the sweep and is not in automerge.yml's "
+        f"requiredChecks {sorted(required)}, so a red sweep merges"
+    )
+
+
+def test_no_page_names_a_setting_the_harness_does_not_have() -> None:
+    """`memoryDir` is a key nothing reads.
+
+    The harness's setting is `autoMemoryDirectory`; a reader who searches
+    their settings for `memoryDir` finds nothing and has no way to tell a
+    wrong name from a feature they do not have. Cheap to reintroduce by
+    copying a paragraph, and invisible to every other check here.
+
+    CHANGELOG.md is excluded by decision, not by oversight: a changelog entry
+    may legitimately name the key it is recording the correction of. Every
+    other page and module is read WHOLE. A line-level exemption here — for a
+    retraction sentence, say — is a line any remedy string can be written on,
+    so the retraction states what the earlier reading got wrong without
+    spelling the name, and the file-level test keeps its teeth.
+    """
+
+    def names_it(text: str) -> bool:
+        return "memoryDir" in text
+
+    named = []
+    for where in ("docs", "src", "skills"):
+        for path in sorted((REPO / where).rglob("*")):
+            # Bytecode caches are not tracked, and a file that is not tracked
+            # is a file that is not there: leaving them in the walk opens the
+            # window where the source is fixed and the case is still red.
+            if "__pycache__" in path.parts:
+                continue
+            if path.is_file() and names_it(path.read_bytes().decode("utf-8", "replace")):
+                named.append(str(path.relative_to(REPO)))
+    if names_it((REPO / "README.md").read_text(encoding="utf-8")):
+        named.append("README.md")
+    assert named == [], named
+
+
 def test_the_release_procedure_is_written_down_and_reachable() -> None:
     """The mechanics are two PRs in an order that is not guessable, and the
     reasoning survived only in review threads until now.
@@ -3336,6 +5639,11 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         notes = Path(tmp) / "notes"
         notes.mkdir()
+        # HOME is a SIBLING of the store, not its parent: the diagnostic
+        # `~`-contracts through `relpath`, which would normalise away the very
+        # `/./` this case exists to catch.
+        home = Path(tmp) / "home"
+        home.mkdir()
         (notes / "pgbouncer.md").write_text(
             "---\ndescription: PgBouncer in transaction mode breaks "
             "session-scoped features.\n---\n\n# PgBouncer\n\nbody\n"
@@ -3348,7 +5656,7 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
             ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
              "--config", str(config), "--search", "pgbouncer transaction pooling"],
             capture_output=True, text=True, timeout=60,
-            env={"PATH": os.environ["PATH"], "HOME": tmp},
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
         )
         assert out.returncode == hook.EXIT_OK, (out.returncode, out.stderr)
         assert "pgbouncer.md" in out.stdout, out.stdout
@@ -3361,7 +5669,7 @@ def test_the_minimal_config_in_the_readme_is_a_working_config() -> None:
             ["python3", str(REPO / "src" / "memkit" / "memory_prompt_recall.py"),
              "--config", str(config), "--debug-config"],
             capture_output=True, text=True, timeout=60,
-            env={"PATH": os.environ["PATH"], "HOME": tmp},
+            env={"PATH": os.environ["PATH"], "HOME": str(home)},
         )
         assert diag.returncode == hook.EXIT_OK, diag.stderr
         # The exact directory, with nothing appended: a raw join of `.` prints
@@ -3506,7 +5814,7 @@ def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
     script = "set -e\n" + "\n".join(blocks)
     ran = subprocess.run(
         ["sh", "-c", script], capture_output=True, text=True, timeout=60,
-        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+        env=_sealed_env(home),
     )
     assert ran.returncode == 0, (ran.returncode, ran.stderr, script)
 
@@ -3523,7 +5831,7 @@ def test_the_quick_start_sequence_runs_as_printed(tmp_path) -> None:
          "--config", str(config), "--search",
          "why do prepared statements break under pgbouncer transaction pooling"],
         capture_output=True, text=True, timeout=60,
-        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+        env=_sealed_env(home),
     )
     assert out.returncode == hook.EXIT_OK, (out.returncode, out.stdout, out.stderr)
     # The pointer the top of the README promises — same file, same section tag.
@@ -3997,6 +6305,10 @@ def test_the_wrapper_execs_the_byte_identical_hook(root, tmp_path) -> None:
     env = dict(
         os.environ,
         HOME=str(tmp_path),
+        # Pinned, not inherited: the record this compares across the two
+        # invocations is read out of the redirected HOME, and the hook honours
+        # `XDG_CACHE_HOME` over it.
+        XDG_CACHE_HOME=str(tmp_path / ".cache"),
         CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config),
     )
     env.pop("MEMKIT_CONFIG", None)
@@ -4245,11 +6557,35 @@ def test_the_doctor_skill_says_to_relay_the_report_rather_than_re_derive_it():
         assert status in body, status
 
 
-def test_every_flag_the_init_skill_documents_is_inside_a_grant() -> None:
-    """A skill that tells the agent to pass a flag and then leaves it outside
-    the pre-approval is a handshake with a permission prompt in the middle of
-    it — on the one skill where the two turns are the whole of the consent."""
+def test_every_flag_the_init_skill_documents_is_one_init_accepts() -> None:
+    """A skill that names a flag the command does not have sends the agent into
+    a usage error on the turn that was supposed to write nothing — on the one
+    skill where the two turns are the whole of the consent.
+
+    The rule this replaces asked whether each documented flag was "reachable
+    from a prefix grant", which every string is: appending anything to a prefix
+    leaves the prefix where it started, so the loop was satisfied by a flag
+    that does not exist. What the grant decides is ORDER — it matches the
+    command up to `--dry-run`, so anything written before that falls outside
+    the pre-approval — and what decides whether a flag exists at all is the
+    parser.
+    """
+    from memkit import cli_init
+
     body = (SKILLS / "init" / "SKILL.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"^- `(--[a-z-]+)(?: [A-Z]+)?`", body, re.M))
+    assert documented >= {"--store", "--config", "--wire-claude-md"}, documented
+
+    parser = argparse.ArgumentParser()
+    cli_init.add_arguments(parser)
+    # The option strings argparse will actually match, rather than the help
+    # text they appear in: a flag named only inside another flag's help would
+    # pass a text search and still exit 2.
+    accepted = {
+        option for action in parser._actions for option in action.option_strings
+    }
+    assert documented <= accepted, sorted(documented - accepted)
+
     grants = [
         entry.strip().removeprefix("Bash(").rstrip(")")
         for entry in _frontmatter(SKILLS / "init" / "SKILL.md")[
@@ -4257,18 +6593,25 @@ def test_every_flag_the_init_skill_documents_is_inside_a_grant() -> None:
         ].split("), Bash(")
     ]
     prefixes = [g[: -len(":*")] for g in grants if g.endswith(":*")]
-    assert prefixes, grants
-    documented = set(re.findall(r"^- `(--[a-z-]+)(?: [A-Z]+)?`", body, re.M))
-    assert documented >= {"--store", "--config", "--wire-claude-md"}, documented
-    for flag in documented:
-        # Every documented flag has to be reachable from at least one prefix
-        # grant: appended to it, the command is still inside the pattern.
-        assert any(
-            f"{prefix} {flag}".startswith(prefix) for prefix in prefixes
-        ), flag
-    # And the read-only turn is one of the prefixes, which is the half that was
-    # missing.
+    # A PREFIX grant ending at `--dry-run` is what makes the optional flags
+    # pre-approved at all. An exact grant would prompt for a flag this page
+    # tells the agent to pass, on the turn that writes nothing.
     assert any(p.endswith("init --dry-run") for p in prefixes), prefixes
+
+    # And the page writes the command the way the grant matches it. `--dry-run`
+    # first, immediately after `init`; a flag ahead of it is outside the
+    # prefix. The FENCED blocks only — the grant in the frontmatter is the
+    # pattern rather than an invocation, and it is asserted above.
+    fenced = "\n".join(body.split("```")[1::2])
+    shown = [
+        line
+        for line in fenced.splitlines()
+        if "memkit init " in line and "--dry-run" in line
+    ]
+    assert shown, "the page shows no read-only invocation at all"
+    for line in shown:
+        argv = line.split("memkit init ", 1)[1].split()
+        assert argv[0] == "--dry-run", line
 
 
 def test_the_init_skill_describes_both_turns_and_the_codes_it_can_return():

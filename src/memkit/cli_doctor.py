@@ -48,15 +48,19 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Callable
 
+from memkit import harness_memory
 from memkit._exec import (
     CHILD_ENV_KEEP,
     CheckerRoute,
@@ -81,6 +85,7 @@ from memkit.memory_prompt_recall import (
     DOCTOR_ENV,
     ERRLOG_NAME,
     EXCLUDE_BASENAMES,
+    EXCLUDE_DIRS,
     FRAME_NONCE_BYTES,
     FRAME_TAG,
     GENERATED_CONFIG_NAME,
@@ -98,7 +103,9 @@ from memkit.memory_prompt_recall import (
     ConfigError,
     _corpus_files,
     _cwd_digest,
+    _display_cap,
     _display_path,
+    _excluded,
     _fts_db,
     _search_root,
     _session_state_path,
@@ -165,6 +172,20 @@ _LABEL_WIDTH = max(len(v) for v in LABELS.values())
 # is worse than a shorter message: it reads as complete.
 DETAIL_MAX_BYTES = 600
 
+# And what ONE PATH inside a detail may cost, because the bound above is only
+# half the rule. A path is the part of a sentence whose length somebody else
+# decides — a session's own cwd, a value out of a cloned settings file — and a
+# single long one fills the whole budget, so what gets cut is every other
+# sentence in the row. That failure is worse than a truncated path: the row
+# reads as a confident verdict with the verdict missing.
+#
+# Generous rather than tight, and measured against the longest HONEST path this
+# report prints: a derived default is a config directory plus a project key,
+# and a key is a whole absolute path with its separators replaced. Two nested
+# absolute paths in one string is 250 characters before anything is wrong. This
+# is here to stop one value eating a row, not to fit a column.
+PATH_SHOWN = 300
+
 
 # The frame's delimiters as a LITERAL, neutralised in doctor's own output.
 #
@@ -188,13 +209,57 @@ DETAIL_MAX_BYTES = 600
 _FRAME_LITERAL = re.compile(r"</?" + re.escape(FRAME_TAG))
 
 
+# What may follow a home spelling without the match being a different name.
+# TWO RULES AND NOT ONE: a key's own separator is the character a path uses to
+# start a component, so `-home-u-git-app` is a directory under `-home-u` while
+# `/home/u-git-app` is not one under `/home/u`. A single rule either leaves the
+# key spelling of home in the report or renames a sibling to a directory that
+# is not there.
+_PATH_TAIL = r"(?![\w.-])"
+_KEY_TAIL = r"(?!\w)"
+
+
+def _homes() -> tuple:
+    """Every spelling of the home directory a string could carry, compiled.
+
+    FOUR ROUTES, ONE REDACTION. Home reaches a row as the path the environment
+    spells it, as the path that resolves to — the two differ for as long as
+    `$HOME` is a symlink, and the harness derives its project keys from the
+    resolved one — and as either of those with every separator replaced, which
+    is what a project key is. Each route was closed where it was found, for one
+    branch of one check; applied here, where every detail and every remedy
+    passes, the rule holds whichever branch of whichever check produced the row.
+
+    LONGEST FIRST, so a spelling nested inside another does not leave the tail
+    of the longer one standing on its own.
+    """
+    paths: list = []
+    for path in (os.path.expanduser("~"), os.path.realpath(os.path.expanduser("~"))):
+        if path and path != os.sep and path not in paths:
+            paths.append(path)
+    keys: list = []
+    for key in (harness_memory.key_spelling(path) for path in paths):
+        if key and key not in keys:
+            keys.append(key)
+    spellings = [(path, _PATH_TAIL) for path in paths]
+    spellings += [(key, _KEY_TAIL) for key in keys]
+    return tuple(
+        re.compile(re.escape(spelling) + tail)
+        for spelling, tail in sorted(spellings, key=lambda pair: -len(pair[0]))
+    )
+
+
 def _bound(text: str) -> str:
-    """One display string, sanitized and bounded, in that order.
+    """One display string, sanitized, redacted and bounded, in that order.
 
     Sanitizing after bounding would let a truncation land inside an escape
-    sequence and produce a string the sanitizer never saw whole.
+    sequence and produce a string the sanitizer never saw whole. Redacting
+    before the cut for the same shape of reason: a home spelling the cut landed
+    inside is one no substitution can reach afterwards.
     """
     text = _FRAME_LITERAL.sub("(" + FRAME_TAG, sanitize(text))
+    for spelling in _homes():
+        text = spelling.sub("~", text)
     raw = text.encode("utf-8")
     if len(raw) <= DETAIL_MAX_BYTES:
         return text
@@ -311,6 +376,22 @@ def _produces(check_id: str) -> Callable:
 # about a question the harness has already answered. What the precedence order
 # below is for is naming WHICH file to edit — a remedy that said "your
 # settings" over four candidate files is a remedy nobody can act on.
+#
+# THREE KEYS ARE RESOLVED RATHER THAN REPORTED, in `harness_memory`:
+# `autoMemoryDirectory`, `autoMemoryEnabled` and `autoDreamEnabled`. They are
+# the exception the paragraph above allows for, and what earns it is that
+# their effect is a DIRECTORY and a switch the auto-memory check has to name:
+# whether what the harness writes is retrievable is a question about one path,
+# so a report listing every value it found would answer a different one.
+#
+# Their order is `harness_memory.SCOPE_ORDER`, measured on 2.1.258 out of the
+# resolver itself, and it is NOT the order this file lists the scopes in: the
+# harness reads `.claude/settings.local.json` and then the checked-in
+# `.claude/settings.json` ahead of user settings, so a checkout outranks the
+# adopter. It is also not what the shipped schema description claims — that
+# text says the directory key is ignored in a checked-in file "for security",
+# and the resolver consults it on every non-interactive run whatever the
+# folder trust state.
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 SETTINGS_NAME = "settings.json"
 LOCAL_SETTINGS_NAME = "settings.local.json"
@@ -328,6 +409,18 @@ def _managed_dir() -> str:
     return "/etc/claude-code"
 
 
+# WHY A SCOPE DID NOT ANSWER, as three states rather than one message. They are
+# three different things to have happened to an adopter's machine and three
+# different repairs: a syntax error is theirs to fix, a refused open is
+# somebody's to grant and never theirs to edit — the managed scope is an
+# administrator's root-owned policy file — and anything else is a question
+# about what is at that path at all. Collapsed into one string, the sentence
+# written for the commonest of them gets asserted over the other two.
+UNPARSED = "unparsed"
+FORBIDDEN = "forbidden"
+UNREADABLE = "unreadable"
+
+
 class Settings:
     """One settings file: where it is, what it holds, and why it does not.
 
@@ -338,9 +431,23 @@ class Settings:
     what the parser said.
     """
 
-    __slots__ = ("scope", "path", "data", "error", "adopter_owned")
+    __slots__ = (
+        "scope",
+        "path",
+        "data",
+        "error",
+        "failure",
+        "adopter_owned",
+        "unresolved",
+    )
 
-    def __init__(self, scope: str, path: str, adopter_owned: bool = True) -> None:
+    def __init__(
+        self,
+        scope: str,
+        path: str,
+        adopter_owned: bool = True,
+        unresolved: str = "",
+    ) -> None:
         self.scope = scope
         self.path = path
         # WHO CAN WRITE THIS FILE. `managed` and `user` are the adopter's and
@@ -351,24 +458,60 @@ class Settings:
         # important should not be a scope-name comparison repeated at each
         # reader.
         self.adopter_owned = adopter_owned
+        # WHICH QUESTION ABOUT THIS SCOPE THE CALLER COULD NOT SETTLE, named by
+        # the class of the exception that stopped it, or "". A FOURTH state and
+        # not a fifth `failure`: the file at the end of the path can be
+        # perfectly readable and what failed is *where the path leads* — the
+        # containment test that decides whose file this is, and the comparison
+        # that decides whether two scope names are one file. Carried here
+        # because the reader that could not answer it is `settings_scopes`,
+        # and a scope it could not place has to reach the report as a scope
+        # nobody placed rather than as one that was absent or agreed.
+        self.unresolved = unresolved
         self.data: dict = {}
         self.error = ""
-        if not os.path.isfile(path):
+        # WHICH of `UNPARSED`, `FORBIDDEN`, `UNREADABLE`, or "" for a scope
+        # that answered — read off the exception rather than written once for
+        # the case that motivated the message.
+        self.failure = ""
+        if not path:
             return
+        # THE OPEN IS THE TEST. `os.path.isfile` swallows its own `OSError` and
+        # answers False, so a settings file sitting in a directory this process
+        # may not traverse read as no file at all — the one unreadable state
+        # this class was blind to, and the one that let a row conclude from
+        # settings nobody had read. Only the errors that mean "nothing is
+        # there" return silently.
         try:
             with open(path, encoding="utf-8") as f:
                 blob = json.load(f)
-        except (OSError, ValueError) as exc:
+        except (FileNotFoundError, NotADirectoryError):
+            return
+        except PermissionError as exc:
+            self.failure = FORBIDDEN
+            self.error = str(exc)
+            return
+        except OSError as exc:
+            self.failure = UNREADABLE
+            self.error = str(exc)
+            return
+        # `RecursionError` BESIDE `ValueError`, because the parser answers a
+        # document nested past its own depth with neither a `ValueError` nor an
+        # `OSError`. A checked-in `settings.json` of a thousand open brackets is
+        # a settings file that will not parse — the state this class already
+        # names — and caught nowhere it left `Machine()` raising, which is a
+        # traceback out of `memkit init` and twenty rows lost out of `memkit
+        # doctor`. The same branch closed this class at the hook's two readers;
+        # this is the third.
+        except (ValueError, RecursionError) as exc:
+            self.failure = UNPARSED
             self.error = str(exc)
             return
         if not isinstance(blob, dict):
+            self.failure = UNPARSED
             self.error = "top level is not an object"
             return
         self.data = blob
-
-    @property
-    def present(self) -> bool:
-        return os.path.isfile(self.path)
 
 
 def _option_in(scope: Settings) -> str:
@@ -386,40 +529,389 @@ def _option_in(scope: Settings) -> str:
     return value if isinstance(value, str) and value else ""
 
 
-def settings_scopes() -> list[Settings]:
-    """Every scope, most authoritative first."""
-    user = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
+def _session_cwd() -> str:
+    """Where this session stands, or "" once that directory is gone.
+
+    THE DIRECTORY THIS PROCESS STANDS IN CAN BE REMOVED UNDER IT — an agent's
+    session workdir cleaned up by something else, a torn-down worktree.
+    `os.getcwd()` then raises, and this runs from `Machine.__init__`, so an
+    unguarded call turns both commands into a traceback where their published
+    tables promise a closed set of exit codes. A scope whose path cannot be
+    spelled is a scope with no file in it, which is the same answer as an
+    install that has none.
+
+    ONE WALK PER RUN, kept on `Machine` and passed to everything that needs it:
+    the settings scopes and the harness's project key are two facts about one
+    directory, and a second walk answers differently from the first if that
+    directory moved between them.
+    """
     try:
-        cwd = os.getcwd()
+        return os.getcwd()
     except OSError:
-        # THE DIRECTORY THIS PROCESS STANDS IN CAN BE REMOVED UNDER IT — an
-        # agent's session workdir cleaned up by something else, a torn-down
-        # worktree. `os.getcwd()` then raises, and this function runs from
-        # `Machine.__init__`, so an unguarded call turns both commands into a
-        # traceback where their published tables promise a closed set of exit
-        # codes. A scope whose path cannot be spelled is a scope with no file
-        # in it, which is the same answer as an install that has none.
-        cwd = ""
-    # THE TRUSTED SCOPE'S LOCATION IS AN ENVIRONMENT VARIABLE. Whatever can set
-    # `$CLAUDE_CONFIG_DIR` — direnv in a checkout, a wrapper script — decides
-    # where the `user` scope is read from, so pointed inside the session's own
-    # directory it is the project scope under another name. The `project` and
-    # `local` entries below are already untrusted by their paths; this is the
-    # same rule for the one whose path is somebody's to choose.
-    user_owned = not _under_cwd(os.path.join(user, SETTINGS_NAME))
+        return ""
+
+
+def _config_dir() -> tuple:
+    """`(what the environment set, where the scopes are read from)`.
+
+    One derivation for the two readers of it, and the raw value beside the
+    derived one because every guard on this variable is a question about what
+    was SET rather than about the directory that falls out of it.
+    """
+    value = os.environ.get(CONFIG_DIR_ENV) or ""
+    return value, value or os.path.expanduser("~/.claude")
+
+
+def settings_scopes(cwd: str | None = None) -> list[Settings]:
+    """Every scope, most authoritative first."""
+    config_value, user = _config_dir()
+    if cwd is None:
+        cwd = _session_cwd()
+    here = os.path.join(cwd, ".claude") if cwd else ""
+    # THE TRUSTED SCOPE'S LOCATION IS AN ENVIRONMENT VARIABLE, and what is
+    # asked is what was SET rather than where the default lands. Whatever can
+    # set `$CLAUDE_CONFIG_DIR` — direnv in a checkout, a wrapper script —
+    # decides where the `user` scope is read from, so pointed inside the
+    # session's own directory it is the project scope under another name. With
+    # the variable unset there is no such chooser: `~/.claude` is under the cwd
+    # for every session standing anywhere in home, and the containment test
+    # alone reported an adopter's own settings file as one their machine had
+    # not placed.
+    #
+    # NEITHER OF THE TWO RESOLUTIONS BELOW IS GUARANTEED TO ANSWER, and the
+    # guards are here rather than inside what they call. `_under_cwd` returns
+    # True for an `OSError` and `_resolved` declines a guard of its own on
+    # purpose — a path that will not resolve is the CALLER's to decide about,
+    # and these two callers want opposite answers from the four other call
+    # sites. What gets past both is `RecursionError`, which is what a long
+    # enough chain of symbolic links under `$CLAUDE_CONFIG_DIR` raises out of
+    # `realpath`: unguarded it left `Machine()` raising, on 3.12 as well as on
+    # the 3.9 floor.
+    #
+    # A SCOPE THIS RUN COULD NOT PLACE IS REPORTED AS ONE, and that is the
+    # whole of why the answers are not simply defaulted. Each guard takes the
+    # side that claims less — a scope whose containment could not be tested is
+    # not treated as the adopter's, and two directories that could not be
+    # compared are not declared the same one — and both record the exception's
+    # class against the scope, so the rows below say which scope went
+    # unresolved and what stopped it. Silently, either answer is a row
+    # concluding from a scope nobody located.
+    unresolved: dict[str, str] = {}
+    try:
+        user_owned = not config_value or not _under_cwd(
+            os.path.join(user, SETTINGS_NAME)
+        )
+    except (OSError, ValueError, RecursionError) as exc:
+        user_owned = False
+        unresolved["user"] = type(exc).__name__
+    # ONE FILE IS ONE SCOPE, and it is the CHECKED-IN entry that models a file
+    # somebody else's checkout carries. Run from the directory that holds the
+    # config directory — an adopter's own home, which is where a first `memkit
+    # doctor` is most often typed — `.claude/` under the cwd IS the user scope,
+    # and read a second time as `project` the adopter's own settings file was
+    # reported as checked into a repository and travelling with every clone.
+    try:
+        project_dir = "" if not here or _resolved(here) == _resolved(user) else here
+    except (OSError, ValueError, RecursionError) as exc:
+        project_dir = ""
+        unresolved["project"] = type(exc).__name__
     return [
         Settings("managed", os.path.join(_managed_dir(), MANAGED_SETTINGS_NAME)),
         Settings("user", os.path.join(user, SETTINGS_NAME),
-                 adopter_owned=user_owned),
+                 adopter_owned=user_owned,
+                 unresolved=unresolved.get("user", "")),
         Settings(
-            "project", os.path.join(cwd, ".claude", SETTINGS_NAME) if cwd else "",
+            "project",
+            os.path.join(project_dir, SETTINGS_NAME) if project_dir else "",
             adopter_owned=False,
+            unresolved=unresolved.get("project", ""),
         ),
+        # AND THE LOCAL FILE IS A SCOPE OF ITS OWN WHEREVER THIS IS. It is a
+        # different file from the user scope's in any directory, it outranks
+        # every scope an adopter can edit, and emptied alongside `project` a
+        # switch written only there was one no scope in this list had read.
+        # Owned by the adopter exactly where nothing else chose the directory:
+        # somebody else's checkout, or a variable pointing at one, makes it
+        # theirs.
         Settings(
             "local",
-            os.path.join(cwd, ".claude", LOCAL_SETTINGS_NAME) if cwd else "",
-            adopter_owned=False,
+            os.path.join(here, LOCAL_SETTINGS_NAME) if here else "",
+            adopter_owned=not project_dir and not config_value,
         ),
+    ]
+
+
+# How much of the PARSER's own message a row quotes. `json`'s messages carry a
+# line and a column and are short; the cap is here because the string comes
+# from `str(exc)` on an arbitrary file and a row that let it run is a row one
+# settings file can empty of everything else.
+PARSER_SHOWN = 120
+
+# And how much of the WHOLE note, however many scopes contribute to it. Capping
+# the parts was not capping the note: one scope reaches ~490 characters between
+# its prose, its path and its parser message, so two of them filled a 600-byte
+# detail on their own and `_bound`, which cuts from the end, took the row's own
+# verdict with them. A qualifier that erases what it qualifies says less than
+# nothing.
+#
+# HALF THE BUDGET, and that is the whole of the guarantee: the note goes first,
+# so bounding it to half of `DETAIL_MAX_BYTES` leaves the other half for the row
+# — and every row here already leads with its own verdict clause, for the same
+# reason. What a long note now costs is its own tail rather than the answer.
+NOTE_SHOWN = DETAIL_MAX_BYTES // 2
+
+
+def _unparsed_settings(scopes: list) -> str:
+    """What a settings file that would not parse costs the rows below it, or "".
+
+    A SCOPE THAT DID NOT PARSE IS NOT A SCOPE THAT DECLARES NOTHING, and every
+    reader here has been treating the two as one state: `data` is `{}` either
+    way, so a key set in that file reads as unset and whatever the row then
+    concludes rests on a file nobody read. `Settings` has recorded the parser's
+    message since it was written and nothing has ever printed it — which is
+    how a `settings.json` with one stray comma produced a row telling its
+    author to set, in that same file, the key it already sets.
+
+    WHAT THE HARNESS DOES WITH THE SAME FILE IS NOT CLAIMED. This says what
+    THIS process read, because the anti-pattern the field survey names is a
+    harness that meets a parse error and silently replaces the file with a
+    stub — and a diagnostic that asserted either behaviour would be guessing
+    with the adopter's configuration.
+
+    THE SCOPE BY ROLE AND NOT BY PATH, and the parser's text only where the
+    parser wrote it: `json` answers with a line and a column, while a refused
+    or failed open answers with the file it was refused — the raw settings
+    path, reaching four producers' details through this one note. What a
+    reader needs to act is which file, and its role is which file.
+
+    THE VERB COMES OFF THE EXCEPTION. "Could not be parsed" over a file that
+    parses perfectly and was merely refused is an assertion about content this
+    process never saw — the exact overstatement this whole check exists to
+    stop, aimed at memkit's own diagnostic.
+
+    AND A SCOPE NOBODY COULD PLACE GETS ITS OWN CLAUSE, for the same reason
+    the three failures do rather than one. "Could not be read" over a file
+    A SCOPE NOBODY COULD PLACE IS NOT THIS FUNCTION'S SENTENCE, and that is
+    why `_unplaced_settings` is a second one. "Could not be read" over a file
+    this run opened and parsed perfectly, because the containment test above
+    it would not resolve, is the same overstatement aimed at a different half
+    of the answer.
+    """
+    return _display_cap(
+        "; ".join(
+            _ROLE[scope.scope]
+            + " "
+            + _FAILED[scope.failure]
+            + ", so its keys read as unset here"
+            + (
+                " (" + _display_cap(scope.error, PARSER_SHOWN) + ")"
+                if scope.failure == UNPARSED
+                else ""
+            )
+            for scope in scopes
+            if scope.failure
+        ),
+        NOTE_SHOWN,
+    )
+
+
+def _unplaced_settings(scopes: list) -> str:
+    """Which scopes this run could not locate, and what stopped it, or "".
+
+    THE OTHER HALF OF "WHAT THIS ROW COULD NOT READ", and separate from it
+    because the loss is a different one. The file at the end of the path may
+    have parsed perfectly; what went missing is WHICH DIRECTORY it is — the
+    containment test that decides whether the user scope is a file this
+    machine placed, and the comparison that decides whether two scope names
+    are one file. Both sit on `$CLAUDE_CONFIG_DIR`, which an adopter sets, and
+    `realpath` raises on a long enough chain of links rather than answering.
+
+    NAMED BY THE EXCEPTION'S CLASS and by the scope's role, for the reason the
+    three failure sentences above are each their own: a guard that took the
+    quieter answer and said nothing would leave a row resting on a scope
+    nobody located, which is the state this whole note exists to refuse.
+
+    NO CAP OF ITS OWN, unlike the note beside it, and that is a property of
+    what goes in rather than an omission: every part is a closed table's entry
+    or an exception's class name, two scopes can contribute at most, and no
+    path and no parser message reaches it. What DOES need bounding is the
+    whole note, and `_with_unparsed` bounds that once.
+    """
+    return "; ".join(
+        "this run could not resolve where "
+        + _ROLE[scope.scope]
+        + " is ("
+        + scope.unresolved
+        + "), so nothing here could tell which directory it names or whether "
+        "it is one your own machine placed"
+        for scope in scopes
+        if scope.unresolved
+    )
+
+
+# What happened to a scope, in the words of the thing that happened. One per
+# failure kind, because a message that names a failure mode has to be derived
+# from the exception rather than written once for the common case.
+_FAILED = {
+    UNPARSED: "could not be parsed",
+    FORBIDDEN: "could not be read: this process is not permitted to open it",
+    UNREADABLE: "could not be read",
+}
+
+
+def _unparsed_remedy(scopes: list) -> str:
+    """The repair that comes before any other this report could offer.
+
+    NEVER "set the key in that file". Any remedy naming a value to add is
+    advice to edit a file whose next read will discard the edit along with
+    everything else in it, and that is the shape of this finding: the row that
+    could not read the file told its author to write to it.
+
+    AND NEVER "edit it" FOR A FILE NOBODY HERE COULD OPEN. One repair per
+    failure kind, in the order an adopter can act on them: a refused open is
+    not repaired by editing, and the managed scope's file is an
+    administrator's root-owned policy — telling its reader to make it parse,
+    and then to keep a copy of it, is advice to edit and copy a file they were
+    just denied.
+    """
+    parts = []
+    for kind in (UNPARSED, FORBIDDEN, UNREADABLE):
+        named = [scope for scope in scopes if scope.failure == kind]
+        if not named:
+            continue
+        files = ", ".join(_ROLE[scope.scope] for scope in named)
+        if kind == UNPARSED:
+            parts.append(
+                f"Make {files} parse as JSON before setting any key in it — "
+                "while it does not, nothing in it is read here and a value "
+                "added to it changes nothing. Keep a copy first: a file this "
+                "report could not parse is one whose contents are still yours."
+            )
+        elif kind == FORBIDDEN:
+            whose = (
+                " — for a managed policy file that is your administrator, not "
+                "you"
+                if any(scope.scope == "managed" for scope in named)
+                else ""
+            )
+            parts.append(
+                f"Ask whoever owns {files} for read access, or run this "
+                f"as a user who has it{whose}. Do not edit it on this "
+                "report's account: nothing here has seen what is in it."
+            )
+        else:
+            parts.append(
+                f"Find out what is at {files}: the open failed for a reason "
+                "that is neither a syntax error nor a permission, so what the "
+                "harness reads there is not something this report can say."
+            )
+    # AND THE REPAIR FOR A PATH, which is not a repair for a file. Every
+    # remedy above asks something of the settings file itself; this one asks
+    # about the route to it, because that is what did not answer.
+    adrift = [scope for scope in scopes if scope.unresolved]
+    if adrift:
+        where = ", ".join(_ROLE[scope.scope] for scope in adrift)
+        raised = ", ".join(sorted({scope.unresolved for scope in adrift}))
+        parts.append(
+            f"Find out what the path to {where} leads through: resolving it "
+            f"raised {raised} rather than answering, which a long chain of "
+            "symbolic links does, and a directory removed under this process "
+            "does. $" + _NAMED["config_env"] + " is where that path comes "
+            "from when it is set."
+        )
+    return " ".join(parts)
+
+
+def _relative_to_cwd(path: str) -> str:
+    """`path` as a remedy standing in this directory spells it, or "".
+
+    NORMALISED on both sides and never an escape upwards: a `..` answer is not
+    a spelling any remedy here uses, and matching on one would suppress a
+    remedy naming some other file entirely.
+    """
+    cwd = _session_cwd()
+    if not path or not cwd:
+        return ""
+    try:
+        relative = os.path.relpath(os.path.normpath(path), os.path.normpath(cwd))
+    except (OSError, ValueError):
+        return ""
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        return ""
+    return relative
+
+
+def _with_unparsed(rows: list, scopes: list) -> list:
+    """Every row of a producer that reads settings, told what it could not read.
+
+    ONE WRAPPER at the producer's return rather than a sentence at each branch,
+    because the rule is about the INPUT and not about any one answer: a row
+    whose verdict came from a walk of the settings scopes is a row that a file
+    it could not open can falsify, whichever branch it took. A PASS becomes
+    INFO for that reason — the harm this whole check class exists to stop is a
+    confident answer resting on a file nobody read.
+
+    A SCOPE THIS RUN COULD NOT PLACE IS THE SAME KIND OF INPUT. Its file may
+    have read perfectly; what the row rested on is which directory it was, and
+    that is the question `settings_scopes` could not answer.
+    """
+    # BOTH HALVES, CAPPED ONCE. Each is bounded on its own, and two bounded
+    # halves are not a bounded note: `NOTE_SHOWN` is half of the detail budget
+    # and the whole of what the row is promised back.
+    note = _display_cap(
+        "; ".join(
+            part
+            for part in (_unparsed_settings(scopes), _unplaced_settings(scopes))
+            if part
+        ),
+        NOTE_SHOWN,
+    )
+    if not note:
+        return rows
+    fix = _unparsed_remedy(scopes)
+    # EVERY SPELLING A REMEDY USES. The one this rule most needs to drop is
+    # `_TAKE["project"]`, and it names the file the way an adopter standing in
+    # that directory would — relatively; matched on the absolute form alone it
+    # walked straight through, and one remedy then said both "make
+    # settings.local.json parse" and "set a key in settings.local.json".
+    #
+    # The RAW absolute path is not a third spelling: what is searched is a
+    # remedy off an already-bounded `Check`, where a path under home has been
+    # re-spelled `~` — and for a path that is not under home `_shown` returns
+    # the same characters back.
+    spellings = tuple(
+        spelling
+        for scope in scopes
+        if scope.failure or scope.unresolved
+        for spelling in (
+            _shown(scope.path),
+            _relative_to_cwd(scope.path),
+            _ROLE[scope.scope],
+        )
+        if spelling
+    )
+    return [
+        Check(
+            row.id,
+            INFO if row.status == PASS else row.status,
+            _detail(note, row.detail),
+            # A REMEDY THAT NAMES THE UNREADABLE FILE IS DROPPED rather than
+            # appended to. Every one of them names a key to set there, and
+            # that is an instruction to write into a file whose next read
+            # discards it along with everything else — the half of this
+            # finding that is worse than the missing diagnostic.
+            " ".join(
+                part
+                for part in (
+                    fix,
+                    "" if any(s in row.remedy for s in spellings) else row.remedy,
+                )
+                if part
+            ),
+            actor=USER,
+            terminal=row.terminal,
+        )
+        for row in rows
     ]
 
 
@@ -465,7 +957,8 @@ class Machine:
 
     def __init__(self, config_path: str | None = None) -> None:
         self.explicit_config = config_path
-        self.settings = settings_scopes()
+        self.cwd = _session_cwd()
+        self.settings = settings_scopes(self.cwd)
         self.state_dir = _state_dir_candidate()
         # The config the WRAPPER settled on, which is the whole of what doctor
         # knows about the rungs: `bin/memkit` resolves them in POSIX sh and
@@ -718,7 +1211,9 @@ def _config_route(machine: Machine) -> list[Check]:
     not a route this install serves, and merging it into the first would put a
     path nobody vouched for where a reader looks for the answer.
     """
-    return _resolved_route(machine) + _repository_route(machine)
+    return _with_unparsed(
+        _resolved_route(machine) + _repository_route(machine), machine.settings
+    )
 
 
 def _repository_route(machine: Machine) -> list[Check]:
@@ -1540,7 +2035,7 @@ def _probe_budget() -> tuple:
 HOOK_WRAPPER = "bin/memkit-hook"
 
 
-def _init_command(machine: Machine) -> str:
+def _init_command(machine: Machine, flags: str = "") -> str:
     """How to reach init ON THIS CHANNEL.
 
     Skills ship only in the plugin payload, so `/memkit:init` is a command a
@@ -1548,10 +2043,19 @@ def _init_command(machine: Machine) -> str:
     rollout runbook sends to doctor first. A remedy that guessed would send
     them to a command they cannot run, which is exactly the failure the channel
     check exists one screen earlier to prevent.
+
+    `flags` goes on BOTH turns of the binary form, not just the first: the
+    digest binds the request as well as the tree, so a confirm carrying
+    different flags from the dry-run that produced it is refused as stale. A
+    remedy that showed the flag once would send the adopter into that refusal.
     """
+    tail = f" {flags}" if flags else ""
     if machine.plugin:
-        return "/memkit:init"
-    return "`memkit init --dry-run`, then `memkit init --confirm <digest>`"
+        return f"/memkit:init{tail}"
+    return (
+        f"`memkit init --dry-run{tail}`, then "
+        f"`memkit init --confirm <digest>{tail}`"
+    )
 
 
 NO_HOOK_REMEDY = (
@@ -2491,10 +2995,13 @@ def _task_outcomes(machine: Machine) -> list[Check]:
 # nobody established.
 MEASURED_HARNESS = "2.1.238"
 
-# Where the harness keeps the built-in memory feature's per-project state.
-# Measured on 2.1.241: `<config dir>/projects/<sanitized cwd>/memory/`, with
-# the cwd sanitized by replacing `/` and `.` with `-`. The lock beside it is
-# how "armed" and "actually running" are told apart.
+# Where the harness keeps the built-in memory feature's per-project state:
+# `<config dir>/projects/<project key>/memory/`, derived in `harness_memory`.
+# The key was measured on 2.1.241 as the sanitized cwd and RE-MEASURED on
+# 2.1.258, against the binary and code.claude.com/docs/en/memory, as the
+# sanitized git repository root — so every worktree and subdirectory of one
+# checkout shares one directory. The lock beside it is how "armed" and
+# "actually running" are told apart.
 CONSOLIDATE_LOCK = ".consolidate-lock"
 # An hour, which is the harness's own consolidation interval. A lock older than
 # that is a run that finished, not one in flight.
@@ -2546,12 +3053,18 @@ def _plugin_enabled(machine: Machine):
 
 @_produces("registrations-count")
 def _registrations_count(machine: Machine) -> list[Check]:
-    """Exactly one, or say which entries to choose between.
+    """Exactly one, or say which entries to choose between — over every scope
+    this process could read.
 
     Two registrations both serving one prompt is a silent lost update from
     inside: each process injects, each writes the session ledger, and the later
     write wins. What the user sees is pointers that come and go for no reason.
     """
+    return _with_unparsed(_registration_rows(machine), machine.settings)
+
+
+def _registration_rows(machine: Machine) -> list[Check]:
+    """The count, before anything qualifies it."""
     found = _memkit_registrations(machine)
     if len(found) == 1:
         return [Check("registrations-count", PASS, f"one registration: {found[0]}")]
@@ -2599,6 +3112,11 @@ def _plugin_enabled_check(machine: Machine) -> list[Check]:
     that is switched off. Only `plugin list` disagrees, and nothing sends an
     adopter there.
     """
+    return _with_unparsed(_plugin_enabled_rows(machine), machine.settings)
+
+
+def _plugin_enabled_rows(machine: Machine) -> list[Check]:
+    """The answer the scopes that parsed give."""
     enabled = _plugin_enabled(machine)
     if enabled is None:
         return [
@@ -2879,71 +3397,1335 @@ def _harness_stamp(machine: Machine) -> list[Check]:
     ]
 
 
-def _sanitized_cwd() -> str:
-    """The harness's own per-project directory name for this cwd.
+def _count(number: int, one: str, many: str) -> str:
+    return f"{number} {one if number == 1 else many}"
 
-    Measured on 2.1.241: `/` and `.` both become `-`, so
-    `/Users/x/.config/nix` is `-Users-x--config-nix`.
+
+def _detail(*parts: str) -> str:
+    """One detail from the sentences that have something to say.
+
+    FIXED FACTS FIRST at every call site, because `_bound` cuts from the end
+    and only the list of project directories has a length an adopter's own
+    machine decides.
     """
-    return re.sub(r"[/.]", "-", os.getcwd())
+    return "; ".join(part for part in parts if part)
+
+
+def _shown(path: str) -> str:
+    """One path as a detail prints it: `~`-relative, and bounded.
+
+    Both halves at one call, because they were two rules applied at different
+    call sites: every path went through `_display_path` and none of them
+    through a cap, so the whole of `DETAIL_MAX_BYTES` was one value's to spend.
+    """
+    return _display_cap(_display_path(path), PATH_SHOWN)
+
+
+def _resolved(path: str) -> str:
+    """One path in the spelling both sides of a containment test are compared in.
+
+    NORMALISED AT THE COMPARISON AND NEVER AT A SOURCE. `harness_dir` hands
+    back NFC because that is what the harness writes to, and a corpus root out
+    of `memkit.json` is spelled however that file spells it — so a composed
+    character made two strings out of one directory and the comparison below
+    answered about the encoding. Applied to whatever each side happens to
+    carry, rather than to one of them on the way in, because the pair that
+    reaches here comes by two routes and only one of them has a normaliser.
+
+    No guard of its own: a path that will not resolve is `realpath`'s to raise
+    on, and the callers' own `except` is where that answer belongs.
+    """
+    return unicodedata.normalize("NFC", os.path.realpath(path))
+
+
+@functools.lru_cache(maxsize=None)
+def _folds(directory: str) -> bool:
+    """Whether the filesystem holding `directory` reads two cases as one.
+
+    PROBED RATHER THAN ASSUMED FROM THE PLATFORM: a mac's boot volume folds
+    case and a case-sensitive volume mounted beside it does not, and both are
+    ordinary. `realpath` answers in the spelling it was handed, so on a
+    folding filesystem two spellings of one corpus root differ character by
+    character — and compared raw, a directory already inside a store is
+    reported as outside every one of them.
+
+    ASKED OF THE INODE rather than of the name: a path carrying no cased
+    character folds nothing, and one whose case-flipped spelling is the same
+    file is on a filesystem that folds.
+    """
+    try:
+        return directory != directory.swapcase() and os.path.samestat(
+            os.stat(directory), os.stat(directory.swapcase())
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _within(child: str, parent: str) -> bool:
+    """Whether `child` is `parent` or sits under it, symlinks resolved.
+
+    Resolved on both sides, because the two paths compared here reach this
+    function by different routes — one typed into a settings file, one built
+    from the config's roots — and on a mac `/tmp` and `/var` are symlinks that
+    make two spellings of one directory differ character by character.
+
+    NOT `_exec._under_cwd`, whose containment arithmetic is the same one: the
+    safe answer when a path will not resolve is the opposite there. That one
+    says "inside" so an unresolvable path stays untrusted; this one says
+    "outside" so no path that cannot be resolved is reported as retrieved.
+
+    `ValueError` beside `OSError` because the child is adopter-supplied text:
+    `realpath` raises that, not `OSError`, on the embedded NUL a settings file
+    may legally carry.
+    """
+    try:
+        child = _resolved(child)
+        parent = _resolved(parent)
+    except (OSError, ValueError):
+        return False
+    if _folds(parent):
+        child, parent = child.lower(), parent.lower()
+    return child == parent or child.startswith(parent + os.sep)
+
+
+def _pruned(directory: str, root: str) -> bool:
+    """Whether the indexing walk refuses to descend from `root` to `directory`.
+
+    THE INDEXER'S OWN PREDICATE, not a second copy of it: `_fts_scan` asks
+    `_excluded` of the whole path it built, so that is what is asked here, of
+    the same path — `root` as the config spells it, with the components the
+    walk would descend through appended. A corpus-relative test of memkit's
+    own answered "retrieved" about a store whose root sits under an `archive/`
+    or `hot/` component, where the walk indexes nothing at all.
+
+    That consequence is the HOOK's behaviour and it is left alone here: a store
+    under a pruned name is genuinely unindexed today, doctor's job is to report
+    it, and whether the walk should exclude on the absolute path at all is a
+    separate question about a module this row does not own.
+
+    RESOLVED on both sides before the components are taken, and the suffix
+    is taken by position, because the harness writes to what the path
+    resolves to: a link inside the corpus root
+    pointing into `hot/` is a directory the walk never descends into, and its
+    own spelling says nothing about that.
+    """
+    try:
+        inside = _resolved(directory)
+        above = _resolved(root)
+    except (OSError, ValueError):
+        # Only reachable if the pair stopped resolving since `_within` said
+        # they did; the answer that claims no retrieval is the one to give.
+        return True
+    # SLICED RATHER THAN `relpath`, because containment folds case here and
+    # the walk's own test does not: `_excluded` compares the names as they
+    # are spelled on disk, so folding the components handed to it would
+    # answer `pruned` about a `Hot/` the walk descends into.
+    relative = inside[len(above) :].lstrip(os.sep)
+    return _excluded(os.path.join(root, relative))
+
+
+def _store_relation(machine: Machine, directory: str) -> tuple:
+    """`(store id, corpus root, how the two overlap, whether every store answered)`.
+
+    THE FOURTH VALUE SEPARATES TWO EMPTY ANSWERS. A comparison this run could
+    not make produces the same first three as a directory that was compared
+    with every store and found outside all of them, and the sentence a caller
+    hangs off that emptiness — "outside every store, so nothing retrieves what
+    lands there" — is a claim about every store on the machine. Made from a
+    comparison nothing performed, it is this row's most alarming answer given
+    for free.
+
+    A CONFIG THAT WOULD NOT PARSE IS NOT THE ONLY WAY TO FAIL TO LOOK. One
+    store naming a root the config does not define raises where its own root
+    is resolved, and the loop that swallowed it went on to fall out of the
+    bottom with the same empty tuple a completed comparison returns — so the
+    row told an adopter to move a directory out of the store it was already
+    in, from a store it never read.
+
+    EVERY configured store, not `searched_stores()`. A store gated to a root
+    this session is standing outside of still holds whatever the harness writes
+    into it, so gating it out here would answer "outside every store" about a
+    directory that is already right — and the answer would change with the
+    directory the adopter happened to run doctor from.
+
+    FIVE overlaps rather than in-or-out, because the harness does something
+    different in each: `at` and `over` are the two spellings of a configured
+    directory that CONTAINS the store's memories, which is what puts them
+    inside the harness's own rewrite; `pruned` is inside the corpus root and
+    below a name the indexing walk never descends into; `flat` is inside a
+    store that has no `search/` yet, so it is retrieved only until one appears;
+    `inside` is the one that is retrieved.
+
+    EVERY store is asked, and harm dominates. Returning from the first store
+    with any relation at all asked the at/over question per store and never
+    across them, so with one store nested in another `memkit.json`'s
+    declaration order decided the answer — and the order that read as a PASS
+    was the one where the configured directory holds another store's whole
+    corpus root.
+    """
+    cfg = machine.config()
+    if cfg is None:
+        return "", "", "", False
+    # The first store the directory is merely INSIDE, kept rather than
+    # returned: a later store whose corpus root this directory holds is the
+    # worse state and the one worth reporting.
+    within: tuple = ()
+    compared = True
+    for store in cfg.stores:
+        try:
+            live = cfg.store_dir(store, "live")
+            root = _search_root(live)
+            # Asked in this order because both tests are true when the two
+            # paths are one directory, and that case belongs to the rewrite.
+            if _within(root, directory):
+                same = _within(directory, root)
+                return store.id, root, "at" if same else "over", True
+            if _within(directory, root) and not within:
+                tiered = os.path.join(live, "search")
+                within = (store.id, root, _how_inside(directory, root, tiered))
+        except (ConfigError, OSError):
+            # A store naming a root the config does not define raises here
+            # and `store-roots` owns saying so — but it still holds whatever
+            # is inside it, so what this loop was asked to compare it with
+            # was never compared.
+            compared = False
+    return (within or ("", "", "")) + (compared,)
+
+
+def _how_inside(directory: str, root: str, tiered: str) -> str:
+    """Which of the three inside-a-corpus-root states `directory` is in.
+
+    `search/` DECIDES CONTAINMENT, not the fallback root: `_search_root`
+    answers with the store root while a store has no tier layout, so a
+    directory beside the store's memories reads as inside one — and the moment
+    a `search/` appears, the same directory is above the corpus root and
+    nothing in it is retrieved. That is the state this file's `corpus-root`
+    case calls the single most expensive silent one in the field log, and it is
+    reached by creating a directory. So the question asked here is about the
+    corpus root the store WILL have rather than the one it has: `tiered` is that
+    root, `<live>/search`
+    whether or not it is there yet, and on a store already laid out by tier it
+    is `root` itself.
+    """
+    if _pruned(directory, root):
+        return "pruned"
+    if not _within(directory, tiered):
+        return "flat"
+    return "inside"
+
+
+# Every name this row can put in front of an adopter, and the harness's own
+# spelling of each key it reads. Rendered from a table rather than from the
+# value on the machine: a file named by the role it plays needs no path in the
+# sentence, and this report is relayed verbatim into a model's context.
+_NAMED = {
+    "enabled_key": harness_memory.ENABLED_KEY,
+    "dream_key": harness_memory.DREAM_KEY,
+    "directory_key": harness_memory.DIRECTORY_KEY,
+    "disable_env": harness_memory.DISABLE_ENV,
+    "config_env": CONFIG_DIR_ENV,
+    "safe_subdir": harness_memory.SAFE_SUBDIR,
+}
+
+# Which file a scope IS, in the words a repair can be acted on. Keyed by the
+# scope name `settings_scopes` and `harness_memory.switch` both answer with, so
+# a scope that decided a value is named without the value being consulted.
+_ROLE = {
+    "managed": "the managed settings file an administrator placed",
+    "project": "the checked-in settings file of this checkout",
+    "local": "the untracked-by-convention settings file of this checkout",
+    "user": "your own settings file under the harness config directory",
+    "": "a scope this run could not name",
+}
+
+# And what a scope's file costs an adopter who did not place it. Separate from
+# the role because only some scopes have one, and because what the file IS is
+# what a remedy names while what it costs is what the detail explains.
+_TRAVELS = {
+    "project": "that file is checked into this repository and travels with "
+    "every clone",
+    "local": "that file is untracked by convention rather than by anything git "
+    "enforces, and it is in the directory this session stands in",
+    "user": "that file is in the directory this session stands in, so it is "
+    "not one your own machine placed",
+    "managed": "that file is an administrator's policy and not yours to edit",
+    "": "",
+}
+
+# What the row is deciding, where a remedy has to say so. A closed set rather
+# than a phrase passed in, so no caller can put a value of its own in the
+# sentence.
+_DECIDE = {
+    "switch": "whether it runs at all",
+    "directory": "where your agent writes",
+    "value": "it yourself",
+}
+
+# The components the indexing walk never descends into, named because they are
+# memkit's own constants rather than anything on this machine.
+_PRUNED_NAMES = ", ".join(sorted(EXCLUDE_DIRS))
+
+# What each overlap between a directory and a store's corpus root costs. One
+# sentence per relation `_store_relation` can answer with, plus the two empty
+# answers it separates: the harness does something different in each, and none
+# of the six needs either path to say which.
+_PLACEMENT = {
+    "at": "is a store's corpus root itself, so every memory already in that "
+    "store is one the harness re-serialises the first time an agent writes or "
+    "edits it: name slugified, other keys moved under metadata",
+    "over": "holds a store's corpus root, so every memory already in that "
+    "store is one the harness re-serialises the first time an agent writes or "
+    "edits it: name slugified, other keys moved under metadata",
+    "pruned": "is inside a store's corpus root but under a name retrieval "
+    "prunes (" + _PRUNED_NAMES + "), so nothing written there is indexed",
+    "flat": "is inside a store which has no search tree yet, and above the "
+    "corpus root that store gets the moment one exists: creating it stops "
+    "anything there being retrieved",
+    "absent": "is inside a store's corpus root, which is not on disk — see "
+    "corpus-root — so nothing retrieves what lands there",
+    "inside": "is inside a store's corpus root, so what the harness writes "
+    "there is retrieved",
+    "outside": "is outside every store, so nothing retrieves what lands there",
+    "unknown": "cannot be placed: no store was compared with it",
+}
+
+
+def _present(path: str) -> bool | None:
+    """Whether `path` is a directory, or None when this run could not look.
+
+    `os.path.isdir` ANSWERS FALSE TO TWO DIFFERENT QUESTIONS: a directory
+    nobody created and a directory this process may not stat come back the
+    same, and every sentence hung off that False — "not on disk", "not there
+    yet" — is a positive claim about a read that never happened.
+    """
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def _placed(machine: Machine, directory: str) -> tuple:
+    """`(retrieved, which of `_PLACEMENT`'s relations it is in)`.
+
+    The second answer is a KEY and not a sentence: containment alone reports a
+    directory inside a corpus root under a pruned name and a directory that
+    HOLDS the corpus root as the state this check exists to reach, and each of
+    them costs the adopter something different. Naming the store or the root it
+    is in would put a path this row does not render into that sentence, and the
+    relation is the whole of what a reader acts on.
+    """
+    store, root, how, compared = _store_relation(machine, directory)
+    if not store:
+        return False, "outside" if compared else "unknown"
+    if how in ("at", "over", "pruned", "flat"):
+        return False, how
+    present = _present(root)
+    if present is not True:
+        # CONTAINMENT IS NOT EXISTENCE: `realpath` resolves a path nothing has
+        # created, so a store that is configured and not on disk still contains
+        # every directory named under it. Passed on that, this row said what
+        # the harness writes is retrieved in the same envelope as the
+        # `corpus-root` FAIL saying the store is not there. A root that would
+        # not answer at all is neither state, and it takes the third value.
+        return False, "absent" if present is False else "unknown"
+    return True, "inside"
+
+
+def _odd_switch(which: str, value, scope: str) -> str:
+    """What to say about a switch whose value is neither true nor false.
+
+    Only `false` turns either of these off, so a file carrying `0` or `""` has
+    the feature RUNNING while reading, to a person and to a truthiness test
+    alike, as though it were off. The value is described rather than quoted: it
+    is adopter-written text of any shape, and this row renders none. An explicit
+    `null` is not reported, because the harness reads it as the key being
+    absent.
+    """
+    if not scope or isinstance(value, bool):
+        return ""
+    return (
+        '"' + _NAMED[which] + '" holds a value in ' + _ROLE[scope] + " that is "
+        "neither true nor false; only false turns it off"
+    )
+
+
+# What a checked-in settings file costs, said once. It is the whole of why a
+# value this scope decided is reported rather than acted on, and it is too long
+# to repeat in the two remedies that need it.
+_CHECKOUT_COST = (
+    "A settings file checked into a repository travels with every clone, and "
+    "the harness applies it: always in a `claude -p` run, a hook or a "
+    "subagent, whatever the folder trust state, and in an interactive session "
+    "once you trust the folder"
+)
+
+# WHAT TO DO ABOUT EACH SCOPE'S FILE, whole, in one table keyed by the scope
+# that decided. What this replaced was a shared sentence with a per-scope tail
+# on it, and the shared half is what went wrong: it told every scope but one to
+# take the key out of its file, which is advice a `managed` file's reader
+# cannot act on and should not be given — an administrator's policy outranks
+# everything an adopter can write, so there is no edit that would win.
+#
+# The `project` entry is NOT "set it in your user settings", which is the
+# obvious advice and does nothing: `user` ranks BELOW the checked-in file in
+# the measured order, so a value there is masked for as long as that file sets
+# the key. `.claude/settings.local.json` outranks it, which is the one edit
+# that does not require touching the repository — and being untracked is a
+# CONVENTION rather than something git enforces, so the instruction says to
+# keep it that way instead of asserting that it already is.
+#
+# Nothing is asserted beyond what is measured: which directory the scopes were
+# read from is config-route's answer rather than this row's, and nothing here
+# runs git inside the session's checkout to learn whether the untracked file is.
+_TAKE = {
+    "managed": "there is no file of yours that would win: an administrator "
+    "administers that one for this machine and every scope you can write "
+    "ranks below it",
+    "project": "either take the key out of that file or set it in the local "
+    "settings file of this checkout, which outranks it — and keep that file "
+    "untracked, which nothing but convention makes it. Your own settings rank "
+    "below both and change nothing while it is set",
+    "local": "take the key out of that file — and check it is untracked, "
+    "because a bare `git add` tracks it and then a clone carries it too",
+    "user": "take the key out of that file — config-route names the directory "
+    "this run read its scopes from",
+    "": "take the key out of the file that set it",
+}
+
+
+def _checkout_remedy(decides: str, scope: str) -> str:
+    """What to tell an adopter about a value a file in this tree decided.
+
+    ONE FUNCTION for what were two spellings of the same paragraph, because
+    the pair had drifted: whether a scope's file travels with a clone is a
+    different fact per scope, and a remedy that told the adopter to move the
+    key into the local settings file was nonsense addressed to the run where
+    that file is what set it.
+
+    WHICH FILE HOLDS THE KEY is the other per-scope fact, and the same
+    paragraph got it wrong for the `user` scope. `$CLAUDE_CONFIG_DIR` pointing
+    inside the session's directory moves the trusted scope into this tree
+    without the local settings file being involved at all, so the convention to
+    check is about a file the adopter would find the key absent from.
+
+    AND THE INSTRUCTION IS READ OUT OF `_TAKE` RATHER THAN ASSEMBLED. What was
+    shared between the scopes was the half that had to differ: "rather than in
+    a file your own machine placed for you" is a claim about who placed a file,
+    which this run reads for the `user` scope and never learns for the others,
+    and "take the key out of it" is an edit a policy file's reader cannot make.
+    """
+    if scope == harness_memory.CHECKOUT_SCOPE:
+        return (
+            _CHECKOUT_COST + ". To decide " + _DECIDE[decides] + ", "
+            + _TAKE[scope] + "."
+        )
+    return (
+        "That value is in " + _ROLE[scope] + ". To decide " + _DECIDE[decides]
+        + ", " + _TAKE[scope] + "."
+    )
+
+
+def _checkout_source(scope: str) -> tuple:
+    """`(how to name this scope's file, what it costs)` for a scope the adopter
+    does not own.
+
+    WHAT IS ASSERTED IS WHAT IS KNOWN, and the two tables carry it: only the
+    checked-in file is one a repository checks in by design, so only that one is
+    described as travelling with every clone. The local file is untracked by
+    convention alone, and memkit does not measure which — answering it means
+    running git inside the session's own checkout, which `cli_init._git_tracked`
+    refuses outright, because `ls-files` executes `core.fsmonitor` from the
+    config of whatever repository the path belongs to and no `-c` override
+    closes a surface a repository can always add a key to.
+    """
+    return _ROLE[scope], _TRAVELS[scope]
+
+
+def _env_switch_note(forced) -> str:
+    """What to say about `$CLAUDE_CODE_DISABLE_AUTO_MEMORY`, or "".
+
+    BOTH DIRECTIONS ARE REPORTED, and neither is passed. Forced on, the row's
+    most confident sentence would be false while every settings file agrees
+    with it. Forced off, what this process carries is not necessarily what an
+    adopter's interactive sessions carry — doctor can read one environment,
+    and the claim would be about all of them.
+    """
+    if forced is None:
+        return ""
+    if forced:
+        return (
+            "$" + _NAMED["disable_env"] + " carries a value the harness reads "
+            "as an instruction to RUN auto-memory before it opens a settings "
+            "file at all: no settings scope turns it off while that value is "
+            "in the environment"
+        )
+    return (
+        "$" + _NAMED["disable_env"] + " is set, which turns auto-memory off in "
+        "every process that carries it — doctor reads its own environment, "
+        "which need not be the one your sessions run in"
+    )
+
+
+def _env_switch_remedy(forced) -> str:
+    """The remedy for a switch an environment variable decided.
+
+    THE FORCED-ON HALF NAMES NO SETTINGS VALUE, and that is the whole of it:
+    the harness reads this variable before it opens a settings file, so a
+    remedy spelling the key and the value to write is a repair whose own row
+    said two clauses earlier that it changes nothing. Nor does it repeat WHY —
+    `_env_switch_note` is in the same envelope, and this string closes a
+    remedy that already carries two other routes inside one bound.
+    """
+    if forced:
+        return (
+            "Unset $" + _NAMED["disable_env"] + " wherever it is exported — a "
+            "shell profile, a direnv file, a wrapper script — or set it to 1."
+        )
+    return (
+        "That switch is off only for processes that inherit $"
+        + _NAMED["disable_env"] + '. To make it true of every session, set "'
+        + _NAMED["enabled_key"] + '": false in your own settings as well.'
+    )
+
+
+def _named_list(names: tuple) -> str:
+    """Memkit's own constants, joined for a sentence.
+
+    Not a value off the machine: every name that reaches here comes from a
+    fixed tuple in `harness_memory`, and which of them are SET is the fact
+    being reported. Joined outside the row's own functions, where nothing
+    assembles a string from anything but a table.
+    """
+    return ", ".join(names)
+
+
+def _override_note(names: tuple) -> str:
+    """What to say about an environment override of the DIRECTORY, or "".
+
+    Named rather than resolved: each of these needs a resolver of its own, and
+    re-deriving three more harness surfaces is how this row comes to name a
+    directory with confidence and be wrong. What it stops is the PASS.
+    """
+    if not names:
+        return ""
+    return (
+        "an environment override is in effect (" + _named_list(names) + "), so "
+        "where the harness writes is not what any settings file says and "
+        "doctor does not resolve it"
+    )
+
+
+def _adopter_owns(scopes: list, name: str) -> bool:
+    """Whether the scope that decided a key is one the ADOPTER owns.
+
+    The predicate `settings_scopes` already computes, asked here rather than
+    re-derived: a comparison against one scope NAME left `local` — a file in
+    the session's own directory, outranking the one memkit does flag — passing
+    as though the adopter had written it.
+
+    An undeclared key has no scope and no owner to doubt.
+    """
+    for scope in scopes:
+        if scope.scope == name:
+            return scope.adopter_owned
+    return True
+
+
+def _declared_below(scopes: list, key: str, name: str, value) -> str:
+    """The highest scope BELOW `name` declaring `key` differently, or "".
+
+    The only case a precedence order decides anything. Compared as JSON text
+    rather than with `==`, because `False == 0` in Python and the harness reads
+    those two as opposite answers.
+    """
+    if name not in harness_memory.SCOPE_ORDER:
+        return ""
+    by_name = {scope.scope: scope for scope in scopes}
+    below = harness_memory.SCOPE_ORDER[harness_memory.SCOPE_ORDER.index(name) + 1 :]
+    for lower in below:
+        scope = by_name.get(lower)
+        if scope is None:
+            continue
+        other = scope.data.get(key)
+        if other is not None and json.dumps(other) != json.dumps(value):
+            return lower
+    return ""
+
+
+# Why a derived directory cannot be named. The resolver's own message ends in
+# the session's own path, and the limit with the reason is the whole of what a
+# reader acts on.
+_KEY_TOO_LONG = (
+    "where the harness writes for this project is unknown: the project key "
+    "derived from this session's directory is over "
+    + str(harness_memory.KEY_MAX)
+    + " characters, past which the harness appends a hash suffix memkit has "
+    "not measured"
+)
+
+
+def _default_memory_dir(machine: Machine, config_dir: str) -> tuple:
+    """`(where the harness writes for this project, why it cannot be said)`.
+
+    Exactly one of the two is ever non-empty. Both refusals are the same kind
+    of fact — a path this row cannot derive — and neither is an error: a
+    session whose directory was removed under it and a project key too long
+    for the harness's own limit are states an adopter can be in. What the
+    resolver raised is not quoted: its message carries the session path.
+    """
+    if not machine.cwd:
+        return "", (
+            "the session directory was removed underneath this run, so where "
+            "the harness writes for this project cannot be derived"
+        )
+    try:
+        return harness_memory.default_dir(config_dir, machine.cwd), ""
+    except ValueError:
+        return "", _KEY_TOO_LONG
+
+
+def _lock_candidates(default: str) -> tuple:
+    """The two places the harness writes the consolidation lock.
+
+    Built here rather than where the answer is rendered: the row's own
+    functions build no paths, and this is one.
+    """
+    return (
+        os.path.join(os.path.dirname(default), CONSOLIDATE_LOCK),
+        os.path.join(default, CONSOLIDATE_LOCK),
+    )
+
+
+def _consolidation_recency(default: str) -> str:
+    """What the consolidation lock says about the last background run, or "".
+
+    TWO SPELLINGS OF ONE LOCK, in the order the harness writes them: beside the
+    memory directory and inside it. The first hit answers — a stale lock in one
+    place and a fresh one in the other is one run, reported once.
+    """
+    if not default:
+        return ""
+    for candidate in _lock_candidates(default):
+        with contextlib.suppress(OSError):
+            age = int(time.time() - os.stat(candidate).st_mtime)
+            if age < 0:
+                # Clocks disagree — a lock written on another machine, or
+                # before a time step. An elapsed time is the one thing this
+                # cannot report, and a negative one reads as a typo.
+                return "the consolidation lock is dated in the future"
+            if age < CONSOLIDATE_RECENT:
+                return f"a consolidation ran {age}s ago"
+            hours = age // 3600
+            return f"last consolidation {hours}h ago"
+    return ""
+
+
+def _inventoried(machine: Machine, config_dir: str) -> tuple:
+    """`(retrieved, in a store, outside, unplaced, what the walk could not read)`.
+
+    THE RELATION IS ASKED OF EVERY DIRECTORY, not only of the linked ones.
+    Being reached through a link is how a project directory comes to be
+    somewhere other than under the config directory, but it is not the only
+    way: `$CLAUDE_CONFIG_DIR` can name a directory inside a corpus root, and
+    then every project directory under it is in a store while nothing here had
+    asked. The count that said otherwise is this row's loudest number.
+
+    FOUR BUCKETS, because `inside` is the only relation that is retrieved and
+    "outside every store" is a sentence about the other four being false. A
+    directory at or above a corpus root, or under a pruned name, is in the
+    store and unreached from where it is — which is neither of the two answers
+    the caller used to have. The fourth is the one this walk cannot answer at
+    all: asked of the relation alone, a directory a raising store left
+    uncompared arrived in the caller as one more memory outside every store.
+
+    THE SAME PREDICATE THE ROW ASKS ELSEWHERE, and not the relation behind
+    it: `_placed` is where a store that is configured and not on disk stops
+    counting as retrieval, and reading the raw relation here made this count
+    disagree with the sentence printed two lines above it.
+
+    THE FOURTH VALUE IS A SENTENCE, not a flag, because what a caller owes an
+    enumeration failure is the same thing every other branch owes: saying what
+    it could not read. Empty when the walk succeeded, and every count beside
+    it is then a count of what is there rather than of what could be listed.
+    The directory it stopped on is named by its role rather than by its path,
+    and a repair that has to reach one directory of several gets there through
+    the role: the walk fails on a project directory or a `memory/` as readily
+    as on `projects/`.
+    """
+    retrieved: list = []
+    in_store: list = []
+    outside: list = []
+    unplaced: list = []
+    found, read_ok = harness_memory.inventory(config_dir)[:2]
+    for project in found:
+        reached, how = _placed(machine, project.path)
+        bucket = (
+            retrieved
+            if reached
+            else unplaced
+            if how == "unknown"
+            else outside
+            if how == "outside"
+            else in_store
+        )
+        bucket.append(project)
+    unread = (
+        ""
+        if read_ok
+        else (
+            "what the harness has already written cannot be counted: a "
+            "directory under the harness config directory could not be read"
+        )
+    )
+    return retrieved, in_store, outside, unplaced, unread
+
+
+def _unreadable_remedy() -> str:
+    """The repair for the directory this process could not enumerate.
+
+    THE DIRECTORY THE WALK STOPPED ON is named by role and not by path, and the
+    role is the config directory's memory tree rather than `projects/`: a single
+    project directory or a single `memory/` fails the walk too, and an
+    instruction naming `projects/` sends the adopter to a directory that is
+    already readable.
+
+    NEVER "move them" and never "switch it off": both are advice about
+    memories whose number this run does not know, and the only honest first
+    step is making the directory answer.
+    """
+    return (
+        "Make the harness's own project memory tree, under the config "
+        "directory config-route names, readable to this user — then run this "
+        "again. Until it lists, nothing here can say how much the harness has "
+        "already written or where it went."
+    )
+
+
+# The repair for a `$CLAUDE_CONFIG_DIR` that is not absolute. Unsetting it
+# first, because the harness's own default is what almost every adopter wants
+# and a relative value is far likelier to be an accident than a choice.
+_UNROOTED_REMEDY = (
+    "Unset $CLAUDE_CONFIG_DIR, or give it an absolute path — a relative one "
+    "names a different directory from every directory you start a session in, "
+    "and nothing here can say which of them the harness used."
+)
+
+
+def _already_placed(retrieved: list, held: list) -> str:
+    """What to say about project directories a store already holds, or "".
+
+    `linked` DECIDES THE WORDING AND NOTHING ELSE: an adopter who wired a
+    directory into a store with a symlink is told it is wired, and one whose
+    config directory simply sits inside a corpus root is told the directory is
+    in there — the same relation, reached two ways, and telling the second one
+    it is "linked into a store" would send them looking for a link nobody made.
+    """
+    wired = [project for project in retrieved if project.linked]
+    plain = [project for project in retrieved if not project.linked]
+    return _detail(
+        _count(len(wired), "project directory", "project directories")
+        + (" is" if len(wired) == 1 else " are")
+        + " already linked into a store"
+        if wired
+        else "",
+        _count(len(plain), "project directory", "project directories")
+        + (" is" if len(plain) == 1 else " are")
+        + " already inside a store's corpus root"
+        if plain
+        else "",
+        _count(len(held), "project directory", "project directories")
+        + (" is" if len(held) == 1 else " are")
+        + " inside a store and not retrieved from where it is"
+        if held
+        else "",
+    )
+
+
+def _left_behind(outside: list) -> str:
+    """The count of memories no store holds, or "".
+
+    ITS OWN SENTENCE because the branch that most needed it had no inventory
+    at all: "auto-memory is off; memkit is the only memory system here" is
+    true in the present tense over a config directory holding nineteen
+    memories nothing retrieves, and it is the sentence that stops an adopter
+    looking for them.
+
+    THE COUNT AND NOT THE KEYS. A project key is an absolute path with its
+    separators replaced, so a list of them is a list of paths; how many
+    memories are where nothing retrieves them is the number an adopter acts on.
+    """
+    if not outside:
+        return ""
+    return (
+        _count(len(outside), "project directory", "project directories")
+        + (" holds " if len(outside) == 1 else " hold ")
+        + _count(sum(project.memories for project in outside), "memory", "memories")
+        + " outside every store"
+    )
+
+
+def _uncompared(compared: bool, unplaced: list) -> str:
+    """What no store was compared with, or "".
+
+    THE THIRD VALUE OF THE PLACEMENT QUESTION, said once for the whole row.
+    "Already inside a store" and "outside every store" are both claims about
+    stores this run resolved, and a config that would not parse and a store
+    naming a root the config does not define leave behind the same emptiness
+    a completed comparison does.
+
+    NOT `_left_behind`'s sentence, and that is the whole of it: a project
+    directory nothing compared is not a project directory outside every
+    store, so the count goes beside the reason rather than beside the alarm.
+    """
+    if compared and not unplaced:
+        return ""
+    counted = (
+        "; "
+        + _count(len(unplaced), "project directory", "project directories")
+        + (" holds " if len(unplaced) == 1 else " hold ")
+        + _count(sum(project.memories for project in unplaced), "memory", "memories")
+        + " nothing was compared with"
+        if unplaced
+        else ""
+    )
+    return "this run could not read every configured store" + counted
+
+
+# The repair for a placement question this run could not answer. NOT a
+# directory change: which store holds what is unknown here, and the row that
+# says why a store would not resolve is the one to read first.
+_UNCOMPARED_REMEDY = (
+    "Fix what store-roots reports — until every configured store resolves, "
+    "nothing here can say whether what the harness writes is already inside "
+    "one, and re-pointing it is advice about stores nobody read."
+)
+
+
+# Where an adopter is sent for memories that are already written and already
+# outside every store. NOT a settings change: the feature being off does not
+# move a file, and the section named here is the one that says what moving
+# them costs and what carries the coupling.
+ADOPT_ADVICE = (
+    'moving them is "Where your agent\'s own memories land" in the STORE guide'
+)
 
 
 @_produces("auto-memory")
 def _auto_memory(machine: Machine) -> list[Check]:
+    """The harness's own memory feature, qualified by what could not be read.
+
+    THREE OF THIS ROW'S FOUR SETTINGS READS decide its status — both switches
+    and the directory — and a scope that would not parse answers all three the
+    same way a scope that says nothing does. So the wrapper is the row's
+    outermost rule rather than a sentence inside one branch of it.
+
+    AND NO BRANCH OF THIS ROW PASSES. Every answer here is assembled from a
+    settings walk, an environment this one process inherited, and a directory
+    listing — three readings of a machine that a variable set in another
+    session, a file this user cannot open, or a harness release read from a
+    minified bundle can each make wrong, and the module says so at every one of
+    them. A PASS is this report's claim that a question is CLOSED, and no
+    branch here can close it: whichever one answers, something it did not read
+    could contradict the answer. The narrower promise is the one that holds —
+    say what was read and let a reader weigh it — so the settled answer is INFO
+    with no remedy, and its detail is word for word what a PASS carried.
+    """
+    return _with_unparsed(_auto_memory_rows(machine), machine.settings)
+
+
+def _auto_memory_rows(machine: Machine) -> list[Check]:
     """The harness's own memory feature, running beside memkit's.
 
     The one differentiator the field survey found unclaimed: none of the six
     competitors handles built-in auto-memory coexistence at all. Two stores
     writing memories about the same work, in two formats, with two retrieval
     paths, is a state an adopter should choose rather than discover.
+
+    What the branches turn on is WHERE the harness writes, because that is what
+    decides whether the adopter has one corpus or two: a directory inside a
+    store is retrieved and is not a second system at all. Each switch is read
+    in the first scope that declares it, independently of the other — they
+    answer different questions, and the earlier reading, which took whichever
+    key it met first, reported `autoDreamEnabled` while `autoMemoryEnabled`
+    sat in the same file deciding whether the feature ran.
+
+    WHO DECIDED is the other axis, and it is asked of every value on this row
+    regardless of what the value is. A scope the adopter does not own is
+    reported and never passed — a clone that turns the feature ON over an
+    adopter who turned it off is the direction that leaves two memory systems
+    running on a machine whose owner believes there is one.
+
+    NO PATH IS RENDERED HERE, on any branch. What this row reports is counts,
+    presence, and which scope decided; every file it names it names by the ROLE
+    it plays, out of `_ROLE`. The report is relayed verbatim into a model's
+    context, a path under home carries the adopter's own name and the harness's
+    project keys are absolute paths with the separators replaced — and a
+    redaction applied at each of a dozen call sites is a rule that holds until
+    the next branch is written. The relations the counts rest on are still
+    computed from the paths; none of them reaches a sentence.
     """
-    setting = None
-    where = ""
-    for scope in machine.settings:
-        for key in ("autoDreamEnabled", "autoMemoryEnabled"):
-            if key in scope.data:
-                setting = (key, scope.data[key])
-                where = scope.scope
-                break
-        if setting:
-            break
-    config_dir = os.environ.get(CONFIG_DIR_ENV) or os.path.expanduser("~/.claude")
-    project = os.path.join(config_dir, "projects", _sanitized_cwd())
-    recent = ""
-    for candidate in (
-        os.path.join(project, CONSOLIDATE_LOCK),
-        os.path.join(project, "memory", CONSOLIDATE_LOCK),
-    ):
-        with contextlib.suppress(OSError):
-            age = int(time.time() - os.stat(candidate).st_mtime)
-            if age < CONSOLIDATE_RECENT:
-                recent = f"; a consolidation ran {age}s ago"
-            else:
-                recent = f"; last consolidation {age // 3600}h ago"
-            break
-    if setting is None:
+    enabled, enabled_scope = harness_memory.switch(
+        machine.settings, harness_memory.ENABLED_KEY
+    )
+    # THE ENVIRONMENT DECIDES BEFORE ANY SETTINGS FILE IS OPENED, on both
+    # axes — see `harness_memory.DISABLE_ENV` and `OVERRIDE_ENV`. Read from the
+    # 2.1.258 code: a falsy word in that variable RUNS the feature and returns
+    # before the settings walk, so the state this row calls "memkit is the only
+    # memory system here" is one an environment variable can make false while
+    # every settings scope agrees with it.
+    forced = harness_memory.env_switch()[0]
+    # ONE ANSWER to "did something outside every settings file decide part of
+    # this row", carried into every detail and gating every settled answer in
+    # it: a settled answer is a claim about the machine, and neither of these
+    # is answerable from the environment this one process happens to have
+    # inherited.
+    environed = _detail(
+        _env_switch_note(forced),
+        _override_note(harness_memory.overrides()),
+    )
+    dream, dream_scope = harness_memory.switch(
+        machine.settings, harness_memory.DREAM_KEY
+    )
+    # Asked of the SETTINGS value before the environment replaces it: a scope
+    # holding `0` is a file somebody hand-edited meaning `false`, and that is
+    # worth saying whichever way the environment then decided.
+    odd_enabled = _odd_switch("enabled_key", enabled, enabled_scope)
+    if forced is not None:
+        enabled = forced
+    config_value, config_dir = _config_dir()
+    # THE SAME VARIABLE `settings_scopes` guards, guarded the same way. Read
+    # raw it decided two things — the inventory whose emptiness settles the row
+    # rather than leaving it a remedy, and the scope a remedy names — so a
+    # repository that redirects it moved this row to its most reassuring
+    # answer.
+    # ASKED OF THE VALUE, NOT OF THE DERIVED DEFAULT. `~/.claude` is under the
+    # cwd whenever a session stands anywhere in home, so the containment test
+    # alone told an adopter in their own home directory that a checkout had
+    # redirected their harness — and offered them a remedy for a variable
+    # their environment does not carry.
+    steered = bool(config_value) and _under_cwd(config_dir)
+    # AND A RELATIVE ONE NAMES NOTHING. `..`-relative lands outside the
+    # session's directory, so the containment guard above says nothing about
+    # it, and every directory this row counted is then one that resolves only
+    # from where this process happens to stand.
+    unrooted = (
+        "$" + _NAMED["config_env"] + " is a relative path, so every directory "
+        "this run derived from it resolves only from the directory this "
+        "session stands in"
+        if config_value and not os.path.isabs(config_value)
+        else ""
+    )
+    # THE COUNT BELONGS TO A DIRECTORY THE TREE CHOSE, and that is as true of
+    # the branch reporting the switch off as of the one reporting where the
+    # harness writes. Read here rather than two hundred lines down, so every
+    # branch below carries it.
+    redirected = (
+        "$" + _NAMED["config_env"] + " points inside the directory this "
+        "session stands in, so both where the harness writes and what is "
+        "counted in it are this tree's choice"
+        if steered
+        else ""
+    )
+    default, underived = _default_memory_dir(machine, config_dir)
+    configured, where = harness_memory.configured_dir(machine.settings)
+    # THE LOCK BESIDE THE DIRECTORY IN USE. Read from the derived one whatever
+    # the settings said, this reported the recency of a directory the harness
+    # stopped writing to the moment `autoMemoryDirectory` was set — and said
+    # nothing about the one it writes to now.
+    recent = _consolidation_recency(configured or default)
+    # `is False` and not falsiness: JSON `0`, `""`, `[]` and `{}` are every one
+    # of them a value the harness goes on writing under, and read as off they
+    # produce this row's most confident sentence over a machine with two memory
+    # systems on it.
+    #
+    # THE SWITCH'S OWNER, whichever way it was switched. The disclosure used to
+    # live inside this branch, so it fired for a clone that turned the feature
+    # off and never for one that turned it back on.
+    switch_theirs = bool(enabled_scope) and not _adopter_owns(
+        machine.settings, enabled_scope
+    )
+    switch_source, switch_travels = (
+        _checkout_source(enabled_scope) if switch_theirs else ("", "")
+    )
+    # THE INVENTORY BEFORE THE VERDICT, on EVERY branch: a switch that is off
+    # stops the harness WRITING, and every memory it wrote before is still on
+    # disk, so the branch that returned without a walk is the branch whose
+    # sentence stops an adopter looking for them. A directory a store already
+    # holds is not a second memory system, and a link into a corpus root is the
+    # wiring docs/STORE.md recommends — counted as one, this row alarms about
+    # the state it exists to send adopters to.
+    retrieved_dirs, in_store, outside, unplaced, unread = _inventoried(
+        machine, config_dir
+    )
+    # THE SAME QUESTION `_store_relation` ASKS, asked once for the row: every
+    # placement sentence below rests on a comparison this run completed, and
+    # without one "outside every store" and "already inside a store" are the
+    # same emptiness.
+    store_unknown = _uncompared(
+        _store_relation(machine, config_dir)[3], unplaced
+    )
+    # EVERY DISCLOSURE IN ONE TUPLE, and the same tuple gates, details and
+    # chooses the remedy. These were three lists that drifted: the gate held
+    # two of them, the detail four, and the row went on making its most
+    # reassuring claim while an environment variable decided where the harness
+    # writes and a checked-in path decided what was counted.
+    #
+    # THE TWO THAT OWN A REMEDY COME FIRST. `_bound` cuts a detail from the
+    # end, so a disclosure ordered behind the others is the one a long row
+    # drops — and dropping it leaves the repair for it standing over a detail
+    # that never said anything was unread.
+    disclosures = (unread, unrooted, environed, redirected, store_unknown)
+    unsure = _detail(*disclosures)
+    # ONE REMEDY PER DISCLOSURE, because the gate is wider than the two it was
+    # written for. A disclosure with no repair of its own gets none rather than
+    # the repair for whichever one happened to be last in the ternary — and
+    # `environed` is one of those: nothing here can unset a variable in the
+    # environment the adopter's sessions actually run in.
+    unsure_remedy = (
+        _unreadable_remedy()
+        if unread
+        else _UNROOTED_REMEDY
+        if unrooted
+        else _UNCOMPARED_REMEDY
+        if store_unknown
+        else ""
+    )
+    # THE ONLY CASE THE SCOPE ORDER DECIDES ANYTHING. With one declaring scope
+    # every candidate precedence picks it; with two that disagree, this row's
+    # most consequential sentence rests on an order inferred rather than
+    # measured, so it is reported instead of passed. Asked before the branches
+    # rather than inside one: ordered behind the checkout branch it never fired
+    # for the state it matters most in, a clone deciding the switch over a
+    # scope that declares it otherwise.
+    disputed = _declared_below(
+        machine.settings, harness_memory.ENABLED_KEY, enabled_scope, enabled
+    )
+    if enabled is False:
+        left = _left_behind(outside)
+        if left:
+            left = left + ", and " + ADOPT_ADVICE
+        placed = _already_placed(retrieved_dirs, in_store)
+        # THE CLAIM ONLY WHERE THE INVENTORY BEARS IT OUT. "memkit is the only
+        # memory system here" beside a count of memories no store holds is a
+        # sentence contradicted two clauses later; off is still off, so this
+        # stays settled and says the narrower true thing. A walk that FAILED
+        # bears nothing out either way, which is the second condition here.
+        # The third: the checkout branch appends "while this checkout says so"
+        # to this string, and a clone that can switch the feature back on is
+        # not a machine where one memory system is settled.
+        off = (
+            "auto-memory is off in this process's environment"
+            if forced is not None
+            else (
+                "auto-memory is off in " + _ROLE[enabled_scope]
+                + (
+                    ""
+                    if left or unsure or switch_theirs
+                    else "; memkit is the only memory system here"
+                )
+            )
+        )
+        if forced is not None:
+            # NOT A PASS, and not the settings' answer either: the variable
+            # outranks every scope. The scope is still disclosed when the
+            # adopter does not own it, because a session started without this
+            # variable is one that file decides.
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(
+                        off,
+                        unsure,
+                        left,
+                        placed,
+                        '"' + _NAMED["enabled_key"] + '" is also set in '
+                        + switch_source + ", and " + switch_travels
+                        if switch_theirs
+                        else "",
+                        recent,
+                        odd_enabled,
+                    ),
+                    _env_switch_remedy(forced),
+                    actor=USER,
+                )
+            ]
+        if switch_theirs:
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(
+                        off + " while this checkout says so — the value is in "
+                        + switch_source + ", and " + switch_travels,
+                        # BOTH DISCLOSURES, not whichever branch ran first.
+                        # Who decided and which file wins are separate
+                        # questions, and the clone is the case where the
+                        # second one has teeth.
+                        _ROLE[disputed] + " declares it otherwise, and which "
+                        "file wins is inferred for this key rather than read"
+                        if disputed
+                        else "",
+                        unsure,
+                        left,
+                        placed,
+                        recent,
+                    ),
+                    _checkout_remedy("value", enabled_scope),
+                    actor=USER,
+                )
+            ]
+        if disputed:
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(
+                        "auto-memory is off in " + _ROLE[enabled_scope]
+                        + " and " + _ROLE[disputed] + " declares it otherwise. "
+                        "Which file wins is read from the harness's directory "
+                        "resolver and inferred for this key, which resolves "
+                        "through an accessor that reports no scope",
+                        unsure,
+                        left,
+                        placed,
+                        recent,
+                    ),
+                    'Settle it in one place: take "' + _NAMED["enabled_key"]
+                    + '" out of ' + _ROLE[disputed] + ", or out of "
+                    + _ROLE[enabled_scope] + ", so no order decides it.",
+                    actor=USER,
+                )
+            ]
+        if unsure:
+            # A settled answer here is a claim about what is on the machine,
+            # and the walk that would have borne it out is the one that failed.
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(off, unsure, left, placed, recent),
+                    unsure_remedy,
+                    actor=USER,
+                )
+            ]
+        return [Check("auto-memory", INFO, _detail(off, left, placed, recent))]
+
+    # The feature is running, and a file this tree carries may be why.
+    switched_on = (
+        '"' + _NAMED["enabled_key"] + '" is on in ' + switch_source + ", and "
+        + switch_travels
+        if switch_theirs
+        else ""
+    )
+    if configured is not None:
+        checkout = not _adopter_owns(machine.settings, where)
+        source, travels = (
+            _checkout_source(where) if checkout else (_ROLE[where], "")
+        )
+        retrieved, how = _placed(machine, configured)
+        # THE KEY, THE FILE AND THE VERDICT, and no value. The value is a path
+        # a clone chooses the length and the content of: rendered, a
+        # 560-character one filled the whole budget and cut three verdict
+        # sentences off the end, and a prose-shaped one could forge a verdict
+        # of its own. What it points at is the fact this row is about, and the
+        # relation says it.
+        named = (
+            _NAMED["directory_key"] + " in " + source + " names a directory "
+            "that " + _PLACEMENT[how]
+        )
+        # THE WALK GATES THIS ANSWER TOO. The configured directory being inside
+        # a store says nothing about the projects the harness wrote before the
+        # key was set, and this branch returned before the inventory was ever
+        # asked — so the one state that voids every other branch's answer, a
+        # listing that would not answer, was invisible in the only branch that
+        # settles silently. The parallel derived-directory guard below already
+        # gated on it.
+        if (
+            retrieved
+            and not checkout
+            and not switch_theirs
+            and not in_store
+            and not outside
+            and not unsure
+        ):
+            return [
+                Check(
+                    "auto-memory",
+                    INFO,
+                    _detail(named, recent, odd_enabled),
+                )
+            ]
+        # WHO DECIDES OUTRANKS WHERE IT POINTS: where the harness writes is not
+        # the question while somebody else decides whether it writes at all.
+        if checkout:
+            remedy = _checkout_remedy("directory", where)
+        elif switch_theirs:
+            remedy = _checkout_remedy("switch", enabled_scope)
+        elif unsure_remedy:
+            # AHEAD OF THE STORE ADVICE, because moving a directory is advice
+            # about a corpus this run could not enumerate: the first step is
+            # making it answer. On the disclosures that have no repair of their
+            # own this is empty and the store advice stands.
+            remedy = unsure_remedy
+        else:
+            remedy = (
+                "Point it at a directory of the harness's own inside a corpus "
+                'root — set "' + _NAMED["directory_key"] + '" to an '
+                + _NAMED["safe_subdir"] + " directory under a store's search "
+                "tree, so retrieval recurses into it and the rewrite reaches "
+                'only what is in it. Or leave it there deliberately: "Where '
+                'your agent\'s own memories land" in the STORE guide says what '
+                "each choice costs."
+            )
         return [
             Check(
                 "auto-memory",
-                PASS,
-                "no auto-memory setting in any scope" + (recent or ""),
+                INFO,
+                _detail(
+                    named,
+                    travels,
+                    *disclosures,
+                    switched_on,
+                    # THE INVENTORY THAT KEPT THIS BRANCH FROM SETTLING, in the
+                    # branch it falls to. The gate above reads the walk — a
+                    # project directory in a store and not retrieved, or
+                    # outside every store, stops the settled answer — and this
+                    # detail listed neither, so the remedy arrived over counts
+                    # its reader was never shown.
+                    _already_placed(retrieved_dirs, in_store),
+                    _left_behind(outside),
+                    recent,
+                    odd_enabled,
+                ),
+                remedy,
+                actor=USER,
             )
         ]
-    key, value = setting
-    if not value:
-        return [
-            Check("auto-memory", PASS, f"{key} is off in {where} settings" + recent)
-        ]
+
+    here = False
+    present = _present(default)
+    if underived:
+        first = underived
+    elif present:
+        first = (
+            "the harness writes this project's memories to the directory it "
+            "derives from the git root, under its own config directory"
+        )
+        here, how = _placed(machine, default)
+        if here:
+            first = first + ", and that directory " + _PLACEMENT[how]
+    elif present is None:
+        # NEITHER OF THE OTHER TWO SENTENCES, which are both claims about what
+        # is on disk: a directory this process may not stat is one nothing
+        # here read, and "not there yet" would send an adopter looking for
+        # memories this run never counted.
+        first = (
+            "the harness derives this project's memory directory from the git "
+            "root, under its own config directory, and this run could not read "
+            "whether it is there"
+        )
+    else:
+        first = (
+            "the harness would write this project's memories to a directory it "
+            "derives from the git root, under its own config directory, and "
+            "that directory is not there yet"
+        )
+
+    # A remedy NEVER SENDS THE ADOPTER INTO THE CHECKOUT — and "set it in your
+    # user settings" is worse than nothing while a scope above them sets the
+    # key, which is the whole of what `_checkout_remedy` exists to say.
+    #
+    # NOR DOES IT NAME A SETTINGS VALUE THE ENVIRONMENT OUTRANKS. A variable
+    # the harness reads before it opens a settings file at all is the state
+    # this branch is reached in most often, and the switch-off sentence was
+    # rendered from the config directory alone: it closed with the one edit
+    # its own detail had just called moot.
+    if forced:
+        switch_off = _env_switch_remedy(forced)
+    elif steered:
+        switch_off = (
+            'To run memkit alone, set "' + _NAMED["enabled_key"] + '": false '
+            "in your own settings file under your home config directory, and "
+            "unset $" + _NAMED["config_env"] + " or point it back there."
+        )
+    else:
+        switch_off = (
+            'To run memkit alone, set "' + _NAMED["enabled_key"] + '": false '
+            "in " + _ROLE["user"] + "."
+        )
+    # THE TWO FACTS THAT VOID THE ANSWER AHEAD OF THE ONE THE ROW IS ABOUT.
+    fixed = (
+        *disclosures,
+        first,
+        switched_on,
+        recent,
+        odd_enabled,
+        _odd_switch("dream_key", dream, dream_scope),
+        "auto-dream is off in " + _ROLE[dream_scope] + ": no background "
+        "consolidation"
+        if dream is False
+        else "",
+        _already_placed(retrieved_dirs, in_store),
+    )
+    if (
+        here
+        and not outside
+        and not in_store
+        and not unsure
+        and not switch_theirs
+    ):
+        return [Check("auto-memory", INFO, _detail(*fixed))]
+    counted = _left_behind(outside)
+    # WHO DECIDES, THEN WHAT COULD NOT BE READ, THEN THE ADVICE — the order
+    # the configured branch already settles on, and this branch is the one
+    # every adopter without the key lands on. Adopting a corpus and switching
+    # the feature off are both instructions about memories whose number this
+    # run does not know, which is exactly what the disclosures' own repairs
+    # exist to say instead.
+    if switch_theirs:
+        remedy = _checkout_remedy("switch", enabled_scope)
+    elif unsure_remedy:
+        remedy = unsure_remedy
+    else:
+        remedy = (
+            "Two memory systems on one project is a choice rather than a "
+            "fault. To put what the harness writes inside the store, run "
+            + _init_command(machine, "--adopt-auto-memory")
+            + ' — it copies, never moves — or set "'
+            + _NAMED["directory_key"] + '" to an ' + _NAMED["safe_subdir"]
+            + " directory under a corpus root by hand. The STORE guide's "
+            '"Where your agent\'s own memories land" has the value and the '
+            "trap. " + switch_off
+        )
     return [
         Check(
             "auto-memory",
             INFO,
-            f"{key} is ON in {where} settings{recent}. The harness writes and "
-            "consolidates its own memories under "
-            f"{_display_path(project)}/memory/, beside memkit's store",
-            "Two memory systems on one project is a choice rather than a "
-            'fault. To run memkit alone, set "autoDreamEnabled": false in '
-            f"{_display_path(config_dir)}/settings.json.",
+            # HOW MANY, and never which. A project key is an absolute path with
+            # its separators replaced, so a list of five of them is five paths
+            # and longer than everything else in this row put together.
+            _detail(*fixed, counted),
+            # THE WHOLE REMEDY when a scope above the adopter's turned the
+            # feature on, rather than a sentence appended to the store advice:
+            # where the harness writes is not the question while somebody else
+            # decides whether it writes, and the two paragraphs together do not
+            # fit inside this string's own bound.
+            #
+            # A COMMAND FIRST, AND THE BY-HAND ROUTE BESIDE IT. This is the row
+            # an adopter with two memory systems reaches, and until init grew
+            # `--adopt-auto-memory` the only thing to do about it was a settings
+            # edit and a file move. `_init_command` decides the channel, because
+            # skills ship only in the plugin payload and it puts the flag on
+            # both turns of the binary form.
+            #
+            # ALL THREE ROUTES INSIDE ONE BOUND: adopt, redirect by hand, and
+            # switch off. `_bound` cuts from the end, so a fourth sentence here
+            # costs the switch-off paragraph rather than announcing itself; the
+            # longest branch of this string is measured by a test.
+            remedy,
             actor=USER,
         )
     ]
@@ -3689,10 +5471,23 @@ def run(args: argparse.Namespace) -> int:
                         UNKNOWN,
                         f"nothing could be read about this machine: "
                         f"{type(exc).__name__}: {exc}",
-                        "Run this from a directory that exists — the one this "
-                        "session stands in may have been removed under it — "
-                        "and if it does exist, report this with the message "
-                        "above.",
+                        # WHAT STOPPED THE READ IS THE ONLY THING KNOWN HERE,
+                        # and the remedy may not say more than that. This line
+                        # named one cause — a removed session directory — for
+                        # every exception that can reach it, so a checked-in
+                        # settings file the parser gave up on was answered
+                        # with advice about a directory that was never
+                        # missing. The two inputs this reads are named because
+                        # they are the two an adopter can check; which of them
+                        # it was is what the message above says.
+                        "Nothing here read this machine, so the message above "
+                        "is the exception that stopped the read and not a "
+                        "fault this report has found. Check the directory "
+                        "this session stands in and, if you set it, the one $"
+                        + _NAMED["config_env"]
+                        + " names — either can be gone, unreachable, or hold "
+                        "a settings file this build cannot parse. Report this "
+                        "with the message above.",
                         actor=USER,
                     )
                 ]

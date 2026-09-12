@@ -48,6 +48,14 @@ permissions:
 # The cost is that a slow step serialises behind the ones before it. That is the
 # trade, and it is the right way round while every job here is single-digit
 # minutes.
+#
+# `mutation-sweep` is the one thing that is not, and it is a job for exactly
+# that reason: the whole corpus is three quarters of an hour on a hosted
+# runner, which inside `python` would put the context branch protection waits
+# for behind a wait nothing else here needs. The price is the one this comment
+# names, so it is paid explicitly — the job's name is in `automerge.yml`'s
+# required list, and a branch protection rule that does not also name it
+# leaves this advisory.
 
 env:
   # renovate: datasource=pypi depName=ruff
@@ -130,6 +138,16 @@ jobs:
       # produces CLAUDE_PLUGIN_OPTION_MEMKITCONFIG — a repo-wide rename of the
       # assumed prefix otherwise leaves every check green and every adopter's
       # plugin inert.
+      # The store-guidance cases paste the documented commands into both
+      # shells an adopter uses, so half of them need zsh. They fail rather
+      # than skip where it is absent, under this job's name — which branch
+      # protection requires — so the shell is installed here rather than
+      # assumed of the image.
+      - name: zsh (the store-guidance cases are pasted into it)
+        run: |
+          command -v zsh || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zsh; }
+          zsh --version
+
       - name: Test suites (hook pytest + integrity unittest)
         run: .venv/bin/python -m pytest -q
 
@@ -186,13 +204,35 @@ jobs:
       # one in about a tenth of a second. MEMKIT_FLOOR_REQUIRED=1 makes a
       # missing interpreter fail the step rather than skip it, for the same
       # reason the rig's tier does.
+      #
+      # TWO INVOCATIONS AND NOT ONE `-k ... or ...`: pytest exits 5 when a
+      # selection matches nothing and 0 when any half of an `or` still does,
+      # so a renamed test took its clause out of the step and left it green on
+      # the other clause alone. One clause each is what makes a name that
+      # stopped matching turn this red.
       - name: The 3.9 floor, executed
         env:
           MEMKIT_FLOOR_REQUIRED: "1"
         run: |
           uv python install 3.9
           .venv/bin/python -m pytest -q tests/test_packaging.py \
-            -k the_hook_and_both_subcommands_run_on_a_real_39
+            -k "the_hook_and_both_subcommands_run_on_a_real_39"
+          .venv/bin/python -m pytest -q tests/test_packaging.py \
+            -k "harness_shape_runs_on_a_real_floor_interpreter and py39"
+
+      # And the capture tool's own floor, a version lower again: it is piped
+      # over ssh into whatever `python3` somebody else's host resolves, and the
+      # first one it went to ran 3.8.18. The pyright pass below catches the
+      # typing half only — typeshed dropped 3.8 and no longer carries the
+      # guards, so a 3.9-only stdlib call is invisible to it and lands as a
+      # traceback in a colleague's terminal.
+      - name: The 3.8 floor, executed (the capture tool)
+        env:
+          MEMKIT_FLOOR_REQUIRED: "1"
+        run: |
+          uv python install 3.8
+          .venv/bin/python -m pytest -q tests/test_packaging.py \
+            -k "harness_shape_runs_on_a_real_floor_interpreter and py38"
 
       # The hook's 3.9 floor, as a SECOND pyright pass with its own config —
       # executionEnvironments are rooted at a directory, and here the 3.9 hook
@@ -208,6 +248,21 @@ jobs:
         env:
           PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
         run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig-hook39.json
+
+      # And a THIRD floor, for the one file that runs below this repository's
+      # own. `tools/harness_shape.py` is piped over ssh into whatever `python3`
+      # a colleague's host resolves, and the first host it went to ran 3.8.18 —
+      # so nothing else here answers to 3.8, and until this step there was no
+      # interpreter and no checker that did. What it catches is the typing
+      # half: a PEP-585 builtin generic subscripted at runtime is an error at
+      # 3.8 and not at 3.9. What it cannot catch is a 3.9-only stdlib call,
+      # because typeshed dropped 3.8 and no longer carries the guards; that
+      # half is the `ast` walk in tests/test_harness_shape.py. Both, or
+      # neither is a floor.
+      - name: Pyright — the 3.8 floor (the capture tool)
+        env:
+          PYRIGHT_PYTHON_FORCE_VERSION: ${{ env.PYRIGHT_VERSION }}
+        run: uvx pyright@${{ env.PYRIGHT_VERSION }} -p pyrightconfig-shape38.json
 
       # R10, the admission gate. TWO invocations, because the validator picks
       # its mode from what it is pointed at and the two modes check different
@@ -229,6 +284,99 @@ jobs:
         run: |
           claude plugin validate . --strict
           claude plugin validate .claude-plugin/plugin.json --strict
+
+  # A green suite says the tests pass; this says they would have failed had the
+  # code been wrong. The corpus grew all milestone with nothing running it in
+  # CI, so a probe whose anchor had drifted cost nothing until somebody ran the
+  # sweep by hand — and the two `--module` runs that first closed that were an
+  # enumeration of 114 probes out of 661, which is the same failure one level
+  # up: twelve modules went on unrun, and the list nobody re-derived is what
+  # let an anchor slip sit dead for twenty-three commits. So the whole corpus,
+  # with no `--module` to keep in step with anything.
+  mutation-sweep:
+    name: mutation-sweep
+    runs-on: ubuntu-latest
+    # 879 seconds for the whole corpus, measured on the author's machine in one
+    # run. Times three for a hosted runner and rounded up.
+    timeout-minutes: 45
+    steps:
+      # fetch-depth 0, and not only for the reason the `python` job gives.
+      # The corpus selects cases that read the COMMIT GRAPH — the marketplace
+      # pin is asserted to be an ancestor of HEAD — and `_needs_checkout` in
+      # tests/test_plugin_surface.py fails rather than skips where the history
+      # is not there. Under the default depth of 1 those selections are red
+      # before any mutation, which the sweep reports as BASELINE for every
+      # probe that names one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # No zsh and no `claude` here, measured rather than assumed: every
+      # store-guidance probe selects a bash cell, and no probe in the corpus
+      # names a case from tests/rig.
+      - name: Environment
+        run: |
+          uv venv --python 3.12
+          uv pip install --python .venv -e . pytest
+
+      # Seconds, and they buy the rest of this job: the sweep is what decides
+      # a verdict, so a sweep whose refusals have quietly stopped refusing
+      # reports a number for a corpus it never ran. First, because a green
+      # sweep read afterwards is a number already believed.
+      - name: The sweep, falsified
+        run: .venv/bin/python tools/mutation_sweep.py --selftest
+
+      # THE OUTCOME, NEVER A LIST OF ACCEPTED SPELLINGS. The sweep exits
+      # non-zero for every verdict but CAUGHT and DECLARED, and the one state
+      # that exits 0 having proved nothing is an EMPTY selection — `CAUGHT
+      # 0/0`, which a mistyped filter or a corpus that stopped loading
+      # produces. So what is asserted is the number of probes that ran and
+      # that every one of them was either caught or a declared exception. A
+      # step that instead listed the verdict words it would accept would go
+      # green the day a new one is added.
+      #
+      # DECLARED is added back rather than ignored, and the names are printed:
+      # three probes here are guarded by cases that skip on a case-sensitive
+      # filesystem, which this runner has and the author's machine does not.
+      # A sum that dropped them would also drop a probe whose declaration
+      # stopped matching the skip it names, and that is a probe asking nothing.
+      - name: Mutation sweep (the whole corpus)
+        run: |
+          .venv/bin/python tools/mutation_sweep.py > sweep.log 2>&1 && swept=0 || swept=$?
+          cat sweep.log
+          test "$swept" -eq 0
+          .venv/bin/python - sweep.log <<'ASSERT'
+          import re, sys
+
+          log = open(sys.argv[1], encoding="utf-8").read()
+          ran = re.search(r"^probes +: (\d+)$", log, re.M)
+          caught = re.search(r"^CAUGHT (\d+)/(\d+) ", log, re.M)
+          waived = re.search(r"^DECLARED (\d+)/(\d+)$", log, re.M)
+          if not (ran and caught and waived):
+              sys.exit("the sweep printed no count this step can read")
+          probes, done, total = int(ran.group(1)), int(caught.group(1)), int(caught.group(2))
+          declared = int(waived.group(1))
+          named = re.findall(r"^\S+ \[ *\d+/\d+\] DECLARED .*$", log, re.M)
+          for line in named:
+              print(line)
+          # One loop in the sweep prints the per-probe line and counts it, so
+          # a log naming fewer than it counted was edited between the steps.
+          if len(named) != declared:
+              sys.exit(f"the sweep counted {declared} declared and named {len(named)}")
+          if not (probes == total and done + declared == probes):
+              sys.exit(f"{probes} probes selected, {done} caught and {declared} declared")
+          # The floor is what a narrowed selection cannot get under, and it
+          # counts catches alone: a corpus that declared its way to 661 would
+          # have proved nothing. 661 at the commit that set it, with room for a
+          # probe or two to be retired.
+          if done < 640:
+              sys.exit(f"only {done} probes were caught; the corpus held 661 when this floor was set")
+          print(f"{done} probes caught, {declared} declared exceptions")
+          ASSERT
 
   wordlist:
     name: wordlist

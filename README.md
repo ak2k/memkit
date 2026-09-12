@@ -449,7 +449,8 @@ one surface that reads the settings value directly, which is what lets it tell
     first prints every path it would write and a digest and writes nothing, the
     second applies exactly that or refuses because something moved. Exit 5 is a
     named refusal with nothing written; exit 6 is a run that started and did
-    not finish, and re-running converges.
+    not finish, or one that finished every action and then failed its own
+    integrity check; stderr says which.
 
   `memkit --version` prints the three facts every other answer depends on: the
   installed distribution, the hook's content hash, and the payload's commit.
@@ -793,7 +794,7 @@ different job:
 | 2 | usage error, or a subcommand that does not exist |
 | 4 | the subcommand exists and is not in this build — stderr names the fallback. Nothing returns this today; it is kept because a caller that learned what 4 means must not find it meaning something else when the next subcommand lands. **Not** the 4 in the table above: these are different commands and neither borrows the other's vocabulary |
 | 5 | a subcommand refused by name and **wrote nothing** — `init` meeting a store inside the plugin payload, a stale digest, an unparseable settings file. stderr names which refusal. Retrying the same command cannot help; something has to change first |
-| 6 | a subcommand started and did not finish — a write that failed partway, or a store that was created and then failed its own integrity check. The init journal says how far it got. **Recover with the two turns, not by repeating the last one**: the writes that landed change the plan's digest, so the original `--confirm <digest>` now refuses as stale. Run `--dry-run` again, read the new manifest — it will list only what is left — and confirm that |
+| 6 | a subcommand started and did not finish — a write that failed partway — **or** one that performed every action in its manifest and then failed its own integrity check. stderr says which of the two, and for a red check it names each file the check is red on and whether that run wrote it. The init journal says how far a run that stopped got. **Recover from that one with the two turns, not by repeating the last one**: the writes that landed change the plan's digest, so the original `--confirm <digest>` now refuses as stale. Run `--dry-run` again, read the new manifest — it will list only what is left — and confirm that. A file the run did not write is one no re-run changes: fix it where it is |
 
 ## Install (details)
 
@@ -1170,7 +1171,7 @@ before it is emitted. And the opening delimiter DECLARES how many lines the
 region holds, counted off the finished block, so nothing inside it can move the
 end. Both frames state all three in the prose the model reads, and say what to
 do if the closing line never arrives. The block is the frame plus one line
-per pointer: **1041 bytes fixed** on any prompt that fires, plus the pointer
+per pointer: **1063 bytes fixed** on any prompt that fires, plus the pointer
 lines themselves, which are as long as your descriptions. The subagent block is
 the same shape and **1636 bytes fixed**, appended to the brief rather than
 printed;

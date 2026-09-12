@@ -673,6 +673,9 @@ def _changed_files(repo: Path, blame_base: str) -> tuple[set[str], str]:
         try:
             out = run_git(route, repo=str(repo), timeout=30, **holes)
         except (OSError, subprocess.SubprocessError, Untrusted):
+            # swallow: None reaches the caller as the second element of this
+            # function's answer, and `CITED-PATHS-SKIPPED` is where check()
+            # says the run looked at nothing.
             return None
         return out if out.returncode == 0 else None
 
@@ -819,6 +822,10 @@ def _rows_at(
             GitRoute.BLOB_AT, repo=str(repo), rev=Rev(base), path=str(rel)
         )
     except (OSError, subprocess.SubprocessError, Untrusted):
+        # swallow: nothing discloses this one. A git that could not read the
+        # ledger at the base is indistinguishable here from a base that never
+        # carried it, so ROW-LOST reports nothing and no line says the
+        # comparison was never made.
         return None
     if out.returncode != 0:
         return None
@@ -936,6 +943,9 @@ def _last_touch(repo: Path, paths: list[str]) -> dict[str, int]:
             GitRoute.LAST_TOUCH, repo=str(repo), paths=list(paths), timeout=60
         )
     except (OSError, subprocess.SubprocessError, Untrusted):
+        # swallow: nothing discloses this one. An empty map reads downstream as
+        # "no commit touched it", so HOT-STALE is not raised and no line says
+        # the timestamps were never read.
         return {}
     seen: dict[str, int] = {}
     ts = 0
@@ -972,6 +982,9 @@ def _row_touch(repo: Path, ledger: Path, limit: int = 400) -> dict[str, int]:
             GitRoute.ROW_TOUCH, repo=str(repo), limit=limit, path=rel, timeout=60
         )
     except (OSError, subprocess.SubprocessError, Untrusted):
+        # swallow: nothing discloses this one. An empty map reads downstream as
+        # "no diff to the ledger mentioned it", so HOT-STALE is not raised and
+        # no line says the ledger's own history was never walked.
         return {}
     seen: dict[str, int] = {}
     ts = 0

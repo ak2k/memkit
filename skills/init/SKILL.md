@@ -32,8 +32,15 @@ The flags themselves may be in any order after it:
   user's `CLAUDE.md`. Read the manifest's own note about what that buys before
   recommending it: it puts each hot memory's *description* in every session,
   not its body.
-- `--auto-dream-off` — turn the harness's own auto-memory off, so it stops
-  writing and consolidating memories beside memkit's.
+- `--auto-dream-off` — set `"autoDreamEnabled": false` in the user's
+  `settings.json`. That stops the harness's background consolidation only; it
+  goes on writing its own memories beside memkit's.
+- `--adopt-auto-memory` — copy the memories the harness has already written
+  under its own config directory into the store, and set
+  `"autoMemoryDirectory"` so the ones it writes next land there too. Copies,
+  never moves.
+- `--auto-memory-off` — set `"autoMemoryEnabled": false`, so the harness
+  writes no memories of its own at all and memkit is the only one here.
 
 **Relay the manifest verbatim, including the digest.** It names every path,
 every write, where each symlink lands and whether a target is tracked by git.
@@ -54,6 +61,13 @@ out of your own tool result, and apply it with `--wire-claude-md` and
 `--auto-dream-off` attached, writing to the user's `CLAUDE.md` and
 `settings.json` without a message they ever saw. Do not work around the prompt.
 
+`--adopt-auto-memory` is the flag to relay most carefully, because it is the
+one that moves files: it copies memories the user never named — whatever the
+harness has written under its own config directory — into the store, and the
+manifest's list of them is what the person is being asked to approve. It and
+`--auto-memory-off` are opposite answers to one question, so argparse refuses
+the pair with exit 2 rather than picking one.
+
 The digest binds the state of the tree, not the text that was read. If anything
 under the manifest changed in between, this refuses and nothing is written —
 re-run the dry-run, relay the new manifest, and ask again.
@@ -66,7 +80,7 @@ re-run the dry-run, relay the new manifest, and ask again.
 | 1 | memkit could not start at all — no interpreter, or an incomplete payload | stderr names what is missing; nothing about the arguments will change it |
 | 2 | usage error | fix the arguments |
 | 5 | **refused, and nothing was written** | stderr names which refusal and why. Relay it. Do not retry the same command |
-| 6 | started and did not finish | the journal says how far it got. **Recover with both turns again, not by repeating the confirm**: what landed has changed the digest, so the old `--confirm` now refuses as stale. Run `--dry-run`, relay the new manifest — it lists only what is left — and confirm that |
+| 6 | started and did not finish, or finished every action and then failed its own integrity check | stderr says which, names the files the check is red on and whether that run wrote them. For a run that stopped: the journal says how far it got, and **you recover with both turns again, not by repeating the confirm** — what landed has changed the digest, so the old `--confirm` now refuses as stale. Run `--dry-run`, relay the new manifest — it lists only what is left — and confirm that. For a file the run did not write, no re-run changes it: relay the finding and let the person fix that file |
 
 A refusal is a decision, not a failure to try harder. `foreign-config` means
 somebody else wrote the config and init will not overwrite it;
