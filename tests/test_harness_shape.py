@@ -3716,6 +3716,22 @@ elif mode == "squeeze":
         except OSError:
             break
     os.close(held.pop())
+elif mode == "hungry":
+    # The parse that runs out of memory, keyed on the STACK: the handle
+    # `_read_json` passes carries no name to key on, and a patch keyed on one
+    # fires for no call at all and reads as "there is no defect here".
+    import json as _json
+
+    def _hungry(whole):
+        def go(*args, **kwargs):
+            if sys._getframe(1).f_code.co_name == "_read_json":
+                raise MemoryError
+            return whole(*args, **kwargs)
+
+        return go
+
+    _json.load = _hungry(_json.load)
+    _json.loads = _hungry(_json.loads)
 sys.exit(module.main(argv))
 '''
 
@@ -3733,6 +3749,7 @@ _HOSTILE_TREES = {
     "an index row deeper than the recursion limit -> exit 0": 0,
     "--raw with the shape going down a pipe -> exit 0": 0,
     "--out into a directory that refuses the write -> exit 2": 2,
+    "a settings parse that runs out of memory -> exit 2": 2,
 }
 
 
@@ -3755,6 +3772,13 @@ def _hostile_tree(kind, tmp_path):
         door = _write(tmp_path / "door.py", _HOSTILE_DOOR)
         mode = "nul" if kind.startswith("a NUL byte") else "squeeze"
         return [sys.executable, str(door), str(TOOL), mode, str(config)], []
+    if kind.startswith("a settings parse"):
+        # A file to parse, and a small one: what is staged is the failure, and
+        # a tree that allocated its way to a real MemoryError would be a case
+        # about this machine's memory rather than about the boundary.
+        _write(config / "settings.json", json.dumps({"hooks": {}}))
+        door = _write(tmp_path / "door.py", _HOSTILE_DOOR)
+        return [sys.executable, str(door), str(TOOL), "hungry", str(config)], []
     if kind.startswith("a fifo"):
         os.mkfifo(str(memory / "note.md"))
         return plain, []

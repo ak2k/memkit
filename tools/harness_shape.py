@@ -117,6 +117,13 @@ KEPT_PLUGIN = "memkit"
 # somebody's whole disk.
 FRONTMATTER_BYTES = 65536
 
+# And how much of a settings file is parsed. `_read_json` reads a whole file
+# into memory before the parser sees any of it, and a settings file is the
+# adopter's: without a cap, one pathological file is a capture that leaves by
+# a door this tool did not choose. Generously above any real one — a bound,
+# not a size anybody should meet.
+SETTINGS_BYTES = 4 * 1024 * 1024
+
 _FENCE = "---"
 # A top-level key is a literal prefix and is tested as one; only the nested
 # `type:` under `metadata:` needs a pattern, for the indent it is known by.
@@ -226,10 +233,21 @@ def _read_json(path: str):
     exists and records the second as its own state. Omitting it said "no
     settings at that scope", which is a different machine — and one a
     materialiser reproduces by writing a file that does not parse.
+
+    AND FOR A FILE PAST THE CAP, which earns the same None a third way. The
+    parse takes the whole file into memory first, so the size of somebody
+    else's settings file decided how much this capture allocated; past the
+    cap it is a scope this run could not read, which is a state the caller
+    already books. READ AS BYTES for the reason the frontmatter read is:
+    `read(n)` on a text stream counts characters, and the cap is named in
+    bytes because bytes are what came off the disk.
     """
     try:
-        with _open_regular(path) as handle:
-            data = json.load(handle)
+        with _open_regular_bytes(path) as handle:
+            raw = handle.read(SETTINGS_BYTES + 1)
+        if len(raw) > SETTINGS_BYTES:
+            return None
+        data = json.loads(raw)
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -1629,6 +1647,10 @@ def main(argv=None) -> int:
     stdlib as a `ValueError` before the kernel sees it, a name that is not
     UTF-8 reaches an encode as a `UnicodeError` — and `RecursionError`
     because the depth of an index chain is theirs to choose too.
+    `MemoryError` for the same reason one step further out: the SIZE of what
+    is read is theirs as well, and a parse that ran out is a machine that
+    failed under this run rather than a fault in it. The caps are what make it
+    unlikely; the boundary is what makes it a 2 when it happens anyway.
 
     Interior code catches only to BOOK a measurement — a file it could not
     read, a row it could not look at, an entry it skipped — or to carry a
@@ -1636,7 +1658,7 @@ def main(argv=None) -> int:
     """
     try:
         return _run(argv)
-    except (OSError, ValueError, RecursionError, UnicodeError) as exc:
+    except (OSError, ValueError, RecursionError, UnicodeError, MemoryError) as exc:
         # Fd 1 before the report and not after it: the failure may BE the
         # stdout write, whose bytes are still buffered.
         _drop_stdout()
