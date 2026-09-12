@@ -3217,8 +3217,8 @@
       "name": "init-an-interpreter-that-cannot-run-is-refused",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    if not (os.path.isfile(interpreter) and os.access(interpreter, os.X_OK)):",
-      "new": "    if False:",
+      "old": "        if not (os.path.isfile(resolved) and os.access(resolved, os.X_OK)):",
+      "new": "        if False:",
       "tests": [
         "tests/test_init.py::test_an_interpreter_that_cannot_run_is_refused"
       ],
@@ -4368,8 +4368,8 @@
       "name": "plugin-option-becomes-required",
       "module": "plugin",
       "file": ".claude-plugin/plugin.json",
-      "old": "\"required\": false",
-      "new": "\"required\": true",
+      "old": "\"default\": \"~/.config/memkit/memkit.json\",\n      \"required\": false",
+      "new": "\"default\": \"~/.config/memkit/memkit.json\",\n      \"required\": true",
       "tests": [
         "tests/test_plugin_surface.py::test_the_option_is_optional_and_says_what_it_is_for"
       ],

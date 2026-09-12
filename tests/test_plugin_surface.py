@@ -1843,10 +1843,16 @@ def test_a_candidate_that_exists_and_cannot_serve_is_skipped_for_one_that_can(
     repinned = _repinned(root, [below, nofts5, good])
     decided = _decide(repinned, "memkit-hook", shimmed())
     assert decided.interpreter == str(good), decided.interpreter
-    # The two that were skipped are named with their reasons rather than
-    # passed over silently — a candidate that exists and was not used is the
-    # one an adopter goes looking for.
     assert str(below) not in decided.handoff, decided.handoff
+    # And SILENTLY, which is read off an untraced run: `sh -x` prints every
+    # assignment the resolution made, reasons included, so the trace cannot
+    # answer this. The reasons are collected for the diagnosis and the
+    # diagnosis fires only where nothing qualifies — a line per skipped
+    # candidate on a working install would be noise on the every-prompt path.
+    # The case below is where they are read.
+    quiet = _run(repinned / "bin" / "memkit-hook", env=shimmed())
+    assert quiet.returncode == 0, quiet.stderr
+    assert quiet.stderr == "", quiet.stderr
     # And the ORDER holds: the first qualifying candidate answers, so a
     # qualifying path ahead of the others is not overtaken.
     first = _decide(_repinned(root, [good, below]), "memkit-hook", shimmed())
@@ -1936,7 +1942,15 @@ def test_the_config_field_outranks_both_named_routes_and_is_not_probed(
     """
     recorded = tmp_path / "recorded" / "python3"
     marker = tmp_path / "recorded-ran.txt"
-    _shim(recorded.parent, "python3", f'echo ran > "{marker}"')
+    # Refuses the probe and works as an interpreter, which is the only stub
+    # that can tell the two apart: probed, the wrapper would have fallen
+    # through to the pinned path and left no marker.
+    _shim(
+        recorded.parent,
+        "python3",
+        f'[ "$1" = "-I" ] && exit {doctor.PROBE_NO_FTS5}\n'
+        f'echo ran > "{marker}"',
+    )
     pinned = _shim(tmp_path / "pinned", "python3", "exit 0")
     config = _config_file(tmp_path / "rec.json", interpreter=str(recorded))
     env = shimmed(

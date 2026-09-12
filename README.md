@@ -1276,8 +1276,8 @@ writes).
 no edit. `pyrightconfig-hook39.json` is an explicit file list, and it must name
 every file a **3.9 interpreter can execute**. That is two entry points: the
 recall hook, which the plugin's `bin/memkit-hook` runs under the first
-interpreter its four routes admit, and `memkit.cli` — with `memkit.cli_doctor` and `memkit.cli_init`,
-which the dispatcher imports at module scope — because the plugin's
+interpreter its four routes admit, and `memkit.cli` — with `memkit.cli_doctor`
+and `memkit.cli_init`, which the dispatcher imports at module scope — because the plugin's
 `bin/memkit` runs all of them on that same interpreter. Only checker-backed
 work routes to 3.12, and sending the whole dispatcher there would put `memkit
 doctor` out of reach on any machine whose `python3` is older than 3.12 — a
