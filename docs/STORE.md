@@ -334,7 +334,7 @@ directory. Quit the harness first — it recreates `$dir` at startup, and a
 recreation between `rm` and `ln` leaves the link inside `$dir` rather than in
 its place.
 
-`[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && rm "$dir" && ln -sn "$(CDPATH= cd "$target" && pwd -L)" "$dir"`
+`[ -L "$dir" ] && [ -d "$store" ] && mkdir -p "$target" && target=$(CDPATH= cd "$target" && pwd -L) && rm "$dir" && ln -sn "$target" "$dir"`
 
 That race ends at rc 0 all the same, and `ls -ld "$dir"` then shows a directory
 where it showed a link. Where it shows a directory holding one link named for
