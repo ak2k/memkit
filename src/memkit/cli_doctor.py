@@ -431,9 +431,23 @@ class Settings:
     what the parser said.
     """
 
-    __slots__ = ("scope", "path", "data", "error", "failure", "adopter_owned")
+    __slots__ = (
+        "scope",
+        "path",
+        "data",
+        "error",
+        "failure",
+        "adopter_owned",
+        "unresolved",
+    )
 
-    def __init__(self, scope: str, path: str, adopter_owned: bool = True) -> None:
+    def __init__(
+        self,
+        scope: str,
+        path: str,
+        adopter_owned: bool = True,
+        unresolved: str = "",
+    ) -> None:
         self.scope = scope
         self.path = path
         # WHO CAN WRITE THIS FILE. `managed` and `user` are the adopter's and
@@ -444,6 +458,16 @@ class Settings:
         # important should not be a scope-name comparison repeated at each
         # reader.
         self.adopter_owned = adopter_owned
+        # WHICH QUESTION ABOUT THIS SCOPE THE CALLER COULD NOT SETTLE, named by
+        # the class of the exception that stopped it, or "". A FOURTH state and
+        # not a fifth `failure`: the file at the end of the path can be
+        # perfectly readable and what failed is *where the path leads* — the
+        # containment test that decides whose file this is, and the comparison
+        # that decides whether two scope names are one file. Carried here
+        # because the reader that could not answer it is `settings_scopes`,
+        # and a scope it could not place has to reach the report as a scope
+        # nobody placed rather than as one that was absent or agreed.
+        self.unresolved = unresolved
         self.data: dict = {}
         self.error = ""
         # WHICH of `UNPARSED`, `FORBIDDEN`, `UNREADABLE`, or "" for a scope
@@ -471,7 +495,15 @@ class Settings:
             self.failure = UNREADABLE
             self.error = str(exc)
             return
-        except ValueError as exc:
+        # `RecursionError` BESIDE `ValueError`, because the parser answers a
+        # document nested past its own depth with neither a `ValueError` nor an
+        # `OSError`. A checked-in `settings.json` of a thousand open brackets is
+        # a settings file that will not parse — the state this class already
+        # names — and caught nowhere it left `Machine()` raising, which is a
+        # traceback out of `memkit init` and twenty rows lost out of `memkit
+        # doctor`. The same branch closed this class at the hook's two readers;
+        # this is the third.
+        except (ValueError, RecursionError) as exc:
             self.failure = UNPARSED
             self.error = str(exc)
             return
@@ -545,24 +577,54 @@ def settings_scopes(cwd: str | None = None) -> list[Settings]:
     # for every session standing anywhere in home, and the containment test
     # alone reported an adopter's own settings file as one their machine had
     # not placed.
-    user_owned = not config_value or not _under_cwd(
-        os.path.join(user, SETTINGS_NAME)
-    )
+    #
+    # NEITHER OF THE TWO RESOLUTIONS BELOW IS GUARANTEED TO ANSWER, and the
+    # guards are here rather than inside what they call. `_under_cwd` returns
+    # True for an `OSError` and `_resolved` declines a guard of its own on
+    # purpose — a path that will not resolve is the CALLER's to decide about,
+    # and these two callers want opposite answers from the four other call
+    # sites. What gets past both is `RecursionError`, which is what a long
+    # enough chain of symbolic links under `$CLAUDE_CONFIG_DIR` raises out of
+    # `realpath`: unguarded it left `Machine()` raising, on 3.12 as well as on
+    # the 3.9 floor.
+    #
+    # A SCOPE THIS RUN COULD NOT PLACE IS REPORTED AS ONE, and that is the
+    # whole of why the answers are not simply defaulted. Each guard takes the
+    # side that claims less — a scope whose containment could not be tested is
+    # not treated as the adopter's, and two directories that could not be
+    # compared are not declared the same one — and both record the exception's
+    # class against the scope, so the rows below say which scope went
+    # unresolved and what stopped it. Silently, either answer is a row
+    # concluding from a scope nobody located.
+    unresolved: dict[str, str] = {}
+    try:
+        user_owned = not config_value or not _under_cwd(
+            os.path.join(user, SETTINGS_NAME)
+        )
+    except (OSError, ValueError, RecursionError) as exc:
+        user_owned = False
+        unresolved["user"] = type(exc).__name__
     # ONE FILE IS ONE SCOPE, and it is the CHECKED-IN entry that models a file
     # somebody else's checkout carries. Run from the directory that holds the
     # config directory — an adopter's own home, which is where a first `memkit
     # doctor` is most often typed — `.claude/` under the cwd IS the user scope,
     # and read a second time as `project` the adopter's own settings file was
     # reported as checked into a repository and travelling with every clone.
-    project_dir = "" if not here or _resolved(here) == _resolved(user) else here
+    try:
+        project_dir = "" if not here or _resolved(here) == _resolved(user) else here
+    except (OSError, ValueError, RecursionError) as exc:
+        project_dir = ""
+        unresolved["project"] = type(exc).__name__
     return [
         Settings("managed", os.path.join(_managed_dir(), MANAGED_SETTINGS_NAME)),
         Settings("user", os.path.join(user, SETTINGS_NAME),
-                 adopter_owned=user_owned),
+                 adopter_owned=user_owned,
+                 unresolved=unresolved.get("user", "")),
         Settings(
             "project",
             os.path.join(project_dir, SETTINGS_NAME) if project_dir else "",
             adopter_owned=False,
+            unresolved=unresolved.get("project", ""),
         ),
         # AND THE LOCAL FILE IS A SCOPE OF ITS OWN WHEREVER THIS IS. It is a
         # different file from the user scope's in any directory, it outranks
@@ -626,6 +688,14 @@ def _unparsed_settings(scopes: list) -> str:
     parses perfectly and was merely refused is an assertion about content this
     process never saw — the exact overstatement this whole check exists to
     stop, aimed at memkit's own diagnostic.
+
+    AND A SCOPE NOBODY COULD PLACE GETS ITS OWN CLAUSE, for the same reason
+    the three failures do rather than one. "Could not be read" over a file
+    A SCOPE NOBODY COULD PLACE IS NOT THIS FUNCTION'S SENTENCE, and that is
+    why `_unplaced_settings` is a second one. "Could not be read" over a file
+    this run opened and parsed perfectly, because the containment test above
+    it would not resolve, is the same overstatement aimed at a different half
+    of the answer.
     """
     return _display_cap(
         "; ".join(
@@ -642,6 +712,40 @@ def _unparsed_settings(scopes: list) -> str:
             if scope.failure
         ),
         NOTE_SHOWN,
+    )
+
+
+def _unplaced_settings(scopes: list) -> str:
+    """Which scopes this run could not locate, and what stopped it, or "".
+
+    THE OTHER HALF OF "WHAT THIS ROW COULD NOT READ", and separate from it
+    because the loss is a different one. The file at the end of the path may
+    have parsed perfectly; what went missing is WHICH DIRECTORY it is — the
+    containment test that decides whether the user scope is a file this
+    machine placed, and the comparison that decides whether two scope names
+    are one file. Both sit on `$CLAUDE_CONFIG_DIR`, which an adopter sets, and
+    `realpath` raises on a long enough chain of links rather than answering.
+
+    NAMED BY THE EXCEPTION'S CLASS and by the scope's role, for the reason the
+    three failure sentences above are each their own: a guard that took the
+    quieter answer and said nothing would leave a row resting on a scope
+    nobody located, which is the state this whole note exists to refuse.
+
+    NO CAP OF ITS OWN, unlike the note beside it, and that is a property of
+    what goes in rather than an omission: every part is a closed table's entry
+    or an exception's class name, two scopes can contribute at most, and no
+    path and no parser message reaches it. What DOES need bounding is the
+    whole note, and `_with_unparsed` bounds that once.
+    """
+    return "; ".join(
+        "this run could not resolve where "
+        + _ROLE[scope.scope]
+        + " is ("
+        + scope.unresolved
+        + "), so nothing here could tell which directory it names or whether "
+        "it is one your own machine placed"
+        for scope in scopes
+        if scope.unresolved
     )
 
 
@@ -701,6 +805,20 @@ def _unparsed_remedy(scopes: list) -> str:
                 "that is neither a syntax error nor a permission, so what the "
                 "harness reads there is not something this report can say."
             )
+    # AND THE REPAIR FOR A PATH, which is not a repair for a file. Every
+    # remedy above asks something of the settings file itself; this one asks
+    # about the route to it, because that is what did not answer.
+    adrift = [scope for scope in scopes if scope.unresolved]
+    if adrift:
+        where = ", ".join(_ROLE[scope.scope] for scope in adrift)
+        raised = ", ".join(sorted({scope.unresolved for scope in adrift}))
+        parts.append(
+            f"Find out what the path to {where} leads through: resolving it "
+            f"raised {raised} rather than answering, which a long chain of "
+            "symbolic links does, and a directory removed under this process "
+            "does. $" + _NAMED["config_env"] + " is where that path comes "
+            "from when it is set."
+        )
     return " ".join(parts)
 
 
@@ -732,8 +850,22 @@ def _with_unparsed(rows: list, scopes: list) -> list:
     it could not open can falsify, whichever branch it took. A PASS becomes
     INFO for that reason — the harm this whole check class exists to stop is a
     confident answer resting on a file nobody read.
+
+    A SCOPE THIS RUN COULD NOT PLACE IS THE SAME KIND OF INPUT. Its file may
+    have read perfectly; what the row rested on is which directory it was, and
+    that is the question `settings_scopes` could not answer.
     """
-    note = _unparsed_settings(scopes)
+    # BOTH HALVES, CAPPED ONCE. Each is bounded on its own, and two bounded
+    # halves are not a bounded note: `NOTE_SHOWN` is half of the detail budget
+    # and the whole of what the row is promised back.
+    note = _display_cap(
+        "; ".join(
+            part
+            for part in (_unparsed_settings(scopes), _unplaced_settings(scopes))
+            if part
+        ),
+        NOTE_SHOWN,
+    )
     if not note:
         return rows
     fix = _unparsed_remedy(scopes)
@@ -750,7 +882,7 @@ def _with_unparsed(rows: list, scopes: list) -> list:
     spellings = tuple(
         spelling
         for scope in scopes
-        if scope.failure
+        if scope.failure or scope.unresolved
         for spelling in (
             _shown(scope.path),
             _relative_to_cwd(scope.path),
@@ -5339,10 +5471,23 @@ def run(args: argparse.Namespace) -> int:
                         UNKNOWN,
                         f"nothing could be read about this machine: "
                         f"{type(exc).__name__}: {exc}",
-                        "Run this from a directory that exists — the one this "
-                        "session stands in may have been removed under it — "
-                        "and if it does exist, report this with the message "
-                        "above.",
+                        # WHAT STOPPED THE READ IS THE ONLY THING KNOWN HERE,
+                        # and the remedy may not say more than that. This line
+                        # named one cause — a removed session directory — for
+                        # every exception that can reach it, so a checked-in
+                        # settings file the parser gave up on was answered
+                        # with advice about a directory that was never
+                        # missing. The two inputs this reads are named because
+                        # they are the two an adopter can check; which of them
+                        # it was is what the message above says.
+                        "Nothing here read this machine, so the message above "
+                        "is the exception that stopped the read and not a "
+                        "fault this report has found. Check the directory "
+                        "this session stands in and, if you set it, the one $"
+                        + _NAMED["config_env"]
+                        + " names — either can be gone, unreachable, or hold "
+                        "a settings file this build cannot parse. Report this "
+                        "with the message above.",
                         actor=USER,
                     )
                 ]

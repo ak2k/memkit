@@ -6722,9 +6722,12 @@ _ROW_FORBIDDEN = (
     "fsdecode",
 )
 
-# Where a display cap may live at all. Both of these bound a string an adopter's
-# own settings file decides the length of, and neither is reachable from the row.
-_CAP_HOLDERS = ("_shown", "_unparsed_settings")
+# Where a display cap may live at all. Each of these bounds a string an
+# adopter's own settings file or its path decides the length of, and none of
+# them is reachable from the row. `_with_unparsed` is here because the note it
+# assembles has two halves now: each is bounded on its own and two bounded
+# halves are not a bounded note, so the join is capped once where it happens.
+_CAP_HOLDERS = ("_shown", "_unparsed_settings", "_with_unparsed")
 
 
 def test_the_auto_memory_row_renders_no_path() -> None:
@@ -7193,6 +7196,155 @@ def test_the_user_scope_is_untrusted_only_where_a_variable_moved_it(
     assert [s.adopter_owned for s in doctor.settings_scopes() if s.scope == "user"] == [
         False
     ]
+
+
+def test_a_settings_file_nested_past_the_parser_is_unparsed_and_not_a_traceback(
+    profile, monkeypatch
+) -> None:
+    """A thousand open brackets in a settings file is a file that will not
+    parse, and `json` says so by raising `RecursionError`.
+
+    Caught nowhere, it came out of `Settings.__init__` through
+    `settings_scopes` and `Machine()`: `memkit init` printed a traceback and
+    exited 1 — the code its published table reads as "memkit could not start
+    at all" — and `memkit doctor` lost all twenty rows to one `UNKNOWN`
+    install row whose remedy named a directory that was never missing.
+
+    HOW DEEP IS NOT THE INTERPRETER'S `sys.getrecursionlimit()`: the C scanner
+    keeps its own allowance and 3.9 gave up at a thousand brackets where 3.12
+    read five thousand. Written well past both, so the parser gives up on
+    every interpreter this suite runs on — and where some future one does not,
+    an unterminated array is still a document that will not parse, which is
+    the state this case is about.
+    """
+    config = pathlib.Path(os.environ[doctor.CONFIG_DIR_ENV])
+    settings = config / doctor.SETTINGS_NAME
+    settings.write_text("[" * 20000, encoding="utf-8")
+
+    scope = doctor.Settings("user", str(settings))
+    assert scope.failure == doctor.UNPARSED
+    assert scope.error
+
+    scopes = doctor.settings_scopes()
+    assert [s.scope for s in scopes] == ["managed", "user", "project", "local"]
+    assert [s.failure for s in scopes if s.scope == "user"] == [doctor.UNPARSED]
+
+    # AND THE ROWS SURVIVE IT. The note names the file by role and quotes the
+    # parser, and the remedy is the one repair that comes before any other.
+    path = _store_config(profile, stores=["personal"])
+    (row,) = _only(
+        doctor._PRODUCERS["auto-memory"](_machine(profile, monkeypatch, path)),
+        "auto-memory",
+    )
+    assert doctor._ROLE["user"] + " could not be parsed" in row.detail
+    assert "Make " + doctor._ROLE["user"] + " parse as JSON" in row.remedy
+
+
+def test_a_parser_that_gives_up_on_depth_leaves_a_scope_unparsed(
+    profile, monkeypatch
+) -> None:
+    """The same state as the case above, asked of the handler directly.
+
+    `RecursionError` is not a `ValueError` and not an `OSError`, so which
+    interpreter this runs on decides whether the document above reaches the
+    branch at all. This one puts the exception where the parser raises it, so
+    the handler is exercised wherever these tests run.
+    """
+    config = pathlib.Path(os.environ[doctor.CONFIG_DIR_ENV])
+    settings = config / doctor.SETTINGS_NAME
+    settings.write_text(json.dumps({"autoMemoryEnabled": True}), encoding="utf-8")
+
+    def gives_up(*_a, **_kw):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(doctor.json, "load", gives_up)
+    scope = doctor.Settings("user", str(settings))
+    assert scope.failure == doctor.UNPARSED
+    assert "maximum recursion depth exceeded" in scope.error
+    assert scope.data == {}
+
+
+def test_a_scope_whose_path_will_not_resolve_is_reported_and_not_assumed(
+    profile, monkeypatch
+) -> None:
+    """`realpath` raises on a long enough chain of symbolic links, and both
+    resolutions in `settings_scopes` sit on an adopter-set variable.
+
+    Guarded, each takes the side that claims less — a scope whose containment
+    could not be tested is not the adopter's, and two directories that could
+    not be compared are not one directory — and NEITHER is silent about it.
+    The silent versions are a row concluding from a scope nobody located: the
+    user scope trusted because the test that would have distrusted it never
+    ran, and the checked-in scope dropped as absent when nothing said it was.
+    """
+    config = os.environ[doctor.CONFIG_DIR_ENV]
+    real_under_cwd = doctor._under_cwd
+    real_resolved = doctor._resolved
+
+    # THE PATH THE CHAIN IS ON AND NO OTHER: every other caller of these two
+    # is left answering, so what the row below reports is this defect rather
+    # than a module with both of its path helpers broken.
+    def under_cwd(path):
+        if path == os.path.join(config, doctor.SETTINGS_NAME):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_under_cwd(path)
+
+    def resolved(path):
+        if path == config:
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_resolved(path)
+
+    # SCOPED TO THE WALK THAT READS THE SCOPES. `Machine` resolves them once
+    # and every producer reads that answer, so the row below is produced by a
+    # module whose path helpers work — which is the real shape of this: one
+    # unresolvable directory, not a broken resolver.
+    path = _store_config(profile, stores=["personal"])
+    with pytest.MonkeyPatch.context() as adrift:
+        adrift.setattr(doctor, "_under_cwd", under_cwd)
+        adrift.setattr(doctor, "_resolved", resolved)
+        scopes = {scope.scope: scope for scope in doctor.settings_scopes()}
+        machine = _machine(profile, monkeypatch, path)
+
+    assert sorted(scopes) == ["local", "managed", "project", "user"]
+    assert scopes["user"].unresolved == "RecursionError"
+    assert scopes["user"].adopter_owned is False
+    assert scopes["project"].unresolved == "RecursionError"
+    assert scopes["project"].path == ""
+
+    # THE ROW SAYS SO, and names the scope, the class, and the variable the
+    # path comes from.
+    (row,) = _only(doctor._PRODUCERS["auto-memory"](machine), "auto-memory")
+    assert "could not resolve where " + doctor._ROLE["user"] in row.detail
+    assert "RecursionError" in row.detail
+    assert "$" + doctor.CONFIG_DIR_ENV in row.remedy
+    assert row.status != doctor.PASS
+
+
+def test_a_config_dir_reached_through_a_long_symlink_chain_is_not_a_traceback(
+    profile, monkeypatch, tmp_path
+) -> None:
+    """The unguarded half of the same defect, through the real filesystem.
+
+    `$CLAUDE_CONFIG_DIR` is adopter-set, so the chain arrives at `_under_cwd`
+    from outside this process. Whether `realpath` answers by raising is the
+    interpreter's business — it recursed per link until 3.13 — and what this
+    asks is the part that is not: that a settings scope list comes back either
+    way, with every scope named.
+    """
+    chain = tmp_path / "chain"
+    (chain / "real" / ".claude").mkdir(parents=True)
+    os.symlink("real", chain / "l0")
+    for index in range(1, 1200):
+        os.symlink(f"l{index - 1}", chain / f"l{index}")
+    monkeypatch.setenv(doctor.CONFIG_DIR_ENV, str(chain / "l1199" / ".claude"))
+
+    scopes = doctor.settings_scopes()
+    assert [s.scope for s in scopes] == ["managed", "user", "project", "local"]
+    # Where this interpreter's `realpath` did give up, the scope it gave up on
+    # is named rather than quietly answered.
+    for scope in scopes:
+        assert scope.unresolved in ("", "RecursionError"), scope.unresolved
+    assert doctor.Machine().settings
 
 
 def test_every_scope_is_told_what_to_do_about_the_file_it_names(profile) -> None:

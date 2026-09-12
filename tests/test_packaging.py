@@ -999,14 +999,27 @@ _UNPROBED: dict[tuple[str, str, str, str], str] = {
     ("cli_doctor.py", "Settings.__init__", "except", "9fb71c982f1d"): (
         "any other OS error on that file is recorded UNREADABLE"
     ),
-    ("cli_doctor.py", "Settings.__init__", "except", "fbb7856eaf8e"): (
-        "settings that do not parse are recorded UNPARSED"
+    ("cli_doctor.py", "Settings.__init__", "except", "3c4701c8e397"): (
+        "settings that do not parse are recorded UNPARSED, and a document "
+        "nested past the parser's own depth is one of them: `RecursionError` "
+        "joined `ValueError` here, which is what took `memkit init` from a "
+        "traceback back to an answer"
     ),
     ("cli_doctor.py", "Settings.__init__", "if->exit", "935e50823400"): (
         "settings whose top level is not an object are UNPARSED, not empty"
     ),
     ("cli_doctor.py", "_session_cwd", "except", "7be5ed5a3324"): (
         "returns '' when the session's own directory will not resolve"
+    ),
+    ("cli_doctor.py", "settings_scopes", "except", "f380d15dc1b7"): (
+        "a user scope whose containment could not be tested is not treated "
+        "as one this machine placed, and the scope records the exception's "
+        "class so the rows say which scope went unlocated"
+    ),
+    ("cli_doctor.py", "settings_scopes", "except", "23f861046114"): (
+        "two directories that could not be compared are not declared one "
+        "directory: the checked-in scope is emptied and records the "
+        "exception's class rather than being dropped as absent"
     ),
     ("cli_doctor.py", "Machine.config", "if->exit", "90414542b26a"): (
         "no resolved config path means there is no config to read"
