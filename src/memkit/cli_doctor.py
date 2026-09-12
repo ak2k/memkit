@@ -2569,17 +2569,17 @@ def _hook_path(machine: Machine) -> list[Check]:
     ]
 
 
+# The one outcome name a check BRANCHES on rather than counts, so it is a
+# constant: a literal at the branch is a name that can drift from the
+# vocabulary the log writes and the README publishes, and the branch would then
+# simply stop firing with nothing to read.
+INDEX_UNAVAILABLE = "index-unavailable"
+
 # Every outcome the hook can write, and the one line that says what it means.
 # Mechanizes the README's own triage table so an adopter reading a histogram
 # does not have to go and look each name up — and a test pins the two together,
 # because the vocabulary grows without a version bump and a name that arrived
 # here without arriving there is a record nobody can read.
-# The one name in the map below that a check BRANCHES on rather than counts,
-# so it is a constant: a string literal at the branch is a name that can drift
-# from the vocabulary the log writes and the README publishes, and the branch
-# would then simply stop firing.
-INDEX_UNAVAILABLE = "index-unavailable"
-
 OUTCOME_REASONS = {
     "injected": "pointers were written into the prompt",
     "gate:envelope": "the prompt began with an editor or tool envelope",
@@ -4827,10 +4827,12 @@ PROBE_REASONS = {
     ),
 }
 
-# What an adopter is told to do about it, in one place because three surfaces
-# say it: doctor's `interpreter` remedy, doctor's `gate-outcomes` remedy, and
-# the wrapper's own refusal — which is written in POSIX sh and therefore holds
-# its own copy, pinned to this one by a test.
+# What an adopter is told to do about it, in one place because two remedies say
+# it: doctor's `interpreter` row and its `gate-outcomes` row. The wrapper's own
+# refusal is a third surface and holds its own wording, because it is POSIX sh
+# and can import nothing; what is pinned across the two is that all three of
+# these routes are named there too, since a remedy that listed fewer would send
+# an adopter looking for a move the other surface already offered.
 INTERPRETER_ROUTES = (
     "Name a python that can: `memkit init --interpreter <absolute path>` "
     "records it in the config, `--config memkitInterpreter=<absolute path>` at "
