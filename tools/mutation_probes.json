@@ -4468,7 +4468,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "docs/ADMISSION.md",
-      "old": "**110 files, about 4.5 MiB**",
+      "old": "**110 files, about 4.6 MiB**",
       "new": "**101 files, about 3.0 MiB**",
       "tests": [
         "tests/test_plugin_surface.py::test_the_admission_note_answers_what_it_claims_to",
