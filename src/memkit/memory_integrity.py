@@ -26,7 +26,7 @@ nothing else does.
 SEARCH.md and the sub-indexes are generated: `--write` rewrites every row
 from the corresponding file's frontmatter `description:`, alphabetically by
 label, plus the "(N memories)" counts. Check mode fails on any drift. Hot
-rows stay hand-written — a hot row is a judgement about what deserves to be
+rows stay hand-written — a hot row is a judgment about what deserves to be
 in context, which no generator can make — but a hot file edited after its
 row was last touched draws a staleness warning.
 
@@ -177,7 +177,7 @@ def stores_from_config(cfg) -> tuple[tuple[dict, ...], list[str]]:
     Verifying the live tree instead is the seam this replaced. It printed a
     confident `[OK]` about a tree the operator was not editing, and every
     consumer call site had to redirect the root by hand to get the documented
-    behaviour — an env override that must be set everywhere to be correct is a
+    behavior — an env override that must be set everywhere to be correct is a
     default pointing the wrong way.
 
     The report lines exist because the bug this resolver was written for was
@@ -330,7 +330,7 @@ FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 TICKS_RE = re.compile(r"`+")
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 # A destination is a file path if it says so — a slash, or an extension we
-# would recognise in this repo. Anything else (`#anchor`, `?q=1`, a word) is
+# would recognize in this repo. Anything else (`#anchor`, `?q=1`, a word) is
 # left alone rather than guessed at.
 PATH_SUFFIXES = (
     ".md",
@@ -1330,7 +1330,7 @@ def main() -> int:
 
     # Unlike the hook, the checker is not on a prompt's critical path and has
     # no reason to be quiet: no config is a refusal, not an inert pass. It also
-    # honours the per-root environment overrides the hook refuses — a checker is
+    # honors the per-root environment overrides the hook refuses — a checker is
     # a thing an operator points at a tree on purpose.
     try:
         cfg = load_config(args.config, honor_env_overrides=True)

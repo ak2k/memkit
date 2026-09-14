@@ -148,7 +148,7 @@ def _meanwhile(template: str) -> str:
 
 # Subcommand -> the function that runs it, given the namespace this parser
 # produced. Every declared subcommand now owns its own flags, so argparse
-# refuses an unrecognised one itself and a handler never has to.
+# refuses an unrecognized one itself and a handler never has to.
 _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "doctor": cli_doctor.run,
     "init": cli_init.run,
@@ -275,10 +275,10 @@ def main(argv: list[str] | None = None) -> int:
     # parse_args, because every declared subcommand now declares its own flags.
     # While `doctor` and `init` were listed and unimplemented this had to be
     # `parse_known_args`, so that `memkit doctor --json` reached the message
-    # explaining the absence rather than dying on an unrecognised argument —
+    # explaining the absence rather than dying on an unrecognized argument —
     # an agent that met argparse's usage text there learned that `--json` was
     # wrong, which is a different and false thing to learn. With both landed,
-    # an unrecognised flag IS the caller's mistake and argparse says so.
+    # an unrecognized flag IS the caller's mistake and argparse says so.
     args = ap.parse_args(argv)
     if args.subcommand is None:
         # Usage on stderr and a usage exit, because a bare `memkit` asked for

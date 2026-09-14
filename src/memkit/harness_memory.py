@@ -32,12 +32,12 @@ memories, which is why a value decided by that file is reported rather than
 passed.
 
 WHAT LANDS IN THAT DIRECTORY IS REWRITTEN. On every Write or Edit of a `.md`
-file whose normalised path merely STARTS WITH the configured directory — a
+file whose normalized path merely STARTS WITH the configured directory — a
 string prefix, with no `realpath` — a file with parseable frontmatter is
-re-serialised: `name` slugified, every other top-level key buried under
+re-serialized: `name` slugified, every other top-level key buried under
 `metadata`, `node_type`, a session id and a timestamp added, comments and key
 order lost. So pointing the key at a corpus root hands memkit's own memories to
-somebody else's serialiser. A directory of the harness's own under the corpus
+somebody else's serializer. A directory of the harness's own under the corpus
 root is what keeps both: retrieval recurses, and the rewrite reaches only what
 is inside it.
 
@@ -74,7 +74,7 @@ from memkit.memory_prompt_recall import (
     _RootUnknown,
 )
 
-# The harness's own sanitiser for a project key: EVERY character outside
+# The harness's own sanitizer for a project key: EVERY character outside
 # `[A-Za-z0-9]` becomes `-`, one for one and with no run collapsing, so
 # `/Users/x/.config/nix` keys as `-Users-x--config-nix` and a path holding a
 # space or an underscore loses it the same way. Measured on 2.1.258.
@@ -82,7 +82,7 @@ _SANITIZE = re.compile(r"[^A-Za-z0-9]")
 
 # Where the harness stops spelling the path out and starts hashing it: a key
 # longer than this is truncated to it and given a `-<base36>` suffix derived
-# from the unsanitised path. THE HASH IS NOT MEASURED, so this package cannot
+# from the unsanitized path. THE HASH IS NOT MEASURED, so this package cannot
 # name that directory and says so rather than naming the prefix — a prefix is
 # a directory nothing writes to, which is the answer this module refuses
 # everywhere else.
@@ -130,7 +130,7 @@ CHECKOUT_SCOPE = "project"
 # What to point `autoMemoryDirectory` at inside a corpus root, rather than at
 # the root. Retrieval recurses, so a memory here is found; the harness's
 # rewrite is a string prefix on the configured directory, so keeping that
-# directory below memkit's own files is what keeps them out of its serialiser.
+# directory below memkit's own files is what keeps them out of its serializer.
 SAFE_SUBDIR = "auto-memory"
 
 DIRECTORY_KEY = "autoMemoryDirectory"
@@ -208,7 +208,7 @@ class ProjectMemory:
 
 
 def key_spelling(path: str) -> str:
-    """`path` with the harness's sanitiser applied and no walk of any kind.
+    """`path` with the harness's sanitizer applied and no walk of any kind.
 
     The rule in `_SANITIZE`, reachable by a caller that has a path rather than
     a cwd — a report re-spelling `$HOME` inside a key it is about to print
@@ -314,7 +314,7 @@ def default_dir(config_dir: str, cwd: str) -> str:
     NO trailing separator, though a directory that reads as a file is one an
     adopter tries to open. Every surface prints this path through
     `_display_path`, which re-spells anything under `$HOME` relative to it and
-    normalises the separator away in doing so — so the separator survived only
+    normalizes the separator away in doing so — so the separator survived only
     for a config directory outside HOME, which is no real install, and a
     promise kept on the fixtures alone is worse than none.
 
@@ -473,9 +473,9 @@ def harness_dir(value):
 
     - a falsy value is refused before anything else looks at it;
     - only a LEADING `~/` expands, and only against the home directory — and
-      the remainder is refused outright when it normalises to `.`, `..` or
+      the remainder is refused outright when it normalizes to `.`, `..` or
       anything below `..`, so `~/..` is not the parent of home, it is nothing;
-    - the value is then NORMALISED and stripped of trailing separators, and
+    - the value is then NORMALIZED and stripped of trailing separators, and
       only then tested for being absolute, at least three characters, and free
       of a NUL. (Its refusal of a bare `C:` drive letter is not mirrored: on
       the platforms memkit runs on that string is not absolute, so the branch
@@ -486,7 +486,7 @@ def harness_dir(value):
     default directory — and a report that names a directory the harness does
     not write to is the defect this module exists to close.
 
-    NFC, because the harness normalises the string it returns and a Linux
+    NFC, because the harness normalizes the string it returns and a Linux
     filesystem holds the two spellings of a composed character as two
     different directories.
 
@@ -550,7 +550,7 @@ def configured_dir(scopes) -> tuple:
     the harness does not write to, which is the whole defect this module
     exists to close.
 
-    EXPANDED, AND NORMALISED THE WAY THE HARNESS NORMALISES IT. `~/notes/search`
+    EXPANDED, AND NORMALIZED THE WAY THE HARNESS NORMALIZES IT. `~/notes/search`
     and the path it expands to are the same directory, and a comparison against
     a store's corpus root that used the unexpanded spelling would report
     "outside every store" for a setting pointing straight at one. `harness_dir`

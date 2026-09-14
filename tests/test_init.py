@@ -6023,7 +6023,7 @@ def test_a_description_taken_from_a_file_name_cannot_end_its_own_line(
     Asked of the normaliser directly: the planner skips such a file outright
     now, and a guard nothing reaches is a guard that stops being true.
     """
-    written, rule = init._normalise("plain body\n", "foo\nbar")
+    written, rule = init._normalize("plain body\n", "foo\nbar")
     assert "\n" not in written.split("\n---", 1)[0].partition("description:")[2]
     assert "description: foobar" in written
     assert "name: foobar" in written

@@ -63,7 +63,7 @@
 # then look it up in means "the subcommand is not in this build", which is the
 # wrong diagnosis reached by trusting the name in the message.
 # The fallback is for a caller that sources this library directly — doctor's
-# probes, and the tests — and NOT a licence for a wrapper to omit it: a wrapper
+# probes, and the tests — and NOT a license for a wrapper to omit it: a wrapper
 # that did would name the wrong binary in every message with nothing failing.
 # Nothing here can enforce that (a hard failure would be on the every-prompt
 # path, for a diagnostic), so the enforcement is a test that reads each
@@ -103,7 +103,7 @@ MEMKIT_ERRLOG_MAX=200
 
 # The shared derived-state directory, resolved the same way the hook resolves
 # it: `$XDG_CACHE_HOME` when it is set to an ABSOLUTE path, else `~/.cache`. A
-# relative value is ignored rather than honoured, because the directory an
+# relative value is ignored rather than honored, because the directory an
 # every-prompt hook writes into is not the session's to choose.
 memkit_state_dir() {
     case ${XDG_CACHE_HOME:-} in
@@ -301,7 +301,7 @@ memkit_config_from_argv() {
 # It is deliberately NOT the stronger "nothing the payload carries can answer
 # this". Rung 2's directory is harness-owned but payload-WRITABLE — memkit's
 # own hook writes `trust.json` there — so a release could write
-# `$CLAUDE_PLUGIN_DATA/memkit.json` on one prompt and be honoured by every
+# `$CLAUDE_PLUGIN_DATA/memkit.json` on one prompt and be honored by every
 # later, clean release. The escalation over "a malicious payload already runs
 # code" is persistence and laundering, and it is real; what makes it tolerable
 # here is that nothing in this build writes that file. The check that would
@@ -414,7 +414,7 @@ memkit_resolve_config() {
 #     than fixed: validating shape here would mean writing a JSON parser in
 #     POSIX sh to decide which python to run.
 #
-# Said out loud when a recorded value is present and not honoured. Silence
+# Said out loud when a recorded value is present and not honored. Silence
 # here is the wrong answer: the install goes on working, under a python the
 # adopter did not choose — on a stock mac, 3.9.6 rather than the 3.12 they
 # recorded — and no surface in this build reports the resolved interpreter, so
@@ -614,7 +614,7 @@ memkit_config_interpreter() {
     printf '%s\n' "$_found"
 }
 
-# A recorded value this build will not honour — absent, relative, or naming
+# A recorded value this build will not honor — absent, relative, or naming
 # something that is not an executable FILE — falls through to the PATH probe
 # rather than ending the resolution. One bad character in a config field must
 # not be able to turn a working install inert.

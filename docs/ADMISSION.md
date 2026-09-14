@@ -153,7 +153,7 @@ README's *Derived state* has the table.
   session's directory is reported and never followed, and `--config` naming a
   config no route on this install reads makes the hook probe report `UNKNOWN`
   rather than run: a config names the interpreter the wrapper execs, so
-  honouring that flag blindly would be a way to choose a program.
+  honoring that flag blindly would be a way to choose a program.
 - `memkit init` writes, and only what its manifest said and only after you
   approve the digest: the state directory (0700), the config at the path you
   named, the store skeleton, one canary memory, and a journal record per
@@ -199,7 +199,7 @@ it.**
 - `$CLAUDE_PLUGIN_DATA` is Claude Code's directory and it is **writable by the
   payload** — memkit's own hook writes `trust.json` there, beside the
   `memkit.json` that rung 2 reads. So a release could write that file on one
-  prompt and be honoured by every later, clean release. What makes it
+  prompt and be honored by every later, clean release. What makes it
   tolerable rather than theoretical: `memkit init` is the ONE thing that
   writes it, it journals every config it authors, and `memkit doctor`'s
   `config-authorship` check reports a file there that no journal entry claims.

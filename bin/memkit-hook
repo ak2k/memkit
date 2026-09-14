@@ -32,7 +32,7 @@ MEMKIT_SELF=memkit-hook
 # ARGUMENTS ARE IGNORED, deliberately, and this is the second of two
 # independent guards on the same failure. The hook file is dual-mode: no
 # arguments means read a payload off stdin, any argument at all means the
-# search CLI — where argparse answers an unrecognised flag with exit 2, i.e. a
+# search CLI — where argparse answers an unrecognized flag with exit 2, i.e. a
 # blocked prompt on every turn. `hooks.json` passing zero arguments is pinned
 # by a text test; this line is what holds if that pin is ever edited away.
 if [ "$#" -gt 0 ]; then

@@ -149,7 +149,7 @@ def corpus_fingerprint(cfg, repo: pathlib.Path) -> str:
     whether a mismatch is the tool's or the corpus's.
 
     Content-addressed (relative path plus the sha256 of the bytes, sorted, each
-    store labelled and folded together), so a clean checkout and the read-only
+    store labeled and folded together), so a clean checkout and the read-only
     copy a CI check runs from hash the same, while any memory written, edited,
     renamed, retiered or retired hashes differently. Tiers are inside the
     paths, so a hot/->search/ move registers even though the bytes did not
@@ -212,7 +212,7 @@ def case_record(
 
 
 def cases_from_config(cfg) -> dict:
-    """The consumer's case lists, normalised to {slice: [ {prompt, file?} ]}.
+    """The consumer's case lists, normalized to {slice: [ {prompt, file?} ]}.
 
     Three slices, no more: `suite` (each case a prompt plus the BASENAME of the
     memory it is about — the tier resolver finds where that file lives now),
@@ -348,7 +348,7 @@ def pointers(hook, prompt: str, hits: list[str]) -> tuple[list[str], list[str]]:
     the correct weaker claim: production prints two lines, so "would not be
     injected" is the only abstention the eval can honestly assert.
 
-    Session dedup is deliberately not modelled: production also subtracts
+    Session dedup is deliberately not modeled: production also subtracts
     paths already injected this session, which only ever makes it inject
     LESS, so a search case that passes here could still be deduped away in a
     long session, and an abstention case that passes here passes a fortiori.
@@ -1069,7 +1069,7 @@ def main() -> None:
             "because a case pairs a prompt with the filenames it should\n"
             "surface and those are your memories. Each run scores the\n"
             "configured slices and compares them against the committed\n"
-            "snapshot, so what fails is a CHANGE in behaviour rather than an\n"
+            "snapshot, so what fails is a CHANGE in behavior rather than an\n"
             "absolute score."
         ),
         epilog=(
@@ -1127,7 +1127,7 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    # The eval is an operator's instrument, not the prompt path: it honours the
+    # The eval is an operator's instrument, not the prompt path: it honors the
     # per-root environment overrides the hook refuses, and it refuses to run
     # with no config at all rather than scoring an empty corpus green.
     try:
@@ -1221,7 +1221,7 @@ def main() -> None:
     # run that wrote it measured. A run that cannot reach a store records its
     # cases as unsearched and permanently narrows the gate to whatever the cwd
     # could see, and a run against a modified hook records the CANDIDATE's
-    # behaviour as the baseline the candidate is supposed to be judged against.
+    # behavior as the baseline the candidate is supposed to be judged against.
     if args.update_snapshot and unsearched:
         sys.exit(
             "refusing to write a snapshot from a run that cannot search "

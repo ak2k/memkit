@@ -6974,7 +6974,7 @@ def test_the_doctor_skill_says_to_relay_the_report_rather_than_re_derive_it():
     then has two accounts and no way to tell which was measured."""
     body = (SKILLS / "doctor" / "SKILL.md").read_text(encoding="utf-8")
     assert "verbatim" in body
-    assert "summarise it" in body
+    assert "summarize it" in body
     assert "re-derive" in body
     # The branching rule, in the fields an agent actually reads.
     assert "actor" in body and "terminal" in body
