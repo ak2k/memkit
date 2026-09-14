@@ -251,9 +251,16 @@ class _RecordNotWritten(Exception):
 class Plan:
     """Everything init would do, in the order it would do it."""
 
-    def __init__(self, actions: list, notes: list) -> None:
+    def __init__(self, actions: list, notes: list, store: str = "") -> None:
         self.actions = actions
         self.notes = notes
+        # The store this plan was built against, carried rather than re-derived
+        # by whoever reports on the finished run: the default and the flag are
+        # resolved in one place and a second reading of them is a second
+        # answer. Outside `key()` and outside the digest — it names the request
+        # rather than being an effect of it, and every effect that lands inside
+        # it is already an action with its own path.
+        self.store = store
 
     @property
     def writes(self) -> list:
@@ -1588,6 +1595,28 @@ def _scalar_of(raw: str):
     return raw
 
 
+def _quotable(raw: str):
+    """The text a description line carries when plain style cannot hold it,
+    or None when the line is not text this may read.
+
+    `_scalar_of` answers None to two different questions. One is "this value
+    is not readable"; the other is "this value is readable and plain style may
+    not carry it" — an inner `": "`, a trailing colon, a ` #`. The second class
+    is a sentence somebody wrote, and quoting is precisely what `_as_scalar`
+    does with one.
+
+    NONE FOR ANYTHING WHOSE FIRST CHARACTER CLAIMS A STRUCTURE: a quote that
+    has to close, and may close on a line this reader never sees; a block
+    indicator whose value is the lines below it; an anchor, an alias, a flow
+    collection. Those are not text with an awkward character in it, and
+    quoting the one line they begin would be inventing a description rather
+    than keeping one.
+    """
+    if not raw or raw[0] in "\"'" or raw[0] in _YAML_INDICATORS:
+        return None
+    return raw
+
+
 def _as_scalar(value: str) -> str:
     """`value` written so that reading it back gives `value`.
 
@@ -1642,6 +1671,18 @@ def _normalise(text: str, stem: str) -> tuple:
     raw = _frontmatter_of(text).get("description", "")
     value = _scalar_of(raw)
     rules = []
+    if value is None:
+        # QUOTED BEFORE ANYTHING STANDS IN FOR IT. The adopter's own sentence
+        # is the description; a heading and a file name are guesses at one, and
+        # the guess was taken for every line plain style could not carry — a
+        # sentence became a slug, losslessly recoverable the whole time.
+        carried = _clean(_quotable(raw) or "")
+        if carried:
+            value = carried
+            rules.append(
+                "description holds what a plain scalar cannot carry — quoted "
+                "as it stands"
+            )
     if value is None:
         heading = _clean(_first_heading(_body_of(text)))
         # CLEANED, both of them. The stem is a filename, which may hold a
@@ -3369,7 +3410,7 @@ def build_plan(
     # the flags add were appended below it — so the one preflight whose job is
     # to see the whole plan saw the part that never varies.
     _refuse_incompatible_types(actions)
-    return Plan(actions, notes)
+    return Plan(actions, notes, store_path)
 
 
 # The complete set of settings keys init may write, as data.
@@ -3627,7 +3668,21 @@ def run(args: argparse.Namespace) -> int:
     # No `except Refusal` here: `apply_plan` owns every refusal raised past its
     # first write and reports it as incomplete, because exit 5's promise is
     # about the filesystem rather than about where the exception came from.
-    return apply_plan(machine, plan, config_path)
+    applied = len(plan.pending)
+    code = apply_plan(machine, plan, config_path)
+    if code == EXIT_OK:
+        # THE LINE THAT SAYS IT HAPPENED. Every other outcome names itself on
+        # stderr and success named nothing at all, so a run that did the whole
+        # plan ended its transcript at the word `applying:` — the same last
+        # line a run that died between the header and its first write would
+        # leave. The count is the manifest's own `pending`, because this stands
+        # under the list the person was asked to approve.
+        print(
+            f"applied: {applied} {'action' if applied == 1 else 'actions'}. "
+            f"Store {_display_path(plan.store)}, config "
+            f"{_display_path(config_path)}."
+        )
+    return code
 
 
 def _refuse(refusal: Refusal) -> int:
