@@ -9,6 +9,23 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
+## [Unreleased]
+
+### Fixed
+
+- **`memkit init --interpreter` re-points a config it already wrote.** The
+  field was set only where it was absent, so an adopter naming a new python on
+  an install they had already run got a probe, a manifest reading "Nothing to
+  write" and the old value still in place — on the one field no other route can
+  reach, since the wrapper reads it first and never falls through to
+  `memkitInterpreter` or `$MEMKIT_INTERPRETER`. The flag now moves it, names
+  the value it replaces in the manifest, and leaves every other field alone.
+- **`memkit doctor` says when the config's `interpreter` and the
+  `memkitInterpreter` install option name different pythons.** The `interpreter`
+  row reports both paths, says the config's is the one that runs, and offers
+  the re-point command. INFO rather than a failure: neither value is wrong, and
+  what was missing was knowing which of them answers a prompt.
+
 ## [0.5.0] — 2026-09-14
 
 ### Added

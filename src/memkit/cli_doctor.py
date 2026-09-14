@@ -402,6 +402,12 @@ MANAGED_SETTINGS_NAME = "managed-settings.json"
 # naming and not a rule, so it is written once here.
 PLUGIN_KEY = "memkit@memkit"
 OPTION_KEY = "memkitConfig"
+# The plugin's OTHER option, and the only one the wrapper reads without this
+# file's help. It is named here because the `interpreter` row compares it
+# against the config's own field, and the mangling the harness applies to an
+# option name is the same one `OPTION_KEY` gets.
+INTERPRETER_OPTION_KEY = "memkitInterpreter"
+INTERPRETER_OPTION_ENV = "CLAUDE_PLUGIN_OPTION_" + INTERPRETER_OPTION_KEY.upper()
 
 
 def _managed_dir() -> str:
@@ -5100,6 +5106,39 @@ def _interpreter(machine: Machine) -> list[Check]:
                 f'. The config records "{recorded}" and this process is '
                 f"{_display_path(sys.executable)}"
             )
+    # THE TWO ROUTES THAT CAN BOTH BE SET, and the silence between them. The
+    # wrapper takes the config's field first and never reaches the option, so
+    # an adopter who reinstalled with a new `memkitInterpreter` changed
+    # nothing: the python that answers every prompt is still the one init
+    # recorded, and every row here stays green over it. Neither value is wrong,
+    # which is why this is INFO — what it costs is knowing which one runs.
+    #
+    # COMPARED AS SPELLED, after `~` and nothing else. Two paths that reach one
+    # binary through a symlink are the case worth reporting rather than the one
+    # worth hiding: a stable alias and the build behind it differ in exactly
+    # that way, and the alias is usually what the adopter meant.
+    option = os.environ.get(INTERPRETER_OPTION_ENV, "")
+    disagrees = ""
+    repoint = ""
+    if recorded and option and expand_home(option) != expand_home(recorded):
+        disagrees = (
+            f'. The config records "{recorded}" and the '
+            f"{INTERPRETER_OPTION_KEY} install option names "
+            f"{_display_path(option)} — the config's field is first in the "
+            "wrapper's order, so the config's is the one that runs"
+        )
+        repoint = (
+            f"`memkit init --interpreter {_display_path(option)}` records the "
+            "option's value in the config, which is the field the wrapper "
+            "reads. Changing the install option alone moves nothing once the "
+            "config holds one."
+        )
+    # THE DISAGREEMENT FIRST, and it restates the recorded path rather than
+    # leaning on `honoured` for it. This detail is bounded from the end, so the
+    # clause that must survive a cut is the one carrying both paths and the
+    # answer; two uv build paths and the sentence below them are past 600 bytes
+    # together, and in that order what got truncated away was which route wins.
+    suffix = disagrees + honoured
     # WHICH PYTHON WILL ACTUALLY SERVE, and can it. The wrapper prefers the
     # config's record and does not probe it — that field is read on every
     # prompt, so a probe there would put a python start in front of the one
@@ -5128,7 +5167,7 @@ def _interpreter(machine: Machine) -> list[Check]:
                 "interpreter",
                 FAIL,
                 f"the python that will run the hook, {_display_path(serving)}, "
-                f"{cannot}. Retrieval cannot work here{honoured}",
+                f"{cannot}. Retrieval cannot work here{suffix}",
                 INTERPRETER_ROUTES,
                 actor=USER,
                 terminal=True,
@@ -5142,7 +5181,7 @@ def _interpreter(machine: Machine) -> list[Check]:
                 FAIL,
                 f"hook interpreter {running}; NO checker route: no python on "
                 f"this machine meets {floor}, and `uv` located none "
-                f"either{honoured}",
+                f"either{suffix}",
                 NO_CHECKER_REMEDY,
                 actor=USER,
                 terminal=True,
@@ -5174,16 +5213,22 @@ def _interpreter(machine: Machine) -> list[Check]:
                 INFO,
                 f"hook interpreter {running}; checker route {route.value} "
                 f"({where}), because no python on PATH meets {floor} and `uv` "
-                f"located one. Retrieval is unaffected{honoured}",
+                f"located one. Retrieval is unaffected{suffix}",
+                repoint,
             )
         ]
-    if honoured:
+    # THE SUFFIX CARRIES THE DISAGREEMENT, so this is also the arm a green
+    # install with two routes set lands on. Nothing there is broken, and INFO
+    # over PASS is the whole report: a row that said PASS would be true about
+    # retrieval and silent about the one thing the adopter changed.
+    if suffix:
         return [
             Check(
                 "interpreter",
                 INFO,
                 f"hook interpreter {running}; checker route {route.value} "
-                f"({where}){honoured}",
+                f"({where}){suffix}",
+                repoint,
             )
         ]
     return [

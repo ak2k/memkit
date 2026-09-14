@@ -6341,3 +6341,72 @@ def test_a_python_here_with_no_fts5_is_refused_rather_than_recorded(
     assert "FTS5" in refusal.message
     # The remedy names the routes rather than describing the problem twice.
     assert "--interpreter" in refusal.message
+
+
+def test_a_named_interpreter_re_points_a_config_init_already_wrote(
+    profile,
+) -> None:
+    """Changing the python later, which is the route nothing else offers.
+
+    The field outranks every other route the wrapper reads and is not probed
+    on any prompt, so once it holds a value the install option and
+    `$MEMKIT_INTERPRETER` are both unreachable — an adopter who moves their
+    python has no way back except this command. Every other field is still set
+    only where it is absent: the nonce keeps its number and the store list
+    keeps its entries, so the re-point writes one field and converges on the
+    rest.
+    """
+    out = _confirm(profile, _digest_of(_dry(profile)))
+    assert out.returncode == init.EXIT_OK, out.stderr
+    config = profile / "home" / ".config" / "memkit" / "memkit.json"
+    first = json.loads(config.read_text(encoding="utf-8"))
+    named = _stub_interpreter(profile / "elsewhere" / "python3", 0)
+    assert first["interpreter"] != named, first
+
+    store = _snapshot(profile / "notes")
+    dry = _dry(profile, "--interpreter", named)
+    assert dry.returncode == init.EXIT_OK, dry.stderr
+    # PLANNED, and the manifest names both values: the one being written and
+    # the one it replaces, which is the half the adopter cannot read off the
+    # new path.
+    assert "Nothing to write" not in dry.stdout, dry.stdout
+    assert named in dry.stdout, dry.stdout
+    assert first["interpreter"] in dry.stdout, dry.stdout
+
+    applied = _confirm(profile, _digest_of(dry), "--interpreter", named)
+    assert applied.returncode == init.EXIT_OK, applied.stderr
+    after = json.loads(config.read_text(encoding="utf-8"))
+    assert after["interpreter"] == named, after
+    assert after == {**first, "interpreter": named}, after
+    assert _snapshot(profile / "notes") == store
+
+
+def test_a_second_init_with_no_flag_still_leaves_the_interpreter_alone(
+    profile,
+) -> None:
+    """Anti-vacuity for the re-point: the exception is the FLAG and not the
+    second run. An init that moved the field whenever the python it happened to
+    run under differed would retarget an adopter's install every time they ran
+    it from a different shell."""
+    merged = init._merge_config(
+        init._merge_config(
+            "", nonce="mkcORIGINAL", interpreter="/first/python",
+            entries=init._config_entries(store=str(profile / "a"), store_id="a"),
+        ),
+        nonce="mkcSECOND",
+        interpreter="/second/python",
+        entries=init._config_entries(store=str(profile / "b"), store_id="b"),
+    )
+    assert json.loads(merged)["interpreter"] == "/first/python"
+    retargeted = init._merge_config(
+        merged,
+        nonce="mkcTHIRD",
+        interpreter="/second/python",
+        entries=init._config_entries(store=str(profile / "b"), store_id="b"),
+        retarget=True,
+    )
+    blob = json.loads(retargeted)
+    assert blob["interpreter"] == "/second/python"
+    # And nothing else moved with it.
+    assert blob["canary_nonce"] == "mkcORIGINAL"
+    assert {s["id"] for s in blob["stores"]} == {"a", "b"}

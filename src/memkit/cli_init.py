@@ -491,14 +491,24 @@ def _config_entries(*, store: str, store_id: str) -> dict:
 
 
 def _merge_config(
-    existing: str, *, nonce: str, interpreter: str, entries: dict, where: str = ""
+    existing: str,
+    *,
+    nonce: str,
+    interpreter: str,
+    entries: dict,
+    where: str = "",
+    retarget: bool = False,
 ) -> str:
     """`existing` with one store's root and entry added, and nothing removed.
 
-    Every field is set only where it is ABSENT. A second init must not
-    retarget the first one's interpreter or renumber its nonce — the nonce in
+    Every field is set only where it is ABSENT, and `retarget` is the one
+    exception: it is `--interpreter` having been passed. A second init must
+    not move the first one's interpreter or renumber its nonce — the nonce in
     particular is what doctor's fixed query is, and changing it would make
-    every canary already on disk stop answering.
+    every canary already on disk stop answering. But a flag naming a python is
+    the adopter saying which one they want, and a command that took it, probed
+    it and then left the old value standing is a repair that reports success
+    and changes nothing. The nonce has no such flag and is never moved.
     """
     blob: dict = {}
     if existing.strip():
@@ -521,7 +531,10 @@ def _merge_config(
             )
         blob = loaded
     blob.setdefault("schema", SCHEMA)
-    blob.setdefault("interpreter", interpreter)
+    if retarget:
+        blob["interpreter"] = interpreter
+    else:
+        blob.setdefault("interpreter", interpreter)
     blob.setdefault(
         "search_cli", PLUGIN_SEARCH_CLI if _plugin_install() else DEFAULT_SEARCH_CLI
     )
@@ -542,6 +555,28 @@ def _merge_config(
     # or an existing value outside ASCII comes back as an escape that carries
     # the same value and reads as a different file.
     return json.dumps(blob, indent=2, ensure_ascii=False) + "\n"
+
+
+def _replacement_note(config_path: str, named: str | None, chosen: str) -> str:
+    """The manifest's sentence for a re-point, or "" when this is not one.
+
+    A re-point is the one run whose only effect can be inside a file the
+    manifest otherwise summarises as "adds root and store" — nothing is added,
+    one field moves, and the value being replaced is the half the adopter
+    cannot see from the new one. Read here rather than taken from the merge
+    because the merge answers a different question and refuses a config it
+    cannot parse by name; an unreadable one contributes no sentence and meets
+    that refusal a line later.
+    """
+    if named is None:
+        return ""
+    with contextlib.suppress(ValueError):
+        blob = json.loads(_read_or_empty(config_path) or "{}")
+        if isinstance(blob, dict):
+            was = blob.get("interpreter")
+            if isinstance(was, str) and was and was != chosen:
+                return f"Replaces the recorded interpreter {_display_path(was)}. "
+    return ""
 
 
 # --- the refusals ------------------------------------------------------------
@@ -3080,16 +3115,19 @@ def build_plan(
                 interpreter=interpreter_path,
                 entries=_config_entries(store=store_path, store_id=store_id),
                 where=config_path,
+                retarget=interpreter is not None,
             ),
             note=f"adds root and store {store_id!r}; records interpreter "
             f"{_display_path(interpreter_path)} and canary nonce {nonce}. "
-            "Existing stores are kept. "
+            + _replacement_note(config_path, interpreter, interpreter_path)
+            + "Existing stores are kept. "
             + _config_route_note(machine, config_path),
             authored_config=True,
             payload={
                 "nonce": nonce,
                 "interpreter": interpreter_path,
                 "entries": _config_entries(store=store_path, store_id=store_id),
+                "retarget": interpreter is not None,
             },
         ),
         # THE ROOT IS THE CONTAINMENT ROOT, so it is the one action under the
@@ -4272,6 +4310,11 @@ def _perform(
                 interpreter=str(payload.get("interpreter", "")),
                 entries=payload.get("entries") or {},
                 where=action.path,
+                # THROUGH THE PAYLOAD, because this merge runs against the file
+                # as it is under the lock rather than as it was at the dry-run.
+                # Dropped here, a re-point would render in the manifest the
+                # adopter approved and then set nothing.
+                retarget=bool(payload.get("retarget")),
             )
             # WRITE-AHEAD, and it is the config's alone. Between the file
             # landing and its record being fsynced, every future init — dry-run
