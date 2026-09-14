@@ -4098,7 +4098,56 @@ _SCALAR_ESCAPES = {
     '"': '"', "\\": "\\", "/": "/", " ": " ",
     "0": "\0", "a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v",
     "f": "\f", "r": "\r", "e": "\x1b",
-    "N": "\x85", "_": "\xa0", "L": "
+    "N": "\x85", "_": "\xa0", "L": "\u2028", "P": "\u2029",
+}
+
+
+def _scalar_text(raw: str) -> str:
+    r"""A frontmatter scalar's VALUE, from the line as it was written.
+
+    Three forms, and one of them needs nothing done to it: a plain scalar is
+    its own text. A double-quoted one carries escapes and a single-quoted one
+    carries `''` for an apostrophe, so trimming quote CHARACTERS off both ends
+    decodes neither — it took the closing quote of a double-quoted value and
+    left the backslash that had escaped the quote before it, rendering a
+    description that ends in a quoted word with a trailing `\` and no close.
+
+    AN ESCAPE THIS DOES NOT IMPLEMENT IS KEPT AS TYPED, backslash included.
+    The numeric forms are the ones missing, and a reader that dropped the
+    backslash would silently rename what it could not decode.
+
+    A quote that never closes is not a quoted scalar: a real parser reads that
+    value as continuing onto the lines below, which this reader — one regex
+    over one line — cannot see. What is on the line is what it returns.
+    """
+    if len(raw) > 1 and raw[0] in "\"'" and raw[-1] == raw[0]:
+        inner = raw[1:-1]
+        if raw[0] == "'":
+            return inner.replace("''", "'")
+        out = []
+        at = 0
+        while at < len(inner):
+            nxt = inner[at + 1] if at + 1 < len(inner) else ""
+            decoded = _SCALAR_ESCAPES.get(nxt) if inner[at] == "\\" else None
+            if decoded is None:
+                out.append(inner[at])
+                at += 1
+            else:
+                out.append(decoded)
+                at += 2
+        return "".join(out)
+    return raw
+
+
+def _description(path: str, root_real: str = "") -> str:
+    """Frontmatter `description:` line, else first heading, else ''.
+
+    This is the text the pointer line renders, so it is one of the three reads
+    that has to decide containment for itself — see `_store_path`. A refusal
+    reads as no description, which is what an unreadable file already gives.
+    """
+    target = _store_path(path, root_real)
+    if target is None:
         return ""
     try:
         with _open_regular(target) as f:
