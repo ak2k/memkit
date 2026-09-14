@@ -2887,8 +2887,8 @@
       "name": "init-a-named-config-expands-only-what-the-wrapper-expands",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    if named:\n        return expand_home(named)",
-      "new": "    if named:\n        return os.path.expanduser(named)",
+      "old": "    if named:\n        return expand_home(named)\n    option, _scope = machine.settings_option()",
+      "new": "    if named:\n        return os.path.expanduser(named)\n    option, _scope = machine.settings_option()",
       "tests": [
         "tests/test_init.py::test_init_writes_only_where_the_hook_would_read"
       ],
