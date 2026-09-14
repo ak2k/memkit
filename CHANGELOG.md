@@ -9,7 +9,7 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
-## [Unreleased]
+## [0.5.1] — 2026-09-14
 
 ### Fixed
 
