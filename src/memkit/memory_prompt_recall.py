@@ -4099,9 +4099,6 @@ _SCALAR_ESCAPES = {
     "0": "\0", "a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v",
     "f": "\f", "r": "\r", "e": "\x1b",
     "N": "\x85", "_": "\xa0", "L": "
-    """
-    target = _store_path(path, root_real)
-    if target is None:
         return ""
     try:
         with _open_regular(target) as f:

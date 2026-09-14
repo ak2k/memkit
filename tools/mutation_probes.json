@@ -809,6 +809,17 @@
       "why": "Only ok licenses a reader to read `files` as a census of the corpus, so a run that did not complete must never be recorded under it."
     },
     {
+      "name": "pointer-trims-quote-characters-instead-of-decoding-the-scalar",
+      "module": "prompt_recall_pointer",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "    desc = sanitize(_scalar_text(m.group(1).strip())).strip()",
+      "new": "    desc = sanitize(m.group(1)).strip().strip(\"\\\"'\")",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_a_quoted_description_renders_as_the_text_it_encodes"
+      ],
+      "why": "the pointer line is the whole of what the model is shown about a memory it has not opened"
+    },
+    {
       "name": "gate-envelope-needs-a-complete-block",
       "module": "prompt_recall_gates",
       "file": "src/memkit/memory_prompt_recall.py",
@@ -4471,7 +4482,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 666 probes",
+      "old": "the 671 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
@@ -4931,6 +4942,29 @@
         "tests/test_packaging.py::test_the_dispatcher_is_in_the_39_floor_because_a_wrapper_runs_it_there"
       ],
       "why": "nothing else connects bin/memkit to the 3.9 entry-point list; drop the link and cli.py could leave the floor with no diff to read"
+    },
+    {
+      "name": "wrapper-ignores-the-config-named-on-the-command-line",
+      "module": "plugin",
+      "file": "bin/lib/common.sh",
+      "old": "    if _argv_config=$(memkit_config_from_argv \"$@\"); then",
+      "new": "    if false; then",
+      "tests": [
+        "tests/test_plugin_surface.py::test_rung_zero_is_the_config_named_on_the_command_line",
+        "tests/test_plugin_surface.py::test_the_command_line_config_outranks_the_routes_the_install_set"
+      ],
+      "why": "the interpreter comes from the config the command line named, and that is the only route a person checking an install from their own shell has"
+    },
+    {
+      "name": "argv-config-skips-the-shape-rule-every-other-rung-obeys",
+      "module": "plugin",
+      "file": "bin/lib/common.sh",
+      "old": "        if _why=$(memkit_path_refusal \"$_candidate\"); then\n            memkit_stderr \\\n                \"the --config path names \\\"$_candidate\\\", which $_why.\"",
+      "new": "        if false; then\n            memkit_stderr \\\n                \"the --config path names \\\"$_candidate\\\", which $_why.\"",
+      "tests": [
+        "tests/test_plugin_surface.py::test_a_command_line_config_is_admitted_by_the_rule_every_rung_obeys"
+      ],
+      "why": "a relative --config resolves against whatever directory the session stands in, and what it would name there is the binary the wrapper execs"
     },
     {
       "name": "pyproject-drops-notice-from-the-declared-licence-files",
@@ -5858,6 +5892,28 @@
         "tests/test_init.py::test_a_config_value_outside_ascii_comes_back_as_the_bytes_it_went_in_as"
       ],
       "why": "a second init re-serializes the whole config from its own parse to add one store, so escaping every non-ASCII character rewrites a store path the adopter typed into a form only a machine reads"
+    },
+    {
+      "name": "init-a-finished-confirm-says-nothing",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    code = apply_plan(machine, plan, config_path)\n    if code == EXIT_OK:",
+      "new": "    code = apply_plan(machine, plan, config_path)\n    if False:",
+      "tests": [
+        "tests/test_init.py::test_the_confirm_turn_says_what_it_applied_when_it_is_done"
+      ],
+      "why": "a run that performed the whole plan and one that stopped after printing it leave the same last line in the transcript a person reads"
+    },
+    {
+      "name": "init-adoption-discards-a-description-plain-yaml-cannot-carry",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "        carried = _clean(_quotable(raw) or \"\")",
+      "new": "        carried = \"\"",
+      "tests": [
+        "tests/test_init.py::test_a_description_plain_yaml_cannot_carry_is_quoted_not_discarded"
+      ],
+      "why": "the adopter's own sentence is the description; a heading and a file name are guesses at one, and the copy is what the store keeps"
     },
     {
       "name": "scope-resolution-distrusts-the-user-scope-no-variable-moved",

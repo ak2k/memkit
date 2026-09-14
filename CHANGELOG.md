@@ -9,6 +9,40 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--config PATH` on a wrapper's own command line is the config it resolves
+  the interpreter from.** The flag reached python and never the shell, so the
+  by-hand check the README prescribes — `memkit-recall --config <path>
+  --search …` from your own terminal, where none of the harness's variables are
+  set — resolved no config, found no recorded interpreter, and exited 4 saying
+  "Config in use: `<none resolved>`" about a config named on the same line. It
+  is a rung above the `memkitConfig` install option and the plugin data
+  directory, and it is admitted by the same shape rule they are: absolute,
+  canonical, and not a path the kernel resolves through this process.
+  `bin/memkit-hook` passes nothing, because it takes no arguments at all.
+- **A `memkit init --confirm` that finished says so.** Every write landed, exit
+  0 was returned and stdout ended at the bare word `applying:` — so the surface
+  a model is told to relay carried the plan and no statement that it had been
+  carried out, and a run that did everything looked from outside like one that
+  stopped after printing the header. The last line now names how many actions
+  were applied, the store and the config.
+- **Adoption keeps a description that plain YAML cannot carry.** A ` #` opens a
+  comment there, so the checker's reader refuses the line — and what stood in
+  for it was the file's first heading and then its file name, which turned a
+  271-character sentence somebody wrote into a slug, under a manifest line
+  saying the description "could not be read". The text is quoted instead, which
+  is what the writer beside that reader already did for every other shape, and
+  the manifest says it was quoted. The 155-character cap still applies after.
+- **A pointer renders the description the file actually encodes.** The renderer
+  trimmed quote CHARACTERS off both ends rather than decoding the scalar, so a
+  description ending in an escaped quote lost its closing one and kept the
+  backslash that had escaped it, and `''` inside a single-quoted value rendered
+  as two apostrophes. All three forms — plain, single-quoted, double-quoted —
+  now render as the text they encode.
+
 ## [0.5.0] — 2026-09-14
 
 ### Added
@@ -31,7 +65,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 666 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 671 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for
