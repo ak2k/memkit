@@ -51,6 +51,12 @@ def profile(tmp_path, monkeypatch):
         hook.PLUGIN_DATA_ENV,
         "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
         "CLAUDE_PLUGIN_ROOT",
+        # THE TWO ROUTES THAT NAME A PYTHON. init reads both to find out
+        # whether anything named the one it is running as, so a developer with
+        # either exported would have every default-path case here record a
+        # spelling CI never sees.
+        doctor.INTERPRETER_ENV,
+        doctor.INTERPRETER_OPTION_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
     # AND THE VARIABLES THE HARNESS DECIDES AUTO-MEMORY FROM. The preflight
@@ -6287,6 +6293,87 @@ def test_a_named_interpreter_that_qualifies_is_what_the_config_records(
         a for a in _plan(profile).actions if a.op == init.MERGE_CONFIG
     ]
     assert default.payload["interpreter"] == init._interpreter()
+
+
+def test_a_named_interpreter_is_recorded_as_the_path_it_was_given(
+    profile,
+) -> None:
+    """The NAME, not what it resolves to, and the difference is a choice.
+
+    The stable spelling is usually the link: uv's python directory carries a
+    minor-version alias beside each patch build, and the alias is what survives
+    the upgrade that removes the build behind it. Recorded as the target, the
+    field goes stale on an upgrade nobody would connect to it — the wrapper
+    then refuses it by name on every prompt and falls through to a route the
+    adopter thought they had replaced. A launcher named here loses more: it is
+    replaced by the binary it execs, and whatever it set is gone.
+    """
+    target = _stub_interpreter(profile / "elsewhere" / "python3.12.13", 0)
+    link = profile / "elsewhere" / "python3.12"
+    link.symlink_to(target)
+    assert os.path.realpath(link) == target, link
+
+    (action,) = [
+        a for a in _plan(profile, interpreter=str(link)).actions
+        if a.op == init.MERGE_CONFIG
+    ]
+    assert action.payload["interpreter"] == str(link), action.payload
+    assert json.loads(action.content)["interpreter"] == str(link), action.content
+
+
+def test_an_interpreter_nothing_named_is_still_resolved(
+    profile, monkeypatch
+) -> None:
+    """The other half of the rule, and the reason the resolution stays.
+
+    Where no route named a python there is no spelling to keep: the value is
+    INFERRED from `sys.executable`, and a venv's `python3` is a symlink into an
+    interpreter the adopter can move out from under it. Nobody chose the link,
+    so nothing is overruled by recording what it points at — and the wrapper
+    reading the field cannot follow a dangling one back.
+    """
+    real = _stub_interpreter(profile / "elsewhere" / "real-python3", 0)
+    link = profile / "elsewhere" / "venv-python3"
+    link.symlink_to(real)
+    monkeypatch.setattr(sys, "executable", str(link))
+    assert init._interpreter() == real, init._interpreter()
+
+    # NAMED by the route that produced this process, and the spelling is kept.
+    monkeypatch.setenv(doctor.INTERPRETER_ENV, str(link))
+    assert init._interpreter() == str(link), init._interpreter()
+    # And the install option is the same rung, one step down.
+    monkeypatch.delenv(doctor.INTERPRETER_ENV)
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(link))
+    assert init._interpreter() == str(link), init._interpreter()
+
+
+def test_a_route_naming_some_other_python_does_not_get_recorded(
+    profile, monkeypatch
+) -> None:
+    """A variable being SET is not a variable that won.
+
+    The wrapper prefers the config's own field over both of these and reads
+    them in its own order, so the only honest test of "did this route produce
+    this process" is whether it resolves to this process. Trusted instead, an
+    adopter with a stale export would have init record a python that is not
+    running and was never probed.
+
+    THE SHAPE RULE STILL APPLIES to the one that does resolve here, and it is
+    the second case: a non-canonical spelling of this very python names a
+    different file depending on who resolves it, which is the one thing the
+    field the wrapper execs may not do.
+    """
+    real = _stub_interpreter(profile / "elsewhere" / "real-python3", 0)
+    monkeypatch.setattr(sys, "executable", real)
+    monkeypatch.setenv(
+        doctor.INTERPRETER_ENV, _stub_interpreter(profile / "other" / "python3", 0)
+    )
+    assert init._interpreter() == real, init._interpreter()
+
+    crooked = str(profile / "elsewhere" / ".." / "elsewhere" / "real-python3")
+    assert os.path.realpath(crooked) == real, crooked
+    monkeypatch.setenv(doctor.INTERPRETER_ENV, crooked)
+    assert init._interpreter() == real, init._interpreter()
 
 
 @pytest.mark.parametrize(

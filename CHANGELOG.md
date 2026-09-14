@@ -13,6 +13,18 @@ ordering.
 
 ### Fixed
 
+- **`memkit init` records the interpreter it was given, not the one it
+  resolves to.** A path that was NAMED — by `--interpreter`, or by the
+  `memkitInterpreter` option or `$MEMKIT_INTERPRETER` route that handed this
+  process its python — is written as spelled, with symlinks followed only for
+  the shape and existence checks. uv names each python by a minor-version
+  alias beside the patch build behind it, and recording the build tied the
+  config to one upgrade: the alias outlived it, the recorded path did not, and
+  every prompt after logged a refusal for a field the adopter had set
+  correctly. A launcher named this way lost whatever it set, to the binary it
+  execs. An interpreter nothing named is still resolved, since a venv's
+  `python3` is a link whose target is the durable half and no one chose the
+  link.
 - **`memkit init --interpreter` re-points a config it already wrote.** The
   field was set only where it was absent, so an adopter naming a new python on
   an install they had already run got a probe, a manifest reading "Nothing to

@@ -408,6 +408,11 @@ OPTION_KEY = "memkitConfig"
 # option name is the same one `OPTION_KEY` gets.
 INTERPRETER_OPTION_KEY = "memkitInterpreter"
 INTERPRETER_OPTION_ENV = "CLAUDE_PLUGIN_OPTION_" + INTERPRETER_OPTION_KEY.upper()
+# The third route, and the one to reach for from a terminal. Named here with
+# the other two because `init` reads both to find out whether anything NAMED
+# the python it is running as, and a route spelled in two files is a route
+# that comes to mean two things.
+INTERPRETER_ENV = "MEMKIT_INTERPRETER"
 
 
 def _managed_dir() -> str:

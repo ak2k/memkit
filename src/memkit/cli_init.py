@@ -57,6 +57,8 @@ from memkit.cli_doctor import (
     CANARY_NAME,
     CONFIG_DIR_ENV,
     EXCLUDE_STRAY,
+    INTERPRETER_ENV,
+    INTERPRETER_OPTION_ENV,
     INTERPRETER_ROUTES,
     NO_CHECKER_REMEDY,
     OPTION_KEY,
@@ -1295,14 +1297,49 @@ def _config_route_note(machine: Machine, config_path: str) -> str:
     return f"Read via --config or ${CONFIG_ENV}"
 
 
+def _named_this_process() -> str:
+    """The route's own spelling of the python this process is, or "".
+
+    The wrapper `exec`s what a route named, and the NAME is the choice: uv's
+    minor-version directory outlives the patch build behind it, and a launcher
+    script is replaced by the binary it execs, losing whatever it set. This
+    field is read on every prompt and never probed again, so a name swapped
+    for its target here is a choice overruled silently.
+
+    CONFIRMED AGAINST THIS PROCESS rather than trusted. A variable being set
+    says nothing about which route won — the wrapper prefers the config's own
+    field over both of these — so a name that resolves to some other python is
+    not the one that produced this one.
+
+    In the WRAPPER'S ORDER, so two routes naming this python record the one it
+    would have used. Held to the shape rule the wrapper applies, because a
+    value it refuses by name is one init must not write: `/proc/self/exe`
+    resolves to the running python and names a different file for every reader.
+    """
+    running = os.path.realpath(sys.executable)
+    for value in (
+        os.environ.get(INTERPRETER_ENV, ""),
+        os.environ.get(INTERPRETER_OPTION_ENV, ""),
+    ):
+        if not value:
+            continue
+        named = expand_home(value)
+        if not path_refusal(named) and os.path.realpath(named) == running:
+            return named
+    return ""
+
+
 def _interpreter() -> str:
     """The absolute python this process is, which is the one that will read
     every prompt if the wrapper honours the record.
 
-    `sys.executable` resolved: a venv's `python3` is a symlink, and recording
-    the link records a path whose target the adopter can move.
+    A route that NAMED this python wins, as spelled. Otherwise the answer is
+    INFERRED — nothing chose a spelling, so there is none to keep — and
+    `sys.executable` is resolved: a venv's `python3` is a symlink, and
+    recording the link records a path whose target the adopter can move, which
+    a wrapper reading the field cannot follow back.
     """
-    return os.path.realpath(sys.executable)
+    return _named_this_process() or os.path.realpath(sys.executable)
 
 
 def _chosen_interpreter(named: str | None) -> str:
@@ -1315,15 +1352,21 @@ def _chosen_interpreter(named: str | None) -> str:
     is the only one of the three routes that leaves the answer written down
     rather than living in an environment.
 
-    Resolved for the reason `_interpreter` resolves: a venv's `python3` is a
-    symlink, and the field is read by a wrapper that cannot follow one back to
-    a target the adopter has moved. The SHAPE is judged before this, in
-    `check_refusals`, against the value as typed — resolving first would turn a
-    relative path into an absolute one inside whatever directory the session
-    stands in, which is the value that rule exists to refuse.
+    RECORDED AS GIVEN, with symlinks resolved for the shape and existence
+    checks and never for the value written. A path somebody typed is a path
+    somebody chose, and the stable spelling is usually the link rather than
+    its target: uv's minor-version alias survives a patch upgrade that removes
+    the build behind it, and a launcher named here would be replaced by the
+    binary it execs. Resolving where nothing was named is a different question
+    and `_interpreter` still answers it that way.
+
+    The SHAPE is judged before this, in `check_refusals`, against the value as
+    typed — expanding or resolving first would turn a relative path into an
+    absolute one inside whatever directory the session stands in, which is the
+    value that rule exists to refuse.
     """
     if named:
-        return os.path.realpath(expand_home(named))
+        return expand_home(named)
     return _interpreter()
 
 
