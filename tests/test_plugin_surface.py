@@ -1445,6 +1445,94 @@ def _config_file(path: Path, **extra) -> Path:
     return path
 
 
+@pytest.mark.parametrize(
+    "wrapper,args",
+    [("memkit-recall", ("--search", "x")), ("memkit", ("doctor",))],
+)
+def test_rung_zero_is_the_config_named_on_the_command_line(
+    root, tmp_path, shimmed, wrapper, args
+) -> None:
+    """`--config PATH` with nothing else set, which is how a person checks an
+    install by hand.
+
+    The README prescribes this exact form, and it could not work: the wrappers
+    are on the AGENT's PATH rather than the terminal's, so an adopter reaches
+    the installed copy by path from a shell that carries none of the harness's
+    variables. The config reached python and never the wrapper, so the
+    interpreter that config records went unread and `memkit-recall` ended at
+    exit 4 before the search could start — "Config in use: <none resolved>",
+    about a config named on the same command line.
+
+    The hook wrapper is not here because it takes no arguments at all, which
+    is what keeps the every-prompt path unchanged by this rung.
+    """
+    config = _config_file(tmp_path / "byhand.json")
+    env = shimmed()
+    assert "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG" not in env
+    assert "CLAUDE_PLUGIN_DATA" not in env
+    decided = _decide(root, wrapper, env, *args, "--config", str(config))
+    assert decided.config == str(config), decided.stderr[-600:]
+    # The point of the rung: the INTERPRETER came from the config the command
+    # line named. A wrapper that resolved the config and then asked some other
+    # route for a python would pass the line above and still serve nothing.
+    assert decided.interpreter == str(shimmed.dir / "python3"), decided.stderr[-600:]
+
+
+def test_the_command_line_config_outranks_the_routes_the_install_set(
+    root, tmp_path, shimmed
+) -> None:
+    """One invocation pointed somewhere else is what the flag is for, so it
+    wins over the option the install recorded — and over the data-dir rung
+    under it, which is the same argument one rung down.
+    """
+    named = _config_file(tmp_path / "named.json")
+    option = _config_file(tmp_path / "option.json")
+    data = tmp_path / "data"
+    _config_file(data / "memkit.json")
+    env = shimmed(
+        CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(option), CLAUDE_PLUGIN_DATA=str(data)
+    )
+    for spelling in (("--config", str(named)), (f"--config={named}",)):
+        assert _decided_config(
+            root, "memkit-recall", env, "--search", "x", *spelling
+        ) == str(named), spelling
+    # Nothing after it names nothing, so the rungs below still answer. The
+    # argument parser one process along is what calls that a usage error.
+    assert _decided_config(
+        root, "memkit-recall", env, "--search", "x", "--config"
+    ) == str(option)
+    # And an operand that merely LOOKS like the flag is an operand.
+    assert _decided_config(
+        root, "memkit-recall", env, "--", "--config", str(named)
+    ) == str(option)
+
+
+def test_a_command_line_config_is_admitted_by_the_rule_every_rung_obeys(
+    root, tmp_path, shimmed
+) -> None:
+    """The shape rule reaches the argv rung too.
+
+    A relative path resolves against the directory the session stands in, and
+    what it would name here is the binary this process execs — so the rung
+    declines it and says so, rather than letting the repository somebody
+    happens to be standing in choose the python that runs.
+    """
+    session = tmp_path / "someone-elses-repo"
+    session.mkdir()
+    marker = tmp_path / "session-config-used.txt"
+    _shim(session, "python3", f'echo used > "{marker}"')
+    _config_file(session / "memkit.json", interpreter=str(session / "python3"))
+    option = _config_file(tmp_path / "option.json")
+    env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(option))
+    decided = _decide(
+        root, "memkit-recall", env, "--config", "memkit.json", "--search", "x",
+        cwd=session,
+    )
+    assert decided.config == str(option), decided.stderr[-600:]
+    assert not marker.exists(), "the session directory named the interpreter"
+    assert "is not an absolute path" in decided.stderr, decided.stderr[-600:]
+
+
 def test_rung_one_is_the_manifest_option(root, tmp_path, shimmed) -> None:
     config = _config_file(tmp_path / "opt.json")
     env = shimmed(CLAUDE_PLUGIN_OPTION_MEMKITCONFIG=str(config))
@@ -6271,6 +6359,7 @@ def test_the_config_location_is_not_a_cache_directory() -> None:
 # The mapping is the only handwritten link in the chain: the expressions are
 # scraped from the shell and the phrases are read out of the module.
 ROUTE_FOR_RUNG = {
+    '$(memkit_expand_home "$_argv_config")': "--config PATH",
     '$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")':
         "the `memkitConfig` install option",
     '$(memkit_expand_home "$CLAUDE_PLUGIN_DATA")/memkit.json':
@@ -6338,6 +6427,9 @@ def test_the_inert_message_names_the_rungs_the_resolver_actually_tries() -> None
     # The basename is part of the route, not decoration: the message tells an
     # adopter which FILE to create.
     assert "memkit.json" in "".join(rungs), rungs
+    # `--config PATH` is in the expected set twice over now — as python's own
+    # route, which no shell rung could remove, and as the shell rung that
+    # resolves the interpreter from the same value.
     expected = {"--config PATH"} | {ROUTE_FOR_RUNG[rung] for rung in rungs}
     assert set(hook.PLUGIN_CONFIG_ROUTES) == expected, hook.PLUGIN_CONFIG_ROUTES
 

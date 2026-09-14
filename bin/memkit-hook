@@ -66,6 +66,11 @@ if [ ! -r "$HOOK_FILE" ]; then
     exit 0
 fi
 
+# NO ARGUMENTS PASSED IN, because this wrapper takes none: the resolver's
+# first rung reads `--config` out of them, and reading flags this file has
+# already said it ignores is the dual-mode hazard above by another door. The
+# sibling wrappers pass theirs.
+# shellcheck disable=SC2119  # the empty argument list is the point
 CONFIG=$(memkit_resolve_config) || CONFIG=""
 
 # A HARD override, in both directions. Setting it when a rung answered is the

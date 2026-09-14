@@ -223,9 +223,56 @@ memkit_expand_home() {
     esac
 }
 
-# The config this install serves, or nothing. Two rungs, in order, first
+# `--config PATH` in this invocation's own argv, or nothing.
+#
+# THE FORM AN ADOPTER CHECKS AN INSTALL WITH. The wrappers are on the AGENT's
+# PATH and not a terminal's, so a person reaches the installed copy by path
+# from a shell carrying none of the harness's variables — which is the one
+# state where the two environment rungs below both answer nothing. The config
+# reached python and never the wrapper, so the interpreter that config records
+# went unread and the run ended before the search: `memkit-recall` exiting 4
+# with "Config in use: <none resolved>", about a config named on its own
+# command line.
+#
+# BOTH SPELLINGS AND ONLY THESE TWO. argparse also accepts an unambiguous
+# prefix, and this deliberately does not: knowing which abbreviations are
+# unambiguous means knowing every other flag of every subcommand, in a file
+# that may not run a program to ask. An abbreviation therefore resolves the
+# way it does today — through the rungs below — rather than wrongly.
+#
+# `--` ends the options, so what follows it is an operand however it is
+# spelled. The value is not otherwise validated here; it goes through the same
+# admission rule every other rung's does.
+memkit_config_from_argv() {
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            --) return 1 ;;
+            --config=*)
+                printf '%s\n' "${1#--config=}"
+                return 0
+                ;;
+            --config)
+                # Nothing after it names nothing. The argument parser one
+                # process along is what calls that a usage error.
+                [ "$#" -gt 1 ] || return 1
+                printf '%s\n' "$2"
+                return 0
+                ;;
+        esac
+        shift
+    done
+    return 1
+}
+
+# The config this install serves, or nothing. Three rungs, in order, first
 # existing file wins:
 #
+#   0. `--config PATH` in the arguments this wrapper was given, which the
+#      caller passes in — see `memkit_config_from_argv`. Above both of the
+#      others because it is the one route a person types for this invocation
+#      alone, and because python reads it that way too: a run whose interpreter
+#      came from one config and whose stores came from another is a wrong
+#      answer that looks like a right one.
 #   1. CLAUDE_PLUGIN_OPTION_MEMKITCONFIG — the harness's own typed userConfig
 #      mechanism, settable non-interactively at install with
 #      `--config memkitConfig=<path>`. The variable name is the manifest key
@@ -273,6 +320,25 @@ memkit_expand_home() {
 # Nothing found is not an error: the wrapper goes on to run the hook with no
 # config, which is inert by construction — no stores, no pointers, exit 0.
 memkit_resolve_config() {
+    if _argv_config=$(memkit_config_from_argv "$@"); then
+        _candidate=$(memkit_expand_home "$_argv_config")
+        if _why=$(memkit_path_refusal "$_candidate"); then
+            memkit_stderr \
+                "the --config path names \"$_candidate\", which $_why." \
+                "Resolving the interpreter from the other routes instead; the" \
+                "run itself still reads the path you gave."
+            _candidate=""
+        fi
+        # SILENT when the path is merely absent or unreadable, unlike the rung
+        # below. This value is about to be handed to a process that opens it
+        # and names it in its own refusal, so a sentence here would be the
+        # same news twice — while the option rung's file is opened by nothing
+        # that would report it.
+        [ -n "$_candidate" ] && [ -r "$_candidate" ] && {
+            printf '%s\n' "$_candidate"
+            return 0
+        }
+    fi
     if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITCONFIG:-}" ]; then
         _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")
         if _why=$(memkit_path_refusal "$_candidate"); then

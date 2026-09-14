@@ -221,7 +221,7 @@ it.**
 So the payload is code you can read that acts on decisions you made elsewhere,
 within those two limits.
 The thing worth auditing before installing is not this tree's size; it is
-`bin/memkit-hook` and `bin/lib/common.sh`, which are **801 lines of POSIX
+`bin/memkit-hook` and `bin/lib/common.sh`, which are **872 lines of POSIX
 shell** between them — mostly comment — and look up no command on any PATH.
 The one program either of them starts is a python it has already resolved to an
 absolute path, asked once whether it can run the hook at all.
