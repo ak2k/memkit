@@ -57,6 +57,8 @@ from memkit.cli_doctor import (
     CANARY_NAME,
     CONFIG_DIR_ENV,
     EXCLUDE_STRAY,
+    INTERPRETER_ENV,
+    INTERPRETER_OPTION_ENV,
     INTERPRETER_ROUTES,
     NO_CHECKER_REMEDY,
     OPTION_KEY,
@@ -498,14 +500,24 @@ def _config_entries(*, store: str, store_id: str) -> dict:
 
 
 def _merge_config(
-    existing: str, *, nonce: str, interpreter: str, entries: dict, where: str = ""
+    existing: str,
+    *,
+    nonce: str,
+    interpreter: str,
+    entries: dict,
+    where: str = "",
+    retarget: bool = False,
 ) -> str:
     """`existing` with one store's root and entry added, and nothing removed.
 
-    Every field is set only where it is ABSENT. A second init must not
-    retarget the first one's interpreter or renumber its nonce — the nonce in
+    Every field is set only where it is ABSENT, and `retarget` is the one
+    exception: it is `--interpreter` having been passed. A second init must
+    not move the first one's interpreter or renumber its nonce — the nonce in
     particular is what doctor's fixed query is, and changing it would make
-    every canary already on disk stop answering.
+    every canary already on disk stop answering. But a flag naming a python is
+    the adopter saying which one they want, and a command that took it, probed
+    it and then left the old value standing is a repair that reports success
+    and changes nothing. The nonce has no such flag and is never moved.
     """
     blob: dict = {}
     if existing.strip():
@@ -528,7 +540,10 @@ def _merge_config(
             )
         blob = loaded
     blob.setdefault("schema", SCHEMA)
-    blob.setdefault("interpreter", interpreter)
+    if retarget:
+        blob["interpreter"] = interpreter
+    else:
+        blob.setdefault("interpreter", interpreter)
     blob.setdefault(
         "search_cli", PLUGIN_SEARCH_CLI if _plugin_install() else DEFAULT_SEARCH_CLI
     )
@@ -549,6 +564,28 @@ def _merge_config(
     # or an existing value outside ASCII comes back as an escape that carries
     # the same value and reads as a different file.
     return json.dumps(blob, indent=2, ensure_ascii=False) + "\n"
+
+
+def _replacement_note(config_path: str, named: str | None, chosen: str) -> str:
+    """The manifest's sentence for a re-point, or "" when this is not one.
+
+    A re-point is the one run whose only effect can be inside a file the
+    manifest otherwise summarizes as "adds root and store" — nothing is added,
+    one field moves, and the value being replaced is the half the adopter
+    cannot see from the new one. Read here rather than taken from the merge
+    because the merge answers a different question and refuses a config it
+    cannot parse by name; an unreadable one contributes no sentence and meets
+    that refusal a line later.
+    """
+    if named is None:
+        return ""
+    with contextlib.suppress(ValueError):
+        blob = json.loads(_read_or_empty(config_path) or "{}")
+        if isinstance(blob, dict):
+            was = blob.get("interpreter")
+            if isinstance(was, str) and was and was != chosen:
+                return f"Replaces the recorded interpreter {_display_path(was)}. "
+    return ""
 
 
 # --- the refusals ------------------------------------------------------------
@@ -1267,14 +1304,49 @@ def _config_route_note(machine: Machine, config_path: str) -> str:
     return f"Read via --config or ${CONFIG_ENV}"
 
 
+def _named_this_process() -> str:
+    """The route's own spelling of the python this process is, or "".
+
+    The wrapper `exec`s what a route named, and the NAME is the choice: uv's
+    minor-version directory outlives the patch build behind it, and a launcher
+    script is replaced by the binary it execs, losing whatever it set. This
+    field is read on every prompt and never probed again, so a name swapped
+    for its target here is a choice overruled silently.
+
+    CONFIRMED AGAINST THIS PROCESS rather than trusted. A variable being set
+    says nothing about which route won — the wrapper prefers the config's own
+    field over both of these — so a name that resolves to some other python is
+    not the one that produced this one.
+
+    In the WRAPPER'S ORDER, so two routes naming this python record the one it
+    would have used. Held to the shape rule the wrapper applies, because a
+    value it refuses by name is one init must not write: `/proc/self/exe`
+    resolves to the running python and names a different file for every reader.
+    """
+    running = os.path.realpath(sys.executable)
+    for value in (
+        os.environ.get(INTERPRETER_ENV, ""),
+        os.environ.get(INTERPRETER_OPTION_ENV, ""),
+    ):
+        if not value:
+            continue
+        named = expand_home(value)
+        if not path_refusal(named) and os.path.realpath(named) == running:
+            return named
+    return ""
+
+
 def _interpreter() -> str:
     """The absolute python this process is, which is the one that will read
     every prompt if the wrapper honors the record.
 
-    `sys.executable` resolved: a venv's `python3` is a symlink, and recording
-    the link records a path whose target the adopter can move.
+    A route that NAMED this python wins, as spelled. Otherwise the answer is
+    INFERRED — nothing chose a spelling, so there is none to keep — and
+    `sys.executable` is resolved: a venv's `python3` is a symlink, and
+    recording the link records a path whose target the adopter can move, which
+    a wrapper reading the field cannot follow back.
     """
-    return os.path.realpath(sys.executable)
+    return _named_this_process() or os.path.realpath(sys.executable)
 
 
 def _chosen_interpreter(named: str | None) -> str:
@@ -1287,15 +1359,21 @@ def _chosen_interpreter(named: str | None) -> str:
     is the only one of the three routes that leaves the answer written down
     rather than living in an environment.
 
-    Resolved for the reason `_interpreter` resolves: a venv's `python3` is a
-    symlink, and the field is read by a wrapper that cannot follow one back to
-    a target the adopter has moved. The SHAPE is judged before this, in
-    `check_refusals`, against the value as typed — resolving first would turn a
-    relative path into an absolute one inside whatever directory the session
-    stands in, which is the value that rule exists to refuse.
+    RECORDED AS GIVEN, with symlinks resolved for the shape and existence
+    checks and never for the value written. A path somebody typed is a path
+    somebody chose, and the stable spelling is usually the link rather than
+    its target: uv's minor-version alias survives a patch upgrade that removes
+    the build behind it, and a launcher named here would be replaced by the
+    binary it execs. Resolving where nothing was named is a different question
+    and `_interpreter` still answers it that way.
+
+    The SHAPE is judged before this, in `check_refusals`, against the value as
+    typed — expanding or resolving first would turn a relative path into an
+    absolute one inside whatever directory the session stands in, which is the
+    value that rule exists to refuse.
     """
     if named:
-        return os.path.realpath(expand_home(named))
+        return expand_home(named)
     return _interpreter()
 
 
@@ -3121,16 +3199,19 @@ def build_plan(
                 interpreter=interpreter_path,
                 entries=_config_entries(store=store_path, store_id=store_id),
                 where=config_path,
+                retarget=interpreter is not None,
             ),
             note=f"adds root and store {store_id!r}; records interpreter "
             f"{_display_path(interpreter_path)} and canary nonce {nonce}. "
-            "Existing stores are kept. "
+            + _replacement_note(config_path, interpreter, interpreter_path)
+            + "Existing stores are kept. "
             + _config_route_note(machine, config_path),
             authored_config=True,
             payload={
                 "nonce": nonce,
                 "interpreter": interpreter_path,
                 "entries": _config_entries(store=store_path, store_id=store_id),
+                "retarget": interpreter is not None,
             },
         ),
         # THE ROOT IS THE CONTAINMENT ROOT, so it is the one action under the
@@ -4327,6 +4408,11 @@ def _perform(
                 interpreter=str(payload.get("interpreter", "")),
                 entries=payload.get("entries") or {},
                 where=action.path,
+                # THROUGH THE PAYLOAD, because this merge runs against the file
+                # as it is under the lock rather than as it was at the dry-run.
+                # Dropped here, a re-point would render in the manifest the
+                # adopter approved and then set nothing.
+                retarget=bool(payload.get("retarget")),
             )
             # WRITE-AHEAD, and it is the config's alone. Between the file
             # landing and its record being fsynced, every future init — dry-run

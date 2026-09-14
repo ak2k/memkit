@@ -412,6 +412,7 @@ def profile(tmp_path, monkeypatch):
         hook.PLUGIN_ENV,
         hook.PLUGIN_DATA_ENV,
         "CLAUDE_PLUGIN_OPTION_MEMKITCONFIG",
+        doctor.INTERPRETER_OPTION_ENV,
         "CLAUDE_PLUGIN_ROOT",
         # The harness's own memory surfaces that are not a settings file: a
         # developer with one of these exported would get an answer from the
@@ -4656,6 +4657,55 @@ def test_a_recorded_interpreter_that_can_serve_leaves_the_row_alone(
         "interpreter",
     )
     assert row.status != doctor.FAIL, row.detail
+
+
+def test_a_config_field_and_an_install_option_that_disagree_say_which_one_runs(
+    profile, monkeypatch
+) -> None:
+    """Both routes set, to different pythons, and only one of them reachable.
+
+    The wrapper reads the config's field first and stops there, so an adopter
+    who reinstalled the plugin with a new `memkitInterpreter` has changed
+    nothing they can see: retrieval goes on working, every row here is green,
+    and the python answering their prompts is the one init recorded however
+    long ago. Neither value is a fault, so the row is INFO — what it owes is
+    both paths, which one runs, and the command that moves the other.
+    """
+    recorded = _stub_python(profile, 0)
+    option = profile / "elsewhere" / "python3.12"
+    option.symlink_to(recorded)
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
+    path = _recorded_interpreter_config(profile, recorded)
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, str(path))),
+        "interpreter",
+    )
+    assert row.status == doctor.INFO, (row.status, row.detail)
+    assert str(option) in row.detail, row.detail
+    assert recorded in row.detail, row.detail
+    assert "the config's is the one that runs" in row.detail, row.detail
+    # The remedy is G2's command, carrying the value that is not being used —
+    # a row naming two paths and no move is one an adopter has to go and read
+    # the README for.
+    assert f"memkit init --interpreter {option}" in row.remedy, row.remedy
+
+
+def test_an_option_naming_the_recorded_python_is_not_a_disagreement(
+    profile, monkeypatch
+) -> None:
+    """Anti-vacuity: the row reports a difference rather than the presence of
+    the variable. Both set to one path is the ordinary state of a plugin
+    install that ran init, and a report that called it a disagreement would
+    fire on every one of them."""
+    recorded = _stub_python(profile, 0)
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, recorded)
+    path = _recorded_interpreter_config(profile, recorded)
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, str(path))),
+        "interpreter",
+    )
+    assert doctor.INTERPRETER_OPTION_KEY not in row.detail, row.detail
+    assert row.remedy == "", row.remedy
 
 
 def test_a_running_python_without_fts5_is_a_fail_even_with_nothing_recorded(

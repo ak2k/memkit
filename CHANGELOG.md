@@ -42,6 +42,30 @@ ordering.
   backslash that had escaped it, and `''` inside a single-quoted value rendered
   as two apostrophes. All three forms — plain, single-quoted, double-quoted —
   now render as the text they encode.
+- **`memkit init` records the interpreter it was given, not the one it
+  resolves to.** A path that was NAMED — by `--interpreter`, or by the
+  `memkitInterpreter` option or `$MEMKIT_INTERPRETER` route that handed this
+  process its python — is written as spelled, with symlinks followed only for
+  the shape and existence checks. uv names each python by a minor-version
+  alias beside the patch build behind it, and recording the build tied the
+  config to one upgrade: the alias outlived it, the recorded path did not, and
+  every prompt after logged a refusal for a field the adopter had set
+  correctly. A launcher named this way lost whatever it set, to the binary it
+  execs. An interpreter nothing named is still resolved, since a venv's
+  `python3` is a link whose target is the durable half and no one chose the
+  link.
+- **`memkit init --interpreter` re-points a config it already wrote.** The
+  field was set only where it was absent, so an adopter naming a new python on
+  an install they had already run got a probe, a manifest reading "Nothing to
+  write" and the old value still in place — on the one field no other route can
+  reach, since the wrapper reads it first and never falls through to
+  `memkitInterpreter` or `$MEMKIT_INTERPRETER`. The flag now moves it, names
+  the value it replaces in the manifest, and leaves every other field alone.
+- **`memkit doctor` says when the config's `interpreter` and the
+  `memkitInterpreter` install option name different pythons.** The `interpreter`
+  row reports both paths, says the config's is the one that runs, and offers
+  the re-point command. INFO rather than a failure: neither value is wrong, and
+  what was missing was knowing which of them answers a prompt.
 
 ## [0.5.0] — 2026-09-14
 

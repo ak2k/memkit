@@ -594,6 +594,13 @@ point.
   is the only one that reaches a hook a GUI-launched harness started; and
   `MEMKIT_INTERPRETER=<absolute path>` in the launching environment is the one
   to reach for from a terminal.
+
+  **Changing it later** is `memkit init --interpreter <absolute path>` again:
+  it probes the new path and re-points this field, leaving every other value
+  in the config alone. Reinstalling with a different `memkitInterpreter` does
+  nothing once this field holds a value, because the wrapper reads it first
+  and never reaches the option — `memkit doctor`'s `interpreter` row says so
+  when the two disagree.
 - **`eval.cases`** — three slices. `suite` pairs a prompt with the *basename*
   of the memory it is about; the tier is resolved at run time from where the
   file lives now, so promoting a memory from `search/` to `hot/` flips its
