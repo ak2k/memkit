@@ -1019,6 +1019,34 @@ def test_the_only_settings_key_init_may_write_is_an_allowlist(profile) -> None:
     assert caught.value.name == "enabled-plugins"
 
 
+def test_a_settings_key_init_never_touched_comes_back_byte_for_byte(
+    profile,
+) -> None:
+    """The settings file is the adopter's, re-serialized from its own parse so
+    that one key can change. Every other line has to survive that round trip as
+    the bytes they typed — an escape sequence carries the same value and turns
+    a one-key diff into a rewrite of every line holding a character outside
+    ASCII.
+    """
+    target = profile / "claude-config" / "settings.json"
+    prose = "autoMode — 3 × per session, mostly"
+    before = (
+        json.dumps(
+            {"autoModeNote": prose, "autoMemoryEnabled": True},
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    target.write_text(before, encoding="utf-8")
+    written = init._settings_with(str(target), {"autoMemoryEnabled": False})
+    untouched = [line for line in before.splitlines() if "autoModeNote" in line]
+    assert untouched, before
+    assert set(untouched) <= set(written.splitlines()), written
+    assert "\\u" not in written, written
+    assert json.loads(written)["autoMemoryEnabled"] is False
+
+
 def test_the_refusal_reaches_the_caller_named_and_with_a_reason(profile) -> None:
     """The name is the half a caller branches on and the sentence is the half a
     person acts on. An agent given only prose parses it; one given only a token
@@ -1465,6 +1493,33 @@ def test_a_second_init_does_not_renumber_the_first_ones_nonce(profile) -> None:
     blob = json.loads(merged)
     assert blob["canary_nonce"] == "mkcORIGINAL"
     assert blob["interpreter"] == sys.executable
+
+
+def test_a_config_value_outside_ascii_comes_back_as_the_bytes_it_went_in_as(
+    profile,
+) -> None:
+    """The mirror of the settings round trip, and the same reason: a second
+    init re-serializes the whole config from its own parse to add one store, so
+    a store path or a value somebody typed has to survive that as itself rather
+    than as an escape only a machine reads.
+    """
+    accented = str(profile / "notes-café-×")
+    first = init._merge_config(
+        "", nonce="mkcORIGINAL", interpreter=sys.executable,
+        entries=init._config_entries(store=accented, store_id="café"),
+    )
+    assert accented in first, first
+    merged = init._merge_config(
+        first,
+        nonce="mkcSECOND",
+        interpreter=sys.executable,
+        entries=init._config_entries(store=str(profile / "b"), store_id="b"),
+    )
+    untouched = [line for line in first.splitlines() if accented in line]
+    assert untouched, first
+    assert set(untouched) <= set(merged.splitlines()), merged
+    assert "\\u" not in merged, merged
+    assert json.loads(merged)["roots"]["café"]["path"] == accented
 
 
 def test_the_seeded_store_passes_the_checker_and_answers_doctors_query(profile):
@@ -3565,6 +3620,70 @@ def test_the_description_cap_is_the_checkers_own(profile) -> None:
     assert init._MAX_DESC_CHARS == checker.MAX_DESC_CHARS
     assert set(init._LEDGER_NAMES) == set(checker.LEDGER_NAMES)
     assert init._INDEX_HEADING == checker.INDEX_HEADING
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_the_restated_link_pattern_is_the_checkers_own(profile) -> None:
+    """One rule, two spellings, because the checker exits at import below 3.12
+    and this module answers to the 3.9 floor the dispatcher runs on. A row's
+    destination is what decides whether a memory is rowed at all, so a copy
+    that drifts has the two halves disagreeing about which files the store
+    already indexes.
+    """
+    from memkit import memory_integrity as checker
+
+    assert init._LINK_RE.pattern == checker.LINK_RE.pattern
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_rows_description_cannot_swallow_the_next_rows_link(profile) -> None:
+    """A DESCRIPTION IS PROSE AND A LINK IS NOT. A row's text may hold an
+    unbalanced bracket — the cap's truncation is one way to get one — and a
+    link that could be read across the line break would take the destination
+    off the row below, leaving that memory unrowed and the store failing the
+    check the confirm turn runs over its own work.
+    """
+    # An opener inside what survives the cap, its closer past it. Derived from
+    # the cap rather than counted, so the shape holds if the cap moves.
+    opener = init._MAX_DESC_CHARS - 10
+    long = (
+        "an adopted memory whose description opens a bracket late".ljust(
+            opener, "x"
+        )
+        + "(and closes it only past the cut"
+        + "y" * 40
+    )
+    survives = long[: init._MAX_DESC_CHARS - 1]
+    assert "(" in survives and ")" not in survives, survives
+    _harness(
+        profile,
+        "-home-u",
+        {
+            "aaa.md": f"---\nname: aaa\ndescription: {long}\n---\n\nbody\n",
+            "bbb.md": "---\nname: bbb\ndescription: an ordinary one\n---\n\nb\n",
+        },
+    )
+    store = profile / "notes"
+    manifest = _dry(profile, "--store", str(store), "--adopt-auto-memory")
+    assert manifest.returncode == init.EXIT_OK, manifest.stdout + manifest.stderr
+
+    # The confirm runs the checker over the store it has just built, so the
+    # exit code is the checker's answer as well as init's.
+    out = _confirm(
+        profile, _digest_of(manifest), "--store", str(store), "--adopt-auto-memory"
+    )
+    said = out.stdout + out.stderr
+    assert "ORPHAN" not in said, said
+    assert "STALE" not in said, said
+    assert out.returncode == init.EXIT_OK, said
+
+    rows = _rows_of((store / "SEARCH.md").read_text(encoding="utf-8"))
+    assert "search/projects/-home-u/bbb.md" in rows, rows
+    assert "search/projects/-home-u/aaa.md" in rows, rows
 
 
 def test_a_replaced_description_takes_the_lines_under_it(profile) -> None:
@@ -6124,3 +6243,101 @@ def test_a_refusal_after_a_red_check_still_reports_the_red_check(
     assert init.apply_plan(machine, plan, config) == init.EXIT_INCOMPLETE
     assert "changed-underfoot" in capsys.readouterr().err
     assert len(reported) == 1
+
+
+# --- --interpreter: naming a python without a config init already owns -------
+
+
+# A stand-in for a python whose build cannot serve, answering the probe the
+# way the real one does: an exit status and nothing else. A script rather than
+# a search for a real 3.7 or a real FTS5-less 3.12, because neither is present
+# on any machine this suite runs on and the thing under test is the reaction to
+# the status, not the interpreter that produced it.
+_PROBE_STUB = "#!/bin/sh\nexit %d\n"
+
+
+def _stub_interpreter(path, status: int) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_PROBE_STUB % status, encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_a_named_interpreter_that_qualifies_is_what_the_config_records(
+    profile, capsys
+) -> None:
+    """The route out of the deadlock, and the only one that leaves the answer
+    written down.
+
+    `interpreter` was reachable only through init, and init refuses to write
+    over a config it did not author — so an adopter whose every candidate
+    python is unusable had no first move at all: the field they needed could
+    only be written by the command that could not run.
+    """
+    named = _stub_interpreter(profile / "elsewhere" / "python3", 0)
+    plan = _plan(profile, interpreter=named)
+    rendered = plan.render()
+    assert named in rendered, rendered
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.payload["interpreter"] == named, action.payload
+    assert json.loads(action.content)["interpreter"] == named, action.content
+    # And the default is still the python this command is, which is what makes
+    # the wrapper's decision not to re-probe the field an honest one.
+    (default,) = [
+        a for a in _plan(profile).actions if a.op == init.MERGE_CONFIG
+    ]
+    assert default.payload["interpreter"] == init._interpreter()
+
+
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (doctor.PROBE_BELOW_FLOOR, "older than 3.9"),
+        (doctor.PROBE_NO_FTS5, "no FTS5"),
+    ],
+)
+def test_a_named_interpreter_that_cannot_serve_is_refused_before_any_write(
+    profile, status, reason
+) -> None:
+    """PROBED, not merely tested for the executable bit.
+
+    The two ways a python fails here are both properties of a build and
+    neither is visible from the filesystem: below the floor it cannot parse the
+    hook, and without FTS5 it parses everything and answers every search with a
+    failure the hook turns into an empty block. This field is exec'd on every
+    prompt without being probed again, so what is written has to have been
+    established here or nowhere.
+    """
+    named = _stub_interpreter(profile / "elsewhere" / "python3", status)
+    refusal = _refuses(profile, "interpreter-unusable", interpreter=named)
+    assert reason in refusal.message, refusal.message
+    assert named in refusal.message, refusal.message
+
+
+def test_a_named_interpreter_is_held_to_the_same_shape_rule_as_the_field(
+    profile,
+) -> None:
+    """The value goes into a field a POSIX-sh wrapper reads and exec's, and
+    that wrapper refuses a path whose meaning depends on who resolves it. A
+    value init accepted and the wrapper then refused would be a repair that
+    reports success and changes nothing."""
+    for value in ("python3", "/usr/bin/../bin/python3", "/proc/self/exe"):
+        refusal = _refuses(profile, "interpreter-unusable", interpreter=value)
+        assert value in refusal.message, refusal.message
+
+
+def test_a_python_here_with_no_fts5_is_refused_rather_than_recorded(
+    profile, monkeypatch
+) -> None:
+    """The default path, where there is no `--interpreter` to probe.
+
+    The floor needs no asking — this process imported the package — but FTS5
+    does, and recording a python without it hands the adopter a store, a green
+    integrity check and nothing back on any prompt.
+    """
+    monkeypatch.setattr(doctor, "fts5_available", lambda: False)
+    monkeypatch.setattr(init, "fts5_available", lambda: False)
+    refusal = _refuses(profile, "interpreter-unusable")
+    assert "FTS5" in refusal.message
+    # The remedy names the routes rather than describing the problem twice.
+    assert "--interpreter" in refusal.message

@@ -86,9 +86,10 @@ else
     unset MEMKIT_CONFIG
 fi
 
+# The resolution says its own refusal, naming every candidate it tried and why
+# each one cannot run the hook; this file adds only the status.
 PY=$(memkit_resolve_interpreter "$CONFIG") || PY=""
 if [ -z "$PY" ]; then
-    memkit_no_interpreter_message "$CONFIG"
     exit 4
 fi
 

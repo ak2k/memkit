@@ -13,12 +13,18 @@ ordering.
 
 ### Added
 
+- **Three routes that name the python the hook runs under**, none of which
+  needs a config memkit already wrote: `memkit init --interpreter <path>`,
+  a `memkitInterpreter` install option, and `$MEMKIT_INTERPRETER`. The
+  `interpreter` field was reachable only through init, and init refuses to
+  overwrite a config it did not author, so an adopter whose every candidate
+  python was unusable had no first move.
 - **`memkit init` adopts the harness's own auto-memory.** `--adopt-auto-memory`
   copies the memories the harness wrote into the store and sends the next ones
   there; `--auto-memory-off` stops that writing instead; and `memkit doctor`
   grows an `auto-memory` row counting both sides and naming the deciding scope.
 - **The mutation sweep runs in CI over the whole corpus**, in a job of its own
-  — no module list, and so the 662 probes `tools/mutation_sweep.py --list`
+  — no module list, and so the 666 probes `tools/mutation_sweep.py --list`
   counts in this tree rather than a subset somebody keeps in step by hand. The
   two `--module` runs it replaces covered 114 of them, which is how an anchor
   that had slipped off the code it was written for sat dead for twenty-three
@@ -38,6 +44,30 @@ ordering.
   subdirectory rather than the corpus root itself, because the harness rewrites
   the frontmatter of any `.md` file that already carries it, written or edited
   under the directory it is pointed at.
+
+### Fixed
+
+- **The plugin wrapper no longer execs a python that cannot run the hook.**
+  A candidate qualifies only if it is 3.9 or newer and its sqlite3 can create
+  an FTS5 table; each of the three routes above and each pinned system path is
+  probed once, and one that fails is skipped with its reason kept. On a host
+  whose first pinned path was a 3.7 the hook wrapper exited non-zero on every
+  prompt — a blocked turn, from the file whose contract is that every path
+  exits 0 — and the refusal it writes was unreachable, because it fired only
+  where none of the pinned paths existed. It now names each candidate and why.
+- **`memkit doctor` fails rather than informs when retrieval cannot work.** A
+  python whose sqlite3 has no FTS5 answers every search with an error the hook
+  turns into an empty block, and the report was green over it: `interpreter`
+  read as INFO and `gate-outcomes` counted `index-unavailable` as one line in a
+  histogram. Both now FAIL, and the remedy names the three routes.
+- **Adoption survives a description long enough to be truncated.** Cutting a
+  description to the 155-character cap can leave an unbalanced `(` behind, and
+  the checker's link pattern then ran past the end of the line and read the
+  next row's link as this row's. `memkit init --adopt-auto-memory` built a
+  store and then exited 6 on it. The pattern is bounded to one line in the
+  checker and in init's restatement of it, with a guard against the two
+  drifting apart, and settings and config rewrites keep non-ASCII as it was
+  typed.
 
 ## [0.4.0] — 2026-08-31
 

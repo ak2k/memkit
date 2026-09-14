@@ -1542,6 +1542,60 @@ def test_the_histogram_excludes_the_records_that_are_not_prompt_outcomes(
     assert "dup-registration" not in row.detail
 
 
+def test_a_last_outcome_of_index_unavailable_fails_rather_than_informs(
+    profile, monkeypatch
+) -> None:
+    """The row's always-INFO rule had one name it could not afford.
+
+    `index-unavailable` means a store was asked and could not answer, so the
+    prompt got an empty block back — and reported as one line in a histogram
+    under a verdict of OK it is indistinguishable from a corpus with nothing to
+    say. That is the false green this whole command exists to prevent, produced
+    by the check that was supposed to name it.
+    """
+    path = _store_config(profile, stores=["personal"])
+    here = hook._cwd_digest()
+    _soak(
+        profile,
+        {"ts": 1, "outcome": "injected", "cwd": here, "ms": 30},
+        {"ts": 2, "outcome": doctor.INDEX_UNAVAILABLE, "cwd": here, "ms": 8},
+    )
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["gate-outcomes"](machine), "gate-outcomes")
+    assert row.status == doctor.FAIL, row.detail
+    assert doctor.verdict([row]) != "OK"
+    # The counts are still there: the histogram is the evidence for the verdict
+    # rather than something the verdict replaces.
+    assert "injected 1" in row.detail, row.detail
+    assert doctor._gloss(doctor.INDEX_UNAVAILABLE) in row.detail, row.detail
+    # And the remedy names the routes, because the commonest cause of every
+    # store answering this way is the python the hook runs under.
+    assert "--interpreter" in (row.remedy or ""), row.remedy
+    assert row.actor == doctor.USER
+
+
+def test_one_index_unavailable_that_is_not_the_last_is_still_a_count(
+    profile, monkeypatch
+) -> None:
+    """The outcome is reachable transiently while an index rebuilds, so one of
+    them among the last four hundred prompts is a race that resolved itself.
+    Only the LAST record is read as a verdict; a rule that fired on any
+    occurrence would red every install that has ever rebuilt an index."""
+    path = _store_config(profile, stores=["personal"])
+    here = hook._cwd_digest()
+    _soak(
+        profile,
+        {"ts": 1, "outcome": doctor.INDEX_UNAVAILABLE, "cwd": here, "ms": 8},
+        {"ts": 2, "outcome": "injected", "cwd": here, "ms": 30},
+    )
+    (row,) = _only(
+        doctor._PRODUCERS["gate-outcomes"](_machine(profile, monkeypatch, path)),
+        "gate-outcomes",
+    )
+    assert row.status == doctor.INFO, row.detail
+    assert f"{doctor.INDEX_UNAVAILABLE} 1" in row.detail, row.detail
+
+
 def test_a_torn_final_log_line_is_skipped_rather_than_taken_as_an_empty_log(
     profile, monkeypatch
 ) -> None:
@@ -4520,6 +4574,130 @@ def test_a_recorded_interpreter_that_is_not_honoured_is_said_out_loud(
     )
     assert row.status == doctor.INFO
     assert "not an executable file" in row.detail
+
+
+def _recorded_interpreter_config(profile, path: str) -> str:
+    """A config recording `path` as the python the hook will run under.
+
+    Written by hand on purpose: that is the state this arm exists for. A
+    config `memkit init` wrote has been probed, and the wrapper's decision not
+    to probe the field on every prompt rests on exactly that — so the case has
+    to produce the config init would have refused to write.
+    """
+    target = profile / "memkit.json"
+    target.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "interpreter": path,
+                "roots": {"home": {"kind": "path", "path": str(profile)}},
+                "stores": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(target)
+
+
+def _stub_python(profile, status: int) -> str:
+    """A file that answers the probe with a status and nothing else.
+
+    Outside `profile / "project"`, which is the directory the fixture stands
+    in: a program there is one `_execute` refuses to start, so a case that put
+    it there would be asserting the containment rule rather than the probe.
+    """
+    path = profile / "elsewhere" / "python3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\nexit {status}\n", encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "status,phrase",
+    [
+        (doctor.PROBE_NO_FTS5, "no FTS5"),
+        (doctor.PROBE_BELOW_FLOOR, "older than 3.9"),
+    ],
+)
+def test_a_recorded_interpreter_that_cannot_serve_is_a_fail(
+    profile, monkeypatch, status, phrase
+) -> None:
+    """The highest-cost silent state this check could not see.
+
+    A python whose sqlite3 has no FTS5 is an ordinary executable file: it
+    passes every test the wrapper makes, exec's fine, imports the hook, and
+    then fails every query — which the hook records as `index-unavailable` and
+    turns into an empty block. Every other row here stayed green over an
+    install that answered nothing on every prompt.
+    """
+    path = _recorded_interpreter_config(profile, _stub_python(profile, status))
+    checks = doctor.collect(_machine(profile, monkeypatch, path))
+    (row,) = _only(checks, "interpreter")
+    assert row.status == doctor.FAIL, row.detail
+    assert row.terminal is True
+    assert row.actor == doctor.USER
+    assert phrase in row.detail, row.detail
+    assert doctor.verdict(checks) != "OK"
+    # The remedy is the three routes, and it is the same sentence the wrapper's
+    # own refusal carries — an adopter meeting both reads one instruction.
+    for route in ("--interpreter", "memkitInterpreter", "MEMKIT_INTERPRETER"):
+        assert route in (row.remedy or ""), row.remedy
+
+
+def test_a_recorded_interpreter_that_can_serve_leaves_the_row_alone(
+    profile, monkeypatch
+) -> None:
+    """Anti-vacuity for the arm above: the probe really does pass, so the FAIL
+    is an observation about the stub rather than about any recorded value."""
+    path = _recorded_interpreter_config(profile, _stub_python(profile, 0))
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, str(path))),
+        "interpreter",
+    )
+    assert row.status != doctor.FAIL, row.detail
+
+
+def test_a_running_python_without_fts5_is_a_fail_even_with_nothing_recorded(
+    profile, monkeypatch
+) -> None:
+    """The no-config-record case, where the python that serves is this one.
+
+    On the plugin channel `bin/memkit` exec'd this process, so what doctor is
+    running under IS the wrapper's resolution — and asking it costs no process
+    at all.
+    """
+    monkeypatch.setattr(doctor, "fts5_available", lambda: False)
+    path = _store_config(profile, stores=["personal"])
+    # `_store_config` records this very python, so the recorded value and the
+    # running one are the same file and the in-process answer is the one read.
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, path)),
+        "interpreter",
+    )
+    assert row.status == doctor.FAIL, row.detail
+    assert "no FTS5" in row.detail, row.detail
+
+
+def test_doctor_never_starts_an_interpreter_a_hand_written_config_names_in_the_cwd(
+    profile, monkeypatch
+) -> None:
+    """The probe is a program start, so it answers to the same rule every other
+    program start here does: a candidate inside the directory this session
+    stands in is refused rather than run. A config is a file a checkout can
+    hold, and this check reads one."""
+    marker = profile / "PWNED-probe.txt"
+    hostile = profile / "project" / "evil-python3"
+    hostile.write_text(f"#!/bin/sh\necho pwned > {marker}\n", encoding="utf-8")
+    hostile.chmod(0o755)
+    path = _recorded_interpreter_config(profile, str(hostile))
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, str(path))),
+        "interpreter",
+    )
+    assert not marker.exists(), "the probe started a program inside the session"
+    assert row.status == doctor.FAIL, row.detail
+    assert "session stands in" in row.detail, row.detail
 
 
 def test_the_state_dir_reports_its_size_and_discloses_doctors_own_write(

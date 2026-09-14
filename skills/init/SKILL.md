@@ -28,6 +28,11 @@ The flags themselves may be in any order after it:
 
 - `--store PATH` — where the memory store goes.
 - `--config PATH` — where the config goes.
+- `--interpreter PATH` — the absolute python to record as the one that runs
+  the hook. Pass it only when memkit has asked for it: the wrapper's own
+  refusal names this flag when nothing it tried can run the hook. The path
+  is probed before anything is written, and a python below 3.9 or one whose
+  sqlite3 has no FTS5 is refused.
 - `--wire-claude-md` — append an `@-import` of the store's `MEMORY.md` to the
   user's `CLAUDE.md`. Read the manifest's own note about what that buys before
   recommending it: it puts each hot memory's *description* in every session,
@@ -86,7 +91,9 @@ A refusal is a decision, not a failure to try harder. `foreign-config` means
 somebody else wrote the config and init will not overwrite it;
 `flat-store-adoption` means the store already holds memories that creating
 `search/` would silently un-retrieve, and the message spells out the one-step
-migration. Relay the reason and let the person choose.
+migration. `interpreter-unusable` means the python named by `--interpreter`,
+or the one running this command, cannot serve — relay which of the two and
+the reason beside it. Relay the reason and let the person choose.
 
 ## Afterwards
 

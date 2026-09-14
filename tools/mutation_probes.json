@@ -3217,8 +3217,8 @@
       "name": "init-an-interpreter-that-cannot-run-is-refused",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    if not (os.path.isfile(interpreter) and os.access(interpreter, os.X_OK)):",
-      "new": "    if False:",
+      "old": "        if not (os.path.isfile(resolved) and os.access(resolved, os.X_OK)):",
+      "new": "        if False:",
       "tests": [
         "tests/test_init.py::test_an_interpreter_that_cannot_run_is_refused"
       ],
@@ -4028,6 +4028,17 @@
       "why": "the remediation is the only part of a check anybody acts on, and it named a file that stopped existing at the extraction while still looking right"
     },
     {
+      "name": "integrity-a-ledger-link-read-across-the-line-break",
+      "module": "integrity",
+      "file": "src/memkit/memory_integrity.py",
+      "old": "LINK_RE = re.compile(r\"\\(([^)\\n]+\\.md)\\)\")\n",
+      "new": "LINK_RE = re.compile(r\"\\(([^)]+\\.md)\\)\")\n",
+      "tests": [
+        "tests/test_init.py::test_a_rows_description_cannot_swallow_the_next_rows_link"
+      ],
+      "why": "a row's description is prose and may hold an unbalanced bracket; a link free to run past the newline reads the row below's destination as this row's, so that memory is an ORPHAN and the bogus key is STALE"
+    },
+    {
       "name": "readme-outcome-table-loses-a-row",
       "module": "docs",
       "file": "README.md",
@@ -4368,8 +4379,8 @@
       "name": "plugin-option-becomes-required",
       "module": "plugin",
       "file": ".claude-plugin/plugin.json",
-      "old": "\"required\": false",
-      "new": "\"required\": true",
+      "old": "\"default\": \"~/.config/memkit/memkit.json\",\n      \"required\": false",
+      "new": "\"default\": \"~/.config/memkit/memkit.json\",\n      \"required\": true",
       "tests": [
         "tests/test_plugin_surface.py::test_the_option_is_optional_and_says_what_it_is_for"
       ],
@@ -4460,7 +4471,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 662 probes",
+      "old": "the 666 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
@@ -5814,6 +5825,39 @@
         "tests/test_init.py::test_a_store_with_no_stranded_temporaries_says_nothing_about_them"
       ],
       "why": "the leftover this names is the write's own `<name>.<pid>.tmp`; told to delete anything ending `.tmp`, an adopter is being pointed at their own files."
+    },
+    {
+      "name": "init-the-restated-link-read-across-the-line-break",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "_LINK_RE = re.compile(r\"\\(([^)\\n]+\\.md)\\)\")\n",
+      "new": "_LINK_RE = re.compile(r\"\\(([^)]+\\.md)\\)\")\n",
+      "tests": [
+        "tests/test_init.py::test_the_restated_link_pattern_is_the_checkers_own"
+      ],
+      "why": "the checker's rule restated here decides which memories init already counts as rowed, and a copy that drifts has the two halves disagreeing about the same store"
+    },
+    {
+      "name": "init-the-settings-rewrite-escapes-the-adopters-own-prose",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    # prose that held one, so the diff for a one-key edit is unreadable.\n    return json.dumps(blob, indent=2, ensure_ascii=False) + \"\\n\"\n",
+      "new": "    # prose that held one, so the diff for a one-key edit is unreadable.\n    return json.dumps(blob, indent=2) + \"\\n\"\n",
+      "tests": [
+        "tests/test_init.py::test_a_settings_key_init_never_touched_comes_back_byte_for_byte"
+      ],
+      "why": "the settings file is re-serialized from its own parse so one key can change, and escaping every non-ASCII character rewrites every line of somebody else's prose that held one"
+    },
+    {
+      "name": "init-the-config-merge-escapes-the-adopters-own-values",
+      "module": "init",
+      "file": "src/memkit/cli_init.py",
+      "old": "    # the same value and reads as a different file.\n    return json.dumps(blob, indent=2, ensure_ascii=False) + \"\\n\"\n",
+      "new": "    # the same value and reads as a different file.\n    return json.dumps(blob, indent=2) + \"\\n\"\n",
+      "tests": [
+        "tests/test_init.py::test_a_config_value_outside_ascii_comes_back_as_the_bytes_it_went_in_as"
+      ],
+      "why": "a second init re-serializes the whole config from its own parse to add one store, so escaping every non-ASCII character rewrites a store path the adopter typed into a form only a machine reads"
     },
     {
       "name": "scope-resolution-distrusts-the-user-scope-no-variable-moved",
