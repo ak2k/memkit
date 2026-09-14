@@ -4089,9 +4089,16 @@ def _interleave(ranked_lists: list[list[str]]) -> list[str]:
     return merged
 
 
-def _description(path: str, root_real: str = "") -> str:
-    """Frontmatter `description:` line, else first heading, else ''.
-
+# YAML's double-quoted escapes, less the numeric `\x`, `\u` and `\U` forms.
+# A description is one line of prose, so what actually arrives is `\"` and
+# `\\`; the rest are here because a reader that decoded some escapes and
+# passed others through would render a third spelling of the value rather than
+# either of the two real ones.
+_SCALAR_ESCAPES = {
+    '"': '"', "\\": "\\", "/": "/", " ": " ",
+    "0": "\0", "a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v",
+    "f": "\f", "r": "\r", "e": "\x1b",
+    "N": "\x85", "_": "\xa0", "L": "
     This is the text the pointer line renders, so it is one of the three reads
     that has to decide containment for itself — see `_store_path`. A refusal
     reads as no description, which is what an unreadable file already gives.
@@ -4109,10 +4116,12 @@ def _description(path: str, root_real: str = "") -> str:
         m = re.search(r"^#\s+(.+)$", head, re.MULTILINE)
     if not m:
         return ""
-    # Sanitized BEFORE the cap, so the cap bounds what is actually rendered.
-    # The other order lets an escape sequence spend the budget and then
-    # disappear, and leaves the truncation point inside a sequence.
-    desc = sanitize(m.group(1)).strip().strip("\"'")
+    # DECODED FIRST, so an escape that encodes a control character is one the
+    # sanitizer still gets to see. Sanitized BEFORE the cap, so the cap bounds
+    # what is actually rendered: the other order lets an escape sequence spend
+    # the budget and then disappear, and leaves the truncation point inside a
+    # sequence.
+    desc = sanitize(_scalar_text(m.group(1).strip())).strip()
     return _display_cap(desc, DESC_MAX_CHARS)
 
 

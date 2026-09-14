@@ -2388,6 +2388,37 @@ def test_description_prefers_frontmatter_and_caps_length(tmp_path: Path) -> None
     assert len(out) == 160 and out.endswith("...")
 
 
+def test_a_quoted_description_renders_as_the_text_it_encodes(tmp_path: Path) -> None:
+    r"""The three scalar forms a description line takes, decoded rather than
+    trimmed.
+
+    Stripping the quote CHARACTERS off both ends is not reading a scalar: it
+    takes the closing quote of a double-quoted value and leaves the backslash
+    that escaped it, so a description ending in an escaped quote rendered with
+    a trailing `\` and no closing one — and it leaves `''` inside a
+    single-quoted value as two apostrophes. The pointer line is the whole of
+    what the model is shown about a memory it has not opened, so what it says
+    has to be what the file says.
+    """
+    forms = {
+        # Double-quoted: `\"` is a quote and `\\` is a backslash.
+        '"there is no dynamic \\"withholding\\""':
+            'there is no dynamic "withholding"',
+        # Single-quoted: `\'\'` is the only escape there is, and a backslash
+        # inside one is a backslash.
+        "'it''s the pool that stalls, not the box'":
+            "it's the pool that stalls, not the box",
+        # Plain: no quoting to undo, so nothing is undone. An apostrophe and a
+        # quote mid-value are characters like any other.
+        "the box's \"pool\" is what stalls":
+            "the box's \"pool\" is what stalls",
+    }
+    for written, shown in forms.items():
+        memory = tmp_path / "m.md"
+        memory.write_text(f"---\ndescription: {written}\ntype: reference\n---\n")
+        assert hook._description(str(memory)) == shown, written
+
+
 def test_description_falls_back_to_heading_then_empty(tmp_path: Path) -> None:
     f = tmp_path / "m.md"
     f.write_text("# Just a heading\n\nbody\n")
