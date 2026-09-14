@@ -9,7 +9,7 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
-## [Unreleased]
+## [0.5.0] — 2026-09-14
 
 ### Added
 
@@ -23,12 +23,28 @@ ordering.
   copies the memories the harness wrote into the store and sends the next ones
   there; `--auto-memory-off` stops that writing instead; and `memkit doctor`
   grows an `auto-memory` row counting both sides and naming the deciding scope.
-- **The mutation sweep runs in CI over the whole corpus**, in a job of its own
-  — no module list, and so the 666 probes `tools/mutation_sweep.py --list`
-  counts in this tree rather than a subset somebody keeps in step by hand. The
-  two `--module` runs it replaces covered 114 of them, which is how an anchor
-  that had slipped off the code it was written for sat dead for twenty-three
-  commits with every gate green.
+- **The mutation sweep is a CI job of its own, and no workflow file names a
+  module.** A pull request sweeps the modules its own diff touches, derived
+  from `git diff --name-only BASE...HEAD` against the corpus's `file` and
+  `tests` fields. The whole corpus runs when the change touches the sweep, the
+  corpus, that workflow, `pyproject.toml` or `flake.nix`, when there is no base
+  to diff against, and on the release schedule. Each run is held to two counts
+  read from the corpus rather than typed into the workflow: every selected
+  probe ran, and no more waivers were declared than the corpus declares for
+  what was selected. So the 666 probes `tools/mutation_sweep.py --list` counts
+  in this tree are all of them rather than a subset somebody keeps in step by
+  hand. The two `--module` runs the job replaced covered 114 of them, which is how
+  an anchor that had slipped off the code it was written for sat dead for
+  twenty-three commits with every gate green.
+- **A release tier, for the checks that can only go stale between releases.**
+  The counts `docs/ADMISSION.md` and this file state about the tree are
+  re-derived whenever a release is cut, so they run under `RELEASE_CHECKS=1` in a
+  `release-checks.yml` that runs weekly, on a tag, or by hand, rather than on
+  every commit. That workflow is also where the whole corpus is swept on macOS,
+  the platform on which the case-folding probes are caught rather than
+  declared. Four counts the review machinery used to pin as numbers are now
+  read from the corpus they describe, so editing a guard no longer re-freezes
+  a table.
 - **"Keep your store in git" in `docs/STORE.md`** — the store as a private
   repository, which findings need history to say anything at all, and where
   Claude Code's own agent-written memories land. They default to a directory
