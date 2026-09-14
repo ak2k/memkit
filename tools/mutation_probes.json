@@ -2777,8 +2777,8 @@
       "name": "init-the-plan-wide-type-preflight",
       "module": "init",
       "file": "src/memkit/cli_init.py",
-      "old": "    _refuse_incompatible_types(actions)\n    return Plan(actions, notes)",
-      "new": "    return Plan(actions, notes)",
+      "old": "    _refuse_incompatible_types(actions)\n    return Plan(actions, notes, store_path)",
+      "new": "    return Plan(actions, notes, store_path)",
       "tests": [
         "tests/test_init.py::test_an_interior_store_conflict_refuses_before_the_first_write"
       ],
@@ -4899,10 +4899,10 @@
       "why": "the version stamp mismatches for almost every adopter, so a criterion that counted anything but FAIL is unreachable"
     },
     {
-      "name": "skill-doctor-drops-the-do-not-summarise-rule",
+      "name": "skill-doctor-drops-the-do-not-summarize-rule",
       "module": "plugin",
       "file": "skills/doctor/SKILL.md",
-      "old": "summarise it, do not re-derive",
+      "old": "summarize it, do not re-derive",
       "new": "condense it, do not re-derive",
       "tests": [
         "tests/test_plugin_surface.py::test_the_doctor_skill_says_to_relay_the_report_rather_than_re_derive_it"
