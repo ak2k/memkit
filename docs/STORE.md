@@ -438,7 +438,7 @@ Two things about it are worth knowing before you reach for it:
   run it out of band:
 
   ```
-  uvx --from git+https://github.com/ak2k/memkit@v0.5.0 memory-integrity --config <your config>
+  uvx --from git+https://github.com/ak2k/memkit@v0.5.1 memory-integrity --config <your config>
   ```
 
 If you are not maintaining a curated hot tier, skipping all of it is a
