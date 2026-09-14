@@ -4276,8 +4276,8 @@
       "name": "readme-uvx-rev-is-the-previous-release",
       "module": "docs",
       "file": "README.md",
-      "old": "git+https://github.com/ak2k/memkit@v0.4.0 memory-recall",
-      "new": "git+https://github.com/ak2k/memkit@v0.3.0 memory-recall",
+      "old": "git+https://github.com/ak2k/memkit@v0.5.0 memory-recall",
+      "new": "git+https://github.com/ak2k/memkit@v0.4.0 memory-recall",
       "tests": [
         "tests/test_plugin_surface.py::test_the_docs_quote_the_release_this_payload_is"
       ],
@@ -4288,7 +4288,7 @@
       "name": "readme-uvx-recipe-loses-its-pin",
       "module": "docs",
       "file": "README.md",
-      "old": "uvx --from git+https://github.com/ak2k/memkit@v0.4.0 memory-recall",
+      "old": "uvx --from git+https://github.com/ak2k/memkit@v0.5.0 memory-recall",
       "new": "uvx --from git+https://github.com/ak2k/memkit memory-recall",
       "tests": [
         "tests/test_plugin_surface.py::test_the_docs_quote_the_release_this_payload_is"
@@ -4344,8 +4344,8 @@
       "name": "plugin-manifest-version-drifts",
       "module": "plugin",
       "file": ".claude-plugin/plugin.json",
-      "old": "\"version\": \"0.4.0\"",
-      "new": "\"version\": \"0.4.1\"",
+      "old": "\"version\": \"0.5.0\"",
+      "new": "\"version\": \"0.5.1\"",
       "tests": [
         "tests/test_plugin_surface.py::test_the_manifest_and_the_marketplace_entry_agree_on_the_version",
         "tests/test_plugin_surface.py::test_the_docs_quote_the_release_this_payload_is"
@@ -4357,8 +4357,8 @@
       "name": "marketplace-entry-version-drifts",
       "module": "plugin",
       "file": ".claude-plugin/marketplace.json",
-      "old": "\"version\": \"0.4.0\"",
-      "new": "\"version\": \"0.3.0\"",
+      "old": "\"version\": \"0.5.0\"",
+      "new": "\"version\": \"0.4.0\"",
       "tests": [
         "tests/test_plugin_surface.py::test_the_manifest_and_the_marketplace_entry_agree_on_the_version"
       ],
@@ -4476,7 +4476,7 @@
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
       ],
-      "why": "The unreleased entry counts the corpus in this tree and the 0.4.0 entry counts the one that shipped with that release. The way the live figure goes wrong is by standing still while probes are added, which is what this writes — the released tree's own count, a number that is true two paragraphs below and false here. A probe added without re-deriving the sentence has to fail."
+      "why": "The newest entry counts the corpus in this tree and the 0.4.0 entry counts the one that shipped with that release. The way the live figure goes wrong is by standing still while probes are added, which is what this writes — the released tree's own count, a number that is true two paragraphs below and false here. A probe added without re-deriving the sentence has to fail."
     },
     {
       "name": "store-doc-git-section-heading-renamed",
