@@ -91,7 +91,7 @@ pgbouncer transaction pooling"*, that file surfaces as:
 - ~/notes/search/postgres-connection-pool.md — PgBouncer in transaction mode breaks session-scoped features — prepared statements, advisory locks, and SET LOCAL do not survive. [matches 5/7 prompt terms: prepared, statements, pgbouncer, transaction, pooling] [section: PgBouncer transaction mode]
 ```
 
-### The fields that change behaviour
+### The fields that change behavior
 
 **`description:` is the line the agent reads.** It is the whole of what a
 pointer shows about the file, so write it as the sentence that decides whether
@@ -113,7 +113,7 @@ the checker's cap is below the hook's cut so an authored description is never
 truncated — and 155 is the only one you need. The long form belongs in the
 body.
 
-**`type:` has one behaviour, `type: feedback`.** Those memories must clear a
+**`type:` has one behavior, `type: feedback`.** Those memories must clear a
 stricter relevance bar before they surface, because a standing instruction that
 appears on a loosely related prompt is worse than one that stays quiet. Every
 other value — `reference`, `project`, whatever you invent — behaves the same.
@@ -162,7 +162,7 @@ Two things about the list itself. It is **ordered**, and the order is a
 contract — retrieval interleaves hits across stores in the order you write them,
 so the store you put first is the one that wins a tie. And `role` is a label:
 this build validates it and prints it in `--debug-config`, and nothing reads it.
-The behaviour comes from `cwd_gate` and the ordering, not from the word.
+The behavior comes from `cwd_gate` and the ordering, not from the word.
 
 ## Git is the management layer
 

@@ -430,7 +430,7 @@ canonical path, then edits made in a *worktree* of that repo are not live —
 the hook goes on serving the canonical copy until the change lands there. No
 environment variable moves it, and that is the design: which directories an
 every-prompt hook reads from is the memory-poisoning surface, so the root
-overrides a config declares are honoured by the operator tools and never on
+overrides a config declares are honored by the operator tools and never on
 the prompt path. To see what a worktree's copy *would* retrieve, use the tool
 that takes the tree as an argument — `memory-eval --repo "$PWD"` scores that
 checkout's stores through the same retrieval path the hook uses.
@@ -447,7 +447,7 @@ safe:
 
     memkit main
       -> dependency-bot bump PR against the consumer
-      -> consumer CI (checks.memory-eval gates retrieval behaviour)
+      -> consumer CI (checks.memory-eval gates retrieval behavior)
       -> merge
       -> host rebuild
 

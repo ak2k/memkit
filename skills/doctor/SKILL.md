@@ -23,7 +23,7 @@ Two follow-ups are covered by the same grant, and no other subcommand is:
 ## Relay the report verbatim
 
 The envelope's `report` field is the human text. **Print it as it is.** Do not
-summarise it, do not re-derive its conclusions, and do not answer the user's
+summarize it, do not re-derive its conclusions, and do not answer the user's
 question from your own reading of the checks.
 
 That is not a style preference. The failure this command exists to prevent is a

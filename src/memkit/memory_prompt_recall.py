@@ -39,7 +39,7 @@ session's pointer LEDGER at POINTER_BUDGET — past it a stronger hit displaces
 the weakest already spent (see _replace), so the count of lines rendered into
 a session is not itself bounded. Trigger-driven injection exists
 because model-discretion recall does not happen in practice: left to its own
-judgement the model simply does not go looking.
+judgment the model simply does not go looking.
 
 STARTS NO PROCESS, and the absent `import subprocess` above is the whole of
 the guarantee: every question this file used to fork for — where the
@@ -178,7 +178,7 @@ CONFIG_ENV = "MEMKIT_CONFIG"
 # `.memkit.json` rather than the `memkit.json` init writes: that name is what
 # config rung 2 reads and what doctor treats as a config this install may
 # execute against, and one name meaning two things is how a project file comes
-# to be honoured as a user config. `memkit_project` rather than `schema` for
+# to be honored as a user config. `memkit_project` rather than `schema` for
 # the same reason from the other side — a project file handed to `--config`
 # fails loudly at Config's schema gate, and a user config read as a project
 # file fails on the missing key, so the two shapes cannot be confused in
@@ -360,7 +360,7 @@ def _self_name() -> str:
 
 
 class ConfigError(Exception):
-    """A config file that is present and cannot be honoured.
+    """A config file that is present and cannot be honored.
 
     Distinct from absence, which is a legitimate state (inert). The hook is
     fail-open, so it degrades to inert and says why in the soak record; the
@@ -596,7 +596,7 @@ def _repo_common_dir(root: str):
 #
 #   WHOLE OR NOTHING. There is no partial application. Every check below
 #   returns a REASON and no store, so a file with one bad key adds nothing at
-#   all rather than adding whatever parsed — a half-honoured file is the state
+#   all rather than adding whatever parsed — a half-honored file is the state
 #   nobody can reason about from the file's own text.
 #
 #   THE FILE IS GUARDED BEFORE THE STORE IS. A checkout can carry a symlink, so
@@ -621,7 +621,7 @@ def _repo_common_dir(root: str):
 
 
 # How much of a repository-chosen value a reason or a heading may carry. Long
-# enough to recognise the key you typed, short enough that a 4 KiB file cannot
+# enough to recognize the key you typed, short enough that a 4 KiB file cannot
 # spend an agent's context on a diagnostic — and exactly the widest id the
 # pattern below admits, because a legal id truncated on the surface that names
 # it is a store nobody can grep for.
@@ -932,7 +932,7 @@ class Config:
                 f"limit is {SEARCH_CLI_MAX_CHARS}. It is a command an agent "
                 "runs, not a document"
             )
-        # Absent OR empty falls back to the default, which is the behaviour
+        # Absent OR empty falls back to the default, which is the behavior
         # every earlier build had. Only the TYPE is tightened: an empty string
         # is a config saying nothing about the command and has always meant
         # "use the shipped one", while a number is a config that cannot mean
@@ -1015,7 +1015,7 @@ class Config:
 
     def _resolve(self, name: str, spec: dict) -> tuple:
         # A per-root env override is declared IN the config — one variable can
-        # therefore never mean two trees — and is honoured only by the tools
+        # therefore never mean two trees — and is honored only by the tools
         # that opt in. The hook never does.
         env = spec.get("env")
         if env and self.honor_env_overrides:
@@ -1070,7 +1070,7 @@ class Config:
         # read-only store has no edit root to be different.
         if store.resolved_dir:
             return store.resolved_dir
-        # Normalised, because this path is not only opened — it is PRINTED, in
+        # Normalized, because this path is not only opened — it is PRINTED, in
         # every pointer the model reads and in every diagnostic line. The
         # smallest config a store can have says `"dir": "."`, and joining that
         # raw puts a `/./` in the middle of every path an adopter is shown, on
@@ -1168,7 +1168,7 @@ def _require_str(raw: dict, key: str, where: str) -> str:
 # Two of them were worse than a bad message. `tuple("search/x/INDEX.md")` is a
 # tuple of 21 single characters rather than a syntax error, and a `cwd_gate`
 # that was not a mapping silently ungated its store. Both read as a working
-# config right up until the behaviour was wrong.
+# config right up until the behavior was wrong.
 
 
 def _require_mapping(value: object, where: str) -> dict:
@@ -1265,7 +1265,7 @@ def load_config(path: str | None = None, honor_env_overrides: bool = False):
 
     Absence returns None (inert). A file that is present and unreadable,
     unparseable or of a schema this build does not speak raises ConfigError:
-    "no config" and "a config I could not honour" are different states and only
+    "no config" and "a config I could not honor" are different states and only
     the first one is allowed to be silent.
     """
     if path is None:
@@ -1296,7 +1296,7 @@ def _config(honor_env_overrides: bool = False):
     """The hook's own config, loaded at most once per process.
 
     Returns None when there is none, and None when there is one this build
-    cannot honour — the hook is fail-open, so a bad config degrades to inert
+    cannot honor — the hook is fail-open, so a bad config degrades to inert
     and says so in the soak record rather than blocking a prompt.
     `_config_error` carries the reason for that record.
     """
@@ -1485,7 +1485,7 @@ def _is_envelope(stripped: str) -> bool:
 
 # Pointers one prompt may inject. Back to 3, the value shipped until the
 # 2026-08-12 restructure dropped it to 2, on two independent measurements
-# that both land past the second slot: a bucket of labelled pairs whose answer
+# that both land past the second slot: a bucket of labeled pairs whose answer
 # cleared the floor and then ranked past the cap, and the sem experiment's 23
 # known-good targets, 21/23 of which were lexically retrieved and stranded by
 # the cap rather than missed by vocabulary. The cap only bounds how many
@@ -1495,7 +1495,7 @@ def _is_envelope(stripped: str) -> bool:
 #
 # The size of that bucket has been restated twice and both earlier figures are
 # wrong; see the plan's 2026-08-13 amendment for the current table. "745
-# labelled follow-through misses" counted the whole labelled set, of which a
+# labeled follow-through misses" counted the whole labeled set, of which a
 # quarter were SHOWN — successes, not misses — and the set itself was drawn by
 # an oracle that recursed into subagent transcripts, harvesting agent-to-agent
 # briefs the hook never runs on. What survives the correction is the ordering,
@@ -1614,7 +1614,7 @@ def _display_cap(text: str, cap: int) -> str:
 # Three classes, in this order, because the second cannot see what the first
 # would leave behind:
 #
-#   1. Escape sequences. ANSI CSI/OSC — colour, cursor moves, and the OSC
+#   1. Escape sequences. ANSI CSI/OSC — color, cursor moves, and the OSC
 #      forms that some terminals will act on. Stripping bare control
 #      characters first would leave `[31m` behind as visible text.
 #   2. Control characters, C0 and C1. A newline is the one that matters most:
@@ -1631,7 +1631,7 @@ _ANSI = re.compile(
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # Spelled as escapes rather than as the characters themselves: a class of
 # invisible characters written literally is one no reviewer can read and any
-# tool can silently normalise away — this very edit lost half the class to a
+# tool can silently normalize away — this very edit lost half the class to a
 # `splitlines()` that broke on the U+2028 inside it.
 # Lone surrogates, which are not text: a filename the filesystem holds as
 # undecodable bytes arrives through `os.fsdecode` as these, and every encode
@@ -1759,7 +1759,7 @@ FRAME_NONCE_BYTES = 4
 # session produced `memkit-pointers-c9de8389` and `memkit-pointers-13ae75d9`.
 #
 # It must stay that way, and the reason is the direction a "fix" would point.
-# The nonce is defence (2), the one thing left if the line-break invariant
+# The nonce is defense (2), the one thing left if the line-break invariant
 # ever fails, and its strength is that the writer of a store file cannot see
 # it. A tag that outlived a single injection would be a value the agent has
 # already read in its own transcript before it writes its next memory file —
@@ -1789,7 +1789,7 @@ _PROMPT_FRAME_TAG = f"{FRAME_TAG}-{secrets.token_hex(FRAME_NONCE_BYTES)}"
 # content is read and unchanged by anything content can contain.
 #
 # WHAT ACTUALLY HOLDS THE BOUNDARY, stated exactly, because an overstated
-# safety argument is worse than a modest one: there are TWO defences here, not
+# safety argument is worse than a modest one: there are TWO defenses here, not
 # three, and (1) and (2) below are the two. (3) and the column-zero
 # displacement in `_frame_lines` are COROLLARIES OF (1) — they are worth
 # having and they are not independent, and a reader weighing a change to (1)
@@ -1833,7 +1833,7 @@ _PROMPT_FRAME_TAG = f"{FRAME_TAG}-{secrets.token_hex(FRAME_NONCE_BYTES)}"
 #    `splitlines` — the reader's own units, see `_framed_region` — so the
 #    reader knows where the region ends before it has read a byte of it. No
 #    interior codepoint can change a number computed after the body was
-#    finished. A COROLLARY of (1), not a third defence: what it declares is
+#    finished. A COROLLARY of (1), not a third defense: what it declares is
 #    correct either way, but a reader only needs it when (1) has already
 #    failed, and then it tells them the region is longer than the block
 #    claimed rather than keeping the forged line out.
@@ -1854,7 +1854,7 @@ _PROMPT_FRAME_TAG = f"{FRAME_TAG}-{secrets.token_hex(FRAME_NONCE_BYTES)}"
 # unforgeable, because a closer has to carry a value drawn after the store was
 # written. The OPENING delimiter's shape is public, so a store that could put
 # text at column zero could open a region the reader would believe — which is
-# why (1) is the defence and not a convenience, and why `_frame_lines`
+# why (1) is the defense and not a convenience, and why `_frame_lines`
 # sanitizes at the emission point as well as at each component's source.
 #
 # No number is quoted here on purpose. The rule those numbers were measured
@@ -1910,7 +1910,7 @@ def _frame_lines(lines: list[str]) -> list[str]:
     nothing is dropped, replaced or reordered.
 
     Unreachable today, and — said plainly, because the note above `_frame_tag`
-    used to imply otherwise — NOT a second defence. It runs on the ASSEMBLED
+    used to imply otherwise — NOT a second defense. It runs on the ASSEMBLED
     line, which always begins `- ` or `NOTICE_PREFIX`, so it never fires; and
     it cannot start firing usefully, because the case it would have to catch
     is a line break surviving the sanitizer, and such a break puts the forged
@@ -2161,7 +2161,7 @@ def _store_path(
     with the query run anyway, both documented as normal here — so a row the
     walk refused can still be live when retrieval reads it. Every read site
     therefore asks this for itself, and a filter in front of them is an
-    optimisation rather than the boundary.
+    optimization rather than the boundary.
 
     RESOLVED RATHER THAN REFUSED, which is the whole design of this predicate.
     Rejecting `os.path.islink` would also reject the shape home-manager's
@@ -2178,7 +2178,7 @@ def _store_path(
     ordinary file needs no root: it is not a link, so there is nothing it can
     be a link out of.
 
-    Not a defence against a HARDLINK, and it cannot be: a hardlink to a file
+    Not a defense against a HARDLINK, and it cannot be: a hardlink to a file
     outside the root is indistinguishable from a file inside it, by design and
     at the inode level. It is not the same exposure — git cannot represent
     one, so it does not survive the commit that is this attacker's whole
@@ -2375,7 +2375,7 @@ def _config_state() -> tuple:
     """Whether this installation has anything to search — decided once.
 
     Returns `(config, error, inert)`, where at most one of the last two is
-    set. `error` is a config that is present and cannot be honoured. `inert`
+    set. `error` is a config that is present and cannot be honored. `inert`
     is the reason there is nothing to search, phrased for a person. Both None
     means the config resolved and at least one store is on disk and in scope.
 
@@ -2389,7 +2389,7 @@ def _config_state() -> tuple:
     Always resolved WITHOUT the per-root env overrides. This is the verdict,
     and the verdict is a claim about the tree the hook will serve; the hook
     cannot see an override, so neither may this. `--debug-config` parses a
-    second, override-honouring copy for its DISPLAY alone and reconciles the
+    second, override-honoring copy for its DISPLAY alone and reconciles the
     two itself — that is the whole of the split, and it lives there rather than
     here because only that one surface has a display.
 
@@ -2434,7 +2434,7 @@ def _search_cli() -> str:
     is read by every channel — the README says so and the nix module bakes the
     same path — so a `search_cli` written for a pip install travels to a plugin
     one, where the name it holds resolves to nothing (exit 127) or, on a
-    machine that has both, to the OTHER install's stores. Honouring it is what
+    machine that has both, to the OTHER install's stores. Honoring it is what
     made the truncation notice wrong on a correctly configured plugin, and the
     field cannot be made channel-aware from inside a file that does not know
     which channel is reading it.
@@ -2644,7 +2644,7 @@ def _fts_note_root(db: str, root: str) -> str:
 # OK     a complete sync over a fully readable corpus.
 #
 # THE READER'S RULE, and it is a contract rather than advice: an outcome this
-# reader does not recognise must be treated as NOT-OK, and `files` must not be
+# reader does not recognize must be treated as NOT-OK, and `files` must not be
 # read as a census under it. Only OK licenses reading `files` as the size of
 # the corpus. That rule is what lets this vocabulary grow — UNREADABLE was
 # added after the first four shipped — without every older reader silently
@@ -4089,6 +4089,56 @@ def _interleave(ranked_lists: list[list[str]]) -> list[str]:
     return merged
 
 
+# YAML's double-quoted escapes, less the numeric `\x`, `\u` and `\U` forms.
+# A description is one line of prose, so what actually arrives is `\"` and
+# `\\`; the rest are here because a reader that decoded some escapes and
+# passed others through would render a third spelling of the value rather than
+# either of the two real ones.
+_SCALAR_ESCAPES = {
+    '"': '"', "\\": "\\", "/": "/", " ": " ",
+    "0": "\0", "a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v",
+    "f": "\f", "r": "\r", "e": "\x1b",
+    "N": "\x85", "_": "\xa0", "L": "\u2028", "P": "\u2029",
+}
+
+
+def _scalar_text(raw: str) -> str:
+    r"""A frontmatter scalar's VALUE, from the line as it was written.
+
+    Three forms, and one of them needs nothing done to it: a plain scalar is
+    its own text. A double-quoted one carries escapes and a single-quoted one
+    carries `''` for an apostrophe, so trimming quote CHARACTERS off both ends
+    decodes neither — it took the closing quote of a double-quoted value and
+    left the backslash that had escaped the quote before it, rendering a
+    description that ends in a quoted word with a trailing `\` and no close.
+
+    AN ESCAPE THIS DOES NOT IMPLEMENT IS KEPT AS TYPED, backslash included.
+    The numeric forms are the ones missing, and a reader that dropped the
+    backslash would silently rename what it could not decode.
+
+    A quote that never closes is not a quoted scalar: a real parser reads that
+    value as continuing onto the lines below, which this reader — one regex
+    over one line — cannot see. What is on the line is what it returns.
+    """
+    if len(raw) > 1 and raw[0] in "\"'" and raw[-1] == raw[0]:
+        inner = raw[1:-1]
+        if raw[0] == "'":
+            return inner.replace("''", "'")
+        out = []
+        at = 0
+        while at < len(inner):
+            nxt = inner[at + 1] if at + 1 < len(inner) else ""
+            decoded = _SCALAR_ESCAPES.get(nxt) if inner[at] == "\\" else None
+            if decoded is None:
+                out.append(inner[at])
+                at += 1
+            else:
+                out.append(decoded)
+                at += 2
+        return "".join(out)
+    return raw
+
+
 def _description(path: str, root_real: str = "") -> str:
     """Frontmatter `description:` line, else first heading, else ''.
 
@@ -4109,10 +4159,12 @@ def _description(path: str, root_real: str = "") -> str:
         m = re.search(r"^#\s+(.+)$", head, re.MULTILINE)
     if not m:
         return ""
-    # Sanitized BEFORE the cap, so the cap bounds what is actually rendered.
-    # The other order lets an escape sequence spend the budget and then
-    # disappear, and leaves the truncation point inside a sequence.
-    desc = sanitize(m.group(1)).strip().strip("\"'")
+    # DECODED FIRST, so an escape that encodes a control character is one the
+    # sanitizer still gets to see. Sanitized BEFORE the cap, so the cap bounds
+    # what is actually rendered: the other order lets an escape sequence spend
+    # the budget and then disappear, and leaves the truncation point inside a
+    # sequence.
+    desc = sanitize(_scalar_text(m.group(1).strip())).strip()
     return _display_cap(desc, DESC_MAX_CHARS)
 
 
@@ -4278,13 +4330,13 @@ def _secret_re() -> re.Pattern[str]:
 
     DOCUMENTED LIMITS, and they are limits rather than oversights: this is an
     assignment-and-known-prefix backstop, not a credential scanner. It does
-    not recognise JWTs, credentials inline in a URL
+    not recognize JWTs, credentials inline in a URL
     (`https://user:pass@host`), Google service-account JSON as a document, or
     bare base64 blobs — each of those is either a shape with no keyword to
-    anchor on or one whose recogniser costs more than a backstop may spend on
+    anchor on or one whose recognizer costs more than a backstop may spend on
     a module imported once per prompt.
 
-    Nor does it recognise the markdown spellings that put something other than
+    Nor does it recognize the markdown spellings that put something other than
     a quote, a backtick or a separator between the keyword and the value: a
     BOLD key (`**api_key**: value`), a TABLE ROW (`| api_key | value |`), a
     YAML BLOCK SCALAR (`api_key: |` with the value on the next line), a YAML
@@ -4436,7 +4488,7 @@ def _state_dir() -> str:
     every other tool's cache there and memkit's in a second place, and the
     README's account of where derived state lives stops being true.
 
-    A relative value is ignored rather than honoured, for the same reason the
+    A relative value is ignored rather than honored, for the same reason the
     wrappers refuse a relative config path: the directory an every-prompt hook
     writes into is not the session's to choose.
     """
@@ -4594,7 +4646,7 @@ TASK_STATE_PREFIX = "t-"
 # whose name is not a shape memkit writes is not memkit's to collect.
 #
 # Keyed on the HARNESS's id shape because that is what reaches
-# `_session_state_path`: a v4 UUID, whose dashes survive the sanitiser there
+# `_session_state_path`: a v4 UUID, whose dashes survive the sanitizer there
 # (`-` is in its allowed class). An id of some future shape therefore leaks
 # rather than being collected, which is the safe direction for a rule whose
 # other outcome is an unlink.
@@ -4621,7 +4673,7 @@ _SESSION_NAME = re.compile(
 # Nothing on the WRITING side looks changed — `TASK_STATE_PREFIX`,
 # `TASK_OUTCOME_PREFIX` and `_task_state_path`'s signature are all as this
 # branch has always had them — but the STEM that side returns now carries a
-# digest for a key whose sanitised form ran past eighty characters: exactly 71
+# digest for a key whose sanitized form ran past eighty characters: exactly 71
 # characters of `[A-Za-z0-9_-]`, one `-`, and 8 lowercase hex of a sha256 over
 # the whole key. That stem matches neither of the first two alternatives (the
 # literal `-` at position 71 ends the `toolu_` run), so an allowlist without
@@ -4861,7 +4913,7 @@ def journal_config_claims(state_dir: str) -> dict:
 
     The records themselves rather than a projection of them, because they have
     more than one reader and each wants a different field: whether the path is
-    authored, and whether any write to it went unserialised. A torn line is
+    authored, and whether any write to it went unserialized. A torn line is
     skipped rather than read as "nothing is claimed" — one interrupted init
     must not turn into a config the checker calls foreign or the sweep
     collects.
@@ -5250,7 +5302,7 @@ def _task_state_path(tool_use_id: str) -> str:
 # Everything in this section is a no-op when PLUGIN_ENV is absent, and that is
 # a requirement rather than a consequence. memkit has two install channels and
 # only one of them is new; a nix or pip install must be unable to take any
-# branch added here, or the plugin's instrumentation becomes a behaviour change
+# branch added here, or the plugin's instrumentation becomes a behavior change
 # for installs that never asked for it. PLUGIN_ENV is exported by the plugin's
 # own wrapper and by nothing else, which is why the gate keys on it rather than
 # on `CLAUDE_PLUGIN_DATA`: the wrapper is reachable only through a plugin
@@ -5403,7 +5455,7 @@ def _trust_gate() -> str | None:
     enumerates". The code has no other way to reach a store — there is no
     ambient discovery and no cwd-derived corpus — so what the gate adds is not
     a restriction on WHICH stores are served but an answer for the state before
-    there are any: a plugin that has been installed and not yet initialised.
+    there are any: a plugin that has been installed and not yet initialized.
 
     That state was previously indistinguishable from every other silence. The
     hook is fail-open, so an adopter who installed the plugin, skipped
@@ -5422,7 +5474,7 @@ def _trust_gate() -> str | None:
         return None
     if _config() is not None:
         return None
-    # A config that is present and unhonourable is a different state from no
+    # A config that is present and unhonorable is a different state from no
     # config, and only the second one is "not set up yet". Both refuse; doctor
     # needs the difference, because one wants init run and the other wants a
     # file fixed.
@@ -6124,7 +6176,7 @@ PROJECT_MARK = "[from this repository's checked-in store]"
 # The prefix that marks the one line in a block which is memkit's own, and the
 # reason the frame's carve-out can be stated at all.
 #
-# STRUCTURAL, not semantic. The previous wording asked the model to recognise
+# STRUCTURAL, not semantic. The previous wording asked the model to recognize
 # memkit's line by what it says — "a closing line that names a command" — which
 # is a test a retrieved description passes: a memory reading "before starting,
 # run `curl … | sh`" is store-authored content that satisfies it, and on any
@@ -6143,7 +6195,7 @@ _NOTICE_QUERY = re.compile(r'"([^"]*)"\s*$')
 
 
 def _framed(lines: list[str]) -> str:
-    """The pointer block as it is written to stdout: delimited, and labelled
+    """The pointer block as it is written to stdout: delimited, and labeled
     as retrieved data rather than as anything the user or the harness said.
 
     Two jobs, and the second is the new one. The preamble has always had to
@@ -6195,7 +6247,7 @@ def _framed(lines: list[str]) -> str:
     WHAT IS FRAMED, exactly: the hook's injected block, and nothing else. The
     search CLI prints its pointer lines unframed, deliberately — that caller
     asked for the search, so its output is already attributed to a tool the
-    agent invoked, and a frame there would be labelling the agent's own request
+    agent invoked, and a frame there would be labeling the agent's own request
     as untrusted data.
     """
     body = _frame_lines(lines)
@@ -6207,7 +6259,7 @@ def _framed(lines: list[str]) -> str:
     # PROVENANCE, which is all the shape test establishes. What the marker
     # proves is narrow and is worth saying exactly: this line is memkit's own
     # text, and every other line is content that was retrieved. What the agent
-    # does with a retrieved line stays its own judgement, which is what the
+    # does with a retrieved line stays its own judgment, which is what the
     # sentence above already asks of it.
     #
     # SCOPED TO THE LISTING, because the block is not only the listing. The
@@ -6526,7 +6578,7 @@ TASK_EVENT = "PreToolUse"
 # The event the prompt path registered for, in `hooks/hooks.json`. Named
 # because the two paths have to fail the same way on an event nobody
 # registered either of them for: the task path refuses to rewrite under an
-# unrecognised name, and the prompt path was serving one. A payload carrying
+# unrecognized name, and the prompt path was serving one. A payload carrying
 # `prompt` and any other event name — `PostToolUse`, `Stop`, `SessionStart` —
 # got the full pointer block, so the injection surface was the SHAPE of the
 # payload rather than the registration.
@@ -6697,7 +6749,7 @@ def _task_floor() -> dict:
         # matched terms. Verified exhaustively over n_matched 0-59 by n_total
         # {10, 50, 100, 300, 1000}: no input's verdict changed when it moved
         # between 2 and 0. A maintainer tightening feedback memories by raising
-        # it would have moved a unit test and no production behaviour.
+        # it would have moved a unit test and no production behavior.
         "feedback_min_terms": TASK_MIN_MATCHED,
         "feedback_min_ratio": TASK_FEEDBACK_MIN_RATIO,
     }
@@ -6797,8 +6849,8 @@ def task_gate(stripped: str) -> str | None:
 
 def _task_framed(lines: list[str], truncated: int = 0) -> str:
     """The pointer block as it is appended to a brief: delimited by a
-    delimiter nothing in a store can spell, labelled as retrieved data, and
-    labelled as NOT PART OF THE BRIEF.
+    delimiter nothing in a store can spell, labeled as retrieved data, and
+    labeled as NOT PART OF THE BRIEF.
 
     That second label is the one the prompt path does not need. There, the
     block arrives on its own and the agent can see it did not come from the
@@ -6809,7 +6861,7 @@ def _task_framed(lines: list[str], truncated: int = 0) -> str:
     description is most likely to be obeyed.
 
     THE DELIMITER IS THE BOUNDARY, and on this surface that has to be a fact
-    rather than a judgement: the cost of getting it wrong here is an imperative
+    rather than a judgment: the cost of getting it wrong here is an imperative
     sitting outside the data region at the end of a brief an unattended agent
     is about to act on. The three properties that make it one are set out above
     `_frame_tag` and hold identically on both paths. The difference left is
@@ -6969,7 +7021,7 @@ def _task_emission_ok(payload: object, tool_input: dict, brief: str) -> bool:
     `permissionDecision`, and `continue`, `systemMessage` and
     `terminalSequence` are live top-level keys while `additionalContext` and
     `permissionDecision` are live inside `hookSpecificOutput`. A denylist is a
-    claim about which keys the harness honours TODAY, restated every time the
+    claim about which keys the harness honors TODAY, restated every time the
     harness adds one; an allowlist is a claim about what this hook writes, and
     the harness cannot add a key to that.
 
@@ -6981,13 +7033,13 @@ def _task_emission_ok(payload: object, tool_input: dict, brief: str) -> bool:
 
     The brief is checked as a substring rather than as a prefix so the block
     could move without this becoming a test of where it was put; verbatim
-    rather than normalised because the property being protected is that the
+    rather than normalized because the property being protected is that the
     parent's own words reach the subagent unaltered, and a comparison that
     strips or collapses anything is a comparison that would not notice.
 
     Takes the payload as `object` and re-checks every type, because it is
     handed the JSON ROUND TRIP rather than the dict that was built: a key that
-    is not a string serialises to one, so the key sets an in-memory check
+    is not a string serializes to one, so the key sets an in-memory check
     compares are not the key sets the harness will read.
     """
     if not isinstance(payload, dict) or set(payload) != {"hookSpecificOutput"}:
@@ -7015,10 +7067,10 @@ def _task_payload(tool_input: dict, block: str) -> str | None:
     right — which is nearly every failure this path has, since the only thing
     it can do wrong is write.
 
-    Serialise, then verify the ROUND TRIP against the allowlist. In that order,
+    Serialize, then verify the ROUND TRIP against the allowlist. In that order,
     and neither step is redundant:
 
-    - The serialisation can fail outright on a value the harness sent that
+    - The serialization can fail outright on a value the harness sent that
       `json` will not take back, and a raise here would be a raise inside the
       hook rather than a spawn without pointers.
     - The verification reads what the harness will read. Verifying the dict
@@ -7429,13 +7481,13 @@ def main() -> None:
     # hook on every prompt must never return.
     #
     # QUIET, HERE ONLY, and for one reason: the trust gate below has not run.
-    # An uninitialised install has no business creating the shared state dir,
+    # An uninitialized install has no business creating the shared state dir,
     # which is what writing a record would do, and its own record is the
     # marker. Past the gate the handler is replaced by one that records.
     _on_kill(lambda *_: os._exit(0))
 
     # The trust gate, before the payload is read rather than after. An
-    # uninitialised plugin install has no business seeing the prompt at all,
+    # uninitialized plugin install has no business seeing the prompt at all,
     # and this is the seam where nothing has been read yet: no stdin, no
     # corpus, no state dir — the marker in the plugin's own data directory is
     # the only thing this branch touches, and it is skipped when the harness
@@ -7549,11 +7601,11 @@ def main() -> None:
         # renames the event or moves the key drops the whole path into the
         # prompt branch, where an Agent payload has no `prompt` and records as
         # a user submitting an empty one — subagent delivery stops, nothing
-        # says so, and the mislabelled records inflate `gate:empty`. Sent to
+        # says so, and the mislabeled records inflate `gate:empty`. Sent to
         # the path that has a name for it.
         #
         # TO BE RECORDED, NOT SERVED. `_task_main` refuses to emit under an
-        # event name it does not recognise (`task:event`), because the
+        # event name it does not recognize (`task:event`), because the
         # replacement names the event it is answering and a rejected
         # replacement cancels the tool call. So this branch buys a line in the
         # log and never a rewrite on an event nobody registered for.
@@ -7574,7 +7626,7 @@ def main() -> None:
         # HERE, and not in the two other places it could go. `_prompt_main`
         # has no emitter at the line that raises. The payload check above is
         # on the path the TASK dispatch also takes, and that path never reads
-        # this field — a subagent spawn must not be cancelled over a key it
+        # this field — a subagent spawn must not be canceled over a key it
         # has nothing to do with.
         #
         # One answer for the whole class rather than for the truthy half: a
@@ -7749,7 +7801,7 @@ def _prompt_main(payload: dict, t0: float) -> None:
     # is what every direct invocation of this file sends — the CLI's own
     # probes and an adopter piping JSON in — and refusing those would refuse
     # the documented way to drive it. Anything else is recorded and not
-    # served: the block is an injection, and what authorises it is the
+    # served: the block is an injection, and what authorizes it is the
     # registration rather than the presence of a `prompt` key.
     event = payload.get("hook_event_name")
     if event is not None and event != PROMPT_EVENT:
@@ -7759,10 +7811,10 @@ def _prompt_main(payload: dict, t0: float) -> None:
     if gate in PROMPT_SHAPE_GATES:
         return done(gate)
     if not _search_dirs():
-        # No config, or one this build could not honour. Both leave the hook
+        # No config, or one this build could not honor. Both leave the hook
         # with nothing to search; only the second has something to say, and it
         # says it here because a fail-open hook has no other voice — an
-        # unhonourable config would otherwise look exactly like a corpus with
+        # unhonorable config would otherwise look exactly like a corpus with
         # nothing in it.
         why = {"config": _CONFIG_ERROR} if _CONFIG_ERROR else {}
         return done("gate:nodirs", **why)
@@ -7979,7 +8031,7 @@ def _prompt_main(payload: dict, t0: float) -> None:
             # memory the agent never saw permanently consumed one of the
             # session's POINTER_BUDGET slots — and past the budget it is worse:
             # `_replace` had already evicted a pointer that really was
-            # delivered in favour of one about to be shed, and reported that
+            # delivered in favor of one about to be shed, and reported that
             # eviction as real. Rebuilt from the survivors rather than patched.
             picks = picks[: len(kept_pointers)]
             if room > 0:
@@ -8129,11 +8181,11 @@ def _print_config(state: tuple) -> int:
     tells it something false about the store as well.
 
     TWO resolutions of one config, and the split is the whole of this
-    function's contract. The DISPLAY honours the per-root env overrides,
+    function's contract. The DISPLAY honors the per-root env overrides,
     because pointing a session at a fixture tree and seeing where it landed is
     what the flag is for. The VERDICT — the exit code, handed in as `state` —
     is taken WITHOUT them, because the exit code is a claim about the tree the
-    hook will serve, and the hook never honours an override. Sharing a
+    hook will serve, and the hook never honors an override. Sharing a
     predicate was not enough to make the two surfaces agree: one derivation
     over two configs still let a root with a live `env` override print
     `searched` and exit 0 for an installation `--search` called inert, and made
@@ -8268,7 +8320,7 @@ def _print_config(state: tuple) -> int:
     # the one store on this surface that no line of the user's config names,
     # and "where did that corpus come from" is the question this output exists
     # to answer. Its id is repository-chosen prose and gets the capped
-    # sanitiser; its paths get `_display_path` — as every path above does, so
+    # sanitizer; its paths get `_display_path` — as every path above does, so
     # that one field is not read in two spellings — and nothing else, because
     # `sanitize`'s whitespace collapse is what turns a directory named with two
     # spaces into a directory that is not there — on the line whose whole job
@@ -8392,7 +8444,7 @@ def search_cli(argv: list[str]) -> int:
         "--debug-config",
         action="store_true",
         help="print the resolved configuration and exit. The one place per-root "
-        "environment overrides are honoured — the hook path ignores them, because "
+        "environment overrides are honored — the hook path ignores them, because "
         "which trees an every-prompt hook reads is not the ambient environment's "
         "decision to make",
     )

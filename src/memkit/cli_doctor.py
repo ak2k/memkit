@@ -676,7 +676,7 @@ def _unparsed_settings(scopes: list) -> str:
     WHAT THE HARNESS DOES WITH THE SAME FILE IS NOT CLAIMED. This says what
     THIS process read, because the anti-pattern the field survey names is a
     harness that meets a parse error and silently replaces the file with a
-    stub — and a diagnostic that asserted either behaviour would be guessing
+    stub — and a diagnostic that asserted either behavior would be guessing
     with the adopter's configuration.
 
     THE SCOPE BY ROLE AND NOT BY PATH, and the parser's text only where the
@@ -826,7 +826,7 @@ def _unparsed_remedy(scopes: list) -> str:
 def _relative_to_cwd(path: str) -> str:
     """`path` as a remedy standing in this directory spells it, or "".
 
-    NORMALISED on both sides and never an escape upwards: a `..` answer is not
+    NORMALIZED on both sides and never an escape upwards: a `..` answer is not
     a spelling any remedy here uses, and matching on one would suppress a
     remedy naming some other file entirely.
     """
@@ -936,7 +936,7 @@ def authored_configs(state_dir: str) -> set:
     `$XDG_CACHE_HOME` is an environment variable, so a checkout that exports
     one and checks in a `memory-recall/init-journal.jsonl` gets to write this
     function's answer. What hangs off that answer is whether doctor may run a
-    config, and whether init may overwrite one — two authorisations a
+    config, and whether init may overwrite one — two authorizations a
     repository must not be able to grant itself. It is the same rule
     `settings_scopes` applies to `$CLAUDE_CONFIG_DIR`, on the file that
     records what was written rather than on the settings that ask for it.
@@ -1055,7 +1055,7 @@ class Machine:
         """(True, "") when the config in play is one this install itself
         reads.
 
-        `--config` says "diagnose THIS config", and the only way to honour it
+        `--config` says "diagnose THIS config", and the only way to honor it
         through a real wrapper run is to hand the wrapper the option variable
         the harness would have set — after which the wrapper execs the
         `interpreter` that config records. So the flag is a way to choose a
@@ -1396,7 +1396,7 @@ def _resolved_route(machine: Machine) -> list[Check]:
 
 @_produces("config-parse")
 def _config_parse(machine: Machine) -> list[Check]:
-    """A config that is present and cannot be honoured is never green.
+    """A config that is present and cannot be honored is never green.
 
     The error string is the CLI's own, verbatim, because it names the file, the
     field and the cause — and a diagnostic that paraphrased would be a second
@@ -1442,7 +1442,7 @@ def _config_authorship(machine: Machine) -> list[Check]:
 
     `$CLAUDE_PLUGIN_DATA` is harness-owned and payload-WRITABLE — memkit's own
     hook writes `trust.json` there — so a release could write a `memkit.json`
-    beside it on one prompt and be honoured by every later, clean release. The
+    beside it on one prompt and be honored by every later, clean release. The
     escalation over "a malicious payload already runs code" is persistence and
     laundering, and it is real.
 
@@ -1451,16 +1451,16 @@ def _config_authorship(machine: Machine) -> list[Check]:
     reads — and it journals every config it authors. That journal is what
     makes an UNCLAIMED one detectable at all.
     """
-    return _rung_two_authorship(machine) + _unserialised_writes(machine)
+    return _rung_two_authorship(machine) + _unserialized_writes(machine)
 
 
-def _unserialised_writes(machine: Machine) -> list[Check]:
+def _unserialized_writes(machine: Machine) -> list[Check]:
     """Any config the journal records having been written without the lock.
 
     THE JOURNAL'S ONLY READER FOR THIS. The lock is best-effort by design — a
     setup command must not fail because a lock could not be taken, and a
     filesystem with no working `flock` degrades to what every earlier build
-    did — but an unserialised write is the one case where a store can go
+    did — but an unserialized write is the one case where a store can go
     missing from a config two inits wrote. Without a check that says so, the
     person who hits exactly that failure has to know to grep a JSONL file
     nothing documents.
@@ -1469,21 +1469,21 @@ def _unserialised_writes(machine: Machine) -> list[Check]:
     a broken install, and the store it would explain is usually there.
     """
     claims = journal_config_claims(machine.state_dir)
-    unserialised = sorted(
+    unserialized = sorted(
         path
         for path, records in claims.items()
         if any(record.get("unlocked") for record in records)
     )
-    if not unserialised:
+    if not unserialized:
         return []
     return [
         Check(
             "config-authorship",
             INFO,
             "written while another init held the lock, or with no working "
-            f"lock at all: {', '.join(_display_path(p) for p in unserialised)}"
+            f"lock at all: {', '.join(_display_path(p) for p in unserialized)}"
             ". Two inits racing on one config can lose one of their appends, "
-            "and this is the record that a write was not serialised",
+            "and this is the record that a write was not serialized",
             "Check that the config lists every store you expect. If one is "
             "missing, run init again for it — the merge is additive, and a "
             "second run adds what the first lost.",
@@ -1791,8 +1791,8 @@ def _build_record(root: str) -> tuple:
 def _index_state(machine: Machine) -> list[Check]:
     """How each corpus root was LAST indexed, read out of the sidecar.
 
-    Honours the sidecar's own reader's rule, which is a contract rather than
-    advice: an outcome this build does not recognise is treated as NOT-OK, and
+    Honors the sidecar's own reader's rule, which is a contract rather than
+    advice: an outcome this build does not recognize is treated as NOT-OK, and
     `files` is read as a corpus census only under `ok`. That rule is what lets
     the outcome vocabulary grow without an older reader mistaking a new failure
     state for a healthy one.
@@ -1887,14 +1887,14 @@ def _index_state(machine: Machine) -> list[Check]:
                 )
             )
         else:
-            # The reader's rule: unrecognised is NOT-OK, and `files` is not a
+            # The reader's rule: unrecognized is NOT-OK, and `files` is not a
             # census under it. A newer build wrote this record.
             out.append(
                 Check(
                     "index-state",
                     UNKNOWN,
                     f"{store.id}: index outcome {outcome!r}, which this build "
-                    "does not recognise. Not read as ok, and the file count "
+                    "does not recognize. Not read as ok, and the file count "
                     "is not read as a census",
                 )
             )
@@ -2171,7 +2171,7 @@ def _installed_hook(machine: Machine) -> tuple:
                         NO_HOOK_REMEDY,
                     )
                 if _under_cwd(command):
-                    # Defence in depth, for what the scope rule cannot see: the
+                    # Defense in depth, for what the scope rule cannot see: the
                     # scope says an adopter wrote the ENTRY and says nothing
                     # about who wrote the file it points at.
                     return (
@@ -2292,7 +2292,7 @@ def _probe_hook(
     if machine.explicit_config:
         # `--config` says "diagnose THIS config", and the wrapper reads its own
         # rungs — it deliberately ignores `$MEMKIT_CONFIG` — so the only way to
-        # honour the flag through a real wrapper run is to hand it the option
+        # honor the flag through a real wrapper run is to hand it the option
         # variable the harness would have set.
         #
         # What that costs is stated in the check's own detail rather than
@@ -2638,7 +2638,7 @@ OUTCOME_REASONS = {
     "shape, so nothing was written — this one is a defect report",
     "task:notool": "the hook was called for a tool other than `Agent`",
     "task:event": "an `Agent` call arrived under an event name this build "
-    "does not recognise",
+    "does not recognize",
     "task:nobrief": "the tool call carried no `prompt` string to read",
     "task:unencodable": "the brief carried a lone surrogate, so the emission "
     "cannot be written as UTF-8 at all",
@@ -2710,8 +2710,8 @@ def _gloss(outcome: object, reasons: dict | None = None) -> str:
     table by an equality assertion in both directions. Which map a caller reads
     is a fact about which file it read the record out of.
 
-    An unrecognised name is a STATEMENT rather than a silence, for the same
-    reason `_index_state` treats an unrecognised index outcome as not-ok: these
+    An unrecognized name is a STATEMENT rather than a silence, for the same
+    reason `_index_state` treats an unrecognized index outcome as not-ok: these
     vocabularies grow without a version bump, so meeting a name from a newer
     build is the expected case and not an error.
     """
@@ -2810,7 +2810,7 @@ def _histogram(records: list) -> str:
     parts = [
         # An outcome this build does not know is REPORTED rather than dropped:
         # the vocabulary grows without a version bump, and a reader that
-        # silently discarded a name it did not recognise would compute a rate
+        # silently discarded a name it did not recognize would compute a rate
         # over a denominator nobody checked.
         f"{outcome} {count} ({_gloss(outcome)})"
         for outcome, count in sorted(counts.items(), key=lambda kv: -kv[1])
@@ -2928,7 +2928,7 @@ def _gate_outcomes(machine: Machine) -> list[Check]:
     that resolved itself, not an install that has stopped answering.
 
     THE PER-PROMPT POPULATION ONLY, and it says so. It counted that population
-    from the day it was written and labelled the count "last N prompts", which
+    from the day it was written and labeled the count "last N prompts", which
     is true — but a log now holding two populations makes a count that names
     one of them and never mentions the other read as a count of everything.
     `task-outcomes` is the other half, and the two never merge: a rate over the
@@ -3017,7 +3017,7 @@ def _task_outcomes(machine: Machine) -> list[Check]:
 
 # The harness build memkit's claims about the harness were MEASURED against:
 # the option-name mangling, the trailing slash on the plugin root, the
-# exit-2-blocks-the-turn behaviour the zero-argument pin rests on. Pinned to
+# exit-2-blocks-the-turn behavior the zero-argument pin rests on. Pinned to
 # the workflows' own `CLAUDE_CODE_VERSION` by a test, because a stamp that
 # drifted from the build CI measures on is a stamp that reports agreement
 # nobody established.
@@ -3353,7 +3353,7 @@ def _subagent_delivery(machine: Machine) -> list[Check]:
     # those lines were unreachable and the row an adopter met said `task:killed`
     # and stopped. Sent through the same gloss as both histograms, which is
     # also what makes a name from a newer build say so rather than sit there
-    # looking like a word the reader ought to recognise.
+    # looking like a word the reader ought to recognize.
     return [
         Check(
             "subagent-delivery",
@@ -3452,13 +3452,13 @@ def _shown(path: str) -> str:
 def _resolved(path: str) -> str:
     """One path in the spelling both sides of a containment test are compared in.
 
-    NORMALISED AT THE COMPARISON AND NEVER AT A SOURCE. `harness_dir` hands
+    NORMALIZED AT THE COMPARISON AND NEVER AT A SOURCE. `harness_dir` hands
     back NFC because that is what the harness writes to, and a corpus root out
     of `memkit.json` is spelled however that file spells it — so a composed
     character made two strings out of one directory and the comparison below
     answered about the encoding. Applied to whatever each side happens to
     carry, rather than to one of them on the way in, because the pair that
-    reaches here comes by two routes and only one of them has a normaliser.
+    reaches here comes by two routes and only one of them has a normalizer.
 
     No guard of its own: a path that will not resolve is `realpath`'s to raise
     on, and the callers' own `except` is where that answer belongs.
@@ -3526,7 +3526,7 @@ def _pruned(directory: str, root: str) -> bool:
     own answered "retrieved" about a store whose root sits under an `archive/`
     or `hot/` component, where the walk indexes nothing at all.
 
-    That consequence is the HOOK's behaviour and it is left alone here: a store
+    That consequence is the HOOK's behavior and it is left alone here: a store
     under a pruned name is genuinely unindexed today, doctor's job is to report
     it, and whether the walk should exclude on the absolute path at all is a
     separate question about a module this row does not own.
@@ -3699,10 +3699,10 @@ _PRUNED_NAMES = ", ".join(sorted(EXCLUDE_DIRS))
 # of the six needs either path to say which.
 _PLACEMENT = {
     "at": "is a store's corpus root itself, so every memory already in that "
-    "store is one the harness re-serialises the first time an agent writes or "
+    "store is one the harness re-serializes the first time an agent writes or "
     "edits it: name slugified, other keys moved under metadata",
     "over": "holds a store's corpus root, so every memory already in that "
-    "store is one the harness re-serialises the first time an agent writes or "
+    "store is one the harness re-serializes the first time an agent writes or "
     "edits it: name slugified, other keys moved under metadata",
     "pruned": "is inside a store's corpus root but under a name retrieval "
     "prunes (" + _PRUNED_NAMES + "), so nothing written there is indexed",
@@ -5073,30 +5073,30 @@ def _interpreter(machine: Machine) -> list[Check]:
     running = ".".join(str(n) for n in sys.version_info[:3])
     route, interpreter = _checker_route(machine)
     recorded = _recorded_interpreter(machine)
-    honoured = ""
+    honored = ""
     if recorded:
         # `expand_home` and `path_refusal`, in the wrapper's own order: this
         # field names the binary exec'd on every prompt, and the wrapper vets
         # its SHAPE before it ever asks whether the file is executable. Asking
-        # only the second question reported `/proc/self/exe` as honoured while
+        # only the second question reported `/proc/self/exe` as honored while
         # the wrapper refused it, and `~someone/python3` as "not an executable
         # file" — true, and the wrong repair.
         expanded = expand_home(recorded)
         shape = path_refusal(expanded)
         if shape:
-            honoured = (
+            honored = (
                 f'. The config records "interpreter": "{recorded}", which '
                 f"{shape}, so the wrapper refuses it by name and falls "
                 "through to the routes below it"
             )
         elif not (os.path.isfile(expanded) and os.access(expanded, os.X_OK)):
-            honoured = (
+            honored = (
                 f'. The config records "interpreter": "{recorded}", which is '
                 "not an executable file, so the wrapper falls through to the "
                 "routes below it"
             )
         elif os.path.realpath(expanded) != os.path.realpath(sys.executable):
-            honoured = (
+            honored = (
                 f'. The config records "{recorded}" and this process is '
                 f"{_display_path(sys.executable)}"
             )
@@ -5128,7 +5128,7 @@ def _interpreter(machine: Machine) -> list[Check]:
                 "interpreter",
                 FAIL,
                 f"the python that will run the hook, {_display_path(serving)}, "
-                f"{cannot}. Retrieval cannot work here{honoured}",
+                f"{cannot}. Retrieval cannot work here{honored}",
                 INTERPRETER_ROUTES,
                 actor=USER,
                 terminal=True,
@@ -5142,7 +5142,7 @@ def _interpreter(machine: Machine) -> list[Check]:
                 FAIL,
                 f"hook interpreter {running}; NO checker route: no python on "
                 f"this machine meets {floor}, and `uv` located none "
-                f"either{honoured}",
+                f"either{honored}",
                 NO_CHECKER_REMEDY,
                 actor=USER,
                 terminal=True,
@@ -5174,16 +5174,16 @@ def _interpreter(machine: Machine) -> list[Check]:
                 INFO,
                 f"hook interpreter {running}; checker route {route.value} "
                 f"({where}), because no python on PATH meets {floor} and `uv` "
-                f"located one. Retrieval is unaffected{honoured}",
+                f"located one. Retrieval is unaffected{honored}",
             )
         ]
-    if honoured:
+    if honored:
         return [
             Check(
                 "interpreter",
                 INFO,
                 f"hook interpreter {running}; checker route {route.value} "
-                f"({where}){honoured}",
+                f"({where}){honored}",
             )
         ]
     return [

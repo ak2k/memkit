@@ -251,9 +251,16 @@ class _RecordNotWritten(Exception):
 class Plan:
     """Everything init would do, in the order it would do it."""
 
-    def __init__(self, actions: list, notes: list) -> None:
+    def __init__(self, actions: list, notes: list, store: str = "") -> None:
         self.actions = actions
         self.notes = notes
+        # The store this plan was built against, carried rather than re-derived
+        # by whoever reports on the finished run: the default and the flag are
+        # resolved in one place and a second reading of them is a second
+        # answer. Outside `key()` and outside the digest — it names the request
+        # rather than being an effect of it, and every effect that lands inside
+        # it is already an action with its own path.
+        self.store = store
 
     @property
     def writes(self) -> list:
@@ -386,7 +393,7 @@ def _canary_nonce(config_path: str) -> str:
     a converged install would look like a changed one. What the nonce has to be
     is unlikely to appear in the adopter's own corpus, which a derivation over
     an absolute path satisfies as well as randomness does. It is not a secret;
-    nothing is authorised by holding it.
+    nothing is authorized by holding it.
 
     Keyed on the CONFIG and not on the store, because one config holds one
     `canary_nonce` and may hold several stores: doctor asks one fixed query
@@ -672,7 +679,7 @@ def _foreign_canary(store: str, nonce: str) -> str:
 
 # The suffix `_write_atomically` gives its temporary. A pid rather than a
 # random token, so a leftover says which process died holding it — and so this
-# recognises one without having to guess at arbitrary names.
+# recognizes one without having to guess at arbitrary names.
 _STRANDED_TEMPORARY = re.compile(r"\.\d+\.tmp$")
 
 
@@ -1085,7 +1092,7 @@ def check_refusals(
             f"{_display_path(machine.state_dir)}, which holds derived state "
             "and which the hook sweeps on its own schedule. The sweep keeps "
             "what init's journal claims and collects nothing whose name it "
-            "does not recognise, so this would probably survive — and 'would "
+            "does not recognize, so this would probably survive — and 'would "
             "probably survive' is not a property to hang a config on. Put it "
             "somewhere nothing collects.",
         )
@@ -1262,7 +1269,7 @@ def _config_route_note(machine: Machine, config_path: str) -> str:
 
 def _interpreter() -> str:
     """The absolute python this process is, which is the one that will read
-    every prompt if the wrapper honours the record.
+    every prompt if the wrapper honors the record.
 
     `sys.executable` resolved: a venv's `python3` is a symlink, and recording
     the link records a path whose target the adopter can move.
@@ -1297,7 +1304,7 @@ def _store_id(store: str) -> str:
 
     Ids appear in `--debug-config`, in doctor's per-store rows and in the
     inert message, so `notes` reads better than `store-0` — and a store the
-    adopter named is one they can recognise in a report.
+    adopter named is one they can recognize in a report.
     """
     base = os.path.basename(store.rstrip(os.sep)) or "memories"
     cleaned = "".join(c if c.isalnum() or c in "-_" else "-" for c in base)
@@ -1457,7 +1464,7 @@ def _refuse_incompatible_types(actions: list) -> None:
 # work. Adoption that left the store failing its own checker would hand the
 # adopter a broken store and an exit 6 out of the command that made it.
 
-# Ledgers and sub-indexes are never memories, at any depth, and are recognised
+# Ledgers and sub-indexes are never memories, at any depth, and are recognized
 # by FILENAME — which is what lets the harness's own `MEMORY.md` travel beside
 # the memories it indexed without owing anybody a row.
 _LEDGER_NAMES = frozenset({"MEMORY.md", "SEARCH.md", "INDEX.md"})
@@ -1551,7 +1558,7 @@ def _frontmatter_of(text: str) -> dict:
 def _is_frontmatter_key(line: str) -> bool:
     """Whether this line of a `---` block declares a top-level key.
 
-    Nested keys (the harness buries everything it does not recognise under
+    Nested keys (the harness buries everything it does not recognize under
     `metadata:`) are indented and are not; a comment is not; a line with no
     colon, or a spaced word before one, is not.
     """
@@ -1584,6 +1591,28 @@ def _scalar_of(raw: str):
     if ": " in raw or raw.endswith(":"):
         return None
     if " #" in raw:
+        return None
+    return raw
+
+
+def _quotable(raw: str):
+    """The text a description line carries when plain style cannot hold it,
+    or None when the line is not text this may read.
+
+    `_scalar_of` answers None to two different questions. One is "this value
+    is not readable"; the other is "this value is readable and plain style may
+    not carry it" — an inner `": "`, a trailing colon, a ` #`. The second class
+    is a sentence somebody wrote, and quoting is precisely what `_as_scalar`
+    does with one.
+
+    NONE FOR ANYTHING WHOSE FIRST CHARACTER CLAIMS A STRUCTURE: a quote that
+    has to close, and may close on a line this reader never sees; a block
+    indicator whose value is the lines below it; an anchor, an alias, a flow
+    collection. Those are not text with an awkward character in it, and
+    quoting the one line they begin would be inventing a description rather
+    than keeping one.
+    """
+    if not raw or raw[0] in "\"'" or raw[0] in _YAML_INDICATORS:
         return None
     return raw
 
@@ -1626,7 +1655,7 @@ def _first_heading(text: str) -> str:
     return found.group(1).strip() if found else ""
 
 
-def _normalise(text: str, stem: str) -> tuple:
+def _normalize(text: str, stem: str) -> tuple:
     """(`text` with a description and a label a ledger row can carry, the
     rules applied).
 
@@ -1642,6 +1671,18 @@ def _normalise(text: str, stem: str) -> tuple:
     raw = _frontmatter_of(text).get("description", "")
     value = _scalar_of(raw)
     rules = []
+    if value is None:
+        # QUOTED BEFORE ANYTHING STANDS IN FOR IT. The adopter's own sentence
+        # is the description; a heading and a file name are guesses at one, and
+        # the guess was taken for every line plain style could not carry — a
+        # sentence became a slug, losslessly recoverable the whole time.
+        carried = _clean(_quotable(raw) or "")
+        if carried:
+            value = carried
+            rules.append(
+                "description holds what a plain scalar cannot carry — quoted "
+                "as it stands"
+            )
     if value is None:
         heading = _clean(_first_heading(_body_of(text)))
         # CLEANED, both of them. The stem is a filename, which may hold a
@@ -1668,9 +1709,9 @@ def _normalise(text: str, stem: str) -> tuple:
     # AFTER the block exists, and asked whether there are other rules or not: a
     # file whose description the checker already reads can still carry a name
     # that ends the row's link.
-    text, relabelled = _relabel(text, stem)
-    if relabelled:
-        rules.append(relabelled)
+    text, relabeled = _relabel(text, stem)
+    if relabeled:
+        rules.append(relabeled)
     return text, "; ".join(rules)
 
 
@@ -1783,7 +1824,7 @@ def _relabel(text: str, stem: str) -> tuple:
     one.
 
     THE ADOPTED TEXT IS WHAT IS REWRITTEN, not init's own row, and that is the
-    whole reason this exists as a normalisation rule rather than as a sanitiser
+    whole reason this exists as a normalization rule rather than as a sanitizer
     at the point the row is built: the checker regenerates that row from this
     file's frontmatter, so a label init cleaned over a file it did not would
     agree with the checker exactly until the next `--write`.
@@ -2054,7 +2095,7 @@ def _search_ledger_text(store: str, entries: list) -> str:
     old = _search_ledger(store)
     # Through the same reader the destinations go through, so a ledger this
     # process cannot decode falls back to the default preamble rather than
-    # raising out of `--dry-run`. That is today's behaviour — the file was
+    # raising out of `--dry-run`. That is today's behavior — the file was
     # clobbered unconditionally before this — and not a new refusal.
     held, _readable = _held_text(os.path.join(store, "SEARCH.md"))
     if held is not None:
@@ -2511,7 +2552,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
     rows: list = []
     skipped: list = []
     diverged: list = []
-    normalised = 0
+    normalized = 0
     already = 0
     payload = 0
     directories = 0
@@ -2657,7 +2698,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             # which strips the same characters and keeps the spacing a path
             # needs.
             shown = f"{_clean(project.key)}/{_clean(name)}"
-            # AND A NAME NO LINE CAN CARRY IS NOT COPIED AT ALL. Sanitising
+            # AND A NAME NO LINE CAN CARRY IS NOT COPIED AT ALL. Sanitizing
             # the note leaves the destination path line, which must keep its
             # spacing byte for byte to name a file that exists — so the only
             # honest answer for a name holding a newline is not to write a
@@ -2791,7 +2832,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             row = None
             desc = ""
             if name not in _LEDGER_NAMES:
-                text, rule = _normalise(text, os.path.splitext(name)[0])
+                text, rule = _normalize(text, os.path.splitext(name)[0])
                 if _TIER_RE.search(text[:4096]):
                     skipped.append(
                         f"{shown}: carries a `tier:` line, which "
@@ -2800,7 +2841,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
                     continue
                 front = _frontmatter_of(text)
                 desc = _scalar_of(front.get("description", ""))
-                # NOT REACHABLE TODAY, and kept: `_normalise` either leaves a
+                # NOT REACHABLE TODAY, and kept: `_normalize` either leaves a
                 # description `_scalar_of` already read or writes one through
                 # `_as_scalar`, whose output it reads back by construction. It
                 # is the guard on that construction rather than on an input.
@@ -2860,7 +2901,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             if held is not None:
                 already += 1
             elif rule:
-                normalised += 1
+                normalized += 1
             payload += len(_utf8(text))
             mine.append(
                 Action(CREATE_FILE, dest, text,
@@ -2869,7 +2910,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             )
             held_back[dest] = (
                 shown, desc, row, len(_utf8(text)),
-                "already" if held is not None else ("normalised" if rule else ""),
+                "already" if held is not None else ("normalized" if rule else ""),
             )
         # AFTER THE LOOP, AND TO A FIXPOINT. `landing` is what this run is
         # getting, and it is built one file at a time — a link answered inline
@@ -2898,8 +2939,8 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
             payload -= size
             if counted == "already":
                 already -= 1
-            elif counted == "normalised":
-                normalised -= 1
+            elif counted == "normalized":
+                normalized -= 1
         rows.extend(
             held_back[action.path][2] for action in mine
             if held_back[action.path][2] is not None
@@ -2925,7 +2966,7 @@ def _plan_adoption(machine: Machine, store: str, known: list) -> tuple:
         f"Adoption: {files} files ({payload} bytes) from {directories} project "
         f"{'directory' if directories == 1 else 'directories'} -> "
         f"{_display_path(base)}{os.sep}<project key>{os.sep}, "
-        f"{normalised} normalised, {len(skipped)} skipped, {already} already "
+        f"{normalized} normalized, {len(skipped)} skipped, {already} already "
         f"adopted, {len(diverged)} diverged."
     ]
     # THE MODE IS PART OF WHAT IS BEING CONSENTED TO. These are a person's
@@ -2968,7 +3009,7 @@ def _redirect_dir(store: str) -> str:
 
     A DIRECTORY OF THE HARNESS'S OWN inside the corpus root, never the corpus
     root itself. Measured on 2.1.258: every `.md` written or edited under the
-    configured directory is re-serialised — name slugified, other top-level
+    configured directory is re-serialized — name slugified, other top-level
     keys buried under `metadata:` — and the gate is a string prefix on that
     path. Pointed at the corpus root, that is every memory in the store;
     pointed here, it is only what the harness itself wrote.
@@ -3225,7 +3266,7 @@ def build_plan(
                 SETTINGS_WRITE,
                 target,
                 _settings_with_auto_dream_off(target),
-                # "no other KEY", not "no other byte": the file is re-serialised
+                # "no other KEY", not "no other byte": the file is re-serialized
                 # from its own parse, so a settings.json indented some other way
                 # comes back at two spaces. That converges after one write and
                 # changes nothing a reader of the file means by it, but a
@@ -3369,7 +3410,7 @@ def build_plan(
     # the flags add were appended below it — so the one preflight whose job is
     # to see the whole plan saw the part that never varies.
     _refuse_incompatible_types(actions)
-    return Plan(actions, notes)
+    return Plan(actions, notes, store_path)
 
 
 # The complete set of settings keys init may write, as data.
@@ -3627,7 +3668,21 @@ def run(args: argparse.Namespace) -> int:
     # No `except Refusal` here: `apply_plan` owns every refusal raised past its
     # first write and reports it as incomplete, because exit 5's promise is
     # about the filesystem rather than about where the exception came from.
-    return apply_plan(machine, plan, config_path)
+    applied = len(plan.pending)
+    code = apply_plan(machine, plan, config_path)
+    if code == EXIT_OK:
+        # THE LINE THAT SAYS IT HAPPENED. Every other outcome names itself on
+        # stderr and success named nothing at all, so a run that did the whole
+        # plan ended its transcript at the word `applying:` — the same last
+        # line a run that died between the header and its first write would
+        # leave. The count is the manifest's own `pending`, because this stands
+        # under the list the person was asked to approve.
+        print(
+            f"applied: {applied} {'action' if applied == 1 else 'actions'}. "
+            f"Store {_display_path(plan.store)}, config "
+            f"{_display_path(config_path)}."
+        )
+    return code
 
 
 def _refuse(refusal: Refusal) -> int:
@@ -3726,7 +3781,7 @@ class Journal:
         if expects is not None:
             record["expects"] = expects
         if locked is False:
-            # Only on the unserialised write. Its absence means the ordinary
+            # Only on the unserialized write. Its absence means the ordinary
             # case, so an existing reader does not have to learn a key to keep
             # reading; its presence is the one thing worth going back for when
             # a store turns out to be missing from a config two inits wrote.
@@ -3755,19 +3810,19 @@ class _Lock:
 
     `os.replace` makes the file untearable and does nothing at all about a LOST
     APPEND: two inits that both read the config, both add their own store and
-    both write, leave one store. The lock is what serialises read→merge→write→
+    both write, leave one store. The lock is what serializes read→merge→write→
     journal into one step.
 
     Best-effort by design — a filesystem with no working `flock` degrades to
-    the behaviour every earlier build had, which is the same race and no worse.
+    the behavior every earlier build had, which is the same race and no worse.
     A setup command must not fail because a lock could not be taken.
     """
 
     def __init__(self, state_dir: str) -> None:
         self.path = os.path.join(state_dir, "init.lock")
         self._fd = None
-        # Whether serialisation was actually obtained. A caller that cannot
-        # tell a serialised write from an unserialised one cannot tell a lost
+        # Whether serialization was actually obtained. A caller that cannot
+        # tell a serialized write from an unserialized one cannot tell a lost
         # append from a write that never raced, so the journal records it.
         self.held = False
 
