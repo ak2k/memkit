@@ -13,10 +13,11 @@ for each is below.
 pinned in `.claude-plugin/marketplace.json` — not a built artifact, and not a
 subset chosen for the hook.
 
-The table below counts **the tree this file ships in** — **110 files, about 4.5 MiB**
-— and `.claude-plugin/marketplace.json` pins that same tree as this is written,
-so there is one tree here and one set of numbers. The recipe at the bottom
-reproduces them against either the repository or your own installed copy.
+The table below counts **the tree this file ships in** — **110 files, about 4.6 MiB**
+— and `.claude-plugin/marketplace.json` pins a tree of the same files at
+**about 4.5 MiB**: `main` has grown bytes inside files the pin already
+carries, which is the drift described below. The recipe at the bottom reproduces both, against
+either the repository or your own installed copy.
 
 It does not stay that way, and it goes in both directions at once. `main` grows
 files the pin does not carry, so from the first such merge a count taken at the
@@ -153,7 +154,7 @@ README's *Derived state* has the table.
   session's directory is reported and never followed, and `--config` naming a
   config no route on this install reads makes the hook probe report `UNKNOWN`
   rather than run: a config names the interpreter the wrapper execs, so
-  honouring that flag blindly would be a way to choose a program.
+  honoring that flag blindly would be a way to choose a program.
 - `memkit init` writes, and only what its manifest said and only after you
   approve the digest: the state directory (0700), the config at the path you
   named, the store skeleton, one canary memory, and a journal record per
@@ -199,7 +200,7 @@ it.**
 - `$CLAUDE_PLUGIN_DATA` is Claude Code's directory and it is **writable by the
   payload** — memkit's own hook writes `trust.json` there, beside the
   `memkit.json` that rung 2 reads. So a release could write that file on one
-  prompt and be honoured by every later, clean release. What makes it
+  prompt and be honored by every later, clean release. What makes it
   tolerable rather than theoretical: `memkit init` is the ONE thing that
   writes it, it journals every config it authors, and `memkit doctor`'s
   `config-authorship` check reports a file there that no journal entry claims.
@@ -221,7 +222,7 @@ it.**
 So the payload is code you can read that acts on decisions you made elsewhere,
 within those two limits.
 The thing worth auditing before installing is not this tree's size; it is
-`bin/memkit-hook` and `bin/lib/common.sh`, which are **801 lines of POSIX
+`bin/memkit-hook` and `bin/lib/common.sh`, which are **872 lines of POSIX
 shell** between them — mostly comment — and look up no command on any PATH.
 The one program either of them starts is a python it has already resolved to an
 absolute path, asked once whether it can run the hook at all.

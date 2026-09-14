@@ -1,6 +1,6 @@
 ---
 name: init
-description: Set up memkit on this machine — create the memory store, write the config, and seed a memory that proves retrieval works. Use ONLY when the user asks to set up, initialise or configure memkit. This command writes files and requires the user's explicit consent between two turns.
+description: Set up memkit on this machine — create the memory store, write the config, and seed a memory that proves retrieval works. Use ONLY when the user asks to set up, initialize or configure memkit. This command writes files and requires the user's explicit consent between two turns.
 disable-model-invocation: true
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/memkit init --dry-run:*)
 ---
@@ -77,11 +77,16 @@ The digest binds the state of the tree, not the text that was read. If anything
 under the manifest changed in between, this refuses and nothing is written —
 re-run the dry-run, relay the new manifest, and ask again.
 
+**A confirm that finished says so on its last line** — `applied: <n> actions`,
+with the store and the config it wrote. Relay that line: it is the only thing
+in the turn that distinguishes a run that did the whole plan from one that
+stopped after printing it.
+
 ## Exit codes
 
 | code | meaning | what to do |
 |---|---|---|
-| 0 | done, or the manifest printed | relay it |
+| 0 | done, or the manifest printed | relay it — on a confirm, the `applied:` line is the last one |
 | 1 | memkit could not start at all — no interpreter, or an incomplete payload | stderr names what is missing; nothing about the arguments will change it |
 | 2 | usage error | fix the arguments |
 | 5 | **refused, and nothing was written** | stderr names which refusal and why. Relay it. Do not retry the same command |

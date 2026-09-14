@@ -62,7 +62,7 @@ for _need in src/memkit/__init__.py src/memkit/memory_prompt_recall.py src/memki
     fi
 done
 
-CONFIG=$(memkit_resolve_config) || CONFIG=""
+CONFIG=$(memkit_resolve_config "$@") || CONFIG=""
 if [ -n "$CONFIG" ]; then
     MEMKIT_CONFIG=$CONFIG
     export MEMKIT_CONFIG

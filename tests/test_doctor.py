@@ -710,7 +710,7 @@ def test_an_unserialised_config_write_reaches_the_adopter(
     monkeypatch.setenv(hook.CONFIG_ENV, str(config))
     hook._use_config(None)
     rows = doctor._PRODUCERS["config-authorship"](doctor.Machine())
-    said = [r for r in rows if "not serialised" in r.detail or "unlock" in r.detail]
+    said = [r for r in rows if "not serialized" in r.detail or "unlock" in r.detail]
     assert said, [r.detail for r in rows]
     (row,) = said
     assert str(config) in row.detail, row.detail
@@ -735,7 +735,7 @@ def test_an_unserialised_config_write_reaches_the_adopter(
     assert not [
         r
         for r in doctor._PRODUCERS["config-authorship"](machine)
-        if "not serialised" in r.detail
+        if "not serialized" in r.detail
     ]
 
 
@@ -1066,7 +1066,7 @@ def test_an_unreadable_corpus_is_a_fail_and_a_partial_one_is_not(
         (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
         assert row.status == doctor.INFO, outcome
         assert "floor rather than a census" in row.detail
-        assert "does not recognise" not in row.detail, outcome
+        assert "does not recognize" not in row.detail, outcome
 
 
 def test_every_outcome_the_emitter_can_write_has_a_branch_in_index_state(
@@ -1092,7 +1092,7 @@ def test_every_outcome_the_emitter_can_write_has_a_branch_in_index_state(
     for outcome in sorted(outcomes):
         _sidecar(profile, root, {"v": 1, "ts": 1, "outcome": outcome, "files": 2})
         (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
-        assert "does not recognise" not in row.detail, outcome
+        assert "does not recognize" not in row.detail, outcome
         assert row.status != doctor.UNKNOWN, (outcome, row.detail)
 
 
@@ -1125,7 +1125,7 @@ def test_a_corpus_indexed_incompletely_says_so_rather_than_unknown(
 
     (row,) = _only(doctor._PRODUCERS["index-state"](machine), "index-state")
     assert row.status != doctor.UNKNOWN, row.detail
-    assert "does not recognise" not in row.detail, row.detail
+    assert "does not recognize" not in row.detail, row.detail
     # And it names what the adopter needs: that retrieval here is incomplete,
     # BOTH of the emitter's causes — the two send a reader to different places
     # — and that the next run carries on rather than repeating this one.
@@ -2933,7 +2933,7 @@ def test_nested_stores_answer_the_same_whichever_is_declared_first(
         )
         assert row.status == doctor.INFO, order
         assert "holds a store's corpus root" in row.detail, order
-        assert "re-serialises" in row.detail, order
+        assert "re-serializes" in row.detail, order
 
     # And a directory that is only ever `inside` still passes, whichever store
     # answers for it: the rule is that harm dominates, not that nesting does.
@@ -3386,7 +3386,7 @@ def test_the_corpus_root_itself_is_named_as_a_rewrite_rather_than_a_pass(
     )
     assert row.status == doctor.INFO
     assert "is a store's corpus root itself" in row.detail
-    assert "re-serialises" in row.detail
+    assert "re-serializes" in row.detail
     assert "directory under a store's search tree" in row.remedy
     assert row.actor == doctor.USER
 

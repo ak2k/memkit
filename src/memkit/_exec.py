@@ -245,7 +245,7 @@ def _execute(
     Raises `Untrusted` rather than running anything `require_executable`
     refuses, so a call site that forgot the rule cannot silently execute — the
     check that called it reports UNKNOWN with the reason instead, which is the
-    answer a diagnostic owes when honouring the rule costs it its signal.
+    answer a diagnostic owes when honoring the rule costs it its signal.
 
     EVERY parameter is named here, and the absent `**kw` is the point: the
     gate governs the whole invocation rather than argv[0]. Forwarding a
@@ -328,14 +328,14 @@ _GIT_NEUTRAL_CONFIG = (
 # usual place", and the usual place is a file whichever `$HOME` the session
 # exported points at.
 #
-# `GIT_CONFIG_PARAMETERS` is git's own serialisation of `-c` options and is
-# honoured despite every other name here. It cannot arrive — the child's
+# `GIT_CONFIG_PARAMETERS` is git's own serialization of `-c` options and is
+# honored despite every other name here. It cannot arrive — the child's
 # environment is built from an allow-list and this is not in it — and it is
 # set EMPTY anyway, because a route that one day declares a forward should not
 # be able to reopen config discovery by accident.
 #
 # What this costs is `core.excludesFile` — `ls-files --others
-# --exclude-standard` no longer honours an adopter's GLOBAL ignore file, so a
+# --exclude-standard` no longer honors an adopter's GLOBAL ignore file, so a
 # file they ignore everywhere reads as untracked here. The blamed set is `.md`
 # under a memory store, which is not what a global ignore file is usually
 # about.
@@ -423,7 +423,7 @@ def _require_path(value: str, where: str) -> str:
 def _git_template(route: GitRoute, holes: dict) -> list:
     """`route`'s fixed template with its holes filled, or `Untrusted`.
 
-    One branch per member and no default: an unrecognised route is not a route,
+    One branch per member and no default: an unrecognized route is not a route,
     and falls out as a refusal rather than as an argv nobody wrote.
     """
     if not isinstance(route, GitRoute):
@@ -595,7 +595,7 @@ CHECKER_TAIL = ("-m", "memkit.memory_integrity")
 class CheckerRoute(enum.Enum):
     """Which interpreter runs the checker. A closed set, not a string.
 
-    A route has no spelling that is not one of these four, and an unrecognised
+    A route has no spelling that is not one of these four, and an unrecognized
     value fails at the boundary rather than falling through to a bare-name
     lookup — a parse failure is an exception, never a default. Because the
     argv is derived from the route, "there is no route" also has exactly one

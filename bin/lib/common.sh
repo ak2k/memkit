@@ -63,7 +63,7 @@
 # then look it up in means "the subcommand is not in this build", which is the
 # wrong diagnosis reached by trusting the name in the message.
 # The fallback is for a caller that sources this library directly — doctor's
-# probes, and the tests — and NOT a licence for a wrapper to omit it: a wrapper
+# probes, and the tests — and NOT a license for a wrapper to omit it: a wrapper
 # that did would name the wrong binary in every message with nothing failing.
 # Nothing here can enforce that (a hard failure would be on the every-prompt
 # path, for a diagnostic), so the enforcement is a test that reads each
@@ -103,7 +103,7 @@ MEMKIT_ERRLOG_MAX=200
 
 # The shared derived-state directory, resolved the same way the hook resolves
 # it: `$XDG_CACHE_HOME` when it is set to an ABSOLUTE path, else `~/.cache`. A
-# relative value is ignored rather than honoured, because the directory an
+# relative value is ignored rather than honored, because the directory an
 # every-prompt hook writes into is not the session's to choose.
 memkit_state_dir() {
     case ${XDG_CACHE_HOME:-} in
@@ -223,9 +223,56 @@ memkit_expand_home() {
     esac
 }
 
-# The config this install serves, or nothing. Two rungs, in order, first
+# `--config PATH` in this invocation's own argv, or nothing.
+#
+# THE FORM AN ADOPTER CHECKS AN INSTALL WITH. The wrappers are on the AGENT's
+# PATH and not a terminal's, so a person reaches the installed copy by path
+# from a shell carrying none of the harness's variables — which is the one
+# state where the two environment rungs below both answer nothing. The config
+# reached python and never the wrapper, so the interpreter that config records
+# went unread and the run ended before the search: `memkit-recall` exiting 4
+# with "Config in use: <none resolved>", about a config named on its own
+# command line.
+#
+# BOTH SPELLINGS AND ONLY THESE TWO. argparse also accepts an unambiguous
+# prefix, and this deliberately does not: knowing which abbreviations are
+# unambiguous means knowing every other flag of every subcommand, in a file
+# that may not run a program to ask. An abbreviation therefore resolves the
+# way it does today — through the rungs below — rather than wrongly.
+#
+# `--` ends the options, so what follows it is an operand however it is
+# spelled. The value is not otherwise validated here; it goes through the same
+# admission rule every other rung's does.
+memkit_config_from_argv() {
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            --) return 1 ;;
+            --config=*)
+                printf '%s\n' "${1#--config=}"
+                return 0
+                ;;
+            --config)
+                # Nothing after it names nothing. The argument parser one
+                # process along is what calls that a usage error.
+                [ "$#" -gt 1 ] || return 1
+                printf '%s\n' "$2"
+                return 0
+                ;;
+        esac
+        shift
+    done
+    return 1
+}
+
+# The config this install serves, or nothing. Three rungs, in order, first
 # existing file wins:
 #
+#   0. `--config PATH` in the arguments this wrapper was given, which the
+#      caller passes in — see `memkit_config_from_argv`. Above both of the
+#      others because it is the one route a person types for this invocation
+#      alone, and because python reads it that way too: a run whose interpreter
+#      came from one config and whose stores came from another is a wrong
+#      answer that looks like a right one.
 #   1. CLAUDE_PLUGIN_OPTION_MEMKITCONFIG — the harness's own typed userConfig
 #      mechanism, settable non-interactively at install with
 #      `--config memkitConfig=<path>`. The variable name is the manifest key
@@ -254,7 +301,7 @@ memkit_expand_home() {
 # It is deliberately NOT the stronger "nothing the payload carries can answer
 # this". Rung 2's directory is harness-owned but payload-WRITABLE — memkit's
 # own hook writes `trust.json` there — so a release could write
-# `$CLAUDE_PLUGIN_DATA/memkit.json` on one prompt and be honoured by every
+# `$CLAUDE_PLUGIN_DATA/memkit.json` on one prompt and be honored by every
 # later, clean release. The escalation over "a malicious payload already runs
 # code" is persistence and laundering, and it is real; what makes it tolerable
 # here is that nothing in this build writes that file. The check that would
@@ -273,6 +320,25 @@ memkit_expand_home() {
 # Nothing found is not an error: the wrapper goes on to run the hook with no
 # config, which is inert by construction — no stores, no pointers, exit 0.
 memkit_resolve_config() {
+    if _argv_config=$(memkit_config_from_argv "$@"); then
+        _candidate=$(memkit_expand_home "$_argv_config")
+        if _why=$(memkit_path_refusal "$_candidate"); then
+            memkit_stderr \
+                "the --config path names \"$_candidate\", which $_why." \
+                "Resolving the interpreter from the other routes instead; the" \
+                "run itself still reads the path you gave."
+            _candidate=""
+        fi
+        # SILENT when the path is merely absent or unreadable, unlike the rung
+        # below. This value is about to be handed to a process that opens it
+        # and names it in its own refusal, so a sentence here would be the
+        # same news twice — while the option rung's file is opened by nothing
+        # that would report it.
+        [ -n "$_candidate" ] && [ -r "$_candidate" ] && {
+            printf '%s\n' "$_candidate"
+            return 0
+        }
+    fi
     if [ -n "${CLAUDE_PLUGIN_OPTION_MEMKITCONFIG:-}" ]; then
         _candidate=$(memkit_expand_home "$CLAUDE_PLUGIN_OPTION_MEMKITCONFIG")
         if _why=$(memkit_path_refusal "$_candidate"); then
@@ -348,7 +414,7 @@ memkit_resolve_config() {
 #     than fixed: validating shape here would mean writing a JSON parser in
 #     POSIX sh to decide which python to run.
 #
-# Said out loud when a recorded value is present and not honoured. Silence
+# Said out loud when a recorded value is present and not honored. Silence
 # here is the wrong answer: the install goes on working, under a python the
 # adopter did not choose — on a stock mac, 3.9.6 rather than the 3.12 they
 # recorded — and no surface in this build reports the resolved interpreter, so
@@ -548,7 +614,7 @@ memkit_config_interpreter() {
     printf '%s\n' "$_found"
 }
 
-# A recorded value this build will not honour — absent, relative, or naming
+# A recorded value this build will not honor — absent, relative, or naming
 # something that is not an executable FILE — falls through to the PATH probe
 # rather than ending the resolution. One bad character in a config field must
 # not be able to turn a working install inert.

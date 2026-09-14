@@ -1202,6 +1202,32 @@ def test_the_confirm_turn_puts_the_applied_text_in_the_transcript(profile) -> No
             assert line in out.stdout, line
 
 
+def test_the_confirm_turn_says_what_it_applied_when_it_is_done(profile) -> None:
+    """The last line of a successful confirm, which there was not one of.
+
+    Every write landed and stdout ended at the bare word `applying:` — so the
+    surface a model is told to relay carried the plan and no statement that it
+    had been carried out, and a run that did everything looked from outside
+    like one that stopped after printing the header. The exit code says which,
+    to a caller that reads exit codes; nothing said it to the person reading
+    the transcript.
+    """
+    plan = _plan(profile)
+    manifest = _dry(profile)
+    assert _digest_of(manifest) == plan.digest, "the plan moved between reads"
+    out = _confirm(profile, plan.digest)
+    assert out.returncode == init.EXIT_OK, out.stderr
+    last = out.stdout.rstrip("\n").splitlines()[-1]
+    assert last.startswith("applied: "), out.stdout[-400:]
+    # THE COUNT IS THE MANIFEST'S OWN. The line stands directly under the
+    # actions the person just read and was asked to approve, so a number
+    # derived any other way would be a second claim about the same list.
+    assert f"{len(plan.pending)} actions" in last, (last, len(plan.pending))
+    # And the two paths anything done next has to name.
+    assert "~/notes" in last, last
+    assert init.DEFAULT_CONFIG in last, last
+
+
 def test_the_journal_names_every_file_the_run_made_and_nothing_it_did_not(profile):
     """A record per mutation, at the mutation. Not batched at the end: a crash
     between two mutations has to leave a journal that describes what happened,
@@ -3430,6 +3456,67 @@ def test_every_description_adoption_writes_is_one_the_checker_can_read(
     (copied,) = [a for a in kept.actions if a.path.endswith("-kept/fine.md")]
     assert copied.content == TRAP
     assert copied.note == ""
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="the integrity checker's own floor"
+)
+def test_a_description_plain_yaml_cannot_carry_is_quoted_not_discarded(
+    profile,
+) -> None:
+    """A sentence a plain scalar cannot hold is QUOTED, not thrown away.
+
+    ` #` opens a comment in plain YAML, so the checker's reader refuses the
+    line — and what stood in for it was the first heading, then the file name.
+    A 271-character sentence somebody wrote became a slug, under a manifest
+    line saying the description "could not be read", on a command whose named
+    harm is a wrong copy. The text was readable throughout; what it needed was
+    quotes, which the writer beside this has always known how to put on.
+    """
+    sentence = (
+        "the dashboard's port is state and not config, so set it on the box "
+        "rather than in the repo #ops"
+    )
+    assert " #" in sentence and init._scalar_of(sentence) is None
+    _harness(
+        profile,
+        "-hash",
+        {
+            "ports.md": (
+                f"---\nname: abs-dashboard-port-state\ndescription: {sentence}\n"
+                "---\n\n# Ports\n\nbody\n"
+            )
+        },
+    )
+    store = profile / "notes"
+    named = ("--store", str(store), "--adopt-auto-memory")
+    plan = _plan(profile, store=str(store), adopt_auto_memory=True)
+    (copied,) = [a for a in plan.actions if a.path.endswith("-hash/ports.md")]
+    assert init._scalar_of(
+        init._frontmatter_of(copied.content).get("description", "")
+    ) == sentence
+    assert f'description: "{sentence}"' in copied.content
+    # The manifest says what was done to it, and "quoted" is a different
+    # statement from "could not be read": one of them is an edit that kept the
+    # adopter's sentence and the other is one that threw it away.
+    assert "quoted" in copied.note, copied.note
+    assert "could not be read" not in copied.note, copied.note
+
+    # AND THE STORE PASSES ITS OWN CHECKER, which is the half that makes the
+    # quoting worth anything: a row carrying a description the checker cannot
+    # read is DESC-BAD on a store init has just declared correct.
+    manifest = _dry(profile, *named)
+    applied = _confirm(profile, _digest_of(manifest), *named)
+    assert applied.returncode == init.EXIT_OK, applied.stdout + applied.stderr
+    ledger = (store / "SEARCH.md").read_text(encoding="utf-8")
+    assert sentence in ledger, ledger
+    config = init._resolve_config(doctor.Machine(), None)
+    checked = subprocess.run(
+        [sys.executable, "-m", "memkit.memory_integrity", "--config", str(config)],
+        capture_output=True, text=True, timeout=300,
+        env=dict(os.environ, HOME=str(profile / "home")),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
 def test_what_adoption_will_not_carry_is_named_rather_than_dropped(profile) -> None:
@@ -5942,7 +6029,7 @@ def test_a_description_taken_from_a_file_name_cannot_end_its_own_line(
     Asked of the normaliser directly: the planner skips such a file outright
     now, and a guard nothing reaches is a guard that stops being true.
     """
-    written, rule = init._normalise("plain body\n", "foo\nbar")
+    written, rule = init._normalize("plain body\n", "foo\nbar")
     assert "\n" not in written.split("\n---", 1)[0].partition("description:")[2]
     assert "description: foobar" in written
     assert "name: foobar" in written

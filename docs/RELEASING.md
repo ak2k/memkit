@@ -49,7 +49,7 @@ Everything below has been missed at least once.
    version. Step 1 therefore carries this one: update the version and the test
    names the docs if they lag.
 4. **Sweep `(from the next release)`.** `grep -rn "from the next release"`.
-   Every behaviour marker becomes a plain statement — the pin is about to carry
+   Every behavior marker becomes a plain statement — the pin is about to carry
    it. Two occurrences are *not* markers and stay: the `## Status` sentence that
    defines the convention, and the paragraph that refers to it. A third is a
    test string in `tests/test_plugin_surface.py` and stays as well.
@@ -117,7 +117,7 @@ Everything below has been missed at least once.
     input.
 12. **Verify from the outside.** Install from the marketplace into a scratch
     profile — `HOME` and `CLAUDE_CONFIG_DIR` redirected — and confirm the
-    behaviour this release was cut for. Every release so far has been reviewed
+    behavior this release was cut for. Every release so far has been reviewed
     that way, and it is the only check that sees what an adopter sees.
 13. **Run the rig's LIVE tier**, beside step 12 and for the same reason: it is
     the only thing that takes a real turn with a real model, and no merge sees

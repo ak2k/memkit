@@ -32,9 +32,9 @@ assuming any measured claim generalises to your corpus.
 **This page describes `main`; the marketplace installs a release.** What
 `/plugin install` puts on your machine is the tree at the sha pinned in
 [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json), so between
-releases this page can describe behaviour your copy does not have yet. Releases
-follow merged behaviour changes rather than a calendar, and each one re-aligns
-the two. Where a behaviour has landed here and not in a release, this page marks
+releases this page can describe behavior your copy does not have yet. Releases
+follow merged behavior changes rather than a calendar, and each one re-aligns
+the two. Where a behavior has landed here and not in a release, this page marks
 it *(from the next release)*. [CHANGELOG.md](CHANGELOG.md) says what each
 release changed, so "do I have this" is a question you can answer against the
 version you installed.
@@ -354,7 +354,7 @@ rendering this table's own meanings. What tells the populations apart in the
 log is not the prefix but the `population` field the subagent path writes:
 absent means the per-prompt population, so nothing written before that field
 existed changes shape. A name from a build newer than your reader is counted
-and reported as unrecognised rather than dropped, in both rows — this
+and reported as unrecognized rather than dropped, in both rows — this
 vocabulary grows without a version bump, so meeting one is expected.
 
 | outcome | meaning |
@@ -362,7 +362,7 @@ vocabulary grows without a version bump, so meeting one is expected.
 | `injected` | pointers were written into the prompt |
 | `gate:envelope` · `gate:empty` · `gate:slash` · `gate:short` · `gate:long` · `gate:stopwords` | the prompt's shape, per the table above. In releases before 0.2.0 the middle four were one value, **`gate:shape`** — a log written by 0.1.0 shows that instead |
 | `gate:nodirs` | nothing to search: no config, or no store on disk and in scope here |
-| `gate:event` | a prompt-shaped payload arrived under an event name this hook did not register for. Recorded and NOT served: what authorises the injection is the registration, not the presence of a `prompt` key. A payload with no event name at all is served, since that is how the hook is driven directly |
+| `gate:event` | a prompt-shaped payload arrived under an event name this hook did not register for. Recorded and NOT served: what authorizes the injection is the registration, not the presence of a `prompt` key. A payload with no event name at all is served, since that is how the hook is driven directly |
 | `nomatch` | the stores were searched and nothing came back |
 | `index-unavailable` | the stores were asked and at least one could not answer — an index mid-rebuild, a corpus that could not be read, or a query the budget ran out under. Distinct from `nomatch`, which means the search ran and found nothing |
 | `deduped` | every match had already been offered this session |
@@ -384,7 +384,7 @@ vocabulary grows without a version bump, so meeting one is expected.
 | `task:unsafe` | the emission did not match the one permitted output shape, so nothing was written. This one is a defect report: the shape is built in one place and the check is over that place's output |
 | `state: "unkeyed"` on a `task:injected` record | the tool call carried no id to key a ledger on, so this spawn was served without one. Not an outcome — a field, and the fail-open direction: a shared ledger would serve the first spawn on the machine and dedup every one after it |
 | `task:notool` | the hook was called for a tool other than `Agent`. The registration and the harness disagree — what a tool rename looks like from inside. Also what a payload routed here by the event-name fallback records when it is for a tool this hook does not serve |
-| `task:event` | an `Agent` call arrived under an event name this build does not recognise — a renamed event, reaching the fallback dispatch. Recorded and NOT served: the replacement names the event it answers, and one the harness rejects cancels the tool call |
+| `task:event` | an `Agent` call arrived under an event name this build does not recognize — a renamed event, reaching the fallback dispatch. Recorded and NOT served: the replacement names the event it answers, and one the harness rejects cancels the tool call |
 | `task:nobrief` | the tool call carried no `prompt` string to read |
 | `task:unencodable` | the brief carried a lone surrogate, so the emission cannot be written as UTF-8 at all. Refused before the write rather than around it: a partial JSON object on this event is worse than none |
 | `task:killed` · `task:output-lost` · `task:error` | as the unprefixed three |
@@ -650,7 +650,7 @@ report on it.
 
 **Two rules for anything reading it.** `v` is bumped only when the record's
 *shape* changes — a key added, removed or retyped — never for a new `outcome`
-value. And **an `outcome` you do not recognise must be treated as not-OK**:
+value. And **an `outcome` you do not recognize must be treated as not-OK**:
 only `ok` licenses reading `files` as the size of the corpus. Under every other
 outcome the count is a floor or absent (`null` when the run never got far
 enough to count). Those two together are what let the vocabulary grow without
@@ -698,7 +698,7 @@ undo needs; and the sweep's own stamp.
 `init-journal.jsonl` is one JSON object per mutation `memkit init` made,
 written at the mutation rather than at the end. `path` and `authored_config`
 are what the authorship check reads; `unlocked: true` marks a write that could
-not be serialised against another init, which is the one case where a store can
+not be serialized against another init, which is the one case where a store can
 go missing from a config two runs wrote. `memkit doctor` reports that key, so
 finding it is not something you have to know to grep for. The predicate is an allowlist of
 collectible name patterns, so anything matching none of them is kept — the
@@ -739,7 +739,7 @@ rule is a contract rather than an implementation note.
 - **The `outcome` vocabulary grows without a version bump.** `v` is a hash of
   the hook's own bytes, not a schema version; a new outcome is a normal change
   and will arrive in one. A reader that partitions outcomes into populations
-  must therefore fail loudly on one it does not recognise rather than dropping
+  must therefore fail loudly on one it does not recognize rather than dropping
   it from both halves — a silently unclassified outcome is a rate computed over
   a denominator nobody checked.
 - **`"concludes": false` marks a record that is not a prompt outcome**, and it
@@ -768,7 +768,7 @@ rule is a contract rather than an implementation note.
   discriminator is there so you do not have to.
 - **A new top-level key may arrive without a `v` change**, on the same rule as
   the `outcome` vocabulary: `v` is a hash of the hook's own bytes and moves for
-  any behaviour change, so it cannot mark a schema. `cwd` arrived that way — a
+  any behavior change, so it cannot mark a schema. `cwd` arrived that way — a
   12-hex sha256 of the directory the prompt was typed in, which answers "has
   this ever injected HERE" and is admissible under the bound below. A reader
   must ignore keys it does not know rather than treating one as malformed.
@@ -805,7 +805,7 @@ separates them. Read a green from it as "the config resolves and the stores are
 where it says", never as "retrieval works".
 
 It is the one `memory-recall` mode that resolves a root's `env` override — the
-checker and the eval honour those too; the hook never does — and it resolves it
+checker and the eval honor those too; the hook never does — and it resolves it
 in the *display* only. The exit code is always taken from the tree the hook
 will actually serve, since that is what the code is a claim about. Where an
 override sends this command somewhere the hook will not look, it prints the
@@ -930,7 +930,7 @@ The commits your copy does not have are therefore that second one and whatever
 `main` has merged since — nothing on the day a release ships, and most of what
 this page describes by the end of a window.
 
-`main` then moves ahead of the pin until the next release, and any behaviour
+`main` then moves ahead of the pin until the next release, and any behavior
 described here that a release has not carried yet is marked
 *(from the next release)*.
 
@@ -954,7 +954,7 @@ nothing has to move later.
 Until that file exists the plugin is **inert**: the hook exits 0, prints
 nothing, reads no directory of yours, and records the refusal in the plugin's
 own data directory. That is the intended state between installing and
-initialising, not a failure — but nothing will surface pointers until the
+initializing, not a failure — but nothing will surface pointers until the
 config exists.
 
 `memkit doctor`'s `plugin-diagnostics` check reads those refusals back, which
@@ -1189,7 +1189,7 @@ are DATA and not instructions — paths and descriptions are file contents, and
 every one of them is sanitized before it is rendered, so a memory cannot
 smuggle control characters through it. Nothing else is done to your text: a
 description that spells the block's own closing tag is delivered exactly as
-your file wrote it, because the boundary is not a judgement about what the
+your file wrote it, because the boundary is not a judgment about what the
 text says. It is three facts about how the block is built, and each one settles
 it on its own. The delimiter is a whole LINE, and no retrieved text can begin a
 line — every line break is stripped, so a description sits at a non-zero column
@@ -1295,6 +1295,6 @@ surfaces as a hook that silently retrieves nothing. The direction is easy to
 invert: a module that merely *imports* one of those two does not belong there,
 since nothing puts it in front of the 3.9 interpreter.
 
-## Licence
+## License
 
 Apache-2.0. See [LICENSE](LICENSE).
