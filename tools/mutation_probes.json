@@ -3403,49 +3403,26 @@
       "smoke": true
     },
     {
-      "name": "verdict-a-moved-corpus-demotes-to-drift",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "    if kind != \"drift\" and not corpus_matches:",
-      "new": "    if kind == \"drift\" and not corpus_matches:",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_moved_corpus_demotes_every_mismatch_to_drift"
-      ],
-      "why": "the fingerprint is the whole attribution rule: under a corpus nobody baselined, nothing measured is the tool's and nothing may gate",
-      "same_length": true
-    },
-    {
       "name": "verdict-a-retargeted-case-is-drift",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
       "old": "            \"drift\",\n            f\"snapshot says {want.get('file')}, case now names {seen.get('file')}\",",
-      "new": "            \"regression\",\n            f\"snapshot says {want.get('file')}, case now names {seen.get('file')}\",",
+      "new": "            \"moved\",\n            f\"snapshot says {want.get('file')}, case now names {seen.get('file')}\",",
       "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_case_repointed_at_another_memory_is_drift_not_a_regression"
+        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_case_repointed_at_another_memory_is_drift_not_a_moved_outcome"
       ],
-      "why": "pointing a case at another memory changes WHAT is asserted, not how well the assertion held, so failing the build on it blames the tool for an edit"
+      "why": "pointing a case at another memory changes WHAT is asserted, not how well the assertion held, so reporting it as a moved outcome sends the reader after a retrieval change that did not happen"
     },
     {
       "name": "verdict-a-retiered-target-is-drift",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
       "old": "            \"drift\",\n            f\"snapshot says {want.get('position')}, now {seen.get('position')}\",",
-      "new": "            \"regression\",\n            f\"snapshot says {want.get('position')}, now {seen.get('position')}\",",
+      "new": "            \"moved\",\n            f\"snapshot says {want.get('position')}, now {seen.get('position')}\",",
       "tests": [
         "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_target_that_changed_tier_is_drift_because_the_question_did"
       ],
       "why": "search asserts injection and hot asserts abstention, so a promoted target makes the recorded status an answer to a different question"
-    },
-    {
-      "name": "snapshot-gating-read-demands-a-fingerprint",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:",
-      "new": "def read_snapshot(path: pathlib.Path, require_fingerprint: bool = False) -> dict | None:",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_gating_read_refuses_a_snapshot_with_no_fingerprint"
-      ],
-      "why": "read leniently, a snapshot predating the fingerprint is a permanently green check that never says it stopped looking"
     },
     {
       "name": "snapshot-with-no-cases-object-is-refused",
@@ -3457,28 +3434,6 @@
         "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_snapshot_with_no_cases_object_is_refused_either_way"
       ],
       "why": "a truncated or hand-mangled snapshot is not `no expectations recorded`: read as one it compares nothing and exits like a clean run"
-    },
-    {
-      "name": "fingerprint-hashes-only-markdown",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "            ((p.relative_to(root).as_posix(), p) for p in root.rglob(\"*.md\")),",
-      "new": "            ((p.relative_to(root).as_posix(), p) for p in root.rglob(\"*.*\")),",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_stray_non_markdown_file_cannot_switch_the_gate_off"
-      ],
-      "why": "only *.md is indexed, so a .DS_Store must not be able to switch the run into the regime where every mismatch is drift and nothing gates"
-    },
-    {
-      "name": "fingerprint-carries-the-tier-in-the-path",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "            digest.update(_utf8(f\"{rel}\\0{content}\\0\"))",
-      "new": "            digest.update(_utf8(f\"{content}\\0\"))",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_memory_retiered_without_an_edit_hashes_differently"
-      ],
-      "why": "tier is the directory and the assertion follows it, so a hot/->search/ move must rehash even though not one byte of the file changed"
     },
     {
       "name": "store-roots-keep-config-order",
@@ -3613,17 +3568,6 @@
       "why": "uniqueness by path counts one brief under two names as two cases — the same population inflation the path check exists to prevent, one copy away"
     },
     {
-      "name": "a-moved-corpus-is-a-refusal-not-a-note",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "        sys.exit(\n            \"corpus moved — re-baseline with `--update-snapshot` and commit \"\n            \"the snapshot in the same change\"\n        )",
-      "new": "        print(\n            \"corpus moved — re-baseline with `--update-snapshot` and commit \"\n            \"the snapshot in the same change\"\n        )",
-      "tests": [
-        "tests/test_eval.py::test_a_moved_corpus_refuses_instead_of_reporting_green"
-      ],
-      "why": "exiting 0 made `this run gated nothing` and `this run gated everything and found nothing wrong` the same answer to CI, and the first is far commoner"
-    },
-    {
       "name": "a-rate-failure-is-not-accepted-by-a-rebaseline",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
@@ -3658,15 +3602,72 @@
       "smoke": true
     },
     {
-      "name": "an-unrecorded-case-gates-like-a-regression",
+      "name": "an-unrecorded-case-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        if kind in (\"regression\", \"new\") and slice_ in gating:",
-      "new": "        if kind in (\"regression\",) and slice_ in gating:",
+      "old": "        if slice_ in gating:\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and kind != \"new\":\n            gate_fails += 1\n",
       "tests": [
+        "tests/test_eval.py::test_an_unrecorded_case_gates_after_a_memory_edit",
         "tests/test_memory_integrity.py::EvalGateDecisionRules::test_nothing_outside_a_gating_slice_can_raise_the_failure_count"
       ],
       "why": "letting an unrecorded case pass would make adding one the way to add an ungated case; --update-snapshot is the sanctioned path instead"
+    },
+    {
+      "name": "a-drifted-case-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if slice_ in gating:\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and kind != \"drift\":\n            gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_moved_between_tiers_gates",
+        "tests/test_eval.py::test_a_case_pointed_at_another_memory_gates"
+      ],
+      "why": "a retargeted case or a retiered memory leaves the snapshot answering a question the case no longer asks; ungated, that case sits outside the gate until somebody happens to re-baseline"
+    },
+    {
+      "name": "a-moved-outcome-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if slice_ in gating:\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and kind != \"moved\":\n            gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_moved_outcome_fails_and_says_how_to_attribute_it"
+      ],
+      "why": "every case is gated against the corpus in front of it, so a recorded outcome that no longer holds is the one thing the gate exists to report, memory edit or not"
+    },
+    {
+      "name": "a-moved-outcome-counts-as-compared",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if kind in (\"ok\", \"moved\"):\n",
+      "new": "        if kind in (\"ok\",):\n",
+      "tests": [
+        "tests/test_eval.py::test_a_moved_outcome_fails_and_says_how_to_attribute_it"
+      ],
+      "why": "a moved outcome answered the snapshot's question; uncounted, a slice whose every case moved is refused as one that compared nothing, and the attribution rule never reaches the reader"
+    },
+    {
+      "name": "the-vacuity-check-asks-every-run",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if vacuous:\n        sys.exit(\n",
+      "new": "    if False:\n        sys.exit(\n",
+      "tests": [
+        "tests/test_eval.py::test_a_gating_slice_that_compared_nothing_is_refused_after_a_memory_edit"
+      ],
+      "why": "zero failures and zero comparisons print the same exit code, so an empty gating slice would buy a pass by having no expectations to fail"
+    },
+    {
+      "name": "a-failing-run-names-the-attribution-rule",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if gate_fails and not args.update_snapshot:\n",
+      "new": "    if False and not args.update_snapshot:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_moved_outcome_fails_and_says_how_to_attribute_it"
+      ],
+      "why": "the run cannot tell whether the corpus or the retriever moved an outcome, so without the rule a memkit bump's regression reads like a memory edit and gets re-baselined into the expected outcomes"
     },
     {
       "name": "the-cap-tells-the-subagent-what-it-dropped",

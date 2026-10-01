@@ -9,6 +9,29 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
+## [Unreleased]
+
+### Changed
+
+- **`memory-eval` gates every case against the corpus in front of it, and the
+  snapshot no longer records which corpus it was written on.** A memory edit
+  that moves no outcome now passes with no re-baseline. On the consumer
+  measured, 250 of the 254 snapshot rewrites in 30 days moved no outcome, and
+  the `corpus` line every one of them rewrote made concurrent memory changes
+  conflict. A moved outcome in a gating slice now fails the run when the
+  corpus differs from the snapshot's, where that run used to refuse with
+  "corpus moved". A case the snapshot never recorded fails it too, and so
+  does drift: a case pointed at another memory, or a memory moved between
+  `hot/` and `search/`. The run cannot tell whether the corpus or the
+  retriever moved an outcome, so a failure prints the rule: if the change
+  edits no memory store and no case (a memkit bump, say), the retriever moved
+  it and the snapshot must not be re-baselined; if it edits memories or
+  cases, review what moved, then `--update-snapshot`. A per-case `REGRESSION`
+  now reads `MOVED`, and a run that cannot search a store its cases target
+  fails on those cases as drift. A snapshot that still carries a `corpus`
+  fingerprint is read as before, and the next `--update-snapshot` drops the
+  field.
+
 ## [0.5.1] — 2026-09-14
 
 ### Fixed
