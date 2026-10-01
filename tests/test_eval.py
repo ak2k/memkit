@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shutil
 import stat
@@ -48,7 +49,9 @@ def corpus(tmp_path: Path) -> Path:
     return dst
 
 
-def _eval(corpus: Path, *args: str) -> subprocess.CompletedProcess:
+def _eval(
+    corpus: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -61,6 +64,7 @@ def _eval(corpus: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=300,
+        env=env,
     )
 
 
@@ -280,6 +284,50 @@ def test_update_snapshot_writes_the_outcomes_and_no_fingerprint(
     # And the gate is live again immediately, which is what makes the remedy a
     # remedy rather than a way to switch the check off.
     assert _eval(corpus).returncode == 0
+
+
+@pytest.mark.parametrize("shape", ["as-shipped", "no-long-briefs", "long-briefs-only"])
+def test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing(
+    corpus: Path, tmp_path: Path, shape: str
+) -> None:
+    """A state directory the run cannot write is an index that cannot answer,
+    and `recall` returns no hits for it rather than raising: every search case
+    scores a MISS and every abstention and noinject case passes. Written, that
+    is a snapshot of the failure, and every later run that cannot write there
+    either matches it and exits 0.
+
+    Without the long-brief slice no rate fails either, so nothing but this
+    refusal stands between that run and an exit 0. With only that slice, the
+    task path's searches are the only ones that could have failed."""
+    if os.geteuid() == 0:
+        pytest.skip("root writes everything, so this cannot be staged")
+    config = corpus / "memkit.json"
+    data = json.loads(config.read_text())
+    if shape == "no-long-briefs":
+        del data["eval"]["long_briefs"]
+        data["eval"]["gating_slices"] = ["noinject", "suite"]
+    elif shape == "long-briefs-only":
+        data["eval"]["cases"] = {}
+        data["eval"]["gating_slices"] = ["longbrief"]
+    config.write_text(json.dumps(data))
+    cache = tmp_path / "cache"
+    state = cache / "memory-recall"
+    state.mkdir(parents=True)
+    state.chmod(0o500)
+    before = (corpus / SNAPSHOT).read_bytes()
+    try:
+        out = _eval(
+            corpus,
+            "--update-snapshot",
+            env={**os.environ, "XDG_CACHE_HOME": str(cache)},
+        )
+    finally:
+        state.chmod(0o700)
+    assert "search tier: 0/" in out.stdout, out.stdout
+    assert out.returncode != 0, out.stdout
+    assert "refusing to write a snapshot" in out.stderr, out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
 
 
 def test_a_snapshot_that_still_carries_a_fingerprint_reads_as_before(

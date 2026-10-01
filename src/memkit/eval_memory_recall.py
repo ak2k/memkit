@@ -1224,6 +1224,19 @@ def main() -> None:
             return f"  <- {kind.upper()} ({why})"
         return f"  <- {kind.upper()} ({why}; not gating)"
 
+    # Dirs that failed to search, summed over the run. `recall` drops a dir
+    # that fails and returns the rest, so an index the run cannot open scores
+    # every search case a MISS and every abstention a pass, and `errs_lex` is
+    # the only thing that tells that apart from a retriever that found nothing.
+    unanswerable = 0
+
+    def search(prompt: str) -> list[str]:
+        nonlocal unanswerable
+        rec: dict = {}
+        hits = hook.recall(prompt, stats=rec, dirs=dirs)
+        unanswerable += int(rec.get("errs_lex") or 0)
+        return hits
+
     for case in cases["suite"]:
         prompt, expected = case["prompt"], case["file"]
         found = locate(roots, expected)
@@ -1249,7 +1262,7 @@ def main() -> None:
             continue
         tier = "hot" if found[0] == "hot" else "search"
         try:
-            hits = hook.recall(prompt, dirs=dirs)  # abs paths, best-first
+            hits = search(prompt)  # abs paths, best-first
         except AttributeError:
             sys.exit(
                 "hook has no recall(prompt) entrypoint — expose one "
@@ -1282,7 +1295,7 @@ def main() -> None:
 
     for case in cases["noinject"]:
         prompt = case["prompt"]
-        _, shown = pointers(hook, prompt, hook.recall(prompt, dirs=dirs))
+        _, shown = pointers(hook, prompt, search(prompt))
         ok = not shown
         mark = "NOINJECT-OK" if ok else "NOINJECT-FAIL"
         scored["noinject"][0] += int(ok)
@@ -1315,11 +1328,11 @@ def main() -> None:
                 f"(not in search/){moved}"
             )
             continue
-        # dirs=dirs, like every other call site here. Without it this slice
-        # measured the DEFAULT stores while the three above measured --repo's,
-        # so a --repo run printed one scoreboard over two different corpora and
-        # named neither.
-        hits = hook.recall(prompt, dirs=dirs)
+        # Through `search`, and so dirs=dirs, like every other call site here.
+        # Without it this slice measured the DEFAULT stores while the three
+        # above measured --repo's, so a --repo run printed one scoreboard over
+        # two different corpora and named neither.
+        hits = search(prompt)
         _, shown = pointers(hook, prompt, hits)
         got = expected in shown
         vocab_tot += 1
@@ -1409,6 +1422,7 @@ def main() -> None:
             entrypoint_checked = False
             for case in briefs["served"]:
                 got = task_delivery(hook, case["brief"], dirs)
+                unanswerable += got["unanswerable"]
                 shown = got["names"]
                 ok = case["file"] in shown
                 if shown and not entrypoint_checked:
@@ -1467,6 +1481,7 @@ def main() -> None:
                     cap_fail.extend(over_cap_faults(hook, case, got))
             for case in briefs["unserved"]:
                 got = task_delivery(hook, case["brief"], dirs)
+                unanswerable += got["unanswerable"]
                 shown = got["names"]
                 ok = not shown
                 leaked += not ok
@@ -1589,6 +1604,17 @@ def main() -> None:
         # sanctioned path.
         print("             --update-snapshot accepts these, once you know why")
     if args.update_snapshot:
+        # The same refusal as the two ahead of scoring, on a fact only scoring
+        # can find: a row scored against an index that could not answer
+        # records the failure as the expected outcome, and every later run
+        # that fails the same way then matches it.
+        if unanswerable:
+            sys.exit(
+                f"refusing to write a snapshot: {unanswerable} dir(s) failed "
+                "to search in this run, and a dir that cannot answer scores "
+                "as a miss or a clean abstention — rerun where memkit can "
+                "build its index"
+            )
         write_snapshot(snap_path, seen_cases)
         # Exit 0 even on a red run: re-baselining is the act of accepting what
         # the run reported, and a nonzero exit here would make the accepted

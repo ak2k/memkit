@@ -3613,6 +3613,40 @@
       "why": "a process exit status is taken mod 256, so a count passed through uncapped reads 256 gating failures as a green run"
     },
     {
+      "name": "a-re-baseline-refuses-an-index-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if unanswerable:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing"
+      ],
+      "why": "a dir that cannot answer scores every search case a MISS and every abstention a pass, so a snapshot written from it records the failure as expected and the next run that fails the same way exits 0"
+    },
+    {
+      "name": "the-prompt-path-counts-a-dir-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        unanswerable += int(rec.get(\"errs_lex\") or 0)\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing"
+      ],
+      "why": "recall drops a dir that fails and returns the rest, so errs_lex is the only record that the suite, noinject and vocab rows were scored against an index that could not answer"
+    },
+    {
+      "name": "the-task-path-counts-a-dir-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                unanswerable += got[\"unanswerable\"]\n",
+      "new": "",
+      "occurrences": 2,
+      "tests": [
+        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing"
+      ],
+      "why": "the long-brief rows are written into the same snapshot, so a brief scored against an index that could not answer has to block the write as a prompt would"
+    },
+    {
       "name": "an-unrecorded-case-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
