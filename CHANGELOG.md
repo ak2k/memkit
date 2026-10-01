@@ -32,6 +32,11 @@ ordering.
   fingerprint is read as before, and the next `--update-snapshot` drops the
   field.
 
+### Fixed
+
+- **`memory-eval` exits 255 on 255 or more gating failures.** The count was
+  the exit status, which is taken mod 256, so 256 failures exited 0.
+
 ## [0.5.1] — 2026-09-14
 
 ### Fixed
@@ -112,7 +117,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 671 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 672 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for

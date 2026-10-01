@@ -166,6 +166,22 @@ def test_an_unrecorded_case_gates_after_a_memory_edit(corpus: Path) -> None:
     assert "1 gating failure(s)" in out.stdout, out.stdout
 
 
+def test_a_failure_count_past_255_still_exits_non_zero(corpus: Path) -> None:
+    """A process exit status is taken mod 256, so a count passed through as
+    the status reads 256 failures as a pass. The count saturates at 255 and
+    the summary line still carries the whole of it."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["cases"]["noinject"].extend(
+        {"prompt": f"what time zone is standup number {i} in"} for i in range(256)
+    )
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode == 255, out.stdout[-2000:] + out.stderr
+    assert "256 gating failure(s)" in out.stdout, out.stdout[-2000:]
+
+
 def test_a_memory_moved_between_tiers_gates(corpus: Path) -> None:
     """Moving a memory from hot/ to search/ flips what every case about it
     asserts, from abstention to injection, with no byte of it edited. The

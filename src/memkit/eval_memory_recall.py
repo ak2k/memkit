@@ -103,10 +103,11 @@ Usage:
   memory-eval --all-stores         # every store whatever the cwd
   memory-eval --snapshot F         # gate against F, not the configured one
   memory-eval --update-snapshot    # re-baseline, deliberately
-Exit code = failures in the gating slices, or a refusal (a gating slice that
-compared nothing, an unreadable or absent snapshot); 0 = every case in every
-gating slice matched the snapshot, so it can gate CI. Every way of NOT gating
-is non-zero, which is the property that makes a green here mean something.
+Exit code = failures in the gating slices, capped at 255, or a refusal (a
+gating slice that compared nothing, an unreadable or absent snapshot); 0 =
+every case in every gating slice matched the snapshot, so it can gate CI. Every
+way of NOT gating is non-zero, which is the property that makes a green here
+mean something.
 """
 
 from __future__ import annotations
@@ -1024,7 +1025,9 @@ def main() -> None:
             "     an acceptance and exits 0 even on a red run\n"
             "  1  a case in a gating slice moved off the snapshot, or the run\n"
             "     could not start. The message names which, and what to do\n"
-            "     about it."
+            "     about it.\n"
+            "  N  N cases in gating slices moved off the snapshot; 255 is 255\n"
+            "     or more"
         ),
     )
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -1621,7 +1624,9 @@ def main() -> None:
             "             every gating case matched the snapshot — no re-baseline "
             "needed, whatever this change did to the memories"
         )
-    sys.exit(gate_fails)
+    # Saturated, because the status is taken mod 256 and 256 failures would
+    # otherwise exit 0. The summary line above carries the whole count.
+    sys.exit(min(gate_fails, 255))
 
 
 def cli() -> None:

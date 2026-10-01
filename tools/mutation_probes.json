@@ -3593,13 +3593,24 @@
       "name": "gating-failures-reach-the-exit-code",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "    sys.exit(gate_fails)",
+      "old": "    sys.exit(min(gate_fails, 255))",
       "new": "    sys.exit(0)",
       "tests": [
         "tests/test_memory_integrity.py::FixtureEvalSensitivity::test_an_outcome_that_moved_off_the_snapshot_reaches_the_exit_code"
       ],
       "why": "all CI reads of this check is the exit code, so a gating slice that regressed has to arrive there or the check asserts nothing",
       "smoke": true
+    },
+    {
+      "name": "a-failure-count-past-255-does-not-wrap-to-0",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    sys.exit(min(gate_fails, 255))",
+      "new": "    sys.exit(gate_fails)",
+      "tests": [
+        "tests/test_eval.py::test_a_failure_count_past_255_still_exits_non_zero"
+      ],
+      "why": "a process exit status is taken mod 256, so a count passed through uncapped reads 256 gating failures as a green run"
     },
     {
       "name": "an-unrecorded-case-gates",
