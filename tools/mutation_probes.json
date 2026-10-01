@@ -4563,7 +4563,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 681 probes",
+      "old": "the 684 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
@@ -6111,12 +6111,47 @@
       "name": "which-interpreter-runs-is-said-before-the-paths-it-names",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "            f'. The config\\'s \"interpreter\" and the {INTERPRETER_OPTION_KEY} '\n            \"install option name different pythons, and the config's field is \"\n            \"first in the wrapper's order, so the config's is the one that \"\n            f'runs: it records \"{recorded}\" and the option names '\n            f\"{_display_path(option)}\"\n",
-      "new": "            f'. The config records \"{recorded}\" and the '\n            f\"{INTERPRETER_OPTION_KEY} install option names \"\n            f\"{_display_path(option)} — the config's field is first in the \"\n            \"wrapper's order, so the config's is the one that runs\"\n",
+      "old": "    suffix = answer + paths\n",
+      "new": "    suffix = paths + answer\n",
       "tests": [
-        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[option]"
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[option]",
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[recorded]",
+        "tests/test_doctor.py::test_a_record_the_wrapper_refuses_is_not_said_to_run"
       ],
-      "why": "the detail is cut from the end at DETAIL_MAX_BYTES, so an answer placed after the two paths is lost whenever they are long"
+      "why": "the detail is cut from the end at DETAIL_MAX_BYTES, so an answer placed after the paths is lost whenever one of them is long"
+    },
+    {
+      "name": "a-python-that-cannot-serve-is-said-before-its-path",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                \"Retrieval cannot work here: the python that will run the hook \"\n                f\"{cannot}{answer}. That python is \"\n                f\"{_display_path(serving)}{paths}\",\n",
+      "new": "                f\"the python that will run the hook, {_display_path(serving)}, \"\n                f\"{cannot}. Retrieval cannot work here{answer}{paths}\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_recorded_python_that_cannot_serve_says_so_ahead_of_its_path"
+      ],
+      "why": "a FAIL row that names the serving python first lets a long path cut away both why it cannot serve and which route chose it"
+    },
+    {
+      "name": "a-record-the-wrapper-cannot-execute-is-not-said-to-run",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        honored = not shape and os.path.isfile(expanded) and os.access(\n",
+      "new": "        honored = True or not shape and os.path.isfile(expanded) and os.access(\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_record_the_wrapper_refuses_is_not_said_to_run"
+      ],
+      "why": "the wrapper falls through a record that is not an executable file, so a row that skips that check tells the adopter the config's python runs when the option's may be the one serving"
+    },
+    {
+      "name": "the-option-moves-nothing-only-under-an-honored-record",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            if honored:\n                repoint += (\n",
+      "new": "            if True:\n                repoint += (\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_record_the_wrapper_refuses_is_not_said_to_run"
+      ],
+      "why": "when the wrapper falls through the record, the install option is one of the routes it falls to, so saying a change to it moves nothing sends the adopter away from the route that serves"
     },
     {
       "name": "which-interpreter-runs-is-said-before-the-uv-checker-command",
