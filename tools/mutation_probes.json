@@ -3694,6 +3694,17 @@
       "why": "every case is gated against the corpus in front of it, so a recorded outcome that no longer holds is the one thing the gate exists to report, memory edit or not"
     },
     {
+      "name": "a-prompt-repeated-in-a-slice-is-refused",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            if prompt in prompts:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_prompt_repeated_in_a_slice_is_refused"
+      ],
+      "why": "rows are keyed by prompt, so a repeated prompt overwrites the first case's row and the run after a re-baseline fails the other case as drift, permanently"
+    },
+    {
       "name": "a-slice-of-unrecorded-cases-is-not-a-vacuous-one",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
@@ -4552,7 +4563,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 680 probes",
+      "old": "the 681 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"

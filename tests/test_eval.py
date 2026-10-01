@@ -306,6 +306,31 @@ def test_a_stale_row_reports_without_failing_and_wants_a_re_baseline(
     assert "no re-baseline needed" not in out.stdout, out.stdout
 
 
+@pytest.mark.parametrize("slice_", ["suite", "noinject", "vocab"])
+def test_a_prompt_repeated_in_a_slice_is_refused(corpus: Path, slice_: str) -> None:
+    """The snapshot keys a slice's rows by prompt, so a second case with the
+    same prompt overwrites the first one's row. A re-baseline then records one
+    of the two, and every later run fails the other as drift, which no
+    re-baseline can clear. One prompt per slice is the contract, refused at
+    load like a brief named twice."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    cases = state["eval"]["cases"][slice_]
+    twin = dict(cases[0])
+    if "file" in twin:
+        twin["file"] = "sprocket_alignment.md"
+    cases.append(twin)
+    config.write_text(json.dumps(state))
+
+    for args in ((), ("--update-snapshot",)):
+        out = _eval(corpus, *args)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert (
+            f"the {slice_} slice names the same prompt twice: {twin['prompt']!r}"
+            in out.stderr
+        ), out.stderr
+
+
 def test_update_snapshot_writes_the_outcomes_and_no_fingerprint(
     corpus: Path,
 ) -> None:

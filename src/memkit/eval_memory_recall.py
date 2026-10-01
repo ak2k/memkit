@@ -187,11 +187,16 @@ def cases_from_config(cfg) -> dict:
     `vocab` (paraphrases of suite cases, same targets). A slice the config
     omits is simply empty, which the vacuity check below then refuses to
     accept as a gating pass.
+
+    One prompt per slice, because the snapshot keys a slice's rows by prompt:
+    a repeat overwrites the first case's row, and the run after a re-baseline
+    fails whichever of the two the row no longer describes.
     """
     out: dict[str, list[dict]] = {"suite": [], "noinject": [], "vocab": []}
     for slice_, raw in (cfg.eval_cases or {}).items():
         if slice_ not in out:
             raise ConfigError(f"{cfg.path}: eval.cases has unknown slice {slice_!r}")
+        prompts: set[str] = set()
         for case in raw:
             prompt = case.get("prompt")
             if not isinstance(prompt, str) or not prompt:
@@ -200,6 +205,12 @@ def cases_from_config(cfg) -> dict:
                 raise ConfigError(
                     f"{cfg.path}: {slice_} case {prompt[:40]!r} names no file"
                 )
+            if prompt in prompts:
+                raise ConfigError(
+                    f"{cfg.path}: the {slice_} slice names the same prompt "
+                    f"twice: {prompt!r}"
+                )
+            prompts.add(prompt)
             out[slice_].append(case)
     return out
 
