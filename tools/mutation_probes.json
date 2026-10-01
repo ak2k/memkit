@@ -3707,6 +3707,52 @@
       "why": "an index answering from rows its skipped sync left behind matches a snapshot recorded before the memory edit, so the run passes the gate or writes the baseline over a corpus it never read"
     },
     {
+      "name": "an-all-stores-brief-row-about-a-searched-memory-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        return bool(gated_out and files) and all(\n",
+      "new": "        return bool(gated_out) or bool(gated_out and files) and all(\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches[memory-in-a-searched-store]",
+        "tests/test_eval.py::test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches[memory-in-a-searched-store]"
+      ],
+      "why": "reading a gated-out store took the whole long-brief slice out of the gate, so one brief about a memory this cwd searches could stop being served or start leaking inside the rates' one-case slack and exit 0"
+    },
+    {
+      "name": "an-all-stores-brief-row-about-a-gated-out-memory-reports",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n",
+      "new": "        if slice_ in gating:\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches[memory-only-in-the-gated-store]",
+        "tests/test_eval.py::test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches[memory-only-in-the-gated-store]"
+      ],
+      "why": "a brief row about a memory only a gated-out store holds is a delivery production refuses from this cwd, so gating on it fails --all-stores runs on behavior no session here can see"
+    },
+    {
+      "name": "a-served-brief-row-names-its-memory",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                    (case[\"file\"],),\n",
+      "new": "                    (),\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches[memory-only-in-the-gated-store]"
+      ],
+      "why": "the row's memory is what says whether production would make the delivery from this cwd, so a row that names none gates a delivery production refuses"
+    },
+    {
+      "name": "a-leaking-brief-row-names-what-it-leaked",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                    LONG_BRIEF_SLICE, case[\"name\"], case_record(mark), tuple(shown)\n",
+      "new": "                    LONG_BRIEF_SLICE, case[\"name\"], case_record(mark), ()\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches[memory-only-in-the-gated-store]"
+      ],
+      "why": "a leak is about the memories it injected, so a row that names none gates a leak only a gated-out store could produce"
+    },
+    {
       "name": "an-unrecorded-case-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
@@ -4611,7 +4657,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 689 probes",
+      "old": "the 693 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"

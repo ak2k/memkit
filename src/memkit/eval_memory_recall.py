@@ -1127,8 +1127,7 @@ def main() -> None:
     # long-brief slice is the only gate over subagent delivery, and it hands
     # `dirs` straight to `recall` — so a target sitting in a cwd-gated store
     # makes the served floor pass on a memory the real `_task_main` would
-    # answer `task:nodirs` for in the same environment. `--all-stores` is a
-    # reporting mode; it may not also be the thing that gates.
+    # answer `task:nodirs` for in the same environment.
     ungated = [p for p in roots if p not in permitted]
     snap_path = args.snapshot or repo / cfg.eval_snapshot
     prior = read_snapshot(snap_path)
@@ -1136,18 +1135,19 @@ def main() -> None:
     # inferred type is a frozenset of whatever literals the default happened to
     # carry.
     gating: frozenset[str] = cfg.eval_gating
-    if ungated and LONG_BRIEF_SLICE in gating:
-        # Said out loud, because every way of not having this gate is
-        # otherwise silent and a green run has to name the gates it ran. The
-        # slice still RUNS and still prints its rates; what it stops doing is
-        # deciding the exit code, since it would be deciding it on a delivery
-        # production refuses from this cwd.
+    # So a brief row whose memories are all in those stores reports rather
+    # than gates. A row about a memory this cwd searches is a delivery
+    # production makes, and it gates: the rates leave one such row moving
+    # inside their slack.
+    gated_out = ungated if LONG_BRIEF_SLICE in gating else []
+    if gated_out:
+        # Said out loud, because a green run has to name the gates it ran.
         print(
             "long briefs: --all-stores is reading "
-            + ", ".join(str(p) for p in ungated)
-            + ", which this cwd is gated out of — reporting only, not gating"
+            + ", ".join(str(p) for p in gated_out)
+            + ", which this cwd is gated out of — a brief row whose memories "
+            "are only there reports, not gates"
         )
-        gating = frozenset(s for s in gating if s != LONG_BRIEF_SLICE)
     # Say what this run measured. These lines are the difference between "the
     # hook missed" and "you ran the suite from somewhere the hook does not
     # look" or "you gated against some other snapshot".
@@ -1205,12 +1205,17 @@ def main() -> None:
     gate_fails = 0
     prior_cases = prior["cases"] if prior else {}
 
-    def against_snapshot(slice_: str, prompt: str, seen: dict) -> str:
+    def against_snapshot(
+        slice_: str, prompt: str, seen: dict, files: tuple = ()
+    ) -> str:
         """Record one case's outcome, diff it, and return the line's tail.
 
         The tail rides on the case's own line rather than in a block at the
         end because the two facts are read together: which case moved, and
         which of the three ways it moved.
+
+        `files` are the memories a brief row is about, which decide whether
+        production would make that delivery from this cwd at all.
         """
         nonlocal gate_fails
         seen_cases[slice_][prompt] = seen
@@ -1225,10 +1230,16 @@ def main() -> None:
         # one or retiering its memory the way to take that case out of the
         # gate until somebody happens to re-baseline. The sanctioned path is
         # --update-snapshot in the same change.
-        if slice_ in gating:
+        if slice_ in gating and not only_gated_out(files):
             gate_fails += 1
             return f"  <- {kind.upper()} ({why})"
         return f"  <- {kind.upper()} ({why}; not gating)"
+
+    def only_gated_out(files: tuple) -> bool:
+        return bool(gated_out and files) and all(
+            locate(permitted, name) is None and locate(gated_out, name) is not None
+            for name in files
+        )
 
     # Store searches that failed, one per store per call, summed over the run.
     # `recall` drops a dir that fails and returns the rest, so an index the run
@@ -1484,7 +1495,10 @@ def main() -> None:
                 if got["unanswerable"] and not ok:
                     mark = "BRIEF-NOINDEX"
                 moved = against_snapshot(
-                    LONG_BRIEF_SLICE, case["name"], case_record(mark, case["file"])
+                    LONG_BRIEF_SLICE,
+                    case["name"],
+                    case_record(mark, case["file"]),
+                    (case["file"],),
                 )
                 print(
                     f"[{mark:<12}] {case['name'][:58]:<58} -> "
@@ -1517,7 +1531,7 @@ def main() -> None:
                     )
                     mark = "BRIEF-NOINDEX"
                 moved = against_snapshot(
-                    LONG_BRIEF_SLICE, case["name"], case_record(mark)
+                    LONG_BRIEF_SLICE, case["name"], case_record(mark), tuple(shown)
                 )
                 saw = f"injected {shown}" if shown else "(nothing)"
                 print(f"[{mark:<12}] {case['name'][:58]:<58} -> {saw}{moved}")

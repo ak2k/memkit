@@ -53,7 +53,10 @@ def corpus(tmp_path: Path) -> Path:
 
 
 def _eval(
-    corpus: Path, *args: str, env: dict[str, str] | None = None
+    corpus: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
@@ -68,6 +71,7 @@ def _eval(
         text=True,
         timeout=300,
         env=env,
+        cwd=cwd,
     )
 
 
@@ -626,6 +630,82 @@ def test_the_slice_refuses_when_the_hook_process_delivers_nothing(
     # refusal above is the break's and not the check's.
     ok = _eval(corpus)
     assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def _gate_out_the_project_store(corpus: Path) -> None:
+    """Only the long-brief slice, with the project store gated to the fixture
+    root, so a run standing outside that root is gated out of it."""
+    _shape(corpus, "long-briefs-only")
+    config = corpus / "memkit.json"
+    data = json.loads(config.read_text())
+    for store in data["stores"]:
+        if store["id"] == "project":
+            store["cwd_gate"] = {"root": "self"}
+    config.write_text(json.dumps(data))
+
+
+@pytest.mark.parametrize(
+    "brief,code",
+    [("period-close-automation", 1), ("gearbox-acceptance", 0)],
+    ids=["memory-in-a-searched-store", "memory-only-in-the-gated-store"],
+)
+def test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches(
+    corpus: Path, tmp_path: Path, brief: str, code: int
+) -> None:
+    """`--all-stores` reads a store this cwd is gated out of, and a brief row
+    whose memory lives only there is a delivery production refuses from here,
+    so it reports. A row whose memory is in a store this cwd searches is one
+    production delivers, and one such row moving fails the run although the
+    coverage rate stays inside its slack."""
+    _gate_out_the_project_store(corpus)
+    state = _recorded(corpus)
+    for name, row in state["cases"][ev.LONG_BRIEF_SLICE].items():
+        if brief in name:
+            row["status"] = "BRIEF-MISS"
+    _record(corpus, state)
+
+    out = _eval(corpus, "--all-stores", cwd=tmp_path)
+    assert "which this cwd is gated out of" in out.stdout, out.stdout
+    row = _line(out.stdout, brief)
+    assert "<- MOVED (snapshot says BRIEF-MISS" in row, row
+    assert out.returncode == code, out.stdout + out.stderr
+    assert f"{code} gating failure(s) in longbrief" in out.stdout, out.stdout
+
+
+# A memory the warehouse-slotting brief is about, which no other brief is.
+SLOTTING = (
+    "---\nname: warehouse_slotting\ndescription: Re-slotting the north "
+    "warehouse before peak season puts the fast movers in the widest aisles "
+    "nearest the pack bench, argued from the picked-line history.\ntype: "
+    "reference\n---\n\n# Warehouse slotting\n\nWalk the aisle widths with a "
+    "tape before drawing a slotting plan; the racking drawing is out of "
+    "date.\nFast movers go to the wide aisles near the pack bench. Pickers walk "
+    "less when the catalogue's top fifteen percent sit together.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "store,code",
+    [("personal", 1), ("project", 0)],
+    ids=["memory-in-a-searched-store", "memory-only-in-the-gated-store"],
+)
+def test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches(
+    corpus: Path, tmp_path: Path, store: str, code: int
+) -> None:
+    """The leak half of the rule above. One new memory makes one quiet brief
+    leak, which is 1/16 and under the injection ceiling, so the row is the
+    only thing that can fail the run. It does when production would deliver
+    that memory from this cwd."""
+    _gate_out_the_project_store(corpus)
+    memory = corpus / "corpus" / store / "search" / "warehouse_slotting.md"
+    memory.write_text(SLOTTING, encoding="utf-8")
+
+    out = _eval(corpus, "--all-stores", cwd=tmp_path)
+    row = _line(out.stdout, "warehouse-slotting")
+    assert "<- MOVED (snapshot says BRIEF-QUIET" in row, row
+    assert "1/16 leaked" in _line(out.stdout, " leaked ("), out.stdout
+    assert out.returncode == code, out.stdout + out.stderr
+    assert f"{code} gating failure(s) in longbrief" in out.stdout, out.stdout
 
 
 def test_the_fixture_note_states_the_counts_it_has(corpus: Path) -> None:
