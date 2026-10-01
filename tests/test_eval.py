@@ -614,11 +614,11 @@ def test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes(
     counter: str,
     args: tuple,
 ) -> None:
-    """A memory the sync cannot read, or sits in a directory it cannot list,
+    """A memory the sync cannot read, or one in a directory it cannot list,
     keeps whatever rows the index already held for it, and a new one has none.
     The query answers without it, so a memory edit that should move a case
     matches the snapshot instead, and the run may neither pass the gate nor
-    become the baseline. The counter that says so is named in the refusal."""
+    become the baseline. The refusal names the counter that fired."""
     if os.geteuid() == 0:
         pytest.skip("root reads everything, so this cannot be staged")
     _shape(corpus, shape)
@@ -649,7 +649,7 @@ def test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes(
     assert "wrote" not in out.stdout, out.stdout
     assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
 
-    # Non-vacuity: read, the same memory moves the case.
+    # Non-vacuity: once the sync can read it, the same memory moves the case.
     synced = _eval(corpus, env=env)
     assert "scored on an index whose sync" not in synced.stderr, synced.stderr
     assert "<- MOVED" in _line(synced.stdout, needle), synced.stdout
