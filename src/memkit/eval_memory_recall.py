@@ -1538,15 +1538,20 @@ def main() -> None:
 
     # A case deleted from a list up there leaves its expectation behind, and a
     # stale expectation is the one kind of drift no case line can report —
-    # nothing iterates it any more. The one mismatch that does not gate: no
-    # case asks the row's question, so it leaves nothing ungated.
+    # nothing iterates it any more. In a gating slice it gates like any other
+    # mismatch, or deleting a case would take it out of the gate with the
+    # snapshot unchanged, and a memory edit could delete the one case it fails.
     for slice_, want in prior_cases.items():
         for prompt in want:
             if prompt not in seen_cases.get(slice_, {}):
                 tally["drift"] += 1
+                tail = "; not gating"
+                if slice_ in gating:
+                    gate_fails += 1
+                    tail = ""
                 print(
                     f"[DRIFT       ] {prompt[:58]:<58} -> in the snapshot's "
-                    f"{slice_} slice, not in the suite; not gating"
+                    f"{slice_} slice, not in the suite{tail}"
                 )
 
     ret, tot = scored["search"]

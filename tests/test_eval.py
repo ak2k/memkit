@@ -264,6 +264,11 @@ def test_a_gating_slice_of_unrecorded_cases_fails_on_each_of_them(
         {"prompt": "remind me what the parking code is"},
     ]
     config.write_text(json.dumps(state))
+    # A slice nobody has baselined, so no row of the cases it replaced is left
+    # to fail beside these three.
+    recorded = _recorded(corpus)
+    recorded["cases"]["noinject"] = {}
+    _record(corpus, recorded)
 
     out = _eval(corpus)
     assert out.returncode == 3, out.stdout + out.stderr
@@ -292,23 +297,37 @@ def test_a_moved_outcome_outside_the_gate_reports_without_failing(
     assert "no re-baseline needed" not in out.stdout, out.stdout
 
 
-def test_a_stale_row_reports_without_failing_and_wants_a_re_baseline(
-    corpus: Path,
+@pytest.mark.parametrize(
+    "slice_,code", [("noinject", 1), ("vocab", 0)], ids=["gating", "report-only"]
+)
+def test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one(
+    corpus: Path, slice_: str, code: int
 ) -> None:
-    """A case deleted from the config leaves its row behind. No case asks that
-    row's question, so it gates nothing, and the snapshot still carries it until
-    a re-baseline drops it."""
+    """A case deleted from the config leaves its row behind, and no case runs
+    it. A gating slice's rows are the record of what its gate checks, so in
+    one a row no case asks is a mismatch like any other: deleting the case
+    fails the run until a re-baseline drops the row in a diff a reviewer sees.
+    Outside the gate the row reports, and still wants that re-baseline."""
     config = corpus / "memkit.json"
     state = json.loads(config.read_text())
-    state["eval"]["cases"]["noinject"].pop()
+    gone = state["eval"]["cases"][slice_].pop()["prompt"]
     config.write_text(json.dumps(state))
 
     out = _eval(corpus)
-    assert out.returncode == 0, out.stdout + out.stderr
-    row = _line(out.stdout, "how do I reverse a linked list")
-    assert "not in the suite; not gating" in row, row
-    assert "--update-snapshot accepts these" in out.stdout, out.stdout
+    assert out.returncode == code, out.stdout + out.stderr
+    row = _line(out.stdout, gone[:40])
+    assert f"in the snapshot's {slice_} slice, not in the suite" in row, row
+    assert ("not gating" in row) is (code == 0), row
+    assert f"{code} gating failure(s)" in out.stdout, out.stdout
     assert "no re-baseline needed" not in out.stdout, out.stdout
+    if not code:
+        assert "--update-snapshot accepts these" in out.stdout, out.stdout
+        return
+    assert REVIEW_THEN_UPDATE in out.stdout, out.stdout
+    # The sanctioned path drops the row, and the gate is green after it.
+    assert _eval(corpus, "--update-snapshot").returncode == 0
+    assert gone not in _recorded(corpus)["cases"][slice_]
+    assert _eval(corpus).returncode == 0
 
 
 @pytest.mark.parametrize("slice_", ["suite", "noinject", "vocab"])
@@ -1057,23 +1076,18 @@ def test_one_leaked_brief_fails_the_run_even_under_the_rate_slack(
     `<- MOVED` and reaches the exit code, so a single new injection into an
     autonomous subagent's instructions is a red run. The two controls do
     different jobs: the rate bounds systemic loosening, the snapshot bounds
-    one case moving.
+    one case moving. A new memory is the edit, so every brief keeps its key and
+    the leak is the only row that moves.
     """
-    path = corpus / BRIEFS / "unserved" / "accessibility-audit.md"
-    _write_brief(
-        path,
-        path.read_text()
-        + "\n\nThe sprocket backlash after a gearbox rebuild traces to the "
-        "shim stack rather than chain tension, and the flange fasteners want "
-        "a crossing sequence over three passes.",
-    )
+    memory = corpus / "corpus" / "personal" / "search" / "warehouse_slotting.md"
+    memory.write_text(SLOTTING, encoding="utf-8")
     out = _eval(corpus)
-    assert out.returncode != 0, out.stdout
+    assert out.returncode == 1, out.stdout + out.stderr
     # The RATE held — this is the case the rate cannot catch.
     assert "1/16 leaked (0.062, ceiling 0.084)" in _rates(out.stdout), out.stdout
     assert "long-brief injection" not in out.stderr, out.stderr
     leak = next(ln for ln in out.stdout.splitlines() if "[BRIEF-LEAK  ]" in ln)
-    assert "not gating" not in leak, leak
+    assert "<- MOVED (snapshot says BRIEF-QUIET)" in leak, leak
     assert re.search(r"1 gating failure\(s\) in [\w/]*longbrief", out.stdout), out.stdout
 
 

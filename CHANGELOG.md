@@ -66,6 +66,10 @@ ordering.
   long-brief slice out of the gate, so one brief that stopped being served, or
   started leaking, passed inside the rates' one-case slack. Only a row whose
   memories are all in a gated-out store now reports instead of gating.
+- **Deleting a case from a gating slice fails `memory-eval` until a
+  re-baseline drops its row.** The row was reported as drift outside the gate,
+  so a change could delete the one gating case its memory edit would fail,
+  exit 0, and leave the snapshot as committed.
 - **`memkit doctor` says which interpreter runs before printing any path.** The
   row is cut at 600 bytes, and on a machine with long paths the cut removed
   the answer.
@@ -158,7 +162,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 693 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 695 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for

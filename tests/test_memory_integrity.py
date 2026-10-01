@@ -1367,12 +1367,12 @@ class EvalGateDecisionRules(unittest.TestCase):
 
     def test_nothing_outside_a_gating_slice_can_raise_the_failure_count(self) -> None:
         # The aggregation is a closure over main()'s locals and cannot be
-        # called from here, so its one load-bearing branch is read instead:
-        # every site that raises gate_fails sits under a test that consults
-        # the gating set, and that test filters on no kind. An increment
-        # written outside one is how a report-only slice starts failing CI;
-        # a kind named in the test is a mismatch the gate stopped seeing, and
-        # no case line in the output would say so for either.
+        # called from here, so the branches that raise the count are read
+        # instead: every site that raises gate_fails sits under a test that
+        # consults the gating set, and that test filters on no kind. An
+        # increment written outside one is how a report-only slice starts
+        # failing CI; a kind named in the test is a mismatch the gate stopped
+        # seeing, and no case line in the output would say so for either.
         tree = ast.parse(Path(ev.__file__).read_text())
         bumps = [
             n
@@ -1380,24 +1380,29 @@ class EvalGateDecisionRules(unittest.TestCase):
             if isinstance(n, ast.AugAssign)
             and getattr(n.target, "id", "") == "gate_fails"
         ]
-        self.assertEqual(len(bumps), 1, "the gate grew a second failure counter site")
-        guards = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and any(child is bumps[0] for child in ast.walk(node))
-            and "gating"
-            in {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
-        ]
-        self.assertTrue(
-            guards, "gate_fails is raised without consulting the gating set"
-        )
-        kinds = {
-            c.value for c in ast.walk(guards[0].test) if isinstance(c, ast.Constant)
-        }
-        self.assertEqual(
-            kinds, set(), f"the gating branch filters on {kinds}; every kind gates"
-        )
+        self.assertTrue(bumps, "nothing raises gate_fails")
+        for bump in bumps:
+            guards = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.If)
+                and any(child is bump for child in ast.walk(node))
+                and "gating"
+                in {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+            ]
+            self.assertTrue(
+                guards,
+                f"gate_fails is raised at line {bump.lineno} without consulting "
+                "the gating set",
+            )
+            kinds = {
+                c.value
+                for c in ast.walk(guards[0].test)
+                if isinstance(c, ast.Constant)
+            }
+            self.assertEqual(
+                kinds, set(), f"the gating branch filters on {kinds}; every kind gates"
+            )
 
     # --- the snapshot file itself ---
 

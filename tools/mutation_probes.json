@@ -3756,8 +3756,8 @@
       "name": "an-unrecorded-case-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        if slice_ in gating:\n            gate_fails += 1\n",
-      "new": "        if slice_ in gating and kind != \"new\":\n            gate_fails += 1\n",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and not only_gated_out(files) and kind != \"new\":\n            gate_fails += 1\n",
       "tests": [
         "tests/test_eval.py::test_an_unrecorded_case_gates_after_a_memory_edit",
         "tests/test_memory_integrity.py::EvalGateDecisionRules::test_nothing_outside_a_gating_slice_can_raise_the_failure_count"
@@ -3768,8 +3768,8 @@
       "name": "a-drifted-case-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        if slice_ in gating:\n            gate_fails += 1\n",
-      "new": "        if slice_ in gating and kind != \"drift\":\n            gate_fails += 1\n",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and not only_gated_out(files) and kind != \"drift\":\n            gate_fails += 1\n",
       "tests": [
         "tests/test_eval.py::test_a_memory_moved_between_tiers_gates",
         "tests/test_eval.py::test_a_case_pointed_at_another_memory_gates"
@@ -3780,8 +3780,8 @@
       "name": "a-moved-outcome-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        if slice_ in gating:\n            gate_fails += 1\n",
-      "new": "        if slice_ in gating and kind != \"moved\":\n            gate_fails += 1\n",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and not only_gated_out(files) and kind != \"moved\":\n            gate_fails += 1\n",
       "tests": [
         "tests/test_eval.py::test_a_moved_outcome_fails_and_says_how_to_attribute_it"
       ],
@@ -3828,7 +3828,7 @@
       "new": "    if not gate_fails:\n",
       "tests": [
         "tests/test_eval.py::test_a_moved_outcome_outside_the_gate_reports_without_failing",
-        "tests/test_eval.py::test_a_stale_row_reports_without_failing_and_wants_a_re_baseline"
+        "tests/test_eval.py::test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one[report-only]"
       ],
       "why": "a run that moved something outside the gate, or found a stale row, prints the re-baseline pointer; a pass line saying no re-baseline is needed right after it tells the reader to leave the snapshot as it is"
     },
@@ -3853,6 +3853,28 @@
         "tests/test_eval.py::test_the_committed_fixture_corpus_gates_clean"
       ],
       "why": "TASK_MAX_HITS binds on exactly one fixture brief, and the truncation sentence is the only thing telling an unattended subagent the cap bound"
+    },
+    {
+      "name": "a-stale-row-in-a-gating-slice-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                if slice_ in gating:\n                    gate_fails += 1\n",
+      "new": "                if False:\n                    gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one[gating]"
+      ],
+      "why": "a gating slice's rows are the record of what its gate checks, so a row whose case was deleted left ungated lets a memory edit drop the one case it fails with the snapshot unchanged and exit 0"
+    },
+    {
+      "name": "a-stale-row-outside-the-gate-reports",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                if slice_ in gating:\n                    gate_fails += 1\n",
+      "new": "                if True:\n                    gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one[report-only]"
+      ],
+      "why": "a row in a report-only slice decides no exit code while its case runs, so its deletion failing the run would make removing a non-gating case a red CI"
     },
     {
       "name": "an-expectation-nothing-iterates-is-reported",
@@ -4657,7 +4679,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 693 probes",
+      "old": "the 695 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
