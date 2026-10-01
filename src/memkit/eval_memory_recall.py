@@ -1224,10 +1224,11 @@ def main() -> None:
             return f"  <- {kind.upper()} ({why})"
         return f"  <- {kind.upper()} ({why}; not gating)"
 
-    # Dirs that failed to search, summed over the run. `recall` drops a dir
-    # that fails and returns the rest, so an index the run cannot open scores
-    # every search case a MISS and every abstention a pass, and `errs_lex` is
-    # the only thing that tells that apart from a retriever that found nothing.
+    # Store searches that failed, one per store per call, summed over the run.
+    # `recall` drops a dir that fails and returns the rest, so an index the run
+    # cannot open scores every search case a MISS and every abstention a pass,
+    # and `errs_lex` is the only thing that tells that apart from a retriever
+    # that found nothing.
     unanswerable = 0
 
     def search(prompt: str) -> list[str]:
@@ -1566,6 +1567,17 @@ def main() -> None:
                 f"{briefs['max_injected']:.3f} ceiling — the task gate is "
                 "rewriting spawns the corpus has nothing to say about"
             )
+    # A snapshot recorded against an index that could not answer matches that
+    # index case for case, so on a gating run the snapshot alone would read it
+    # as a pass, and a re-baseline would record the failure as the expected
+    # outcome. The failed searches are the only evidence either run has.
+    cannot_answer = (
+        f"{unanswerable} store search(es) failed in this run, and a store that "
+        "cannot answer scores as a miss or a clean abstention — rerun where "
+        "memkit can build its index"
+    )
+    if unanswerable and not args.update_snapshot:
+        rate_fail.append(f"refusing to gate: {cannot_answer}")
     loose = sum(tally.values()) - gate_fails
     parts = [f"{gate_fails} gating failure(s) in {'/'.join(sorted(gating))}"]
     if loose:
@@ -1605,16 +1617,9 @@ def main() -> None:
         print("             --update-snapshot accepts these, once you know why")
     if args.update_snapshot:
         # The same refusal as the two ahead of scoring, on a fact only scoring
-        # can find: a row scored against an index that could not answer
-        # records the failure as the expected outcome, and every later run
-        # that fails the same way then matches it.
+        # can find.
         if unanswerable:
-            sys.exit(
-                f"refusing to write a snapshot: {unanswerable} dir(s) failed "
-                "to search in this run, and a dir that cannot answer scores "
-                "as a miss or a clean abstention — rerun where memkit can "
-                "build its index"
-            )
+            sys.exit(f"refusing to write a snapshot: {cannot_answer}")
         write_snapshot(snap_path, seen_cases)
         # Exit 0 even on a red run: re-baselining is the act of accepting what
         # the run reported, and a nonzero exit here would make the accepted

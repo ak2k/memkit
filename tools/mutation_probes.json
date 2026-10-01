@@ -3624,13 +3624,25 @@
       "why": "a dir that cannot answer scores every search case a MISS and every abstention a pass, so a snapshot written from it records the failure as expected and the next run that fails the same way exits 0"
     },
     {
+      "name": "a-gating-run-refuses-an-index-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if unanswerable and not args.update_snapshot:\n",
+      "new": "    if False and not args.update_snapshot:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_gating_run_on_an_index_that_cannot_answer_fails"
+      ],
+      "why": "a snapshot recorded against an index that could not answer matches that index case for case, so a gating run on it fails no case and exits 0 over a retriever that searched nothing"
+    },
+    {
       "name": "the-prompt-path-counts-a-dir-that-could-not-answer",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
       "old": "        unanswerable += int(rec.get(\"errs_lex\") or 0)\n",
       "new": "",
       "tests": [
-        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing"
+        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing",
+        "tests/test_eval.py::test_a_gating_run_on_an_index_that_cannot_answer_fails"
       ],
       "why": "recall drops a dir that fails and returns the rest, so errs_lex is the only record that the suite, noinject and vocab rows were scored against an index that could not answer"
     },
@@ -4528,7 +4540,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 671 probes",
+      "old": "the 679 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"

@@ -13,6 +13,7 @@ anybody edits, and it read as green for most of this check's life.
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -286,21 +288,42 @@ def test_update_snapshot_writes_the_outcomes_and_no_fingerprint(
     assert _eval(corpus).returncode == 0
 
 
-@pytest.mark.parametrize("shape", ["as-shipped", "no-long-briefs", "long-briefs-only"])
-def test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing(
-    corpus: Path, tmp_path: Path, shape: str
-) -> None:
-    """A state directory the run cannot write is an index that cannot answer,
-    and `recall` returns no hits for it rather than raising: every search case
-    scores a MISS and every abstention and noinject case passes. Written, that
-    is a snapshot of the failure, and every later run that cannot write there
-    either matches it and exits 0.
+@contextlib.contextmanager
+def _an_index_that_cannot_answer(tmp_path: Path) -> Iterator[dict[str, str]]:
+    """An environment whose state directory the run cannot write.
 
-    Without the long-brief slice no rate fails either, so nothing but this
-    refusal stands between that run and an exit 0. With only that slice, the
-    task path's searches are the only ones that could have failed."""
+    `recall` returns no hits for such an index rather than raising, so every
+    search case scores a MISS and every abstention and noinject case passes.
+    """
     if os.geteuid() == 0:
         pytest.skip("root writes everything, so this cannot be staged")
+    cache = tmp_path / "cache"
+    state = cache / "memory-recall"
+    state.mkdir(parents=True)
+    state.chmod(0o500)
+    try:
+        yield {**os.environ, "XDG_CACHE_HOME": str(cache)}
+    finally:
+        state.chmod(0o700)
+
+
+def _store_searches(corpus: Path) -> int:
+    """How many store searches a run over this config makes: one per store for
+    every case that reaches retrieval. Every fixture case does, on the prompt
+    path; a brief does when the task path's own gate lets it through."""
+    data = json.loads((corpus / "memkit.json").read_text())
+    calls = sum(len(cases) for cases in data["eval"]["cases"].values())
+    if "long_briefs" in data["eval"]:
+        briefs = ev.long_brief_set(corpus / data["eval"]["long_briefs"])
+        calls += sum(
+            hook.task_gate(case["brief"]) is None
+            for half in ("served", "unserved")
+            for case in briefs[half]
+        )
+    return calls * len(data["stores"])
+
+
+def _shape(corpus: Path, shape: str) -> None:
     config = corpus / "memkit.json"
     data = json.loads(config.read_text())
     if shape == "no-long-briefs":
@@ -310,24 +333,60 @@ def test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing(
         data["eval"]["cases"] = {}
         data["eval"]["gating_slices"] = ["longbrief"]
     config.write_text(json.dumps(data))
-    cache = tmp_path / "cache"
-    state = cache / "memory-recall"
-    state.mkdir(parents=True)
-    state.chmod(0o500)
+
+
+@pytest.mark.parametrize("shape", ["as-shipped", "no-long-briefs", "long-briefs-only"])
+def test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing(
+    corpus: Path, tmp_path: Path, shape: str
+) -> None:
+    """Written, a run on an index that cannot answer is a snapshot of the
+    failure, and every later run that cannot write there either matches it.
+
+    Without the long-brief slice no rate fails either, so nothing but this
+    refusal stands between that run and an exit 0. With only that slice, the
+    task path's searches are the only ones that could have failed. The count
+    is of store searches, one per store per case, so a two-store fixture
+    reports its searches rather than dozens of stores."""
+    _shape(corpus, shape)
     before = (corpus / SNAPSHOT).read_bytes()
-    try:
-        out = _eval(
-            corpus,
-            "--update-snapshot",
-            env={**os.environ, "XDG_CACHE_HOME": str(cache)},
-        )
-    finally:
-        state.chmod(0o700)
+    with _an_index_that_cannot_answer(tmp_path) as env:
+        out = _eval(corpus, "--update-snapshot", env=env)
     assert "search tier: 0/" in out.stdout, out.stdout
     assert out.returncode != 0, out.stdout
-    assert "refusing to write a snapshot" in out.stderr, out.stderr
+    assert (
+        f"refusing to write a snapshot: {_store_searches(corpus)} store "
+        "search(es) failed in this run" in out.stderr
+    ), out.stderr
     assert "wrote" not in out.stdout, out.stdout
     assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+
+def test_a_gating_run_on_an_index_that_cannot_answer_fails(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The gating half of the refusal above. A snapshot that recorded what a
+    dead index scores — every search case a MISS, every abstention and noinject
+    case a pass — matches a dead index case for case, so the snapshot alone
+    reads that run as a pass over every gating case."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    for slice_ in ("suite", "vocab"):
+        for row in state["cases"][slice_].values():
+            row["status"] = {"PASS": "MISS", "VOCAB-FOUND": "VOCAB-MISS"}.get(
+                row["status"], row["status"]
+            )
+    _record(corpus, state)
+    with _an_index_that_cannot_answer(tmp_path) as env:
+        out = _eval(corpus, env=env)
+    assert "search tier: 0/" in out.stdout, out.stdout
+    assert "0 gating failure(s)" in out.stdout, out.stdout
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert (
+        f"refusing to gate: {_store_searches(corpus)} store search(es) failed "
+        "in this run" in out.stderr
+    ), out.stderr
+    assert "no re-baseline needed" not in out.stdout, out.stdout
 
 
 def test_a_snapshot_that_still_carries_a_fingerprint_reads_as_before(
