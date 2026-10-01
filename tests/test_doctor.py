@@ -4690,6 +4690,35 @@ def test_a_config_field_and_an_install_option_that_disagree_say_which_one_runs(
     assert f"memkit init --interpreter {option}" in row.remedy, row.remedy
 
 
+@pytest.mark.parametrize("long", ["option", "self", "uv-managed"])
+def test_which_python_runs_survives_the_detail_cap_whatever_the_paths(
+    profile, monkeypatch, long
+) -> None:
+    """The detail is cut from the end at DETAIL_MAX_BYTES, so a sentence placed
+    after a path is only as safe as that path is short, and an adopter's paths
+    are as long as their machine makes them. The answer carries no path and
+    has to come ahead of every one the row prints: the install option's, and
+    the checker's command on either route that prints one."""
+    deep = profile / ("d" * 200) / ("e" * 200)
+    deep.mkdir(parents=True)
+    recorded = _stub_python(profile, 0)
+    option = (deep if long == "option" else profile / "elsewhere") / "python3.12"
+    option.symlink_to(recorded)
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
+    machine = _machine(
+        profile, monkeypatch, _recorded_interpreter_config(profile, recorded)
+    )
+    if long != "option":
+        checker = deep / "python3"
+        checker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        checker.chmod(0o755)
+        machine._route = (_exec.CheckerRoute(long), str(checker))
+    (row,) = _only(doctor._PRODUCERS["interpreter"](machine), "interpreter")
+    assert row.status == doctor.INFO, (row.status, row.detail)
+    assert row.detail.endswith("..."), "the paths never reached the cap"
+    assert "the config's is the one that runs" in row.detail, row.detail
+
+
 def test_an_option_naming_the_recorded_python_is_not_a_disagreement(
     profile, monkeypatch
 ) -> None:

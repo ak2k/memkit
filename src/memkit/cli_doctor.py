@@ -5127,10 +5127,11 @@ def _interpreter(machine: Machine) -> list[Check]:
     repoint = ""
     if recorded and option and expand_home(option) != expand_home(recorded):
         disagrees = (
-            f'. The config records "{recorded}" and the '
-            f"{INTERPRETER_OPTION_KEY} install option names "
-            f"{_display_path(option)} — the config's field is first in the "
-            "wrapper's order, so the config's is the one that runs"
+            f'. The config\'s "interpreter" and the {INTERPRETER_OPTION_KEY} '
+            "install option name different pythons, and the config's field is "
+            "first in the wrapper's order, so the config's is the one that "
+            f'runs: it records "{recorded}" and the option names '
+            f"{_display_path(option)}"
         )
         repoint = (
             f"`memkit init --interpreter {_display_path(option)}` records the "
@@ -5139,10 +5140,10 @@ def _interpreter(machine: Machine) -> list[Check]:
             "config holds one."
         )
     # THE DISAGREEMENT FIRST, and it restates the recorded path rather than
-    # leaning on `honored` for it. This detail is bounded from the end, so the
-    # clause that must survive a cut is the one carrying both paths and the
-    # answer; two uv build paths and the sentence below them are past 600 bytes
-    # together, and in that order what got truncated away was which route wins.
+    # leaning on `honored` for it. This detail is bounded from the end, so
+    # which route wins is said before any path: ahead of the two it names, and
+    # ahead of the checker's command in the arms below. A path is as long as
+    # the adopter's machine makes it, and one long enough cut the answer away.
     suffix = disagrees + honored
     # WHICH PYTHON WILL ACTUALLY SERVE, and can it. The wrapper prefers the
     # config's record and does not probe it — that field is read on every
@@ -5216,9 +5217,9 @@ def _interpreter(machine: Machine) -> list[Check]:
             Check(
                 "interpreter",
                 INFO,
-                f"hook interpreter {running}; checker route {route.value} "
-                f"({where}), because no python on PATH meets {floor} and `uv` "
-                f"located one. Retrieval is unaffected{suffix}",
+                f"hook interpreter {running}{suffix}; checker route "
+                f"{route.value} ({where}), because no python on PATH meets "
+                f"{floor} and `uv` located one. Retrieval is unaffected",
                 repoint,
             )
         ]
@@ -5231,8 +5232,8 @@ def _interpreter(machine: Machine) -> list[Check]:
             Check(
                 "interpreter",
                 INFO,
-                f"hook interpreter {running}; checker route {route.value} "
-                f"({where}){suffix}",
+                f"hook interpreter {running}{suffix}; checker route "
+                f"{route.value} ({where})",
                 repoint,
             )
         ]

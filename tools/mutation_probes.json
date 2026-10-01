@@ -6073,6 +6073,39 @@
       "why": "the remedy for a directory outside every store arrives over a count its reader was never shown, which is how many memories are where nothing retrieves them"
     },
     {
+      "name": "which-interpreter-runs-is-said-before-the-paths-it-names",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            f'. The config\\'s \"interpreter\" and the {INTERPRETER_OPTION_KEY} '\n            \"install option name different pythons, and the config's field is \"\n            \"first in the wrapper's order, so the config's is the one that \"\n            f'runs: it records \"{recorded}\" and the option names '\n            f\"{_display_path(option)}\"\n",
+      "new": "            f'. The config records \"{recorded}\" and the '\n            f\"{INTERPRETER_OPTION_KEY} install option names \"\n            f\"{_display_path(option)} — the config's field is first in the \"\n            \"wrapper's order, so the config's is the one that runs\"\n",
+      "tests": [
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[option]"
+      ],
+      "why": "the detail is cut from the end at DETAIL_MAX_BYTES, so an answer placed after the two paths is lost whenever they are long"
+    },
+    {
+      "name": "which-interpreter-runs-is-said-before-the-uv-checker-command",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                f\"hook interpreter {running}{suffix}; checker route \"\n                f\"{route.value} ({where}), because no python on PATH meets \"\n                f\"{floor} and `uv` located one. Retrieval is unaffected\",\n",
+      "new": "                f\"hook interpreter {running}; checker route \"\n                f\"{route.value} ({where}), because no python on PATH meets \"\n                f\"{floor} and `uv` located one. Retrieval is unaffected{suffix}\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[uv-managed]"
+      ],
+      "why": "the checker's command is a path too, and printed ahead of the disagreement it can push which python runs past the cap"
+    },
+    {
+      "name": "which-interpreter-runs-is-said-before-the-self-checker-command",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                f\"hook interpreter {running}{suffix}; checker route \"\n                f\"{route.value} ({where})\",\n",
+      "new": "                f\"hook interpreter {running}; checker route \"\n                f\"{route.value} ({where}){suffix}\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[self]"
+      ],
+      "why": "the checker's command is a path too, and printed ahead of the disagreement it can push which python runs past the cap"
+    },
+    {
       "name": "packaging-a-floor-interpreter-is-taken-on-its-name",
       "module": "packaging",
       "file": "tests/test_packaging.py",
