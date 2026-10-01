@@ -3801,6 +3801,17 @@
       "why": "a store the task path's budget never reached was neither synced nor searched, and errs_lex does not count it"
     },
     {
+      "name": "the-cap-check-defers-to-a-sync-gap-refusal",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if got[\"unanswerable\"] or got[\"unsynced\"]:\n",
+      "new": "    if got[\"unanswerable\"]:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_refusal_does_not_also_say_the_cap_case_moved"
+      ],
+      "why": "a trip whose sync left a memory out can see fewer eligible memories than the cap case needs, and the cap check then tells the reader the corpus or the brief moved beside a refusal that says the index did not hold the corpus"
+    },
+    {
       "name": "an-all-stores-brief-row-about-a-searched-memory-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
@@ -4773,7 +4784,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 702 probes",
+      "old": "the 703 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"

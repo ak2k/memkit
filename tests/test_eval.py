@@ -656,6 +656,40 @@ def test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes(
     assert synced.returncode != 0, synced.stdout
 
 
+def test_a_sync_gap_refusal_does_not_also_say_the_cap_case_moved(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The over-cap brief clears the floor on four memories, and the sync
+    cannot read one of them, so that trip sees three. The refusal already says
+    the index did not hold the corpus; the cap check adding that the corpus or
+    the brief moved would be a wrong diagnosis of a right refusal."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything, so this cannot be staged")
+    _shape(corpus, "long-briefs-only")
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    memo = corpus / "corpus" / "project" / "search" / "flange_torque.md"
+    memo.write_text(UNRELATED, encoding="utf-8")
+    memo.chmod(0)
+    try:
+        out = _eval(corpus, env=env)
+    finally:
+        memo.chmod(0o600)
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert (
+        "scored on an index whose sync left memory files out of it (lex_spared)"
+        in out.stderr
+    ), out.stderr
+    assert "exists to drive the cap" not in out.stderr, out.stderr
+
+    # Non-vacuity: with the edit read, the corpus did move, and the cap check
+    # says so.
+    synced = _eval(corpus, env=env)
+    assert "scored on an index whose sync" not in synced.stderr, synced.stderr
+    assert "exists to drive the cap" in synced.stderr, synced.stderr
+
+
 def test_a_memory_over_the_size_cap_neither_refuses_the_gate_nor_the_write(
     corpus: Path, tmp_path: Path
 ) -> None:

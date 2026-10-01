@@ -815,10 +815,11 @@ def over_cap_faults(hook, case: dict, got: dict) -> list[str]:
     subagent.
     """
     faults = []
-    if got["unanswerable"]:
-        # The index could not answer, which is already refused above by its own
-        # name. Reporting it here as well would say the corpus or the brief has
-        # moved, which is a wrong diagnosis of a right refusal.
+    if got["unanswerable"] or got["unsynced"]:
+        # The index could not answer, or did not hold the corpus, and the run
+        # refuses on that by its own name. Reporting it here as well would say
+        # the corpus or the brief has moved, which is a wrong diagnosis of a
+        # right refusal.
         return faults
     if got["eligible"] <= hook.TASK_MAX_HITS:
         faults.append(
