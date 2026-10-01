@@ -1192,11 +1192,13 @@ class EvalGateDecisionRules(unittest.TestCase):
     """The retrieval eval's gate, exercised rather than described.
 
     eval-memory-recall.py decides which of a scoreboard's lines fail the
-    build, and that decision is four pure functions and one constant:
-    verdict(), case_record(), read_snapshot()/write_snapshot() and GATING. Nothing runs them on a prompt's path, so before this class the only
-    thing that exercised them was a full run — a real corpus, the hook, an FTS5
-    index and the committed snapshot — which reports that the number moved and
-    not which rule moved it. Every case here is one rule, hermetically.
+    build, and that decision is four pure functions and one config field:
+    verdict(), case_record(), read_snapshot()/write_snapshot() and
+    `eval.gating_slices`. Nothing runs them on a prompt's path, so without this
+    class the only thing that exercises them is a full run — a real corpus, the
+    hook, an FTS5 index and the committed snapshot — which reports that the
+    number moved and not which rule moved it. Every case here is one rule,
+    hermetically.
 
     Two seams are deliberately absent because they are not callable. The
     aggregation (`against_snapshot`) is a closure over main()'s locals, and the
@@ -1204,8 +1206,8 @@ class EvalGateDecisionRules(unittest.TestCase):
     sys.exit, and reaching either means running the whole harness against a
     fixture checkout with a hook, a store pair and an index in it. What is
     asserted instead is the pair the closure joins — the kind verdict() returns
-    and the slices GATING names — plus a structural read of the one branch that
-    joins them.
+    and the slices `eval.gating_slices` names — plus a structural read of the
+    one branch that joins them.
     """
 
     @classmethod
@@ -1441,8 +1443,8 @@ class EvalGateDecisionRules(unittest.TestCase):
         self.assertEqual(self.eval.read_snapshot(old), {"cases": cases})
 
     def test_a_written_snapshot_carries_no_fingerprint(self) -> None:
-        # Every re-baseline rewrote that one line, which made concurrent
-        # memory changes conflict, and with every case gated nothing read it.
+        # Nothing reads one, and a line every re-baseline rewrites makes any
+        # two concurrent memory changes conflict.
         path = self.tmp / "expect.json"
         self.eval.write_snapshot(path, self.cases())
         self.assertEqual(set(json.loads(path.read_text())), {"note", "cases"})

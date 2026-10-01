@@ -892,13 +892,14 @@ def test_one_leaked_brief_fails_the_run_even_under_the_rate_slack(
     corpus: Path,
 ) -> None:
     """The rate slack exists so a corpus can move by one case without a red
-    CI; it is not a licence for one new wrong injection.
+    CI; it is not a license for one new wrong injection.
 
-    One leak in twelve is 0.083, under the 0.084 ceiling, so the RATE holds —
-    and the per-case row said `<- REGRESSION ... not gating` and never reached
-    the exit code. That made a single new injection into an autonomous
-    subagent's instructions a green run. The two controls do different jobs:
-    the rate bounds systemic loosening, the snapshot bounds one case moving.
+    One leak in sixteen is 0.062, under the 0.084 ceiling, so the RATE holds,
+    and only the per-case row can fail the run: in a gating slice it reads
+    `<- MOVED` and reaches the exit code, so a single new injection into an
+    autonomous subagent's instructions is a red run. The two controls do
+    different jobs: the rate bounds systemic loosening, the snapshot bounds
+    one case moving.
     """
     path = corpus / BRIEFS / "unserved" / "accessibility-audit.md"
     _write_brief(
@@ -1146,7 +1147,7 @@ def test_a_neighbours_pointer_line_is_not_this_memory_being_delivered(
     """The names are read back out of the emitted bytes so that a pick the
     block dropped scores as a miss. Tested by containment against the whole
     line, a name another memory's name merely EXTENDS is found on that
-    neighbour's line and scores as delivered — the delivery gate satisfied by
+    neighbor's line and scores as delivered — the delivery gate satisfied by
     a pointer the subagent never received.
 
     Latent on the shipped fixtures, where no basename is a substring of
@@ -1219,7 +1220,7 @@ def test_the_slice_retrieves_under_the_deadline_production_passes(
     the divergence only shows against a consumer's own store under `--repo` or
     `--all-stores`, where the gate can wait and report served pointers that
     production abandons. Driven by moving the budget the gate is supposed to
-    honour — a hook copy whose `TASK_BUDGET_SECONDS` has already expired serves
+    honor — a hook copy whose `TASK_BUDGET_SECONDS` has already expired serves
     nothing, and a slice that passes no deadline cannot tell.
     """
     before = _eval(corpus)
@@ -1266,7 +1267,7 @@ def test_two_filenames_holding_one_brief_are_one_case(corpus: Path) -> None:
     states the invariant as "a CASE is a distinct brief".
 
     So two filenames holding the same text both counted toward the minimum
-    population and both fed the rate denominators — one behaviour repeated
+    population and both fed the rate denominators — one behavior repeated
     enough times to satisfy a bar written to mean that many briefs, which is
     the same defect the path check exists to prevent wearing a different
     filename.
@@ -1376,7 +1377,7 @@ def test_a_description_that_mentions_a_file_does_not_prove_it_was_delivered(
     Splitting a pointer line on whitespace and taking every token's basename
     makes any word of a surviving DESCRIPTION able to vouch for a pointer that
     was shed or never emitted — and descriptions in this corpus are file
-    contents, so a memory that mentions its neighbour by name is ordinary
+    contents, so a memory that mentions its neighbor by name is ordinary
     rather than contrived. The gate then reports subagent coverage for a
     pointer the subagent did not receive, which is the one thing this slice
     exists to measure.

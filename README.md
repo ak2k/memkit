@@ -439,14 +439,16 @@ one surface that reads the settings value directly, which is what lets it tell
   against the committed snapshot and fails on each case in a gating slice
   that moved off it: a changed outcome, an unrecorded case, or a target or
   tier that changed under the case *(from the next release)*. A memory edit
-  that moves no outcome passes with no re-baseline. The run cannot tell
-  whether the corpus or the retriever moved an outcome, so attribute a
-  failure by what the change edits: if it edits no memory store and no case
+  that moves no outcome passes with no re-baseline *(from the next release)*.
+  The run cannot tell whether the corpus or the retriever moved an outcome,
+  so a failing run prints the rule for attributing it by what the change
+  edits *(from the next release)*: if it edits no memory store and no case
   (a memkit bump, say), the retriever moved it and the snapshot must not be
   re-baselined; if it edits memories or cases, review what moved, then run
   `--update-snapshot` and commit the snapshot in the same change. The
-  snapshot carries no corpus fingerprint. An older one that does is read as
-  before, and the next `--update-snapshot` drops the field.
+  snapshot carries no corpus fingerprint; an older one that does is read as
+  before, and the next `--update-snapshot` drops the field
+  *(from the next release)*.
 - **`memkit`** — the dispatcher setup and diagnosis hang off, and the two
   subcommands the plugin exposes as skills:
   - `memkit doctor [--json]` — one envelope, one line per check. Read-only in

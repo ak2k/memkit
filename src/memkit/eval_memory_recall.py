@@ -68,17 +68,10 @@ target or tier changed under it (DRIFT). The last two gate because each leaves
 the snapshot recording an answer to a question the case no longer asks, and a
 case left ungated until somebody happens to re-baseline is an inert gate.
 
-The snapshot is the expected outcomes for the CURRENT corpus, and every run
-re-verifies all of them, so it records no fingerprint of the corpus it was
-written on. A fingerprint could only label a failure, and on a consumer that
-writes memories daily it is stale within hours, so the label would read "the
-corpus changed" on a memkit bump that touched no memory; every re-baseline
-would also rewrite it, and that one line is what made concurrent memory
-changes conflict. What must never come back is a run that stands down under a
-moved corpus. Exiting 0 there made "this run gated nothing" and "this run
-gated everything and found nothing wrong" the same answer to CI, and on the
-consumer measured on 2026-08-21 the first was the commoner state by an order
-of magnitude: 88 memory commits in 30 days against 3 re-baselines.
+The snapshot records outcomes, not the corpus they were measured on, and
+every run re-checks every case against the corpus in front of it. A run that
+gated nothing does not exit 0: to CI that exit has to mean every gating case
+was checked and held.
 
 So a memory edit that moves no outcome passes with no re-baseline. What a run
 cannot know is WHICH side moved an outcome, since the corpus and the retriever
@@ -103,11 +96,14 @@ Usage:
   memory-eval --all-stores         # every store whatever the cwd
   memory-eval --snapshot F         # gate against F, not the configured one
   memory-eval --update-snapshot    # re-baseline, deliberately
-Exit code = failures in the gating slices, capped at 255, or a refusal (a
-gating slice that compared nothing, an unreadable or absent snapshot); 0 =
-every case in every gating slice matched the snapshot, so it can gate CI. Every
-way of NOT gating is non-zero, which is the property that makes a green here
-mean something.
+Exit code = failures in the gating slices, counting MOVED, NEW and DRIFT
+cases, capped at 255; or 1 for a refusal. Before scoring: an unreadable or
+absent snapshot, or a config that cannot run. After scoring: a gating slice
+that ran no case, a long-brief rate outside its bounds or a failed delivery
+check in that slice, or a store search that failed, which refuses a gating
+run and an --update-snapshot alike. 0 = every case in every gating slice
+matched the snapshot, so it can gate CI. Every way of NOT gating is non-zero,
+which is the property that makes a green here mean something.
 """
 
 from __future__ import annotations
@@ -599,7 +595,7 @@ def _delivered_names(appended: str) -> set[str]:
     Off the path field alone. Taking every whitespace token's basename made
     any word of a surviving DESCRIPTION able to vouch for a pointer that was
     shed or never emitted, and descriptions here are file contents — a memory
-    that names its neighbour is ordinary, not contrived. The gate would then
+    that names its neighbor is ordinary, not contrived. The gate would then
     report subagent coverage for a pointer the subagent never received, which
     is the single thing this slice exists to measure.
 
@@ -956,7 +952,7 @@ def write_snapshot(path: pathlib.Path, cases: dict[str, dict[str, dict]]) -> Non
 
     ensure_ascii=False and no key sort: the point of this file is that a
     human reads its diff, and \\u2014-escaped prompts sorted away from their
-    neighbours are a file that only a machine can review.
+    neighbors are a file that only a machine can review.
     """
     body = {
         "note": (
@@ -1033,12 +1029,16 @@ def main() -> None:
             "\n"
             "exit codes:\n"
             "  0  the gating slices held — or a snapshot was written, which is\n"
-            "     an acceptance and exits 0 even on a red run\n"
-            "  1  a case in a gating slice moved off the snapshot, or the run\n"
-            "     could not start. The message names which, and what to do\n"
-            "     about it.\n"
-            "  N  N cases in gating slices moved off the snapshot; 255 is 255\n"
-            "     or more"
+            "     an acceptance and exits 0 even on a red run unless the\n"
+            "     long-brief slice failed a rate or a delivery check\n"
+            "  1  one case in a gating slice moved off the snapshot, or a\n"
+            "     refusal: the run could not start, a gating slice ran no\n"
+            "     case, the long-brief slice failed a rate or a delivery\n"
+            "     check, or a store search failed, which refuses gating and\n"
+            "     --update-snapshot alike. The message names which, and what\n"
+            "     to do about it.\n"
+            "  N  N cases in gating slices moved off the snapshot, counting\n"
+            "     MOVED, NEW and DRIFT; 255 is 255 or more"
         ),
     )
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -1281,7 +1281,7 @@ def main() -> None:
         # Three ways to miss, and they call for different fixes: never
         # retrieved (query/description), retrieved then floored (floor), or
         # retrieved and above the floor but ranked out of the pointer slots
-        # (rank — usually a description competing badly against neighbours).
+        # (rank — usually a description competing badly against neighbors).
         note = ""
         if not ok and tier == "search":
             if expected in passed:
@@ -1612,9 +1612,9 @@ def main() -> None:
         )
     elif any(tally.values()) and not args.update_snapshot:
         # Outside the gate, the pointer still fires: an outcome moved in a
-        # report-only slice is sometimes the one you meant, and the re-baseline
-        # is how you say so — leaving it off made the fix look like it had no
-        # sanctioned path.
+        # report-only slice is sometimes the one you meant, and a stale row
+        # stays until a re-baseline drops it, so the line names the sanctioned
+        # path for both.
         print("             --update-snapshot accepts these, once you know why")
     if args.update_snapshot:
         # The same refusal as the two ahead of scoring, on a fact only scoring
