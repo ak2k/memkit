@@ -226,12 +226,12 @@ def test_a_case_pointed_at_another_memory_gates(corpus: Path) -> None:
     assert "1 gating failure(s)" in out.stdout, out.stdout
 
 
-def test_a_gating_slice_that_compared_nothing_is_refused_after_a_memory_edit(
+def test_a_gating_slice_that_ran_no_case_is_refused_after_a_memory_edit(
     corpus: Path,
 ) -> None:
-    """Zero failures and zero comparisons print the same exit code, and an
-    empty slice would buy a pass by having no expectations to fail. That holds
-    in every run, a memory edit included."""
+    """Zero failures and zero cases print the same exit code, and an empty
+    slice would buy a pass by having no expectations to fail. That holds in
+    every run, a memory edit included."""
     _drift(corpus)
     config = corpus / "memkit.json"
     state = json.loads(config.read_text())
@@ -240,16 +240,38 @@ def test_a_gating_slice_that_compared_nothing_is_refused_after_a_memory_edit(
 
     out = _eval(corpus)
     assert out.returncode != 0, out.stdout
-    assert "nothing was gated: the noinject slice compared 0 of 0" in out.stderr, (
+    assert "nothing was gated: the noinject slice ran 0 cases" in out.stderr, (
         out.stderr
     )
+
+
+def test_a_gating_slice_of_unrecorded_cases_fails_on_each_of_them(
+    corpus: Path,
+) -> None:
+    """A slice whose every case is new ran every one of them and each one
+    failed, so the run reports that many gating failures. It gated all of
+    them, and a refusal saying it gated nothing would misstate the run."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["cases"]["noinject"] = [
+        {"prompt": "what time zone is the standup in"},
+        {"prompt": "who is buying lunch on friday"},
+        {"prompt": "remind me what the parking code is"},
+    ]
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "3 gating failure(s)" in out.stdout, out.stdout
+    assert "nothing was gated" not in out.stderr, out.stderr
 
 
 def test_a_moved_outcome_outside_the_gate_reports_without_failing(
     corpus: Path,
 ) -> None:
     """`vocab` is not a gating slice in the fixture config, so its rows report
-    and never decide the exit code, whatever else the change edited."""
+    and never decide the exit code, whatever else the change edited. Something
+    did move, so the pass does not say the snapshot needs no re-baseline."""
     _drift(corpus)
     state = _recorded(corpus)
     for row in state["cases"]["vocab"].values():
@@ -262,6 +284,26 @@ def test_a_moved_outcome_outside_the_gate_reports_without_failing(
     assert "<- MOVED (snapshot says VOCAB-MISS; not gating)" in row, row
     assert "--update-snapshot accepts these" in out.stdout, out.stdout
     assert NO_REBASELINE not in out.stdout
+    assert "no re-baseline needed" not in out.stdout, out.stdout
+
+
+def test_a_stale_row_reports_without_failing_and_wants_a_re_baseline(
+    corpus: Path,
+) -> None:
+    """A case deleted from the config leaves its row behind. No case asks that
+    row's question, so it gates nothing, and the snapshot still carries it until
+    a re-baseline drops it."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["cases"]["noinject"].pop()
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode == 0, out.stdout + out.stderr
+    row = _line(out.stdout, "how do I reverse a linked list")
+    assert "not in the suite; not gating" in row, row
+    assert "--update-snapshot accepts these" in out.stdout, out.stdout
+    assert "no re-baseline needed" not in out.stdout, out.stdout
 
 
 def test_update_snapshot_writes_the_outcomes_and_no_fingerprint(

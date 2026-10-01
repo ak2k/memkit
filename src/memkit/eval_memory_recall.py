@@ -1175,22 +1175,17 @@ def main() -> None:
     tally = {"moved": 0, "drift": 0, "new": 0}
     # A name nobody has is a refusal, not a KeyError. `gating_slices` is
     # hand-typed — README tells an adopter to add `longbrief` to it — and the
-    # vacuity check below indexes `compared` with whatever the config carries,
-    # so a typo ended a fully green run with a traceback and exit 1, which CI
-    # reads as the regression that did not happen. Refused here rather than
-    # made lenient there: `compared.get(s, 0)` would stop the crash by counting
-    # a typo as a satisfied gate, which is the failure the vacuity check exists
-    # to prevent.
+    # vacuity check below indexes `seen_cases` with whatever the config
+    # carries, so a typo would end a fully green run with a traceback and exit
+    # 1, which CI reads as a regression. Refused here rather than made lenient
+    # there: `seen_cases.get(s)` would stop the crash by counting a typo as a
+    # satisfied gate, which is the failure the vacuity check exists to prevent.
     unknown = sorted(gating - set(seen_cases))
     if unknown:
         sys.exit(
             f"{cfg.path}: eval.gating_slices names {', '.join(unknown)} — "
             f"no such slice; the slices are {', '.join(sorted(seen_cases))}"
         )
-    # Per SLICE, how many cases actually met a recorded expectation. Counted
-    # because "0 failures" and "0 comparisons" print the same exit code, and
-    # the second is a gate that stopped looking — see the vacuity check below.
-    compared = dict.fromkeys(seen_cases, 0)
     gate_fails = 0
     prior_cases = prior["cases"] if prior else {}
 
@@ -1205,11 +1200,6 @@ def main() -> None:
         seen_cases[slice_][prompt] = seen
         want = prior_cases.get(slice_, {}).get(prompt)
         kind, why = verdict(seen, want)
-        # Only these two answered the snapshot's question — the rest are the
-        # snapshot declining to answer, and the vacuity check counts them as
-        # such however they exit.
-        if kind in ("ok", "moved"):
-            compared[slice_] += 1
         if kind == "ok":
             return ""
         tally[kind] += 1
@@ -1632,23 +1622,20 @@ def main() -> None:
         # lands first, so the remedy for a moved outcome is not blocked by this
         # — the run just does not report success.
         sys.exit("; ".join(rate_fail) if rate_fail else 0)
-    # A gating slice that compared nothing is the failure mode a green cannot
-    # show: zero failures and zero comparisons print the same exit code, and
-    # an empty or missing slice would otherwise buy a pass by having no
-    # expectations to fail. Asked of every run, since every run compares every
-    # case against the corpus in front of it.
-    vacuous = [s for s in sorted(gating) if not compared[s]]
+    # A gating slice that ran no case is the failure mode a green cannot show:
+    # zero failures and zero cases print the same exit code, and an empty or
+    # missing slice would otherwise buy a pass by having no expectations to
+    # fail. Every case a slice ran either matched or counted as a failure, so
+    # a slice that ran any case gated it.
+    vacuous = [s for s in sorted(gating) if not seen_cases[s]]
     if vacuous:
         sys.exit(
             "nothing was gated: "
-            + "; ".join(
-                f"the {s} slice compared 0 of {len(seen_cases[s])} case(s) "
-                "against the snapshot"
-                for s in vacuous
-            )
-            + " — re-baseline with --update-snapshot and commit the result"
+            + "; ".join(f"the {s} slice ran 0 cases" for s in vacuous)
+            + " — give each one cases in eval.cases, or take it out of "
+            "eval.gating_slices"
         )
-    if not gate_fails:
+    if not any(tally.values()):
         # Said on the pass because it is the commonest result of a memory edit
         # and needs no re-baseline: the snapshot is still true as written.
         print(

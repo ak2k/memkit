@@ -44,6 +44,12 @@ ordering.
   snapshot that recorded the same failure matched it case for case, so the run
   exited 0 having searched nothing. It now refuses with the number of store
   searches that failed.
+- **A gating slice whose every case is new or drifted fails once per case.**
+  Its cases had no recorded outcome to match, so the run refused the slice as
+  one that gated nothing and exited 1. Every case it ran is a gating failure,
+  so it exits with their count. The refusal is kept for a gating slice that
+  ran no case at all, and now says to give it cases or take it out of
+  `eval.gating_slices`, since a re-baseline cannot fill an empty slice.
 - **`memkit doctor` says which interpreter runs before printing any path.** The
   row is cut at 600 bytes, and on a machine with long paths the cut removed
   the answer.
@@ -128,7 +134,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 679 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 680 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for

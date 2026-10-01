@@ -3694,15 +3694,15 @@
       "why": "every case is gated against the corpus in front of it, so a recorded outcome that no longer holds is the one thing the gate exists to report, memory edit or not"
     },
     {
-      "name": "a-moved-outcome-counts-as-compared",
+      "name": "a-slice-of-unrecorded-cases-is-not-a-vacuous-one",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        if kind in (\"ok\", \"moved\"):\n",
-      "new": "        if kind in (\"ok\",):\n",
+      "old": "    vacuous = [s for s in sorted(gating) if not seen_cases[s]]\n",
+      "new": "    vacuous = [s for s in sorted(gating) if not seen_cases[s].keys() & prior_cases.get(s, {}).keys()]\n",
       "tests": [
-        "tests/test_eval.py::test_a_moved_outcome_fails_and_says_how_to_attribute_it"
+        "tests/test_eval.py::test_a_gating_slice_of_unrecorded_cases_fails_on_each_of_them"
       ],
-      "why": "a moved outcome answered the snapshot's question; uncounted, a slice whose every case moved is refused as one that compared nothing, and the attribution rule never reaches the reader"
+      "why": "every case a slice ran either matched or failed the run, so keying the check on the snapshot's rows refuses a slice of new cases as one that gated nothing, exiting 1 under a message that contradicts the failures it just counted"
     },
     {
       "name": "the-vacuity-check-asks-every-run",
@@ -3711,9 +3711,21 @@
       "old": "    if vacuous:\n        sys.exit(\n",
       "new": "    if False:\n        sys.exit(\n",
       "tests": [
-        "tests/test_eval.py::test_a_gating_slice_that_compared_nothing_is_refused_after_a_memory_edit"
+        "tests/test_eval.py::test_a_gating_slice_that_ran_no_case_is_refused_after_a_memory_edit"
       ],
-      "why": "zero failures and zero comparisons print the same exit code, so an empty gating slice would buy a pass by having no expectations to fail"
+      "why": "zero failures and zero cases print the same exit code, so an empty gating slice would buy a pass by having no expectations to fail"
+    },
+    {
+      "name": "the-pass-line-needs-nothing-moved",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if not any(tally.values()):\n",
+      "new": "    if not gate_fails:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_moved_outcome_outside_the_gate_reports_without_failing",
+        "tests/test_eval.py::test_a_stale_row_reports_without_failing_and_wants_a_re_baseline"
+      ],
+      "why": "a run that moved something outside the gate, or found a stale row, prints the re-baseline pointer; a pass line saying no re-baseline is needed right after it tells the reader to leave the snapshot as it is"
     },
     {
       "name": "a-failing-run-names-the-attribution-rule",
@@ -4540,7 +4552,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 679 probes",
+      "old": "the 680 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
