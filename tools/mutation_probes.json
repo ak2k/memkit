@@ -4563,7 +4563,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 684 probes",
+      "old": "the 685 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
@@ -6124,12 +6124,23 @@
       "name": "a-python-that-cannot-serve-is-said-before-its-path",
       "module": "doctor",
       "file": "src/memkit/cli_doctor.py",
-      "old": "                \"Retrieval cannot work here: the python that will run the hook \"\n                f\"{cannot}{answer}. That python is \"\n                f\"{_display_path(serving)}{paths}\",\n",
+      "old": "                f\"Retrieval cannot work here{answer}. The python that will run \"\n                f\"the hook {cannot}. That python is \"\n                f\"{_display_path(serving)}{paths}\",\n",
       "new": "                f\"the python that will run the hook, {_display_path(serving)}, \"\n                f\"{cannot}. Retrieval cannot work here{answer}{paths}\",\n",
       "tests": [
         "tests/test_doctor.py::test_a_recorded_python_that_cannot_serve_says_so_ahead_of_its_path"
       ],
       "why": "a FAIL row that names the serving python first lets a long path cut away both why it cannot serve and which route chose it"
+    },
+    {
+      "name": "a-probe-exception-is-said-after-which-python-runs",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                f\"Retrieval cannot work here{answer}. The python that will run \"\n                f\"the hook {cannot}. That python is \"\n",
+      "new": "                \"Retrieval cannot work here: the python that will run the hook \"\n                f\"{cannot}{answer}. That python is \"\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_probe_that_cannot_start_leaves_which_python_runs_ahead_of_its_path"
+      ],
+      "why": "a probe that could not start quotes an exception naming the path in full, so placed ahead of the answer a long path cuts which python runs away"
     },
     {
       "name": "a-record-the-wrapper-cannot-execute-is-not-said-to-run",

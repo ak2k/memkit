@@ -64,7 +64,8 @@ ordering.
   below it, the install option among them, yet the row said the config's
   python runs and that changing the option moves nothing. It now leads with
   why the record is passed over, and the row for a python that cannot serve
-  says why before it names the path.
+  says which python runs before why it cannot, since a probe that could not
+  start quotes the path in full.
 
 ## [0.5.1] — 2026-09-14
 
@@ -146,7 +147,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 684 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 685 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for

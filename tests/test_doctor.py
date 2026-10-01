@@ -4804,6 +4804,41 @@ def test_a_recorded_python_that_cannot_serve_says_so_ahead_of_its_path(
     assert CONFIG_RUNS in row.detail, row.detail
 
 
+@pytest.mark.parametrize("raises", ["inside-cwd", "not-a-program"])
+def test_a_probe_that_cannot_start_leaves_which_python_runs_ahead_of_its_path(
+    profile, monkeypatch, raises
+) -> None:
+    """A probe that cannot start the recorded python reports the exception, and
+    both exceptions it can meet name the path in full. Placed ahead of which
+    python runs, a long path is enough to cut that answer away."""
+    if raises == "inside-cwd":
+        # `_execute` refuses a program inside the directory the session
+        # stands in, and the fixture stands in `project`.
+        deep = profile / "project" / ("d" * 200) / ("e" * 200)
+        deep.mkdir(parents=True)
+        body = "#!/bin/sh\nexit 0\n"
+    else:
+        deep = _deep(profile)
+        body = "no interpreter line, so the kernel will not run it\n"
+    recorded = deep / "python3"
+    recorded.write_text(body, encoding="utf-8")
+    recorded.chmod(0o755)
+    option = profile / "elsewhere" / "python3.12"
+    option.parent.mkdir(parents=True, exist_ok=True)
+    option.symlink_to(_stub_python(profile, 0))
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
+    path = _recorded_interpreter_config(profile, str(recorded))
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, path)),
+        "interpreter",
+    )
+    assert row.status == doctor.FAIL, (row.status, row.detail)
+    assert row.detail.endswith("..."), "the path never reached the cap"
+    assert "Retrieval cannot work here" in row.detail, row.detail
+    assert "could not be started" in row.detail, row.detail
+    assert CONFIG_RUNS in row.detail, row.detail
+
+
 def test_an_option_naming_the_recorded_python_is_not_a_disagreement(
     profile, monkeypatch
 ) -> None:

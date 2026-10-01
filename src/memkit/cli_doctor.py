@@ -5181,12 +5181,14 @@ def _interpreter(machine: Machine) -> list[Check]:
     else:
         cannot = interpreter_refusal(serving)
     if cannot:
+        # After the answer, because a probe that could not start quotes the
+        # exception, and both it can meet name the path in full.
         return [
             Check(
                 "interpreter",
                 FAIL,
-                "Retrieval cannot work here: the python that will run the hook "
-                f"{cannot}{answer}. That python is "
+                f"Retrieval cannot work here{answer}. The python that will run "
+                f"the hook {cannot}. That python is "
                 f"{_display_path(serving)}{paths}",
                 INTERPRETER_ROUTES,
                 actor=USER,
