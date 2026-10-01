@@ -3659,52 +3659,146 @@
       "why": "the long-brief rows are written into the same snapshot, so a brief scored against an index that could not answer has to block the write as a prompt would"
     },
     {
-      "name": "the-prompt-path-counts-a-sync-that-lost-the-lock",
+      "name": "the-prompt-path-counts-its-sync-gaps",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        stale += int(rec.get(\"lex_busy_skip\") or 0)\n",
+      "old": "        unsynced.append(sync_gaps(rec))\n",
       "new": "",
       "tests": [
         "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[prompt-path-gate]",
-        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[prompt-path-write]"
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[prompt-path-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-write]"
       ],
-      "why": "a sync that loses the write lock is skipped and the query answers from rows that can predate the memory edit, so the suite, noinject and vocab rows can match the snapshot on a corpus the run never read"
+      "why": "a search whose sync left a memory out of the index answers from rows that can predate the memory edit, or without the memory at all, so the suite, noinject and vocab rows can match the snapshot on a corpus the run never read"
     },
     {
-      "name": "the-task-path-records-a-sync-that-lost-the-lock",
+      "name": "the-task-path-records-its-sync-gaps",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "    stale = int(rec.get(\"lex_busy_skip\") or 0)\n",
-      "new": "    stale = 0\n",
+      "old": "    unsynced = sync_gaps(rec)\n",
+      "new": "    unsynced = ()\n",
       "tests": [
         "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-gate]",
-        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-write]"
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-write]"
       ],
-      "why": "a brief's trip reads the busy skip off its own recall, so a record that drops it scores the long-brief slice against rows that can predate the corpus"
+      "why": "a brief's trip reads its sync gaps off its own recall, so a record that drops them scores the long-brief slice against an index that may not hold the corpus"
     },
     {
-      "name": "the-task-path-counts-a-sync-that-lost-the-lock",
+      "name": "the-task-path-counts-its-sync-gaps",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "                stale += got[\"stale\"]\n",
+      "old": "                unsynced.append(got[\"unsynced\"])\n",
       "new": "",
       "occurrences": 2,
       "tests": [
         "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-gate]",
-        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-write]"
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-write]"
       ],
-      "why": "the long-brief rows are gated and written like any other, so a brief answered without its sync has to refuse the run as a prompt would"
+      "why": "the long-brief rows are gated and written like any other, so a brief scored on an index its sync did not bring up to date has to refuse the run as a prompt would"
     },
     {
-      "name": "a-search-answered-without-its-sync-refuses-the-run",
+      "name": "a-case-scored-on-an-unsynced-index-refuses-the-run",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "    if stale:\n",
+      "old": "    if behind:\n",
       "new": "    if False:\n",
       "tests": [
-        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes"
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes"
       ],
-      "why": "an index answering from rows its skipped sync left behind matches a snapshot recorded before the memory edit, so the run passes the gate or writes the baseline over a corpus it never read"
+      "why": "an index its sync did not bring up to date matches a snapshot recorded before the memory edit, so the run passes the gate or writes the baseline over a corpus it never read"
+    },
+    {
+      "name": "a-sync-that-lost-the-lock-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_busy_skip\",  # lost the write lock to another process\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[busy]"
+      ],
+      "why": "a sync skipped for the write lock answers from the rows the index held before the memory edit under test"
+    },
+    {
+      "name": "a-memory-the-sync-could-not-read-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if int(rec.get(\"lex_spared\") or 0) > int(rec.get(\"lex_oversize\") or 0):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-write]",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[spared-past-oversize]"
+      ],
+      "why": "an unreadable memory keeps whatever rows it had and a new one has none, so the run scores the corpus without the edit while every other counter stays 0"
+    },
+    {
+      "name": "a-memory-over-the-size-cap-is-not-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "int(rec.get(\"lex_spared\") or 0) > int(rec.get(\"lex_oversize\") or 0)",
+      "new": "int(rec.get(\"lex_spared\") or 0) > 0",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_over_the_size_cap_neither_refuses_the_gate_nor_the_write",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[oversize-only]"
+      ],
+      "why": "the index declines a file over the cap on every run and sweeps its rows, so counting it as a gap would refuse every run on a store that holds one, with no rerun able to clear it"
+    },
+    {
+      "name": "an-unlisted-directory-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_unwalked\",  # a directory it could not list\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-write]",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[unwalked]"
+      ],
+      "why": "a memory under a directory the walk could not list is never indexed and spares no row, so lex_unwalked is the only counter that fires"
+    },
+    {
+      "name": "files-the-sync-ran-out-of-budget-for-are-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_deadline\",  # files it ran out of budget to read\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[deadline]"
+      ],
+      "why": "a truncated sync answers from the slice it committed, and lex_deadline is the counter that names the budget as the cause"
+    },
+    {
+      "name": "an-unfinished-sweep-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_unswept\",  # rows of deleted files it ran out of budget to remove\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[unswept]"
+      ],
+      "why": "rows a sweep did not delete still answer for memories the corpus no longer holds, and no other counter fires for them"
+    },
+    {
+      "name": "a-store-skipped-for-budget-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"skipped_lex\",  # a store it ran out of budget to sync and search at all\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[store-skipped]"
+      ],
+      "why": "a store the task path's budget never reached was neither synced nor searched, and errs_lex does not count it"
     },
     {
       "name": "an-all-stores-brief-row-about-a-searched-memory-gates",
@@ -4679,7 +4773,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 695 probes",
+      "old": "the 702 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"

@@ -100,11 +100,11 @@ Exit code = failures in the gating slices, counting MOVED, NEW and DRIFT
 cases, capped at 255; or 1 for a refusal. Before scoring: an unreadable or
 absent snapshot, or a config that cannot run. After scoring: a gating slice
 that ran no case, a long-brief rate outside its bounds or a failed delivery
-check in that slice, or a store search that failed or answered without its
-sync, which refuses a gating run and an --update-snapshot alike. 0 = every
-case in every gating slice matched the snapshot, so it can gate CI. Every way
-of NOT gating is non-zero, which is the property that makes a green here mean
-something.
+check in that slice, or a store search that failed or ran on an index its
+sync did not bring up to date, which refuses a gating run and an
+--update-snapshot alike. 0 = every case in every gating slice matched the
+snapshot, so it can gate CI. Every way of NOT gating is non-zero, which is the
+property that makes a green here mean something.
 """
 
 from __future__ import annotations
@@ -663,6 +663,34 @@ def _pad_to_overhead(tool_input: dict) -> dict:
     return tool_input
 
 
+# The counters in a search's record that say its sync left some memory file's
+# current contents out of the index: rows from before an edit still answer, or
+# a memory is not indexed at all. Either way a case can match the snapshot on a
+# corpus that is not the one in front of the run.
+SYNC_GAP_COUNTERS = (
+    "lex_busy_skip",  # lost the write lock to another process
+    "lex_unwalked",  # a directory it could not list
+    "lex_deadline",  # files it ran out of budget to read
+    "lex_unswept",  # rows of deleted files it ran out of budget to remove
+    "skipped_lex",  # a store it ran out of budget to sync and search at all
+)
+
+
+def sync_gaps(rec: dict) -> tuple[str, ...]:
+    """The counters in one `recall` record that say its sync did not bring
+    every memory file up to date; empty when it did.
+
+    `lex_spared` counts every file the sync held out, and that includes the
+    ones over the size cap. Those the index declines on every run and sweeps
+    the rows of, so no rerun would index them and nothing stale is left behind.
+    Only what is spared beyond them is a gap.
+    """
+    fired = tuple(key for key in SYNC_GAP_COUNTERS if rec.get(key))
+    if int(rec.get("lex_spared") or 0) > int(rec.get("lex_oversize") or 0):
+        fired += ("lex_spared",)
+    return fired
+
+
 def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     """Everything one brief's trip through the task path produced, as a
     record — which is what a subagent WOULD ACTUALLY RECEIVE for this brief.
@@ -690,11 +718,11 @@ def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     the corpus could answer at all, and dropping it is how a broken index
     came to satisfy the injection ceiling — on the leakage half an index
     that could not answer and a brief that was correctly quiet produce the
-    same empty list. `stale` counts the stores that answered without their
-    sync, from rows that can predate the corpus. The cap's consequence is here
-    too: how many hits cleared the floor, how many the cap kept, and the bytes
-    the emission decided to write. All from ONE trip, because two trips is two
-    populations.
+    same empty list. `unsynced` names the `sync_gaps` counters that fired, so
+    the answer may come from rows that predate the corpus. The cap's
+    consequence is here too: how many hits cleared the floor, how many the cap
+    kept, and the bytes the emission decided to write. All from ONE trip,
+    because two trips is two populations.
     """
     return _task_delivery(hook, brief, dirs)
 
@@ -831,7 +859,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "truncated": 0,
         "delivered": "",
         "unanswerable": 0,
-        "stale": 0,
+        "unsynced": (),
     }
     # WHERE PRODUCTION'S CLOCK STARTS, which is before the gate and the query
     # builder rather than at the search. `main` stamps `t0` and hands it down,
@@ -867,8 +895,8 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         deadline=t0 + hook.TASK_BUDGET_SECONDS,
     )
     unanswerable = int(rec.get("errs_lex") or 0)
-    stale = int(rec.get("lex_busy_skip") or 0)
-    empty = dict(empty, unanswerable=unanswerable, stale=stale)
+    unsynced = sync_gaps(rec)
+    empty = dict(empty, unanswerable=unanswerable, unsynced=unsynced)
     terms = list(dict.fromkeys((query or "").split()))
     # `_eligible` with the hook's own bars, not a comprehension with a copy of
     # them: this slice is the only automated gate over the task path's
@@ -926,7 +954,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "truncated": truncated,
         "delivered": appended,
         "unanswerable": unanswerable,
-        "stale": stale,
+        "unsynced": unsynced,
     }
 
 
@@ -1039,9 +1067,10 @@ def main() -> None:
             "  1  one case in a gating slice moved off the snapshot, or a\n"
             "     refusal: the run could not start, a gating slice ran no\n"
             "     case, the long-brief slice failed a rate or a delivery\n"
-            "     check, or a store search failed or answered without its\n"
-            "     sync, which refuses gating and --update-snapshot alike. The\n"
-            "     message names which, and what to do about it.\n"
+            "     check, or a store search failed or ran on an index its sync\n"
+            "     did not bring up to date, which refuses gating and\n"
+            "     --update-snapshot alike. The message names which, and what\n"
+            "     to do about it.\n"
             "  N  N cases in gating slices moved off the snapshot, counting\n"
             "     MOVED, NEW and DRIFT; 255 is 255 or more"
         ),
@@ -1247,17 +1276,16 @@ def main() -> None:
     # and `errs_lex` is the only thing that tells that apart from a retriever
     # that found nothing.
     unanswerable = 0
-    # Store searches whose sync lost the write lock to another process. The
-    # query still answers, from rows that can predate the memory edit under
-    # test, so a case can match the snapshot on rows the edit never reached.
-    stale = 0
+    # Each case's `sync_gaps`, one entry per search, read off that search's
+    # own record.
+    unsynced: list[tuple[str, ...]] = []
 
     def search(prompt: str) -> list[str]:
-        nonlocal unanswerable, stale
+        nonlocal unanswerable
         rec: dict = {}
         hits = hook.recall(prompt, stats=rec, dirs=dirs)
         unanswerable += int(rec.get("errs_lex") or 0)
-        stale += int(rec.get("lex_busy_skip") or 0)
+        unsynced.append(sync_gaps(rec))
         return hits
 
     for case in cases["suite"]:
@@ -1446,7 +1474,7 @@ def main() -> None:
             for case in briefs["served"]:
                 got = task_delivery(hook, case["brief"], dirs)
                 unanswerable += got["unanswerable"]
-                stale += got["stale"]
+                unsynced.append(got["unsynced"])
                 shown = got["names"]
                 ok = case["file"] in shown
                 if shown and not entrypoint_checked:
@@ -1509,7 +1537,7 @@ def main() -> None:
             for case in briefs["unserved"]:
                 got = task_delivery(hook, case["brief"], dirs)
                 unanswerable += got["unanswerable"]
-                stale += got["stale"]
+                unsynced.append(got["unsynced"])
                 shown = got["names"]
                 ok = not shown
                 leaked += not ok
@@ -1603,7 +1631,8 @@ def main() -> None:
     # index case for case, so on a gating run the snapshot alone would read it
     # as a pass, and a re-baseline would record the failure as the expected
     # outcome. The failed searches are the only evidence either run has. An
-    # index answering without its sync is the same case on an older corpus.
+    # index its sync did not bring up to date is the same case on a corpus
+    # that is not this one.
     incomplete = []
     if unanswerable:
         incomplete.append(
@@ -1611,11 +1640,13 @@ def main() -> None:
             "that cannot answer scores as a miss or a clean abstention — rerun "
             "where memkit can build its index"
         )
-    if stale:
+    behind = [gaps for gaps in unsynced if gaps]
+    if behind:
+        fired = sorted({key for gaps in behind for key in gaps})
         incomplete.append(
-            f"{stale} store search(es) answered from an index another process "
-            "was writing, without the sync that brings it up to the corpus — "
-            "rerun once nothing else is updating memkit's index"
+            f"{len(behind)} case(s) scored on an index whose sync left memory "
+            f"files out of it ({', '.join(fired)}) — rerun once memkit can read "
+            "every memory file and nothing else is updating its index"
         )
     cannot_answer = "; ".join(incomplete)
     if cannot_answer and not args.update_snapshot:

@@ -398,10 +398,10 @@ def _an_index_that_cannot_answer(tmp_path: Path) -> Iterator[dict[str, str]]:
         state.chmod(0o700)
 
 
-def _store_searches(corpus: Path) -> int:
-    """How many store searches a run over this config makes: one per store for
-    every case that reaches retrieval. Every fixture case does, on the prompt
-    path; a brief does when the task path's own gate lets it through."""
+def _searches(corpus: Path) -> int:
+    """How many cases a run over this config takes to retrieval. Every fixture
+    case does, on the prompt path; a brief does when the task path's own gate
+    lets it through."""
     data = json.loads((corpus / "memkit.json").read_text())
     calls = sum(len(cases) for cases in data["eval"]["cases"].values())
     if "long_briefs" in data["eval"]:
@@ -411,7 +411,14 @@ def _store_searches(corpus: Path) -> int:
             for half in ("served", "unserved")
             for case in briefs[half]
         )
-    return calls * len(data["stores"])
+    return calls
+
+
+def _store_searches(corpus: Path) -> int:
+    """How many store searches a run over this config makes: one per store for
+    every case that reaches retrieval."""
+    data = json.loads((corpus / "memkit.json").read_text())
+    return _searches(corpus) * len(data["stores"])
 
 
 def _shape(corpus: Path, shape: str) -> None:
@@ -545,16 +552,155 @@ def test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes(
     row = _line(out.stdout, needle)
     assert row.startswith(held_status), row
     assert out.returncode != 0, out.stdout + out.stderr
-    assert "answered from an index another process" in out.stderr, out.stderr
+    assert (
+        f"{_searches(corpus)} case(s) scored on an index whose sync left memory "
+        "files out of it (lex_busy_skip)" in out.stderr
+    ), out.stderr
     assert "wrote" not in out.stdout, out.stdout
     assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
 
     # Non-vacuity: the rows the index held are what answered. A run that
     # syncs the edit moves the same case.
     synced = _eval(corpus, env=env)
-    assert "answered from an index" not in synced.stderr, synced.stderr
+    assert "scored on an index whose sync" not in synced.stderr, synced.stderr
     assert "<- MOVED" in _line(synced.stdout, needle), synced.stdout
     assert synced.returncode != 0, synced.stdout
+
+
+# Memories each path must not deliver: one a noinject prompt asks about, one an
+# unserved brief does.
+ABOUT_A_NOINJECT_PROMPT = (
+    "---\nname: linked_list_reversal\ndescription: Reverse a linked list in "
+    "place with three pointers.\ntype: reference\n---\n\nTo reverse a linked "
+    "list in place, walk the list once and flip each next pointer.\n"
+)
+ABOUT_AN_UNSERVED_BRIEF = (
+    "---\nname: warehouse_slotting\ndescription: Re-slot a warehouse from the "
+    "order history: fast movers near the pick faces, pickers walk less.\ntype: "
+    "reference\n---\n\nSlot the warehouse from the order history, not the "
+    "current layout. Fast movers go to the widest aisles; heavy and bulky items "
+    "stay off the mezzanine; print the pick-face labels on the move plan's "
+    "timeline; measure walking distance per order.\n"
+)
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+@pytest.mark.parametrize(
+    "shape,memory,needle,quiet,hide,counter",
+    [
+        (
+            "no-long-briefs", ABOUT_A_NOINJECT_PROMPT, "reverse a linked list",
+            "[NOINJECT-OK", "file", "lex_spared",
+        ),
+        (
+            "long-briefs-only", ABOUT_AN_UNSERVED_BRIEF, "warehouse-slotting",
+            "[BRIEF-QUIET", "file", "lex_spared",
+        ),
+        (
+            "no-long-briefs", ABOUT_A_NOINJECT_PROMPT, "reverse a linked list",
+            "[NOINJECT-OK", "dir", "lex_unwalked",
+        ),
+    ],
+    ids=["prompt-path-unreadable", "task-path-unreadable", "prompt-path-unlisted"],
+)
+def test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes(
+    corpus: Path,
+    tmp_path: Path,
+    shape: str,
+    memory: str,
+    needle: str,
+    quiet: str,
+    hide: str,
+    counter: str,
+    args: tuple,
+) -> None:
+    """A memory the sync cannot read, or sits in a directory it cannot list,
+    keeps whatever rows the index already held for it, and a new one has none.
+    The query answers without it, so a memory edit that should move a case
+    matches the snapshot instead, and the run may neither pass the gate nor
+    become the baseline. The counter that says so is named in the refusal."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything, so this cannot be staged")
+    _shape(corpus, shape)
+    if shape == "no-long-briefs":
+        state = _recorded(corpus)
+        del state["cases"]["longbrief"]
+        _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    folder = corpus / "corpus" / "project" / "search" / "added"
+    folder.mkdir()
+    memo = folder / "added_memory.md"
+    memo.write_text(memory, encoding="utf-8")
+    hidden = memo if hide == "file" else folder
+    hidden.chmod(0)
+    try:
+        out = _eval(corpus, *args, env=env)
+    finally:
+        hidden.chmod(0o700)
+    assert _line(out.stdout, needle).startswith(quiet), out.stdout
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert (
+        f"{_searches(corpus)} case(s) scored on an index whose sync left memory "
+        f"files out of it ({counter})" in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: read, the same memory moves the case.
+    synced = _eval(corpus, env=env)
+    assert "scored on an index whose sync" not in synced.stderr, synced.stderr
+    assert "<- MOVED" in _line(synced.stdout, needle), synced.stdout
+    assert synced.returncode != 0, synced.stdout
+
+
+def test_a_memory_over_the_size_cap_neither_refuses_the_gate_nor_the_write(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The index declines a file over its size cap on every run and holds no
+    rows for it, so no rerun would read it and the run already measures the
+    corpus the hook can see. The sync counts it as spared all the same, and
+    that alone must not refuse the run."""
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    memo = corpus / "corpus" / "project" / "search" / "oversize.md"
+    memo.write_bytes(b"flange " * (hook.INDEX_FILE_MAX_BYTES // 7 + 1))
+    assert memo.stat().st_size > hook.INDEX_FILE_MAX_BYTES
+    out = _eval(corpus, env=env)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "every gating case matched the snapshot" in out.stdout, out.stdout
+    written = _eval(corpus, "--update-snapshot", env=env)
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "wrote" in written.stdout, written.stdout
+
+
+@pytest.mark.parametrize(
+    "rec,gaps",
+    [
+        ({}, ()),
+        ({"errs_lex": 0, "lex_hits": 3, "lex_outside": 1, "lex_secret": 2}, ()),
+        ({"lex_spared": 2, "lex_oversize": 2}, ()),
+        ({"lex_spared": 3, "lex_oversize": 2}, ("lex_spared",)),
+        ({"lex_busy_skip": 1}, ("lex_busy_skip",)),
+        ({"lex_unwalked": 1}, ("lex_unwalked",)),
+        ({"lex_deadline": 4, "lex_spared": 4}, ("lex_deadline", "lex_spared")),
+        ({"lex_unswept": 5}, ("lex_unswept",)),
+        ({"skipped_lex": 1}, ("skipped_lex",)),
+    ],
+    ids=[
+        "clean", "deliberate-refusals", "oversize-only", "spared-past-oversize",
+        "busy", "unwalked", "deadline", "unswept", "store-skipped",
+    ],
+)
+def test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed(
+    rec: dict, gaps: tuple
+) -> None:
+    """The counters that cannot be staged cheaply through a whole run, read
+    the way the run reads them: off one search's record. A refusal the index
+    makes on every run — a link out of the store, a file over the cap, a
+    credential the scan matched — leaves nothing stale and is not a gap."""
+    assert ev.sync_gaps(rec) == gaps
 
 
 def test_a_snapshot_that_still_carries_a_fingerprint_reads_as_before(
