@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -454,6 +455,83 @@ def test_a_gating_run_on_an_index_that_cannot_answer_fails(
         "in this run" in out.stderr
     ), out.stderr
     assert "no re-baseline needed" not in out.stdout, out.stdout
+
+
+@contextlib.contextmanager
+def _an_index_another_process_is_writing(cache: Path) -> Iterator[None]:
+    """Every index under `cache` held mid-write by another connection, as a
+    concurrent session's hook holds it while its own sync runs. A sync that
+    needs the lock waits out the busy timeout and is skipped, and the query
+    still answers from the rows the index held before."""
+    held = []
+    try:
+        for db in sorted((cache / "memory-recall").glob("fts5-*.db")):
+            con = sqlite3.connect(db, isolation_level=None)
+            held.append(con)
+            con.execute("BEGIN IMMEDIATE")
+        assert held, "no index was built to hold"
+        yield
+    finally:
+        for con in held:
+            con.close()
+
+
+# The memory the flange cases target, rewritten so that none of them finds it.
+UNRELATED = (
+    "---\nname: office_plants\ndescription: The office plants are watered on "
+    "Fridays.\ntype: reference\n---\n\nWater the office plants on Fridays.\n"
+)
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+@pytest.mark.parametrize(
+    "shape,needle,held_status",
+    [
+        ("no-long-briefs", "flange fastener tightening", "[PASS"),
+        ("long-briefs-only", "vessel-reassembly", "[BRIEF-SERVED"),
+    ],
+    ids=["prompt-path", "task-path"],
+)
+def test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes(
+    corpus: Path,
+    tmp_path: Path,
+    shape: str,
+    needle: str,
+    held_status: str,
+    args: tuple,
+) -> None:
+    """A sync that loses the write lock to another process is skipped, and the
+    query answers from the rows the index held before this change's memory
+    edit. The outcomes then match the snapshot because the run measured the
+    corpus as it was, so the run may neither pass the gate nor become the
+    baseline."""
+    _shape(corpus, shape)
+    if shape == "no-long-briefs":
+        state = _recorded(corpus)
+        del state["cases"]["longbrief"]
+        _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    (corpus / "corpus" / "project" / "search" / "flange_torque.md").write_text(
+        UNRELATED, encoding="utf-8"
+    )
+    with _an_index_another_process_is_writing(tmp_path / "cache"):
+        out = _eval(corpus, *args, env=env)
+    row = _line(out.stdout, needle)
+    assert row.startswith(held_status), row
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert "answered from an index another process" in out.stderr, out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: the rows the index held are what answered. A run that
+    # syncs the edit moves the same case.
+    synced = _eval(corpus, env=env)
+    assert "answered from an index" not in synced.stderr, synced.stderr
+    assert "<- MOVED" in _line(synced.stdout, needle), synced.stdout
+    assert synced.returncode != 0, synced.stdout
 
 
 def test_a_snapshot_that_still_carries_a_fingerprint_reads_as_before(

@@ -44,6 +44,11 @@ ordering.
   snapshot that recorded the same failure matched it case for case, so the run
   exited 0 having searched nothing. It now refuses with the number of store
   searches that failed.
+- **A `memory-eval` run whose index sync lost the write lock refuses to gate
+  or to write a snapshot.** The search answered from the rows the index held
+  before the memory edit under test, so every case could match the snapshot
+  and the run exited 0 or wrote that older corpus's outcomes as the baseline.
+  It now refuses with the number of store searches that answered that way.
 - **A gating slice whose every case is new or drifted fails once per case.**
   The vacuity check counted only cases that matched or moved, so the run
   refused such a slice as one that gated nothing and exited 1. Every case it
@@ -147,7 +152,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 685 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 689 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for

@@ -100,10 +100,11 @@ Exit code = failures in the gating slices, counting MOVED, NEW and DRIFT
 cases, capped at 255; or 1 for a refusal. Before scoring: an unreadable or
 absent snapshot, or a config that cannot run. After scoring: a gating slice
 that ran no case, a long-brief rate outside its bounds or a failed delivery
-check in that slice, or a store search that failed, which refuses a gating
-run and an --update-snapshot alike. 0 = every case in every gating slice
-matched the snapshot, so it can gate CI. Every way of NOT gating is non-zero,
-which is the property that makes a green here mean something.
+check in that slice, or a store search that failed or answered without its
+sync, which refuses a gating run and an --update-snapshot alike. 0 = every
+case in every gating slice matched the snapshot, so it can gate CI. Every way
+of NOT gating is non-zero, which is the property that makes a green here mean
+something.
 """
 
 from __future__ import annotations
@@ -689,9 +690,10 @@ def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     the corpus could answer at all, and dropping it is how a broken index
     came to satisfy the injection ceiling — on the leakage half an index
     that could not answer and a brief that was correctly quiet produce the
-    same empty list. The cap's consequence is here too: how many hits
-    cleared the floor, how many the cap kept, and the bytes the emission
-    decided to write. All from ONE trip, because two trips is two
+    same empty list. `stale` counts the stores that answered without their
+    sync, from rows that can predate the corpus. The cap's consequence is here
+    too: how many hits cleared the floor, how many the cap kept, and the bytes
+    the emission decided to write. All from ONE trip, because two trips is two
     populations.
     """
     return _task_delivery(hook, brief, dirs)
@@ -829,6 +831,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "truncated": 0,
         "delivered": "",
         "unanswerable": 0,
+        "stale": 0,
     }
     # WHERE PRODUCTION'S CLOCK STARTS, which is before the gate and the query
     # builder rather than at the search. `main` stamps `t0` and hands it down,
@@ -864,7 +867,8 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         deadline=t0 + hook.TASK_BUDGET_SECONDS,
     )
     unanswerable = int(rec.get("errs_lex") or 0)
-    empty = dict(empty, unanswerable=unanswerable)
+    stale = int(rec.get("lex_busy_skip") or 0)
+    empty = dict(empty, unanswerable=unanswerable, stale=stale)
     terms = list(dict.fromkeys((query or "").split()))
     # `_eligible` with the hook's own bars, not a comprehension with a copy of
     # them: this slice is the only automated gate over the task path's
@@ -922,6 +926,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "truncated": truncated,
         "delivered": appended,
         "unanswerable": unanswerable,
+        "stale": stale,
     }
 
 
@@ -1034,9 +1039,9 @@ def main() -> None:
             "  1  one case in a gating slice moved off the snapshot, or a\n"
             "     refusal: the run could not start, a gating slice ran no\n"
             "     case, the long-brief slice failed a rate or a delivery\n"
-            "     check, or a store search failed, which refuses gating and\n"
-            "     --update-snapshot alike. The message names which, and what\n"
-            "     to do about it.\n"
+            "     check, or a store search failed or answered without its\n"
+            "     sync, which refuses gating and --update-snapshot alike. The\n"
+            "     message names which, and what to do about it.\n"
             "  N  N cases in gating slices moved off the snapshot, counting\n"
             "     MOVED, NEW and DRIFT; 255 is 255 or more"
         ),
@@ -1231,12 +1236,17 @@ def main() -> None:
     # and `errs_lex` is the only thing that tells that apart from a retriever
     # that found nothing.
     unanswerable = 0
+    # Store searches whose sync lost the write lock to another process. The
+    # query still answers, from rows that can predate the memory edit under
+    # test, so a case can match the snapshot on rows the edit never reached.
+    stale = 0
 
     def search(prompt: str) -> list[str]:
-        nonlocal unanswerable
+        nonlocal unanswerable, stale
         rec: dict = {}
         hits = hook.recall(prompt, stats=rec, dirs=dirs)
         unanswerable += int(rec.get("errs_lex") or 0)
+        stale += int(rec.get("lex_busy_skip") or 0)
         return hits
 
     for case in cases["suite"]:
@@ -1425,6 +1435,7 @@ def main() -> None:
             for case in briefs["served"]:
                 got = task_delivery(hook, case["brief"], dirs)
                 unanswerable += got["unanswerable"]
+                stale += got["stale"]
                 shown = got["names"]
                 ok = case["file"] in shown
                 if shown and not entrypoint_checked:
@@ -1484,6 +1495,7 @@ def main() -> None:
             for case in briefs["unserved"]:
                 got = task_delivery(hook, case["brief"], dirs)
                 unanswerable += got["unanswerable"]
+                stale += got["stale"]
                 shown = got["names"]
                 ok = not shown
                 leaked += not ok
@@ -1571,13 +1583,23 @@ def main() -> None:
     # A snapshot recorded against an index that could not answer matches that
     # index case for case, so on a gating run the snapshot alone would read it
     # as a pass, and a re-baseline would record the failure as the expected
-    # outcome. The failed searches are the only evidence either run has.
-    cannot_answer = (
-        f"{unanswerable} store search(es) failed in this run, and a store that "
-        "cannot answer scores as a miss or a clean abstention — rerun where "
-        "memkit can build its index"
-    )
-    if unanswerable and not args.update_snapshot:
+    # outcome. The failed searches are the only evidence either run has. An
+    # index answering without its sync is the same case on an older corpus.
+    incomplete = []
+    if unanswerable:
+        incomplete.append(
+            f"{unanswerable} store search(es) failed in this run, and a store "
+            "that cannot answer scores as a miss or a clean abstention — rerun "
+            "where memkit can build its index"
+        )
+    if stale:
+        incomplete.append(
+            f"{stale} store search(es) answered from an index another process "
+            "was writing, without the sync that brings it up to the corpus — "
+            "rerun once nothing else is updating memkit's index"
+        )
+    cannot_answer = "; ".join(incomplete)
+    if cannot_answer and not args.update_snapshot:
         rate_fail.append(f"refusing to gate: {cannot_answer}")
     loose = sum(tally.values()) - gate_fails
     parts = [f"{gate_fails} gating failure(s) in {'/'.join(sorted(gating))}"]
@@ -1619,7 +1641,7 @@ def main() -> None:
     if args.update_snapshot:
         # The same refusal as the two ahead of scoring, on a fact only scoring
         # can find.
-        if unanswerable:
+        if cannot_answer:
             sys.exit(f"refusing to write a snapshot: {cannot_answer}")
         write_snapshot(snap_path, seen_cases)
         # Exit 0 even on a red run: re-baselining is the act of accepting what
