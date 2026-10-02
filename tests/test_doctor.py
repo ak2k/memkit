@@ -4698,9 +4698,9 @@ CONFIG_RUNS = 'The config\'s "interpreter" is the one that runs'
 
 def _deep(base) -> pathlib.Path:
     """A directory under `base` whose own path is longer than the whole detail
-    cap, so whatever a row prints after it is cut however short the tmp root
-    is. A path that only nearly fills the cap leaves room for the answer on a
-    host whose tmp root is short, and a misplaced answer then survives."""
+    cap, so whatever a row prints after it is cut. A path that only nearly
+    fills the cap leaves room for a misplaced answer on a host with a short
+    tmp root."""
     deep = base
     while len(os.fsencode(deep)) <= doctor.DETAIL_MAX_BYTES:
         deep = deep / ("d" * 200)
@@ -4732,11 +4732,15 @@ def test_which_python_runs_survives_the_detail_cap_whatever_the_paths(
     machine = _machine(
         profile, monkeypatch, _recorded_interpreter_config(profile, recorded)
     )
+    # Stubbed on every case: probed, the route is whatever this host's python
+    # makes it, and a host with no checker route answers from the FAIL arm
+    # rather than the one asserted on here.
+    route, checker = _exec.CheckerRoute.SELF, _stub_python(profile, 0)
     if long in ("self", "uv-managed"):
-        checker = deep / "python3"
-        checker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        checker.chmod(0o755)
-        machine._route = (_exec.CheckerRoute(long), str(checker))
+        route, checker = _exec.CheckerRoute(long), str(deep / "python3")
+        pathlib.Path(checker).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        pathlib.Path(checker).chmod(0o755)
+    machine._route = (route, checker)
     (row,) = _only(doctor._PRODUCERS["interpreter"](machine), "interpreter")
     assert row.status == doctor.INFO, (row.status, row.detail)
     assert row.detail.endswith("..."), "the paths never reached the cap"
@@ -4771,15 +4775,21 @@ def test_a_record_the_wrapper_refuses_is_not_said_to_run(
         reason = "not an executable file"
     option = profile / "elsewhere" / "python3.12"
     option.parent.mkdir(parents=True, exist_ok=True)
-    option.symlink_to(_stub_python(profile, 0))
+    stub = _stub_python(profile, 0)
+    option.symlink_to(stub)
     monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
     path = _recorded_interpreter_config(profile, recorded)
-    (row,) = _only(
-        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, path)),
-        "interpreter",
-    )
+    machine = _machine(profile, monkeypatch, path)
+    # Both host facts that choose the arm are fixed. With no checker route, or
+    # no FTS5 in this python (the one a passed-over record falls to), the
+    # remedy never carries the repoint, and "moves nothing" is absent whatever
+    # the row decided.
+    machine._route = (_exec.CheckerRoute.SELF, stub)
+    monkeypatch.setattr(doctor, "fts5_available", lambda: True)
+    (row,) = _only(doctor._PRODUCERS["interpreter"](machine), "interpreter")
     assert "the one that runs" not in row.detail, row.detail
     assert reason in row.detail, row.detail
+    assert "memkit init --interpreter" in row.remedy, row.remedy
     assert "moves nothing" not in row.remedy, row.remedy
     if length == "long":
         assert row.detail.endswith("..."), "the path never reached the cap"
