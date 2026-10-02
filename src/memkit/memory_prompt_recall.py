@@ -5944,7 +5944,8 @@ def recall(
     corpus of markdown is a thing a caller legitimately wants. Overridden
     dirs are used verbatim: a
     caller naming a directory means that directory, not _search_root's
-    search/ subtree of it.
+    search/ subtree of it. An empty list names no corpus and searches
+    nothing; only None means the stores.
 
     `deadline` is a time.monotonic() instant the retrieval must not run past.
     None (the eval, --search, the tests) means no clock: those callers are not
@@ -5970,7 +5971,9 @@ def recall(
             for d in dirs
             if os.path.isdir(d)
         ]
-        if dirs
+        # An empty list is a caller whose own resolution found no store, and
+        # answering it from the live stores scores a corpus it never named.
+        if dirs is not None
         # A store the hook's own config resolved is scanned and marked by the
         # same fact; only the `--dir` door can be handed a checkout whose
         # project file was refused.
