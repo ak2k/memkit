@@ -3403,49 +3403,26 @@
       "smoke": true
     },
     {
-      "name": "verdict-a-moved-corpus-demotes-to-drift",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "    if kind != \"drift\" and not corpus_matches:",
-      "new": "    if kind == \"drift\" and not corpus_matches:",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_moved_corpus_demotes_every_mismatch_to_drift"
-      ],
-      "why": "the fingerprint is the whole attribution rule: under a corpus nobody baselined, nothing measured is the tool's and nothing may gate",
-      "same_length": true
-    },
-    {
       "name": "verdict-a-retargeted-case-is-drift",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
       "old": "            \"drift\",\n            f\"snapshot says {want.get('file')}, case now names {seen.get('file')}\",",
-      "new": "            \"regression\",\n            f\"snapshot says {want.get('file')}, case now names {seen.get('file')}\",",
+      "new": "            \"moved\",\n            f\"snapshot says {want.get('file')}, case now names {seen.get('file')}\",",
       "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_case_repointed_at_another_memory_is_drift_not_a_regression"
+        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_case_repointed_at_another_memory_is_drift_not_a_moved_outcome"
       ],
-      "why": "pointing a case at another memory changes WHAT is asserted, not how well the assertion held, so failing the build on it blames the tool for an edit"
+      "why": "pointing a case at another memory changes WHAT is asserted, not how well the assertion held, so reporting it as a moved outcome sends the reader after a retrieval change that did not happen"
     },
     {
       "name": "verdict-a-retiered-target-is-drift",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
       "old": "            \"drift\",\n            f\"snapshot says {want.get('position')}, now {seen.get('position')}\",",
-      "new": "            \"regression\",\n            f\"snapshot says {want.get('position')}, now {seen.get('position')}\",",
+      "new": "            \"moved\",\n            f\"snapshot says {want.get('position')}, now {seen.get('position')}\",",
       "tests": [
         "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_target_that_changed_tier_is_drift_because_the_question_did"
       ],
       "why": "search asserts injection and hot asserts abstention, so a promoted target makes the recorded status an answer to a different question"
-    },
-    {
-      "name": "snapshot-gating-read-demands-a-fingerprint",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:",
-      "new": "def read_snapshot(path: pathlib.Path, require_fingerprint: bool = False) -> dict | None:",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_gating_read_refuses_a_snapshot_with_no_fingerprint"
-      ],
-      "why": "read leniently, a snapshot predating the fingerprint is a permanently green check that never says it stopped looking"
     },
     {
       "name": "snapshot-with-no-cases-object-is-refused",
@@ -3457,28 +3434,6 @@
         "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_snapshot_with_no_cases_object_is_refused_either_way"
       ],
       "why": "a truncated or hand-mangled snapshot is not `no expectations recorded`: read as one it compares nothing and exits like a clean run"
-    },
-    {
-      "name": "fingerprint-hashes-only-markdown",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "            ((p.relative_to(root).as_posix(), p) for p in root.rglob(\"*.md\")),",
-      "new": "            ((p.relative_to(root).as_posix(), p) for p in root.rglob(\"*.*\")),",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_stray_non_markdown_file_cannot_switch_the_gate_off"
-      ],
-      "why": "only *.md is indexed, so a .DS_Store must not be able to switch the run into the regime where every mismatch is drift and nothing gates"
-    },
-    {
-      "name": "fingerprint-carries-the-tier-in-the-path",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "            digest.update(_utf8(f\"{rel}\\0{content}\\0\"))",
-      "new": "            digest.update(_utf8(f\"{content}\\0\"))",
-      "tests": [
-        "tests/test_memory_integrity.py::EvalGateDecisionRules::test_a_memory_retiered_without_an_edit_hashes_differently"
-      ],
-      "why": "tier is the directory and the assertion follows it, so a hot/->search/ move must rehash even though not one byte of the file changed"
     },
     {
       "name": "store-roots-keep-config-order",
@@ -3613,17 +3568,6 @@
       "why": "uniqueness by path counts one brief under two names as two cases — the same population inflation the path check exists to prevent, one copy away"
     },
     {
-      "name": "a-moved-corpus-is-a-refusal-not-a-note",
-      "module": "eval",
-      "file": "src/memkit/eval_memory_recall.py",
-      "old": "        sys.exit(\n            \"corpus moved — re-baseline with `--update-snapshot` and commit \"\n            \"the snapshot in the same change\"\n        )",
-      "new": "        print(\n            \"corpus moved — re-baseline with `--update-snapshot` and commit \"\n            \"the snapshot in the same change\"\n        )",
-      "tests": [
-        "tests/test_eval.py::test_a_moved_corpus_refuses_instead_of_reporting_green"
-      ],
-      "why": "exiting 0 made `this run gated nothing` and `this run gated everything and found nothing wrong` the same answer to CI, and the first is far commoner"
-    },
-    {
       "name": "a-rate-failure-is-not-accepted-by-a-rebaseline",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
@@ -3649,7 +3593,7 @@
       "name": "gating-failures-reach-the-exit-code",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "    sys.exit(gate_fails)",
+      "old": "    sys.exit(min(gate_fails, 255))",
       "new": "    sys.exit(0)",
       "tests": [
         "tests/test_memory_integrity.py::FixtureEvalSensitivity::test_an_outcome_that_moved_off_the_snapshot_reaches_the_exit_code"
@@ -3658,15 +3602,490 @@
       "smoke": true
     },
     {
-      "name": "an-unrecorded-case-gates-like-a-regression",
+      "name": "a-failure-count-past-255-does-not-wrap-to-0",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
-      "old": "        if kind in (\"regression\", \"new\") and slice_ in gating:",
-      "new": "        if kind in (\"regression\",) and slice_ in gating:",
+      "old": "    sys.exit(min(gate_fails, 255))",
+      "new": "    sys.exit(gate_fails)",
       "tests": [
+        "tests/test_eval.py::test_a_failure_count_past_255_still_exits_non_zero"
+      ],
+      "why": "a process exit status is taken mod 256, so a count passed through uncapped reads 256 gating failures as a green run"
+    },
+    {
+      "name": "a-re-baseline-refuses-an-index-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if cannot_answer:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing"
+      ],
+      "why": "a dir that cannot answer scores every search case a MISS and every abstention a pass, so a snapshot written from it records the failure as expected and the next run that fails the same way exits 0"
+    },
+    {
+      "name": "a-gating-run-refuses-an-index-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if cannot_answer and not args.update_snapshot:\n",
+      "new": "    if False and not args.update_snapshot:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_gating_run_on_an_index_that_cannot_answer_fails"
+      ],
+      "why": "a snapshot recorded against an index that could not answer matches that index case for case, so a gating run on it fails no case and exits 0 over a retriever that searched nothing"
+    },
+    {
+      "name": "the-prompt-path-counts-a-dir-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        unanswerable += int(rec.get(\"errs_lex\") or 0)\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing",
+        "tests/test_eval.py::test_a_gating_run_on_an_index_that_cannot_answer_fails"
+      ],
+      "why": "recall drops a dir that fails and returns the rest, so errs_lex is the only record that the suite, noinject and vocab rows were scored against an index that could not answer"
+    },
+    {
+      "name": "the-task-path-counts-a-dir-that-could-not-answer",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                unanswerable += got[\"unanswerable\"]\n",
+      "new": "",
+      "occurrences": 2,
+      "tests": [
+        "tests/test_eval.py::test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing"
+      ],
+      "why": "the long-brief rows are written into the same snapshot, so a brief scored against an index that could not answer has to block the write as a prompt would"
+    },
+    {
+      "name": "the-prompt-path-counts-its-sync-gaps",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        unsynced.append(sync_gaps(rec))\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[prompt-path-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[prompt-path-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-write]"
+      ],
+      "why": "a search whose sync left a memory out of the index answers from rows that can predate the memory edit, or without the memory at all, so the suite, noinject and vocab rows can match the snapshot on a corpus the run never read"
+    },
+    {
+      "name": "the-task-path-records-its-sync-gaps",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    unsynced = sync_gaps(rec)\n",
+      "new": "    unsynced = ()\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-write]"
+      ],
+      "why": "a brief's trip reads its sync gaps off its own recall, so a record that drops them scores the long-brief slice against an index that may not hold the corpus"
+    },
+    {
+      "name": "the-task-path-counts-its-sync-gaps",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                unsynced.append(got[\"unsynced\"])\n",
+      "new": "",
+      "occurrences": 2,
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes[task-path-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-write]"
+      ],
+      "why": "the long-brief rows are gated and written like any other, so a brief scored on an index its sync did not bring up to date has to refuse the run as a prompt would"
+    },
+    {
+      "name": "a-case-scored-on-an-unsynced-index-refuses-the-run",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if behind:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes"
+      ],
+      "why": "an index its sync did not bring up to date matches a snapshot recorded before the memory edit, so the run passes the gate or writes the baseline over a corpus it never read"
+    },
+    {
+      "name": "a-sync-that-lost-the-lock-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_busy_skip\",  # lost the write lock to another process\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[busy]"
+      ],
+      "why": "a sync skipped for the write lock answers from the rows the index held before the memory edit under test"
+    },
+    {
+      "name": "a-memory-the-sync-could-not-read-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if int(rec.get(\"lex_spared\") or 0) > int(rec.get(\"lex_oversize\") or 0):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unreadable-write]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[task-path-unreadable-write]",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[spared-past-oversize]"
+      ],
+      "why": "an unreadable memory keeps whatever rows it had and a new one has none, so the run scores the corpus without the edit while every other counter stays 0"
+    },
+    {
+      "name": "a-memory-over-the-size-cap-is-not-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "int(rec.get(\"lex_spared\") or 0) > int(rec.get(\"lex_oversize\") or 0)",
+      "new": "int(rec.get(\"lex_spared\") or 0) > 0",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_over_the_size_cap_neither_refuses_the_gate_nor_the_write",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[oversize-only]"
+      ],
+      "why": "the index declines a file over the cap on every run and sweeps its rows, so counting it as a gap would refuse every run on a store that holds one, with no rerun able to clear it"
+    },
+    {
+      "name": "an-unlisted-directory-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_unwalked\",  # a directory it could not list\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-gate]",
+        "tests/test_eval.py::test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes[prompt-path-unlisted-write]",
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[unwalked]"
+      ],
+      "why": "a memory under a directory the walk could not list is never indexed and spares no row, so lex_unwalked is the only counter that fires"
+    },
+    {
+      "name": "files-the-sync-ran-out-of-budget-for-are-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_deadline\",  # files it ran out of budget to read\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[deadline]"
+      ],
+      "why": "a truncated sync answers from the slice it committed, and lex_deadline is the counter that names the budget as the cause"
+    },
+    {
+      "name": "an-unfinished-sweep-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"lex_unswept\",  # rows of deleted files it ran out of budget to remove\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[unswept]"
+      ],
+      "why": "rows a sweep did not delete still answer for memories the corpus no longer holds, and no other counter fires for them"
+    },
+    {
+      "name": "a-store-skipped-for-budget-is-a-sync-gap",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    \"skipped_lex\",  # a store it ran out of budget to sync and search at all\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed[store-skipped]"
+      ],
+      "why": "a store the task path's budget never reached was neither synced nor searched, and errs_lex does not count it"
+    },
+    {
+      "name": "the-cap-check-defers-to-a-sync-gap-refusal",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if got[\"unanswerable\"] or got[\"unsynced\"]:\n",
+      "new": "    if got[\"unanswerable\"]:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_sync_gap_refusal_does_not_also_say_the_cap_case_moved"
+      ],
+      "why": "a trip whose sync left a memory out can see fewer eligible memories than the cap case needs, and the cap check then tells the reader the corpus or the brief moved beside a refusal that says the index did not hold the corpus"
+    },
+    {
+      "name": "recall-answers-an-empty-dir-list-from-the-stores",
+      "module": "eval",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if dirs is not None\n",
+      "new": "        if dirs\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_recall_searches_nothing_when_handed_an_empty_dir_list"
+      ],
+      "why": "a caller whose own resolution found no store is answered from the live stores, so the eval scored a checkout holding none of them against a corpus it never named"
+    },
+    {
+      "name": "a-run-with-no-store-to-search-is-scored",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if not dirs:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_repo_holding_no_store_is_refused_as_nothing_to_measure[gate]",
+        "tests/test_eval.py::test_a_repo_holding_no_store_is_refused_as_nothing_to_measure[write]"
+      ],
+      "why": "a run that searches no corpus scores every noinject case clean and every search case a miss, and writes that as the baseline"
+    },
+    {
+      "name": "the-run-does-not-compare-its-index-against-disk",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    drift = index_drift(hook, dirs)\n",
+      "new": "    drift = \"\"\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes"
+      ],
+      "why": "a sync that leaves the index missing, extra or stale rows without firing a counter lets every case match the snapshot on a corpus that is not the one on disk"
+    },
+    {
+      "name": "a-memory-the-index-never-saw-is-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        found[\"missing\"] += sorted(disk.keys() - held.keys())\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[added-missing-gate]",
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[added-missing-write]"
+      ],
+      "why": "a memory on disk with no rows answers nothing, so the run scores the corpus without it"
+    },
+    {
+      "name": "rows-of-a-deleted-memory-are-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            p for p in held.keys() - disk.keys()\n",
+      "new": "            p for p in ()\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[deleted-extra-gate]",
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[deleted-extra-write]"
+      ],
+      "why": "rows of a memory the corpus no longer holds still answer, so the run scores a corpus that has it"
+    },
+    {
+      "name": "rows-older-than-their-file-are-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            p for p in disk.keys() & held.keys() if disk[p] != held[p]\n",
+      "new": "            p for p in disk.keys() & held.keys() if False\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[edited-stale-gate]",
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[edited-stale-write]"
+      ],
+      "why": "rows written before a memory edit answer with the text the edit replaced, so the edit under test is never scored"
+    },
+    {
+      "name": "what-the-walk-could-not-read-is-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        found[\"unreadable\"] += sorted(spared | unwalked)\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unlisted]",
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unstattable]"
+      ],
+      "why": "a memory the walk cannot list or stat cannot be compared at all, and its rows are held out of the extra ones, so dropping it reports a corpus nobody could see as matching"
+    },
+    {
+      "name": "rows-under-an-unlisted-directory-are-called-extra",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            if p not in spared and not p.startswith(unseen)\n",
+      "new": "            if p not in spared\n",
+      "tests": [
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unlisted]"
+      ],
+      "why": "a directory the walk cannot list hides whether the memories under it exist, so naming their rows extra sends the reader after deletions that did not happen"
+    },
+    {
+      "name": "rows-of-an-unstattable-memory-are-called-extra",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            if p not in spared and not p.startswith(unseen)\n",
+      "new": "            if not p.startswith(unseen)\n",
+      "tests": [
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unstattable]"
+      ],
+      "why": "a memory the walk lists and cannot stat may still exist, so naming its rows extra sends the reader after a deletion that did not happen"
+    },
+    {
+      "name": "an-index-the-comparison-cannot-open-ends-the-run-in-a-traceback",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            except sqlite3.Error:\n",
+      "new": "            except OSError:\n",
+      "tests": [
+        "tests/test_eval.py::test_an_index_the_comparison_cannot_open_is_named_in_the_refusal"
+      ],
+      "why": "an index the run cannot open is a refusal with a reason, and a traceback in its place reads as a crash in the tool"
+    },
+    {
+      "name": "a-memory-edited-while-the-run-scored-is-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if scored_on.get(p) != ended_on.get(p)\n",
+      "new": "        if False\n",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[gate]",
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[write]"
+      ],
+      "why": "a memory edited after a case was scored is indexed by the next search, so the index the run ends on matches the disk and the case's stale row passes the gate or becomes the baseline"
+    },
+    {
+      "name": "the-corpus-the-run-ends-on-is-the-one-it-started-on",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    ended_on = corpus_map(hook, dirs)\n",
+      "new": "    ended_on = scored_on\n",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[gate]",
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[write]"
+      ],
+      "why": "comparing the corpus taken before the first search with itself finds nothing, so an edit during the run never refuses it"
+    },
+    {
+      "name": "an-all-stores-brief-row-about-a-searched-memory-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        return bool(gated_out and files) and all(\n",
+      "new": "        return bool(gated_out) or bool(gated_out and files) and all(\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches[memory-in-a-searched-store]",
+        "tests/test_eval.py::test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches[memory-in-a-searched-store]"
+      ],
+      "why": "reading a gated-out store took the whole long-brief slice out of the gate, so one brief about a memory this cwd searches could stop being served or start leaking inside the rates' one-case slack and exit 0"
+    },
+    {
+      "name": "an-all-stores-brief-row-about-a-gated-out-memory-reports",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n",
+      "new": "        if slice_ in gating:\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches[memory-only-in-the-gated-store]",
+        "tests/test_eval.py::test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches[memory-only-in-the-gated-store]"
+      ],
+      "why": "a brief row about a memory only a gated-out store holds is a delivery production refuses from this cwd, so gating on it fails --all-stores runs on behavior no session here can see"
+    },
+    {
+      "name": "a-served-brief-row-names-its-memory",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                    (case[\"file\"],),\n",
+      "new": "                    (),\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches[memory-only-in-the-gated-store]"
+      ],
+      "why": "the row's memory is what says whether production would make the delivery from this cwd, so a row that names none gates a delivery production refuses"
+    },
+    {
+      "name": "a-leaking-brief-row-names-what-it-leaked",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                    LONG_BRIEF_SLICE, case[\"name\"], case_record(mark), tuple(shown)\n",
+      "new": "                    LONG_BRIEF_SLICE, case[\"name\"], case_record(mark), ()\n",
+      "tests": [
+        "tests/test_eval.py::test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches[memory-only-in-the-gated-store]"
+      ],
+      "why": "a leak is about the memories it injected, so a row that names none gates a leak only a gated-out store could produce"
+    },
+    {
+      "name": "an-unrecorded-case-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and not only_gated_out(files) and kind != \"new\":\n            gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_an_unrecorded_case_gates_after_a_memory_edit",
         "tests/test_memory_integrity.py::EvalGateDecisionRules::test_nothing_outside_a_gating_slice_can_raise_the_failure_count"
       ],
       "why": "letting an unrecorded case pass would make adding one the way to add an ungated case; --update-snapshot is the sanctioned path instead"
+    },
+    {
+      "name": "a-drifted-case-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and not only_gated_out(files) and kind != \"drift\":\n            gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_moved_between_tiers_gates",
+        "tests/test_eval.py::test_a_case_pointed_at_another_memory_gates"
+      ],
+      "why": "a retargeted case or a retiered memory leaves the snapshot answering a question the case no longer asks; ungated, that case sits outside the gate until somebody happens to re-baseline"
+    },
+    {
+      "name": "a-moved-outcome-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if slice_ in gating and not only_gated_out(files):\n            gate_fails += 1\n",
+      "new": "        if slice_ in gating and not only_gated_out(files) and kind != \"moved\":\n            gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_moved_outcome_fails_and_says_how_to_attribute_it"
+      ],
+      "why": "every case is gated against the corpus in front of it, so a recorded outcome that no longer holds is the one thing the gate exists to report, memory edit or not"
+    },
+    {
+      "name": "a-prompt-repeated-in-a-slice-is-refused",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            if prompt in prompts:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_prompt_repeated_in_a_slice_is_refused"
+      ],
+      "why": "rows are keyed by prompt, so a repeated prompt overwrites the first case's row and the run after a re-baseline fails the other case as drift, permanently"
+    },
+    {
+      "name": "a-slice-of-unrecorded-cases-is-not-a-vacuous-one",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    vacuous = [s for s in sorted(gating) if not seen_cases[s]]\n",
+      "new": "    vacuous = [s for s in sorted(gating) if not seen_cases[s].keys() & prior_cases.get(s, {}).keys()]\n",
+      "tests": [
+        "tests/test_eval.py::test_a_gating_slice_of_unrecorded_cases_fails_on_each_of_them"
+      ],
+      "why": "every case a slice ran either matched or failed the run, so keying the check on the snapshot's rows refuses a slice of new cases as one that gated nothing, exiting 1 under a message that contradicts the failures it just counted"
+    },
+    {
+      "name": "the-vacuity-check-asks-every-run",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if vacuous:\n        sys.exit(\n",
+      "new": "    if False:\n        sys.exit(\n",
+      "tests": [
+        "tests/test_eval.py::test_a_gating_slice_that_ran_no_case_is_refused_after_a_memory_edit"
+      ],
+      "why": "zero failures and zero cases print the same exit code, so an empty gating slice would buy a pass by having no expectations to fail"
+    },
+    {
+      "name": "the-pass-line-needs-nothing-moved",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if not any(tally.values()):\n",
+      "new": "    if not gate_fails:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_moved_outcome_outside_the_gate_reports_without_failing",
+        "tests/test_eval.py::test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one[report-only]"
+      ],
+      "why": "a run that moved something outside the gate, or found a stale row, prints the re-baseline pointer; a pass line saying no re-baseline is needed right after it tells the reader to leave the snapshot as it is"
+    },
+    {
+      "name": "a-failing-run-names-the-attribution-rule",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if gate_fails and not args.update_snapshot:\n",
+      "new": "    if False and not args.update_snapshot:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_moved_outcome_fails_and_says_how_to_attribute_it"
+      ],
+      "why": "the run cannot tell whether the corpus or the retriever moved an outcome, so without the rule a memkit bump's regression reads like a memory edit and gets re-baselined into the expected outcomes"
     },
     {
       "name": "the-cap-tells-the-subagent-what-it-dropped",
@@ -3678,6 +4097,28 @@
         "tests/test_eval.py::test_the_committed_fixture_corpus_gates_clean"
       ],
       "why": "TASK_MAX_HITS binds on exactly one fixture brief, and the truncation sentence is the only thing telling an unattended subagent the cap bound"
+    },
+    {
+      "name": "a-stale-row-in-a-gating-slice-gates",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                if slice_ in gating:\n                    gate_fails += 1\n",
+      "new": "                if False:\n                    gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one[gating]"
+      ],
+      "why": "a gating slice's rows are the record of what its gate checks, so a row whose case was deleted left ungated lets a memory edit drop the one case it fails with the snapshot unchanged and exit 0"
+    },
+    {
+      "name": "a-stale-row-outside-the-gate-reports",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "                if slice_ in gating:\n                    gate_fails += 1\n",
+      "new": "                if True:\n                    gate_fails += 1\n",
+      "tests": [
+        "tests/test_eval.py::test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one[report-only]"
+      ],
+      "why": "a row in a report-only slice decides no exit code while its case runs, so its deletion failing the run would make removing a non-gating case a red CI"
     },
     {
       "name": "an-expectation-nothing-iterates-is-reported",
@@ -4482,7 +4923,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 671 probes",
+      "old": "the 715 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
@@ -6025,6 +6466,85 @@
         "tests/test_doctor.py::test_the_branch_that_could_not_settle_names_how_many_and_never_which"
       ],
       "why": "the remedy for a directory outside every store arrives over a count its reader was never shown, which is how many memories are where nothing retrieves them"
+    },
+    {
+      "name": "which-interpreter-runs-is-said-before-the-paths-it-names",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "    suffix = answer + paths\n",
+      "new": "    suffix = paths + answer\n",
+      "tests": [
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[option]",
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[recorded]",
+        "tests/test_doctor.py::test_a_record_the_wrapper_refuses_is_not_said_to_run"
+      ],
+      "why": "the detail is cut from the end at DETAIL_MAX_BYTES, so an answer placed after the paths is lost whenever one of them is long"
+    },
+    {
+      "name": "a-python-that-cannot-serve-is-said-before-its-path",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                f\"Retrieval cannot work here{answer}. The python that will run \"\n                f\"the hook {cannot}. That python is \"\n                f\"{_display_path(serving)}{paths}\",\n",
+      "new": "                f\"the python that will run the hook, {_display_path(serving)}, \"\n                f\"{cannot}. Retrieval cannot work here{answer}{paths}\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_recorded_python_that_cannot_serve_says_so_ahead_of_its_path"
+      ],
+      "why": "a FAIL row that names the serving python first lets a long path cut away both why it cannot serve and which route chose it"
+    },
+    {
+      "name": "a-probe-exception-is-said-after-which-python-runs",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                f\"Retrieval cannot work here{answer}. The python that will run \"\n                f\"the hook {cannot}. That python is \"\n",
+      "new": "                \"Retrieval cannot work here: the python that will run the hook \"\n                f\"{cannot}{answer}. That python is \"\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_probe_that_cannot_start_leaves_which_python_runs_ahead_of_its_path"
+      ],
+      "why": "a probe that could not start quotes an exception naming the path in full, so placed ahead of the answer a long path cuts which python runs away"
+    },
+    {
+      "name": "a-record-the-wrapper-cannot-execute-is-not-said-to-run",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "        honored = not shape and os.path.isfile(expanded) and os.access(\n",
+      "new": "        honored = True or not shape and os.path.isfile(expanded) and os.access(\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_record_the_wrapper_refuses_is_not_said_to_run"
+      ],
+      "why": "the wrapper falls through a record that is not an executable file, so a row that skips that check tells the adopter the config's python runs when the option's may be the one serving"
+    },
+    {
+      "name": "the-option-moves-nothing-only-under-an-honored-record",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "            if honored:\n                repoint += (\n",
+      "new": "            if True:\n                repoint += (\n",
+      "tests": [
+        "tests/test_doctor.py::test_a_record_the_wrapper_refuses_is_not_said_to_run"
+      ],
+      "why": "when the wrapper falls through the record, the install option is one of the routes it falls to, so saying a change to it moves nothing sends the adopter away from the route that serves"
+    },
+    {
+      "name": "which-interpreter-runs-is-said-before-the-uv-checker-command",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                f\"hook interpreter {running}{suffix}; checker route \"\n                f\"{route.value} ({where}), because no python on PATH meets \"\n                f\"{floor} and `uv` located one. Retrieval is unaffected\",\n",
+      "new": "                f\"hook interpreter {running}; checker route \"\n                f\"{route.value} ({where}), because no python on PATH meets \"\n                f\"{floor} and `uv` located one. Retrieval is unaffected{suffix}\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[uv-managed]"
+      ],
+      "why": "the checker's command is a path too, and printed ahead of the disagreement it can push which python runs past the cap"
+    },
+    {
+      "name": "which-interpreter-runs-is-said-before-the-self-checker-command",
+      "module": "doctor",
+      "file": "src/memkit/cli_doctor.py",
+      "old": "                f\"hook interpreter {running}{suffix}; checker route \"\n                f\"{route.value} ({where})\",\n",
+      "new": "                f\"hook interpreter {running}; checker route \"\n                f\"{route.value} ({where}){suffix}\",\n",
+      "tests": [
+        "tests/test_doctor.py::test_which_python_runs_survives_the_detail_cap_whatever_the_paths[self]"
+      ],
+      "why": "the checker's command is a path too, and printed ahead of the disagreement it can push which python runs past the cap"
     },
     {
       "name": "packaging-a-floor-interpreter-is-taken-on-its-name",

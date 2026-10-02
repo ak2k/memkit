@@ -371,7 +371,9 @@ the eval against the real corpus with the tool from the pinned input, and fails
 on any drift from a committed expectations snapshot. That is what stands
 between an automated bump and every host's every-prompt hook, and it is why the
 gating slices are chosen deliberately rather than left at the default: a slice
-that is not gating reports without blocking.
+that is not gating reports without blocking. A bump edits no memory, so a red
+eval on one is the retriever moving: fix or roll back the bump rather than
+re-baselining the snapshot over it.
 
 **Runtime is not gated, and that is a known posture, not an oversight.** The
 hook fails open by contract; a host whose hook has been silently inert for a

@@ -4681,13 +4681,177 @@ def test_a_config_field_and_an_install_option_that_disagree_say_which_one_runs(
         "interpreter",
     )
     assert row.status == doctor.INFO, (row.status, row.detail)
-    assert str(option) in row.detail, row.detail
+    assert CONFIG_RUNS in row.detail, row.detail
     assert recorded in row.detail, row.detail
-    assert "the config's is the one that runs" in row.detail, row.detail
     # The remedy is G2's command, carrying the value that is not being used —
     # a row naming two paths and no move is one an adopter has to go and read
-    # the README for.
+    # the README for. It is also where the option's path is said whole: the
+    # detail names it after the recorded one, where the cap can reach it.
     assert f"memkit init --interpreter {option}" in row.remedy, row.remedy
+    assert "moves nothing" in row.remedy, row.remedy
+
+
+# What the row says when the wrapper takes the config's field. A clause with no
+# path in it, so the cap cannot cut it when it leads.
+CONFIG_RUNS = 'The config\'s "interpreter" is the one that runs'
+
+
+def _deep(base) -> pathlib.Path:
+    """A directory under `base` whose own path is longer than the whole detail
+    cap, so whatever a row prints after it is cut. A path that only nearly
+    fills the cap leaves room for a misplaced answer on a host with a short
+    tmp root."""
+    deep = base
+    while len(os.fsencode(deep)) <= doctor.DETAIL_MAX_BYTES:
+        deep = deep / ("d" * 200)
+    deep.mkdir(parents=True, exist_ok=True)
+    return deep
+
+
+@pytest.mark.parametrize("long", ["option", "recorded", "self", "uv-managed"])
+def test_which_python_runs_survives_the_detail_cap_whatever_the_paths(
+    profile, monkeypatch, long
+) -> None:
+    """The detail is cut from the end at DETAIL_MAX_BYTES, so a sentence placed
+    after a path is only as safe as that path is short, and an adopter's paths
+    are as long as their machine makes them. The answer carries no path and
+    has to come ahead of every one the row prints: the recorded python's, the
+    install option's, and the checker's command on either route that prints
+    one."""
+    deep = _deep(profile)
+    if long == "recorded":
+        recorded = str(deep / "python3")
+        pathlib.Path(recorded).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        pathlib.Path(recorded).chmod(0o755)
+    else:
+        recorded = _stub_python(profile, 0)
+    option = (deep if long == "option" else profile / "elsewhere") / "python3.12"
+    option.parent.mkdir(parents=True, exist_ok=True)
+    option.symlink_to(recorded)
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
+    machine = _machine(
+        profile, monkeypatch, _recorded_interpreter_config(profile, recorded)
+    )
+    # Stubbed on every case: probed, the route is whatever this host's python
+    # makes it, and a host with no checker route answers from the FAIL arm
+    # rather than the one asserted on here.
+    route, checker = _exec.CheckerRoute.SELF, _stub_python(profile, 0)
+    if long in ("self", "uv-managed"):
+        route, checker = _exec.CheckerRoute(long), str(deep / "python3")
+        pathlib.Path(checker).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        pathlib.Path(checker).chmod(0o755)
+    machine._route = (route, checker)
+    (row,) = _only(doctor._PRODUCERS["interpreter"](machine), "interpreter")
+    assert row.status == doctor.INFO, (row.status, row.detail)
+    assert row.detail.endswith("..."), "the paths never reached the cap"
+    assert CONFIG_RUNS in row.detail, row.detail
+
+
+@pytest.mark.parametrize("length", ["short", "long"])
+@pytest.mark.parametrize("record", ["missing", "not-executable", "relative"])
+def test_a_record_the_wrapper_refuses_is_not_said_to_run(
+    profile, monkeypatch, record, length
+) -> None:
+    """The wrapper takes the config's field only when it names an executable
+    file by an admissible path, and otherwise falls through to the routes
+    below it, the install option among them. A row saying the config's python
+    runs is then false, and so is a remedy saying the option moves nothing. The
+    reason the record is passed over is the answer, so it leads, ahead of the
+    path it is about."""
+    base = _deep(profile) if length == "long" else profile / "elsewhere"
+    base.mkdir(parents=True, exist_ok=True)
+    if record == "relative":
+        recorded = (
+            "r" * doctor.DETAIL_MAX_BYTES + "/" if length == "long" else ""
+        ) + "bin/python3"
+        reason = "refuses it by name"
+    else:
+        # Not `python3`, the name `_stub_python` writes below for the option.
+        target = base / "python3.11"
+        if record == "not-executable":
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o644)
+        recorded = str(target)
+        reason = "not an executable file"
+    option = profile / "elsewhere" / "python3.12"
+    option.parent.mkdir(parents=True, exist_ok=True)
+    stub = _stub_python(profile, 0)
+    option.symlink_to(stub)
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
+    path = _recorded_interpreter_config(profile, recorded)
+    machine = _machine(profile, monkeypatch, path)
+    # Both host facts that choose the arm are fixed. With no checker route, or
+    # no FTS5 in this python (the one a passed-over record falls to), the
+    # remedy never carries the repoint, and "moves nothing" is absent whatever
+    # the row decided.
+    machine._route = (_exec.CheckerRoute.SELF, stub)
+    monkeypatch.setattr(doctor, "fts5_available", lambda: True)
+    (row,) = _only(doctor._PRODUCERS["interpreter"](machine), "interpreter")
+    assert "the one that runs" not in row.detail, row.detail
+    assert reason in row.detail, row.detail
+    assert "memkit init --interpreter" in row.remedy, row.remedy
+    assert "moves nothing" not in row.remedy, row.remedy
+    if length == "long":
+        assert row.detail.endswith("..."), "the path never reached the cap"
+
+
+def test_a_recorded_python_that_cannot_serve_says_so_ahead_of_its_path(
+    profile, monkeypatch
+) -> None:
+    """The FAIL arm names the python that will serve, and a path printed ahead
+    of the reason is a reason the cap can cut. Both answers, that retrieval
+    cannot work and which python is the one that runs, come before it."""
+    recorded = _deep(profile) / "python3"
+    recorded.write_text(f"#!/bin/sh\nexit {doctor.PROBE_NO_FTS5}\n", encoding="utf-8")
+    recorded.chmod(0o755)
+    option = profile / "elsewhere" / "python3.12"
+    option.parent.mkdir(parents=True, exist_ok=True)
+    option.symlink_to(_stub_python(profile, 0))
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
+    path = _recorded_interpreter_config(profile, str(recorded))
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, path)),
+        "interpreter",
+    )
+    assert row.status == doctor.FAIL, (row.status, row.detail)
+    assert row.detail.endswith("..."), "the path never reached the cap"
+    assert "Retrieval cannot work here" in row.detail, row.detail
+    assert "no FTS5" in row.detail, row.detail
+    assert CONFIG_RUNS in row.detail, row.detail
+
+
+@pytest.mark.parametrize("raises", ["inside-cwd", "not-a-program"])
+def test_a_probe_that_cannot_start_leaves_which_python_runs_ahead_of_its_path(
+    profile, monkeypatch, raises
+) -> None:
+    """A probe that cannot start the recorded python reports the exception, and
+    both exceptions it can meet name the path in full. Placed ahead of which
+    python runs, a long path is enough to cut that answer away."""
+    if raises == "inside-cwd":
+        # `_execute` refuses a program inside the directory the session
+        # stands in, and the fixture stands in `project`.
+        deep = _deep(profile / "project")
+        body = "#!/bin/sh\nexit 0\n"
+    else:
+        deep = _deep(profile)
+        body = "no interpreter line, so the kernel will not run it\n"
+    recorded = deep / "python3"
+    recorded.write_text(body, encoding="utf-8")
+    recorded.chmod(0o755)
+    option = profile / "elsewhere" / "python3.12"
+    option.parent.mkdir(parents=True, exist_ok=True)
+    option.symlink_to(_stub_python(profile, 0))
+    monkeypatch.setenv(doctor.INTERPRETER_OPTION_ENV, str(option))
+    path = _recorded_interpreter_config(profile, str(recorded))
+    (row,) = _only(
+        doctor._PRODUCERS["interpreter"](_machine(profile, monkeypatch, path)),
+        "interpreter",
+    )
+    assert row.status == doctor.FAIL, (row.status, row.detail)
+    assert row.detail.endswith("..."), "the path never reached the cap"
+    assert "Retrieval cannot work here" in row.detail, row.detail
+    assert "could not be started" in row.detail, row.detail
+    assert CONFIG_RUNS in row.detail, row.detail
 
 
 def test_an_option_naming_the_recorded_python_is_not_a_disagreement(

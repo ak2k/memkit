@@ -1191,13 +1191,14 @@ class ToolAgreements(unittest.TestCase):
 class EvalGateDecisionRules(unittest.TestCase):
     """The retrieval eval's gate, exercised rather than described.
 
-    eval-memory-recall.py decides which of a scoreboard's moved lines the TOOL
-    is answerable for, and that decision is four pure functions and one
-    constant: verdict(), case_record(), read_snapshot()/write_snapshot() and
-    GATING. Nothing runs them on a prompt's path, so before this class the only
-    thing that exercised them was a full run — a real corpus, the hook, an FTS5
-    index and the committed snapshot — which reports that the number moved and
-    not which rule moved it. Every case here is one rule, hermetically.
+    eval-memory-recall.py decides which of a scoreboard's lines fail the
+    build, and that decision is four pure functions and one config field:
+    verdict(), case_record(), read_snapshot()/write_snapshot() and
+    `eval.gating_slices`. Nothing runs them on a prompt's path, so without this
+    class the only thing that exercises them is a full run — a real corpus, the
+    hook, an FTS5 index and the committed snapshot — which reports that the
+    number moved and not which rule moved it. Every case here is one rule,
+    hermetically.
 
     Two seams are deliberately absent because they are not callable. The
     aggregation (`against_snapshot`) is a closure over main()'s locals, and the
@@ -1205,8 +1206,8 @@ class EvalGateDecisionRules(unittest.TestCase):
     sys.exit, and reaching either means running the whole harness against a
     fixture checkout with a hook, a store pair and an index in it. What is
     asserted instead is the pair the closure joins — the kind verdict() returns
-    and the slices GATING names — plus a structural read of the one branch that
-    joins them.
+    and the slices `eval.gating_slices` names — plus a structural read of the
+    one branch that joins them.
     """
 
     @classmethod
@@ -1228,24 +1229,25 @@ class EvalGateDecisionRules(unittest.TestCase):
         """
         return self.eval.case_record(status, file, position)
 
-    # --- verdict(): which of the four kinds, and whose fault it is ---
+    # --- verdict(): which of the four kinds ---
 
     def test_a_case_that_matches_its_record_passes_with_nothing_to_say(self) -> None:
         seen = self.record("PASS", "a.md", "search")
         self.assertEqual(self.eval.verdict(seen, dict(seen)), ("ok", ""))
 
-    def test_a_moved_status_on_the_baselined_corpus_is_a_regression(self) -> None:
-        # The whole point of the fingerprint: same corpus, moved outcome, so
-        # the retriever moved. One of the two kinds that can fail the build.
+    def test_a_moved_status_is_a_moved_outcome(self) -> None:
+        # Same target, same tier, different outcome. Whether the corpus or the
+        # retriever moved it is not a fact about one case, so the kind does
+        # not claim either.
         kind, why = self.eval.verdict(
             self.record("MISS", "a.md", "search"),
             self.record("PASS", "a.md", "search"),
         )
-        self.assertEqual(kind, "regression")
+        self.assertEqual(kind, "moved")
         self.assertIn("PASS", why)
 
     def test_a_case_the_snapshot_never_heard_of_is_new(self) -> None:
-        # `new` gates alongside `regression` in a gating slice: letting an
+        # `new` gates like every other mismatch in a gating slice: letting an
         # unrecorded case pass would make adding one the way to add an ungated
         # case, with --update-snapshot the sanctioned path instead.
         kind, _ = self.eval.verdict(self.record("PASS", "a.md", "search"), None)
@@ -1265,7 +1267,9 @@ class EvalGateDecisionRules(unittest.TestCase):
         self.assertIn("search", why)
         self.assertIn("hot", why)
 
-    def test_a_case_repointed_at_another_memory_is_drift_not_a_regression(self) -> None:
+    def test_a_case_repointed_at_another_memory_is_drift_not_a_moved_outcome(
+        self,
+    ) -> None:
         # Pointing a case at a different memory changes what is asserted, not
         # how well the assertion held, and the reason names both files because
         # the reader's next move is to decide which one the case is about.
@@ -1295,34 +1299,6 @@ class EvalGateDecisionRules(unittest.TestCase):
         self.assertEqual(kind, "drift")
         self.assertNotIn("PASS", why)
 
-    def test_a_moved_corpus_demotes_every_mismatch_to_drift(self) -> None:
-        # The non-gating regime. These stores are not the ones baselined, so
-        # nothing measured is attributable to the tool — including a case the
-        # snapshot never recorded, which under a moved corpus is usually a
-        # memory somebody just wrote.
-        regressed, _ = self.eval.verdict(
-            self.record("MISS", "a.md", "search"),
-            self.record("PASS", "a.md", "search"),
-            corpus_matches=False,
-        )
-        self.assertEqual(regressed, "drift")
-        unrecorded, why = self.eval.verdict(
-            self.record("PASS", "a.md", "search"), None, corpus_matches=False
-        )
-        self.assertEqual(unrecorded, "drift")
-        self.assertIn("corpus changed", why)
-
-    def test_drift_keeps_its_own_reason_when_the_corpus_also_moved(self) -> None:
-        # A retargeted case is drift for a reason of its own in both regimes.
-        # Appending "corpus changed" would point the reader at
-        # --update-snapshot for a case somebody rewrote by hand.
-        _, why = self.eval.verdict(
-            self.record("PASS", "b.md", "search"),
-            self.record("PASS", "a.md", "search"),
-            corpus_matches=False,
-        )
-        self.assertNotIn("corpus changed", why)
-
     def test_a_recorded_skip_compares_equal_to_the_same_skip(self) -> None:
         # Skips carry a status like every other row. Recording position only
         # left their status comparing None to None, so a case whose target had
@@ -1332,9 +1308,9 @@ class EvalGateDecisionRules(unittest.TestCase):
         self.assertEqual(self.eval.verdict(seen, dict(seen)), ("ok", ""))
 
     def test_a_target_retired_since_the_baseline_reports_as_drift(self) -> None:
-        # Retirement moves the position first, so it is reported and does not
-        # gate — which is right: the memory was retired on purpose, and the
-        # answer is to drop the case and re-baseline, not to fail the build.
+        # Retirement moves the position first, so it is drift, and in a
+        # gating slice it fails the run until the case is dropped and the
+        # snapshot re-baselined: a case about a retired memory asserts nothing.
         kind, _ = self.eval.verdict(
             self.record("SKIP", "a.md", "archive"),
             self.record("PASS", "a.md", "search"),
@@ -1348,12 +1324,12 @@ class EvalGateDecisionRules(unittest.TestCase):
         self.assertEqual(set(seen), {"status"})
         self.assertEqual(self.eval.verdict(seen, dict(seen)), ("ok", ""))
         kind, _ = self.eval.verdict(seen, self.record("NOINJECT-FAIL"))
-        self.assertEqual(kind, "regression")
+        self.assertEqual(kind, "moved")
 
     def test_an_explicit_null_target_compares_equal_to_an_omitted_one(self) -> None:
         # A hand-edited snapshot can carry `"file": null` where a written one
         # omits the key; reading those as different targets would report drift
-        # on every abstention case at once and gate nothing.
+        # on every abstention case at once and fail every one of them.
         self.assertEqual(
             self.eval.verdict(
                 self.record("NOINJECT-OK"),
@@ -1391,12 +1367,12 @@ class EvalGateDecisionRules(unittest.TestCase):
 
     def test_nothing_outside_a_gating_slice_can_raise_the_failure_count(self) -> None:
         # The aggregation is a closure over main()'s locals and cannot be
-        # called from here, so its one load-bearing branch is read instead:
-        # every site that raises gate_fails sits under a test that consults
-        # the gating set, and that test admits exactly the two attributable
-        # kinds. An increment written outside one — on drift, or on any
-        # regression whatever the slice — is how a corpus edit starts failing
-        # CI, and no case line in the output would say so.
+        # called from here, so the branches that raise the count are read
+        # instead: every site that raises gate_fails sits under a test that
+        # consults the gating set, and that test filters on no kind. An
+        # increment written outside one is how a report-only slice starts
+        # failing CI; a kind named in the test is a mismatch the gate stopped
+        # seeing, and no case line in the output would say so for either.
         tree = ast.parse(Path(ev.__file__).read_text())
         bumps = [
             n
@@ -1404,25 +1380,29 @@ class EvalGateDecisionRules(unittest.TestCase):
             if isinstance(n, ast.AugAssign)
             and getattr(n.target, "id", "") == "gate_fails"
         ]
-        self.assertEqual(len(bumps), 1, "the gate grew a second failure counter site")
-        guards = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and any(child is bumps[0] for child in ast.walk(node))
-            and "gating"
-            in {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
-        ]
-        self.assertTrue(
-            guards, "gate_fails is raised without consulting the gating set"
-        )
-        kinds = {
-            c.value for c in ast.walk(guards[0].test) if isinstance(c, ast.Constant)
-        }
-        self.assertTrue(
-            {"regression", "new"}.issubset(kinds),
-            f"the gating branch admits {kinds}, not both attributable kinds",
-        )
+        self.assertTrue(bumps, "nothing raises gate_fails")
+        for bump in bumps:
+            guards = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.If)
+                and any(child is bump for child in ast.walk(node))
+                and "gating"
+                in {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+            ]
+            self.assertTrue(
+                guards,
+                f"gate_fails is raised at line {bump.lineno} without consulting "
+                "the gating set",
+            )
+            kinds = {
+                c.value
+                for c in ast.walk(guards[0].test)
+                if isinstance(c, ast.Constant)
+            }
+            self.assertEqual(
+                kinds, set(), f"the gating branch filters on {kinds}; every kind gates"
+            )
 
     # --- the snapshot file itself ---
 
@@ -1438,10 +1418,8 @@ class EvalGateDecisionRules(unittest.TestCase):
     def test_a_snapshot_survives_a_write_and_a_read_unchanged(self) -> None:
         path = self.tmp / "expect.json"
         cases = self.cases()
-        self.eval.write_snapshot(path, cases, "deadbeef")
-        self.assertEqual(
-            self.eval.read_snapshot(path), {"corpus": "deadbeef", "cases": cases}
-        )
+        self.eval.write_snapshot(path, cases)
+        self.assertEqual(self.eval.read_snapshot(path), {"cases": cases})
 
     def test_re_baselining_a_run_that_moved_nothing_rewrites_the_same_bytes(
         self,
@@ -1450,31 +1428,31 @@ class EvalGateDecisionRules(unittest.TestCase):
         # over an unmoved run has to produce no diff at all — a reformat, a
         # reordering or a dropped field would bury the one line that did move.
         path = self.tmp / "expect.json"
-        self.eval.write_snapshot(path, self.cases(), "deadbeef")
+        self.eval.write_snapshot(path, self.cases())
         first = path.read_bytes()
         again = self.eval.read_snapshot(path)
         assert again is not None, "the file this case just wrote reads as absent"
-        self.eval.write_snapshot(path, again["cases"], again["corpus"])
+        self.eval.write_snapshot(path, again["cases"])
         self.assertEqual(path.read_bytes(), first)
 
-    def test_a_gating_read_refuses_a_snapshot_with_no_fingerprint(self) -> None:
-        # Unattributable is the NON-gating regime, so a snapshot predating the
-        # fingerprint would otherwise read as "the corpus moved" and buy a
-        # permanently green check that never says it stopped looking.
-        path = self.tmp / "expect.json"
-        path.write_text(json.dumps({"cases": {"suite": {}}}))
-        with self.assertRaises(RuntimeError) as caught:
-            self.eval.read_snapshot(path)
-        self.assertIn("--update-snapshot", str(caught.exception))
+    def test_a_snapshot_reads_the_same_with_or_without_a_fingerprint(self) -> None:
+        # Older snapshots carry a `corpus` digest. Nothing reads it, and
+        # refusing it would fail every consumer's committed snapshot on the
+        # bump that stopped writing one; the next re-baseline drops it.
+        cases = self.cases()
+        bare = self.tmp / "bare.json"
+        bare.write_text(json.dumps({"cases": cases}))
+        old = self.tmp / "old.json"
+        old.write_text(json.dumps({"corpus": "deadbeef", "cases": cases}))
+        self.assertEqual(self.eval.read_snapshot(bare), {"cases": cases})
+        self.assertEqual(self.eval.read_snapshot(old), {"cases": cases})
 
-    def test_the_run_that_is_about_to_overwrite_it_reads_it_leniently(self) -> None:
-        # The refusal above names --update-snapshot as the fix, so that run
-        # cannot be the one it refuses.
+    def test_a_written_snapshot_carries_no_fingerprint(self) -> None:
+        # Nothing reads one, and a line every re-baseline rewrites makes any
+        # two concurrent memory changes conflict.
         path = self.tmp / "expect.json"
-        path.write_text(json.dumps({"cases": {"suite": {}}}))
-        prior = self.eval.read_snapshot(path, require_fingerprint=False)
-        assert prior is not None, "the file this case just wrote reads as absent"
-        self.assertIsNone(prior["corpus"])
+        self.eval.write_snapshot(path, self.cases())
+        self.assertEqual(set(json.loads(path.read_text())), {"note", "cases"})
 
     def test_a_missing_snapshot_reads_as_nothing_recorded(self) -> None:
         # Distinct from an unreadable one: main() turns this into "run
@@ -1484,16 +1462,12 @@ class EvalGateDecisionRules(unittest.TestCase):
     def test_a_snapshot_with_no_cases_object_is_refused_either_way(self) -> None:
         # A truncated or hand-mangled file is not "no expectations recorded".
         # Read as one, the run would compare nothing and exit like a clean
-        # one, so it has to raise in both modes — including the update mode,
-        # which is otherwise the lenient one.
+        # one, so it has to raise — for the run about to overwrite it too,
+        # since that run reads the same file through the same function.
         path = self.tmp / "expect.json"
         path.write_text(json.dumps({"corpus": "deadbeef"}))
-        for require in (True, False):
-            with (
-                self.subTest(require_fingerprint=require),
-                self.assertRaises(RuntimeError),
-            ):
-                self.eval.read_snapshot(path, require_fingerprint=require)
+        with self.assertRaises(RuntimeError):
+            self.eval.read_snapshot(path)
 
     def test_the_written_file_keeps_its_prompts_readable(self) -> None:
         # ensure_ascii=False and no key sort, both for the same reason: a
@@ -1510,62 +1484,12 @@ class EvalGateDecisionRules(unittest.TestCase):
                     "first": self.record("MISS", "a.md", "search"),
                 }
             },
-            "deadbeef",
         )
         text = path.read_text(encoding="utf-8")
         self.assertIn("zeroth — an em dash", text)
         self.assertNotIn("\\u2014", text)
         self.assertLess(text.index("zeroth"), text.index("first"))
         self.assertTrue(text.endswith("\n"), "no trailing newline to diff against")
-
-    # --- the fingerprint that picks the regime ---
-
-    def fixture_store(self, name: str, files: dict[str, str]) -> Path:
-        """A checkout holding only memories, laid out where the eval looks."""
-        repo = self.tmp / name
-        for rel, text in files.items():
-            path = repo / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-        return repo
-
-    def one_store_config(self):
-        """A config whose single store is where fixture_store puts things."""
-        path = _config(
-            self.tmp / "fp.json",
-            [{"id": "project", "dir": STORE_DIR, "live_root": "home"}],
-        )
-        return _loaded(path)
-
-    def test_a_memory_retiered_without_an_edit_hashes_differently(self) -> None:
-        # The tier is the directory and the assertion follows it, so a
-        # hot/->search/ move flips what every case about that file asserts
-        # while changing not one byte of it. Hashing contents alone would call
-        # that corpus the baselined one and gate on the flip.
-        body = _memory("a", "body")
-        before = self.fixture_store("before", {"docs/memories/search/a.md": body})
-        after = self.fixture_store("after", {"docs/memories/hot/a.md": body})
-        cfg = self.one_store_config()
-        self.assertNotEqual(
-            self.eval.corpus_fingerprint(cfg, before),
-            self.eval.corpus_fingerprint(cfg, after),
-        )
-
-    def test_a_stray_non_markdown_file_cannot_switch_the_gate_off(self) -> None:
-        # Only *.md is indexed, so a .DS_Store or an editor swapfile landing in
-        # a store must not be able to move the run into the regime where every
-        # mismatch is drift and nothing gates.
-        body = _memory("a", "body")
-        clean = self.fixture_store("clean", {"docs/memories/search/a.md": body})
-        littered = self.fixture_store(
-            "littered",
-            {"docs/memories/search/a.md": body, "docs/memories/search/.DS_Store": "x"},
-        )
-        cfg = self.one_store_config()
-        self.assertEqual(
-            self.eval.corpus_fingerprint(cfg, clean),
-            self.eval.corpus_fingerprint(cfg, littered),
-        )
 
 
 class FixtureEvalSensitivity(unittest.TestCase):
@@ -1586,12 +1510,10 @@ class FixtureEvalSensitivity(unittest.TestCase):
     MAX_HITS=0, pointed at CI, watched to redden — and the evidence lived in a
     closed pull request rather than in the suite.
 
-    A third mutation deliberately has no case here: re-pointing a fixture case
-    at a different memory exits 0, because `verdict()` compares the target
-    before the outcome and a retargeted case asserts a different thing (see
-    test_a_case_repointed_at_another_memory_is_drift_not_a_regression). It is
-    the wrong probe for this property, and reads as insensitivity if you try
-    it.
+    A third mutation, re-pointing a fixture case at a different memory, goes
+    red too, as drift rather than a moved outcome: `verdict()` compares the
+    target first, and a retargeted case asserts a different thing.
+    tests/test_eval.py drives that one.
     """
 
     FIXTURES = Path(__file__).parent / "fixtures"
@@ -1650,13 +1572,13 @@ class FixtureEvalSensitivity(unittest.TestCase):
         # this check could be worthless.
         done = self.run_eval()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn("matches the snapshot", done.stdout)
+        self.assertIn("every gating case matched the snapshot", done.stdout)
 
     def test_an_outcome_that_moved_off_the_snapshot_reaches_the_exit_code(
         self,
     ) -> None:
-        # The corpus is untouched, so the run is in the attributable regime and
-        # a recorded outcome that no longer holds is the tool's to answer for.
+        # The corpus is untouched and a recorded outcome no longer holds, so
+        # the run fails on it.
         path = self.fixtures / "eval-expectations.json"
         data = self.snapshot()
         recorded = data["cases"]["suite"][self.CASE]
@@ -1666,7 +1588,7 @@ class FixtureEvalSensitivity(unittest.TestCase):
 
         done = self.run_eval()
         self.assertNotEqual(done.returncode, 0, done.stdout)
-        self.assertIn("REGRESSION", done.stdout)
+        self.assertIn("MOVED", done.stdout)
         self.assertIn("1 gating failure(s)", done.stdout)
 
     def test_a_retrieval_change_the_corpus_did_not_ask_for_reddens_the_gate(
@@ -1691,7 +1613,7 @@ class FixtureEvalSensitivity(unittest.TestCase):
         done = self.run_eval("--hook", str(target))
         self.assertNotEqual(done.returncode, 0, done.stdout)
         self.assertIn("MAX_HITS=0", done.stdout)
-        self.assertIn("REGRESSION", done.stdout)
+        self.assertIn("MOVED", done.stdout)
         self.assertIn("5/5 retrieved", self.run_eval().stdout)  # and it is the copy
         self.assertIn("search tier: 0/5 retrieved", done.stdout)
 

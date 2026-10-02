@@ -435,7 +435,20 @@ one surface that reads the settings value directly, which is what lets it tell
   none of it, and a plugin install does not ship it
   ([docs/STORE.md](docs/STORE.md#the-ledgers-and-whether-you-need-them)).
 - **`memory-eval`** — a snapshot-gated retrieval eval. The cases are *your*
-  data, supplied in config; memkit ships none.
+  data, supplied in config; memkit ships none. Every run checks every case
+  against the committed snapshot and fails on each case in a gating slice
+  that moved off it: a changed outcome, an unrecorded case, or a target or
+  tier that changed under the case *(from the next release)*. A memory edit
+  that moves no outcome passes with no re-baseline *(from the next release)*.
+  The run cannot tell whether the corpus or the retriever moved an outcome,
+  so a failing run prints the rule for attributing it by what the change
+  edits *(from the next release)*: if it edits no memory store and no case
+  (a memkit bump, say), the retriever moved it and the snapshot must not be
+  re-baselined; if it edits memories or cases, review what moved, then run
+  `--update-snapshot` and commit the snapshot in the same change. The
+  snapshot carries no corpus fingerprint; an older one that does is read as
+  before, and the next `--update-snapshot` drops the field
+  *(from the next release)*.
 - **`memkit`** — the dispatcher setup and diagnosis hang off, and the two
   subcommands the plugin exposes as skills:
   - `memkit doctor [--json]` — one envelope, one line per check. Read-only in

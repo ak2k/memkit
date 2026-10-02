@@ -5084,7 +5084,14 @@ def _interpreter(machine: Machine) -> list[Check]:
     running = ".".join(str(n) for n in sys.version_info[:3])
     route, interpreter = _checker_route(machine)
     recorded = _recorded_interpreter(machine)
-    honored = ""
+    option = os.environ.get(INTERPRETER_OPTION_ENV, "")
+    # WHICH PYTHON RUNS, in words, and the paths behind it, kept apart. This
+    # detail is bounded from the end and a path is as long as the adopter's
+    # machine makes it, so the answer carries no path and every arm below puts
+    # it ahead of every path the row prints.
+    answer = ""
+    paths = ""
+    repoint = ""
     if recorded:
         # `expand_home` and `path_refusal`, in the wrapper's own order: this
         # field names the binary exec'd on every prompt, and the wrapper vets
@@ -5094,56 +5101,63 @@ def _interpreter(machine: Machine) -> list[Check]:
         # file" — true, and the wrong repair.
         expanded = expand_home(recorded)
         shape = path_refusal(expanded)
+        honored = not shape and os.path.isfile(expanded) and os.access(
+            expanded, os.X_OK
+        )
+        # THE TWO ROUTES THAT CAN BOTH BE SET, and the silence between them.
+        # The wrapper takes an honored record first and never reaches the
+        # option, so an adopter who reinstalled with a new `memkitInterpreter`
+        # changed nothing: every row here stays green over the python init
+        # recorded. Neither value is wrong, which is why this is INFO — what it
+        # costs is knowing which one runs.
+        #
+        # COMPARED AS SPELLED, after `~` and nothing else. Two paths that reach
+        # one binary through a symlink are the case worth reporting rather than
+        # the one worth hiding: a stable alias and the build behind it differ
+        # in exactly that way, and the alias is usually what the adopter meant.
+        differs = bool(option) and expand_home(option) != expanded
         if shape:
-            honored = (
-                f'. The config records "interpreter": "{recorded}", which '
-                f"{shape}, so the wrapper refuses it by name and falls "
-                "through to the routes below it"
-            )
-        elif not (os.path.isfile(expanded) and os.access(expanded, os.X_OK)):
-            honored = (
-                f'. The config records "interpreter": "{recorded}", which is '
-                "not an executable file, so the wrapper falls through to the "
+            answer = (
+                f'. The config\'s "interpreter" names a path which {shape}, so '
+                "the wrapper refuses it by name and falls through to the "
                 "routes below it"
             )
-        elif os.path.realpath(expanded) != os.path.realpath(sys.executable):
-            honored = (
-                f'. The config records "{recorded}" and this process is '
-                f"{_display_path(sys.executable)}"
+        elif not honored:
+            answer = (
+                '. The config\'s "interpreter" is not an executable file, so '
+                "the wrapper falls through to the routes below it"
             )
-    # THE TWO ROUTES THAT CAN BOTH BE SET, and the silence between them. The
-    # wrapper takes the config's field first and never reaches the option, so
-    # an adopter who reinstalled with a new `memkitInterpreter` changed
-    # nothing: the python that answers every prompt is still the one init
-    # recorded, and every row here stays green over it. Neither value is wrong,
-    # which is why this is INFO — what it costs is knowing which one runs.
-    #
-    # COMPARED AS SPELLED, after `~` and nothing else. Two paths that reach one
-    # binary through a symlink are the case worth reporting rather than the one
-    # worth hiding: a stable alias and the build behind it differ in exactly
-    # that way, and the alias is usually what the adopter meant.
-    option = os.environ.get(INTERPRETER_OPTION_ENV, "")
-    disagrees = ""
-    repoint = ""
-    if recorded and option and expand_home(option) != expand_home(recorded):
-        disagrees = (
-            f'. The config records "{recorded}" and the '
-            f"{INTERPRETER_OPTION_KEY} install option names "
-            f"{_display_path(option)} — the config's field is first in the "
-            "wrapper's order, so the config's is the one that runs"
+        elif differs:
+            answer = (
+                '. The config\'s "interpreter" is the one that runs, not the '
+                f"{INTERPRETER_OPTION_KEY} install option: the two name "
+                "different pythons, and the wrapper reads the config's field "
+                "first"
+            )
+        elsewhere = honored and (
+            os.path.realpath(expanded) != os.path.realpath(sys.executable)
         )
-        repoint = (
-            f"`memkit init --interpreter {_display_path(option)}` records the "
-            "option's value in the config, which is the field the wrapper "
-            "reads. Changing the install option alone moves nothing once the "
-            "config holds one."
-        )
-    # THE DISAGREEMENT FIRST, and it restates the recorded path rather than
-    # leaning on `honored` for it. This detail is bounded from the end, so the
-    # clause that must survive a cut is the one carrying both paths and the
-    # answer; two uv build paths and the sentence below them are past 600 bytes
-    # together, and in that order what got truncated away was which route wins.
-    suffix = disagrees + honored
+        if answer or elsewhere:
+            paths = f'. The config records "{recorded}"'
+            if differs:
+                paths += (
+                    f" and the {INTERPRETER_OPTION_KEY} install option names "
+                    f"{_display_path(option)}"
+                )
+            if elsewhere:
+                paths += f"; this process is {_display_path(sys.executable)}"
+        if differs:
+            repoint = (
+                f"`memkit init --interpreter {_display_path(option)}` records "
+                "the option's value in the config, which is the field the "
+                "wrapper reads first."
+            )
+            if honored:
+                repoint += (
+                    " Changing the install option alone moves nothing once "
+                    "the config holds one."
+                )
+    suffix = answer + paths
     # WHICH PYTHON WILL ACTUALLY SERVE, and can it. The wrapper prefers the
     # config's record and does not probe it — that field is read on every
     # prompt, so a probe there would put a python start in front of the one
@@ -5167,12 +5181,15 @@ def _interpreter(machine: Machine) -> list[Check]:
     else:
         cannot = interpreter_refusal(serving)
     if cannot:
+        # After the answer, because a probe that could not start quotes the
+        # exception, and both it can meet name the path in full.
         return [
             Check(
                 "interpreter",
                 FAIL,
-                f"the python that will run the hook, {_display_path(serving)}, "
-                f"{cannot}. Retrieval cannot work here{suffix}",
+                f"Retrieval cannot work here{answer}. The python that will run "
+                f"the hook {cannot}. That python is "
+                f"{_display_path(serving)}{paths}",
                 INTERPRETER_ROUTES,
                 actor=USER,
                 terminal=True,
@@ -5208,7 +5225,7 @@ def _interpreter(machine: Machine) -> list[Check]:
     # `_display_path` on the binary, like every other path this report prints:
     # the detail is pasted into issues, and an absolute interpreter path under
     # `/Users/<name>` or `/home/<name>` carries the username while every
-    # neighbouring line has been shortened.
+    # neighboring line has been shortened.
     command = checker_argv(route, interpreter)
     where = " ".join([_display_path(command[0]), *command[1:]])
     if route is CheckerRoute.UV_MANAGED:
@@ -5216,9 +5233,9 @@ def _interpreter(machine: Machine) -> list[Check]:
             Check(
                 "interpreter",
                 INFO,
-                f"hook interpreter {running}; checker route {route.value} "
-                f"({where}), because no python on PATH meets {floor} and `uv` "
-                f"located one. Retrieval is unaffected{suffix}",
+                f"hook interpreter {running}{suffix}; checker route "
+                f"{route.value} ({where}), because no python on PATH meets "
+                f"{floor} and `uv` located one. Retrieval is unaffected",
                 repoint,
             )
         ]
@@ -5231,8 +5248,8 @@ def _interpreter(machine: Machine) -> list[Check]:
             Check(
                 "interpreter",
                 INFO,
-                f"hook interpreter {running}; checker route {route.value} "
-                f"({where}){suffix}",
+                f"hook interpreter {running}{suffix}; checker route "
+                f"{route.value} ({where})",
                 repoint,
             )
         ]

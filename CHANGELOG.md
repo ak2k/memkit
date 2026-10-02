@@ -9,6 +9,90 @@ your machine is the tree at the sha in `.claude-plugin/marketplace.json`, which
 moves one commit later — [docs/RELEASING.md](docs/RELEASING.md) explains the
 ordering.
 
+## [Unreleased]
+
+### Changed
+
+- **`memory-eval` gates every case against the corpus in front of it, and the
+  snapshot no longer records which corpus it was written on.** A memory edit
+  that moves no outcome now passes with no re-baseline. On the consumer
+  measured, 250 of the 254 snapshot rewrites in 30 days moved no outcome, and
+  the `corpus` line every one of them rewrote made concurrent memory changes
+  conflict. A moved outcome in a gating slice now fails the run when the
+  corpus differs from the snapshot's, where that run used to refuse with
+  "corpus moved". A case the snapshot never recorded fails it too, and so
+  does drift: a case pointed at another memory, or a memory moved between
+  `hot/` and `search/`. The run cannot tell whether the corpus or the
+  retriever moved an outcome, so a failure prints the rule: if the change
+  edits no memory store and no case (a memkit bump, say), the retriever moved
+  it and the snapshot must not be re-baselined; if it edits memories or
+  cases, review what moved, then `--update-snapshot`. A per-case `REGRESSION`
+  now reads `MOVED`, and a run that cannot search a store its cases target
+  fails on those cases as drift. A snapshot that still carries a `corpus`
+  fingerprint is read as before, and the next `--update-snapshot` drops the
+  field.
+
+### Fixed
+
+- **`memory-eval` exits 255 on 255 or more gating failures.** The count was
+  the exit status, which is taken mod 256, so 256 failures exited 0.
+- **`memory-eval --update-snapshot` refuses to write from a run whose index
+  could not answer.** Such a run scores every search case a miss and every
+  abstention a pass, and was written as the baseline, exiting 0 unless a
+  long-brief rate failed.
+- **A gating `memory-eval` run on an index that could not answer fails.** A
+  snapshot that recorded the same failure matched it case for case, so the run
+  exited 0 having searched nothing. It now refuses with the number of store
+  searches that failed.
+- **A `memory-eval` run gates or writes a snapshot only if every case was
+  scored against one corpus: the memory files its stores hold on disk,
+  unchanged from the first search to the last, and held exactly by the index
+  it searched.** A sync that lost the write lock, could not read a memory file
+  or list a directory, or ran out of budget left the search answering without
+  the memory edit under test; a `--repo` holding none of the configured stores
+  was answered from the stores the hook's own config names; and a memory
+  edited during the run was indexed by a later search after earlier cases had
+  been scored without it. Each time every case could match the snapshot, and
+  the run exited 0 or wrote that other corpus's outcomes as the baseline. The
+  run now refuses when a search's sync reports such a gap, when a memory file
+  changed while it scored, when the index it ends on is missing a memory
+  file, holds rows for one that is gone or older than its file, or covers a
+  path it cannot read, naming the first few paths, and when it has no store
+  to search. A file over the index's size cap, which no run indexes, still
+  passes.
+- **A gating slice whose every case is new or drifted fails once per case.**
+  The vacuity check counted only cases that matched or moved, so the run
+  refused such a slice as one that gated nothing and exited 1. Every case it
+  ran is a gating failure, so it exits with their count. The refusal is kept
+  for a gating slice that ran no case at all, and now says to give it cases or
+  take it out of `eval.gating_slices`, since a re-baseline cannot fill an
+  empty slice.
+- **`memory-eval` refuses a prompt listed twice in one slice.** The snapshot
+  keys a slice's rows by prompt, so the second case overwrote the first one's
+  row. With drift now gating, the run after a re-baseline would fail one of
+  the two, and no re-baseline could clear it. The config error names the
+  slice and the prompt.
+- **`memory-eval --all-stores` gates a long-brief row about a memory this cwd
+  searches.** Reading a store the cwd is gated out of took the whole
+  long-brief slice out of the gate, so one brief that stopped being served, or
+  started leaking, passed inside the rates' one-case slack. Only a row whose
+  memories are all in a gated-out store now reports instead of gating.
+- **Deleting a case from a gating slice fails `memory-eval` until a
+  re-baseline drops its row.** The row was reported as drift outside the gate,
+  so a change could delete the one gating case its memory edit would fail,
+  exit 0, and leave the snapshot as committed.
+- **`memkit doctor` says which interpreter runs before printing any path.** The
+  row is cut at 600 bytes, and on a machine with long paths the cut removed
+  the answer.
+- **`memkit doctor` no longer says the config's interpreter runs when the
+  wrapper passes it over.** A recorded path that is not an executable file,
+  or that the wrapper refuses by its shape, sends the wrapper on to the routes
+  below it, the install option among them, yet the row said the config's
+  python runs and that changing the option moves nothing. It now leads with
+  why the record is passed over, and the row for a python that cannot serve
+  says which python runs before why it cannot, since a probe that could not
+  start quotes the path in full.
+
 ## [0.5.1] — 2026-09-14
 
 ### Fixed
@@ -89,7 +173,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 671 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 715 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for

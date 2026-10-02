@@ -60,29 +60,35 @@ Which slices gate is config (`eval.gating_slices`).
 
 The EXIT CODE is a diff against a committed snapshot of these outcomes rather
 than the raw fail count, because a raw count cannot gate anything here: some
-cases are red by design, and all of them are scored against a corpus that
-changes whenever somebody writes a memory. The snapshot absorbs the first —
-it records the by-design reds as the expected reds, so what gates is
-MOVEMENT. A CORPUS FINGERPRINT, sha256 over every store's contents, absorbs
-the second, and it is what makes a red here mean one thing:
+cases are red by design. The snapshot records the by-design reds as the
+expected reds, so what gates is MOVEMENT. In a gating slice every case has to
+match its recorded row, and every case that does not fails the run: an
+outcome that MOVED, a case the snapshot never recorded (NEW), and a case whose
+target or tier changed under it (DRIFT). The last two gate because each leaves
+the snapshot recording an answer to a question the case no longer asks, and a
+case left ungated until somebody happens to re-baseline is an inert gate.
 
-  fingerprint MATCHES the snapshot's — the corpus is the one that was
-      baselined, so an outcome that moved in a gating slice moved because the
-      TOOL moved. It gates.
-  fingerprint DIFFERS — a memory was written, edited, retired or retiered
-      since the baseline, so nothing measured here is attributable to the
-      tool. EVERY mismatch reports as DRIFT and nothing gates — and the run
-      REFUSES, non-zero, pointing at --update-snapshot for a human who has
-      looked at what moved. It exited 0 until 2026-08-21, which made "this
-      run gated nothing" and "this run gated everything and found nothing
-      wrong" the same answer to CI; on the consumer being measured then, the
-      first was the commoner state by an order of magnitude.
+The snapshot records outcomes, not the corpus they were measured on, and
+every run re-checks every case against the corpus in front of it: one
+corpus, unchanged from the first search to the last, which the index it
+searched holds exactly, at its current contents, or the run neither gates
+nor writes. A run that gated nothing does not exit 0: to CI that exit has to
+mean every gating case was checked and held.
 
-So a red on a bump PR (corpus untouched) is always the tool, and a memory
-edit is never falsely red. Position — the tier a target sits in today — is
-recorded and reported, but it does NOT decide attributability: "the target
-did not move, therefore the tool did" is false, since three new memories can
-outrank a target that never budged.
+So a memory edit that moves no outcome passes with no re-baseline. What a run
+cannot know is WHICH side moved an outcome, since the corpus and the retriever
+both change, so a failing run prints the rule for attributing it:
+
+  the change edits no memory store and no case (a memkit bump, say) — the
+      retriever moved it. Do not re-baseline: that records the regression as
+      the expected outcome.
+  the change edits memories or cases — review what moved, then
+      --update-snapshot and commit the snapshot in the same change.
+
+Position — the tier a target sits in today — is compared but says nothing
+about which side moved an outcome: "the target did not move, therefore the
+tool did" is false, since three new memories can outrank a target that never
+budged.
 
 Usage:
   memory-eval                      # run the configured suite, score, gate
@@ -92,11 +98,16 @@ Usage:
   memory-eval --all-stores         # every store whatever the cwd
   memory-eval --snapshot F         # gate against F, not the configured one
   memory-eval --update-snapshot    # re-baseline, deliberately
-Exit code = failures in the gating slices, or a refusal (a corpus that moved
-under the snapshot, a gating slice that compared nothing, an unreadable or
-absent snapshot); 0 = gated and clean, so it can gate CI. Every way of NOT
-gating is non-zero, which is the property that makes a green here mean
-something.
+Exit code = failures in the gating slices, counting MOVED, NEW and DRIFT
+cases, capped at 255; or 1 for a refusal. Before scoring: an unreadable or
+absent snapshot, a config that cannot run, or no store to search. After
+scoring: a gating slice that ran no case, a long-brief rate outside its bounds
+or a failed delivery check in that slice, a store search that failed or ran on
+an index its sync did not bring up to date, or memory files that changed while
+the run scored or that the index does not hold, which refuses a gating run and
+an --update-snapshot alike. 0 = every case in every gating slice matched the
+snapshot, so it can gate CI. Every way of NOT gating is non-zero, which is the
+property that makes a green here mean something.
 """
 
 from __future__ import annotations
@@ -109,6 +120,7 @@ import json
 import os
 import pathlib
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -144,50 +156,6 @@ def store_roots(cfg, repo: pathlib.Path) -> list[pathlib.Path]:
     return [repo / store.dir for store in cfg.stores]
 
 
-def corpus_fingerprint(cfg, repo: pathlib.Path) -> str:
-    """One digest over every one of `repo`'s stores — the fact that decides
-    whether a mismatch is the tool's or the corpus's.
-
-    Content-addressed (relative path plus the sha256 of the bytes, sorted, each
-    store labeled and folded together), so a clean checkout and the read-only
-    copy a CI check runs from hash the same, while any memory written, edited,
-    renamed, retiered or retired hashes differently. Tiers are inside the
-    paths, so a hot/->search/ move registers even though the bytes did not
-    change.
-
-    Only `*.md` is hashed, because only `*.md` is indexed: a stray .DS_Store
-    must not be able to switch the gate into its non-gating regime.
-
-    Untracked memories are the one asymmetry to know about. They count here and
-    not in a sealed source snapshot, so re-baselining with one sitting in a
-    store leaves CI hashing a different corpus — green, and gating nothing.
-
-    Both encodes below are the hook's total one, and neither is hygiene. A
-    store id comes out of `json.load`, which turns an escaped `\\udXXX` in the
-    config into a lone surrogate; a relative path comes out of `rglob`, which
-    turns a filename the filesystem holds as undecodable bytes into one. A
-    strict `.encode()` raises `UnicodeEncodeError` on either, and this function
-    runs before the gate does anything — so one such name anywhere under a
-    store root would end the run with a traceback and no eval, rather than with
-    a fingerprint that separates that corpus from every other. Digesting
-    `surrogatepass` bytes separates exactly the corpora a strict encode would
-    have separated; it simply also answers for the ones it dies on.
-    """
-    digest = hashlib.sha256()
-    for store, root in zip(cfg.stores, store_roots(cfg, repo), strict=True):
-        digest.update(_utf8(f"{store.id}\0"))
-        if not root.is_dir():
-            continue
-        files = sorted(
-            ((p.relative_to(root).as_posix(), p) for p in root.rglob("*.md")),
-            key=lambda entry: entry[0],
-        )
-        for rel, path in files:
-            content = hashlib.sha256(path.read_bytes()).hexdigest()
-            digest.update(_utf8(f"{rel}\0{content}\0"))
-    return digest.hexdigest()
-
-
 def case_record(
     status: str, file: str | None = None, position: str | None = None
 ) -> dict:
@@ -220,11 +188,16 @@ def cases_from_config(cfg) -> dict:
     `vocab` (paraphrases of suite cases, same targets). A slice the config
     omits is simply empty, which the vacuity check below then refuses to
     accept as a gating pass.
+
+    One prompt per slice, because the snapshot keys a slice's rows by prompt:
+    a repeat overwrites the first case's row, and the run after a re-baseline
+    fails whichever of the two the row no longer describes.
     """
     out: dict[str, list[dict]] = {"suite": [], "noinject": [], "vocab": []}
     for slice_, raw in (cfg.eval_cases or {}).items():
         if slice_ not in out:
             raise ConfigError(f"{cfg.path}: eval.cases has unknown slice {slice_!r}")
+        prompts: set[str] = set()
         for case in raw:
             prompt = case.get("prompt")
             if not isinstance(prompt, str) or not prompt:
@@ -233,6 +206,12 @@ def cases_from_config(cfg) -> dict:
                 raise ConfigError(
                     f"{cfg.path}: {slice_} case {prompt[:40]!r} names no file"
                 )
+            if prompt in prompts:
+                raise ConfigError(
+                    f"{cfg.path}: the {slice_} slice names the same prompt "
+                    f"twice: {prompt!r}"
+                )
+            prompts.add(prompt)
             out[slice_].append(case)
     return out
 
@@ -397,9 +376,9 @@ def long_brief_set(root: pathlib.Path) -> dict:
     they gate on.
 
     Files rather than config entries because a brief is kilobytes of prose, and
-    the rates sit beside them rather than in the config for the same reason the
-    corpus fingerprint sits in the snapshot: a number is only worth what it was
-    measured over, so it travels with the thing it was measured over.
+    the rates sit beside them rather than in the config because a number is
+    only worth what it was measured over, so it travels with the thing it was
+    measured over.
 
     Refuses rather than warns on a set that cannot gate. Every check below has
     the same shape as the vacuity check further down — a run that gated nothing
@@ -505,9 +484,8 @@ def long_brief_set(root: pathlib.Path) -> dict:
         # reads as a new case and its old row as a stale one rather than
         # quietly inheriting a recorded outcome. The config's own cases get
         # this for free — their key is the prompt text — and a case keyed on a
-        # filename alone would be the one kind of drift nothing reports: the
-        # corpus fingerprint does not cover this directory, because these are
-        # the queries and not the corpus.
+        # filename alone would be the one kind of drift nothing reports: an
+        # edited brief compared against the outcome recorded for its old text.
         digest = hashlib.sha256(_utf8(brief)).hexdigest()[:12]
         return {
             "name": f"{case['brief']}#{digest}",
@@ -622,7 +600,7 @@ def _delivered_names(appended: str) -> set[str]:
     Off the path field alone. Taking every whitespace token's basename made
     any word of a surviving DESCRIPTION able to vouch for a pointer that was
     shed or never emitted, and descriptions here are file contents — a memory
-    that names its neighbour is ordinary, not contrived. The gate would then
+    that names its neighbor is ordinary, not contrived. The gate would then
     report subagent coverage for a pointer the subagent never received, which
     is the single thing this slice exists to measure.
 
@@ -689,6 +667,91 @@ def _pad_to_overhead(tool_input: dict) -> dict:
     return tool_input
 
 
+# The counters in a search's record that say its sync left some memory file's
+# current contents out of the index: rows from before an edit still answer, or
+# a memory is not indexed at all. Either way a case can match the snapshot on a
+# corpus that is not the one in front of the run.
+SYNC_GAP_COUNTERS = (
+    "lex_busy_skip",  # lost the write lock to another process
+    "lex_unwalked",  # a directory it could not list
+    "lex_deadline",  # files it ran out of budget to read
+    "lex_unswept",  # rows of deleted files it ran out of budget to remove
+    "skipped_lex",  # a store it ran out of budget to sync and search at all
+)
+
+
+def sync_gaps(rec: dict) -> tuple[str, ...]:
+    """The counters in one `recall` record that say its sync did not bring
+    every memory file up to date; empty when it did.
+
+    `lex_spared` counts every file the sync held out, and that includes the
+    ones over the size cap. Those the index declines on every run and sweeps
+    the rows of, so no rerun would index them and nothing stale is left behind.
+    Only what is spared beyond them is a gap.
+    """
+    fired = tuple(key for key in SYNC_GAP_COUNTERS if rec.get(key))
+    if int(rec.get("lex_spared") or 0) > int(rec.get("lex_oversize") or 0):
+        fired += ("lex_spared",)
+    return fired
+
+
+def index_drift(hook, dirs: list[str]) -> str:
+    """How the index behind `dirs` differs from the memory files on disk now,
+    naming the first few paths of each kind; "" when it holds every one of
+    them at its current identity.
+
+    Both sides are the hook's own: its walk decides what a memory file is, so
+    whatever it declines on every run (past the size cap, a link out of the
+    store, a name it cannot bind) is exempt, and the identity compared is the
+    one its sync decides staleness by. This asks the index rather than the
+    sync's counters, so a gap no counter names still differs here.
+    """
+    found: dict[str, list[str]] = {
+        "missing": [], "extra": [], "stale": [], "unreadable": []
+    }
+    for d in dirs:
+        disk, spared, unwalked, _oversize = hook._fts_scan(d)
+        db = hook._fts_db(d)
+        held: dict = {}
+        if os.path.exists(db):
+            try:
+                con = sqlite3.connect(db)
+                try:
+                    held = hook._fts_identity(con)
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                found["unreadable"].append(db)
+                continue
+        # What the walk could not stat or list it can say nothing about, so
+        # those paths are not reported as extra rows too.
+        unseen = tuple(os.path.join(u, "") for u in unwalked)
+        found["unreadable"] += sorted(spared | unwalked)
+        found["missing"] += sorted(disk.keys() - held.keys())
+        found["extra"] += sorted(
+            p for p in held.keys() - disk.keys()
+            if p not in spared and not p.startswith(unseen)
+        )
+        found["stale"] += sorted(
+            p for p in disk.keys() & held.keys() if disk[p] != held[p]
+        )
+    return ", ".join(
+        f"{len(paths)} {kind} ({_first_few(paths)})"
+        for kind, paths in found.items()
+        if paths
+    )
+
+
+def corpus_map(hook, dirs: list[str]) -> dict[str, tuple[int, int, int]]:
+    """Every memory file under `dirs` that the hook's walk finds, at the
+    identity its sync decides staleness by."""
+    return {path: ident for d in dirs for path, ident in hook._fts_scan(d)[0].items()}
+
+
+def _first_few(paths: list[str]) -> str:
+    return ", ".join(paths[:3]) + (", ..." if len(paths) > 3 else "")
+
+
 def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     """Everything one brief's trip through the task path produced, as a
     record — which is what a subagent WOULD ACTUALLY RECEIVE for this brief.
@@ -716,10 +779,11 @@ def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
     the corpus could answer at all, and dropping it is how a broken index
     came to satisfy the injection ceiling — on the leakage half an index
     that could not answer and a brief that was correctly quiet produce the
-    same empty list. The cap's consequence is here too: how many hits
-    cleared the floor, how many the cap kept, and the bytes the emission
-    decided to write. All from ONE trip, because two trips is two
-    populations.
+    same empty list. `unsynced` names the `sync_gaps` counters that fired, so
+    the answer may come from rows that predate the corpus. The cap's
+    consequence is here too: how many hits cleared the floor, how many the cap
+    kept, and the bytes the emission decided to write. All from ONE trip,
+    because two trips is two populations.
     """
     return _task_delivery(hook, brief, dirs)
 
@@ -812,10 +876,11 @@ def over_cap_faults(hook, case: dict, got: dict) -> list[str]:
     subagent.
     """
     faults = []
-    if got["unanswerable"]:
-        # The index could not answer, which is already refused above by its own
-        # name. Reporting it here as well would say the corpus or the brief has
-        # moved, which is a wrong diagnosis of a right refusal.
+    if got["unanswerable"] or got["unsynced"]:
+        # The index could not answer, or did not hold the corpus, and the run
+        # refuses on that by its own name. Reporting it here as well would say
+        # the corpus or the brief has moved, which is a wrong diagnosis of a
+        # right refusal.
         return faults
     if got["eligible"] <= hook.TASK_MAX_HITS:
         faults.append(
@@ -856,6 +921,7 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "truncated": 0,
         "delivered": "",
         "unanswerable": 0,
+        "unsynced": (),
     }
     # WHERE PRODUCTION'S CLOCK STARTS, which is before the gate and the query
     # builder rather than at the search. `main` stamps `t0` and hands it down,
@@ -891,7 +957,8 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         deadline=t0 + hook.TASK_BUDGET_SECONDS,
     )
     unanswerable = int(rec.get("errs_lex") or 0)
-    empty = dict(empty, unanswerable=unanswerable)
+    unsynced = sync_gaps(rec)
+    empty = dict(empty, unanswerable=unanswerable, unsynced=unsynced)
     terms = list(dict.fromkeys((query or "").split()))
     # `_eligible` with the hook's own bars, not a comprehension with a copy of
     # them: this slice is the only automated gate over the task path's
@@ -949,23 +1016,22 @@ def _task_delivery(hook, brief: str, dirs: list[str]) -> dict:
         "truncated": truncated,
         "delivered": appended,
         "unanswerable": unanswerable,
+        "unsynced": unsynced,
     }
 
 
-def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict | None:
-    """The committed expectations — {"corpus": digest, "cases": slice -> prompt
-    -> record}; None if absent.
+def read_snapshot(path: pathlib.Path) -> dict | None:
+    """The committed expectations — {"cases": slice -> prompt -> record}; None
+    if absent.
 
     Cases are keyed by the prompt itself rather than an index or a hash: the
     file is read in a review diff, and a case reordered or reworded should
     show up there as the case it is.
 
-    A gating run demands the fingerprint rather than shrugging at a file that
-    predates it, because unattributable is the NON-gating regime: read
-    leniently, a snapshot with no digest is a permanently green check that
-    never says it stopped looking. A run that is about to overwrite the file
-    passes require_fingerprint=False — the refusal would otherwise name
-    --update-snapshot as the fix and then reject it.
+    A `corpus` fingerprint, which older snapshots carry, is ignored rather than
+    refused: nothing reads it, and refusing it would fail every consumer's
+    committed snapshot on the bump that stopped writing one. The next
+    --update-snapshot drops it.
     """
     if not path.exists():
         return None
@@ -973,63 +1039,43 @@ def read_snapshot(path: pathlib.Path, require_fingerprint: bool = True) -> dict 
     cases = data.get("cases")
     if not isinstance(cases, dict):
         raise RuntimeError(f"{path} has no `cases` object — regenerate it")
-    corpus = data.get("corpus")
-    if not isinstance(corpus, str):
-        if require_fingerprint:
-            raise RuntimeError(
-                f"{path} has no `corpus` fingerprint — regenerate it with "
-                "--update-snapshot"
-            )
-        corpus = None
-    return {"corpus": corpus, "cases": cases}
+    return {"cases": cases}
 
 
-def write_snapshot(
-    path: pathlib.Path, cases: dict[str, dict[str, dict]], corpus: str
-) -> None:
+def write_snapshot(path: pathlib.Path, cases: dict[str, dict[str, dict]]) -> None:
     """Rewrite the snapshot from a run, in suite order and readably.
 
     ensure_ascii=False and no key sort: the point of this file is that a
     human reads its diff, and \\u2014-escaped prompts sorted away from their
-    neighbours are a file that only a machine can review.
+    neighbors are a file that only a machine can review.
     """
     body = {
         "note": (
             "Expected outcomes of `memory-eval` on this checkout's memory "
-            "stores. Regenerate with --update-snapshot, "
-            "deliberately, after reading what moved; a diff here is either a "
-            "corpus edit you meant or a retrieval regression you did not."
+            "stores, checked against the current corpus on every run. "
+            "Regenerate with --update-snapshot, deliberately, after reading "
+            "what moved; a diff here is an outcome that moved and was accepted."
         ),
-        "corpus_note": (
-            "sha256 over every store's *.md contents when these outcomes were "
-            "recorded. A run that hashes the same corpus can attribute a "
-            "moved outcome to the retriever, and gates on it; a run that "
-            "hashes a different one reports every mismatch as drift."
-        ),
-        "corpus": corpus,
         "cases": cases,
     }
     path.write_text(json.dumps(body, indent=2, ensure_ascii=False) + "\n", "utf-8")
 
 
-def verdict(
-    seen: dict, want: dict | None, corpus_matches: bool = True
-) -> tuple[str, str]:
-    """One case against its snapshot: (ok|new|drift|regression, why).
+def verdict(seen: dict, want: dict | None) -> tuple[str, str]:
+    """One case against its snapshot: (ok|new|drift|moved, why).
 
-    `corpus_matches` is the attribution rule, and the only thing that decides
-    whether a failure can be pinned on the tool: the stores this run measured
-    either hash to what the snapshot was written from or they do not. If they
-    do not, every mismatch — a moved status, a case the snapshot never heard
-    of — demotes to drift for a human to re-baseline.
+    Every kind but `ok` fails a gating slice, so the kind does not decide
+    WHETHER a case gates; it says what the reader has to look at. Which side
+    moved an outcome — the corpus or the retriever — is not a fact about one
+    case, and main() prints the rule for telling them apart.
 
     `file` and `position` are compared before status, and each answers a
     question the case's assertion silently rests on: which target the case
     names at all, and which tier that target sits in today (search asserts
     injection, hot asserts abstention). Either one moving makes the recorded
-    status an answer to a different question, so it is drift in both regimes
-    — a retargeted case is a change in what is being asserted, not in the
-    thing asserted about.
+    status an answer to a different question, so it is drift rather than a
+    moved outcome — a retargeted case is a change in what is being asserted,
+    not in the thing asserted about.
 
     Cases whose class names no file carry neither field, so both sides read
     None and the comparison falls through to status.
@@ -1047,11 +1093,9 @@ def verdict(
             f"snapshot says {want.get('position')}, now {seen.get('position')}",
         )
     elif seen.get("status") != want.get("status"):
-        kind, why = "regression", f"snapshot says {want.get('status')}"
+        kind, why = "moved", f"snapshot says {want.get('status')}"
     else:
         return "ok", ""
-    if kind != "drift" and not corpus_matches:
-        return "drift", f"{why}; corpus changed since the baseline"
     return kind, why
 
 
@@ -1080,9 +1124,18 @@ def main() -> None:
             "\n"
             "exit codes:\n"
             "  0  the gating slices held — or a snapshot was written, which is\n"
-            "     an acceptance and exits 0 even on a red run\n"
-            "  1  a gating slice regressed, or the run could not start. The\n"
-            "     message names which, and what to do about it."
+            "     an acceptance and exits 0 even on a red run unless the\n"
+            "     long-brief slice failed a rate or a delivery check\n"
+            "  1  one case in a gating slice moved off the snapshot, or a\n"
+            "     refusal: the run could not start or had no store to search,\n"
+            "     a gating slice ran no case, the long-brief slice failed a\n"
+            "     rate or a delivery check, a store search failed or ran on an\n"
+            "     index its sync did not bring up to date, or memory files\n"
+            "     changed while the run scored or are not what the index\n"
+            "     holds, which refuses gating and --update-snapshot alike.\n"
+            "     The message names which, and what to do about it.\n"
+            "  N  N cases in gating slices moved off the snapshot, counting\n"
+            "     MOVED, NEW and DRIFT; 255 is 255 or more"
         ),
     )
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -1150,8 +1203,8 @@ def main() -> None:
     # answers which SESSIONS are served a gated store, which is not a fact
     # about retrieval, and the run already reports a store it cannot reach
     # rather than scoring it. A build sandbox stands outside every checkout, so
-    # a gating run without this scores only the ungated cases and files the
-    # rest as drift — a green earned by not looking.
+    # a gating run without this scores only the ungated cases and fails the
+    # rest as position drift — a red that says nothing about retrieval.
     every = all_stores(cfg, repo)
     permitted = stores(cfg, repo)
     roots = every if args.all_stores else permitted
@@ -1166,34 +1219,30 @@ def main() -> None:
     # long-brief slice is the only gate over subagent delivery, and it hands
     # `dirs` straight to `recall` — so a target sitting in a cwd-gated store
     # makes the served floor pass on a memory the real `_task_main` would
-    # answer `task:nodirs` for in the same environment. `--all-stores` is a
-    # reporting mode; it may not also be the thing that gates.
+    # answer `task:nodirs` for in the same environment.
     ungated = [p for p in roots if p not in permitted]
     snap_path = args.snapshot or repo / cfg.eval_snapshot
-    corpus = corpus_fingerprint(cfg, repo)
-    prior = read_snapshot(snap_path, require_fingerprint=not args.update_snapshot)
-    # Whether this run can attribute anything to the tool. No snapshot at all
-    # reads as "cannot": --update-snapshot is then the only legal next move.
-    corpus_matches = prior is not None and prior["corpus"] == corpus
+    prior = read_snapshot(snap_path)
     # Annotated, because the long-brief slice narrows it below and the
     # inferred type is a frozenset of whatever literals the default happened to
     # carry.
     gating: frozenset[str] = cfg.eval_gating
-    if ungated and LONG_BRIEF_SLICE in gating:
-        # Said out loud, because every way of not having this gate is
-        # otherwise silent and a green run has to name the gates it ran. The
-        # slice still RUNS and still prints its rates; what it stops doing is
-        # deciding the exit code, since it would be deciding it on a delivery
-        # production refuses from this cwd.
+    # So a brief row whose memories are all in those stores reports rather
+    # than gates. A row about a memory this cwd searches is a delivery
+    # production makes, and it gates: the rates leave one such row moving
+    # inside their slack.
+    gated_out = ungated if LONG_BRIEF_SLICE in gating else []
+    if gated_out:
+        # Said out loud, because a green run has to name the gates it ran.
         print(
             "long briefs: --all-stores is reading "
-            + ", ".join(str(p) for p in ungated)
-            + ", which this cwd is gated out of — reporting only, not gating"
+            + ", ".join(str(p) for p in gated_out)
+            + ", which this cwd is gated out of — a brief row whose memories "
+            "are only there reports, not gates"
         )
-        gating = frozenset(s for s in gating if s != LONG_BRIEF_SLICE)
-    # Say what this run measured. Four of these lines are the difference
-    # between "the hook missed" and "you ran the suite from somewhere the hook
-    # does not look" or "you scored a corpus nobody baselined".
+    # Say what this run measured. These lines are the difference between "the
+    # hook missed" and "you ran the suite from somewhere the hook does not
+    # look" or "you gated against some other snapshot".
     print(f"config: {cfg.path}")
     print(f"hook:   {hook_file}  (MAX_HITS={hook.MAX_HITS})")
     print(f"cwd:    {pathlib.Path.cwd()}")
@@ -1203,20 +1252,16 @@ def main() -> None:
             "        not searched from this cwd: "
             + ", ".join(str(p) for p in unsearched)
         )
-    print(f"snap:   {snap_path}")
-    if prior is None:
-        regime = "no snapshot yet"
-    elif corpus_matches:
-        regime = "matches the snapshot — gating slices answer for the tool"
-    elif prior["corpus"] is None:
-        regime = "the snapshot records none — nothing gates"
-    else:
-        regime = (
-            f"DIFFERS from the snapshot's {prior['corpus'][:12]} — "
-            "the corpus moved, so nothing gates"
-        )
-    print(f"corpus: {corpus[:12]} ({regime})")
+    print(f"snap:   {snap_path}{'  (none yet)' if prior is None else ''}")
     print()
+    if not dirs:
+        # A run that searches no corpus scores every noinject case clean and
+        # every search case a miss, which is a measurement of nothing.
+        sys.exit(
+            f"nothing to measure: none of the stores in {cfg.path} is a "
+            f"directory under {repo} that this run searches"
+            + (" — rerun from inside the checkout being scored" if every else "")
+        )
     # Both refusals guard the same failure: a snapshot is only worth what the
     # run that wrote it measured. A run that cannot reach a store records its
     # cases as unsearched and permanently narrows the gate to whatever the cwd
@@ -1243,56 +1288,83 @@ def main() -> None:
     seen_cases: dict[str, dict[str, dict]] = {
         "suite": {}, "noinject": {}, "vocab": {}, LONG_BRIEF_SLICE: {}
     }
-    tally = {"regression": 0, "drift": 0, "new": 0}
+    tally = {"moved": 0, "drift": 0, "new": 0}
     # A name nobody has is a refusal, not a KeyError. `gating_slices` is
     # hand-typed — README tells an adopter to add `longbrief` to it — and the
-    # vacuity check below indexes `compared` with whatever the config carries,
-    # so a typo ended a fully green run with a traceback and exit 1, which CI
-    # reads as the regression that did not happen. Refused here rather than
-    # made lenient there: `compared.get(s, 0)` would stop the crash by counting
-    # a typo as a satisfied gate, which is the failure the vacuity check exists
-    # to prevent.
+    # vacuity check below indexes `seen_cases` with whatever the config
+    # carries, so a typo would end a fully green run with a traceback and exit
+    # 1, which CI reads as a regression. Refused here rather than made lenient
+    # there: `seen_cases.get(s)` would stop the crash by counting a typo as a
+    # satisfied gate, which is the failure the vacuity check exists to prevent.
     unknown = sorted(gating - set(seen_cases))
     if unknown:
         sys.exit(
             f"{cfg.path}: eval.gating_slices names {', '.join(unknown)} — "
             f"no such slice; the slices are {', '.join(sorted(seen_cases))}"
         )
-    # Per SLICE, how many cases actually met a recorded expectation. Counted
-    # because "0 failures" and "0 comparisons" print the same exit code, and
-    # the second is a gate that stopped looking — see the vacuity check below.
-    compared = dict.fromkeys(seen_cases, 0)
     gate_fails = 0
     prior_cases = prior["cases"] if prior else {}
 
-    def against_snapshot(slice_: str, prompt: str, seen: dict) -> str:
+    def against_snapshot(
+        slice_: str, prompt: str, seen: dict, files: tuple = ()
+    ) -> str:
         """Record one case's outcome, diff it, and return the line's tail.
 
         The tail rides on the case's own line rather than in a block at the
         end because the two facts are read together: which case moved, and
-        which of the four ways it moved.
+        which of the three ways it moved.
+
+        `files` are the memories a brief row is about, which decide whether
+        production would make that delivery from this cwd at all.
         """
         nonlocal gate_fails
         seen_cases[slice_][prompt] = seen
         want = prior_cases.get(slice_, {}).get(prompt)
-        kind, why = verdict(seen, want, corpus_matches)
-        # Only these two answered the snapshot's question — the rest are the
-        # snapshot declining to answer, and the vacuity check counts them as
-        # such however they exit.
-        if kind in ("ok", "regression"):
-            compared[slice_] += 1
+        kind, why = verdict(seen, want)
         if kind == "ok":
             return ""
         tally[kind] += 1
-        # `new` gates alongside `regression`: an unrecorded case in a gating
-        # slice is a case nobody baselined, and letting it pass makes adding
-        # one the way to add an ungated case. The sanctioned path is
-        # --update-snapshot in the same change. Under a moved corpus neither
-        # ever reaches here — verdict() has already demoted them to drift.
-        if kind in ("regression", "new") and slice_ in gating:
+        # Every kind gates, `new` and `drift` included. Each of those two
+        # leaves the snapshot recording an answer to a question the case no
+        # longer asks, and letting it pass makes adding a case, retargeting
+        # one or retiering its memory the way to take that case out of the
+        # gate until somebody happens to re-baseline. The sanctioned path is
+        # --update-snapshot in the same change.
+        if slice_ in gating and not only_gated_out(files):
             gate_fails += 1
             return f"  <- {kind.upper()} ({why})"
         return f"  <- {kind.upper()} ({why}; not gating)"
+
+    def only_gated_out(files: tuple) -> bool:
+        return bool(gated_out and files) and all(
+            locate(permitted, name) is None and locate(gated_out, name) is not None
+            for name in files
+        )
+
+    # Store searches that failed, one per store per call, summed over the run.
+    # `recall` drops a dir that fails and returns the rest, so an index the run
+    # cannot open scores every search case a MISS and every abstention a pass,
+    # and `errs_lex` is the only thing that tells that apart from a retriever
+    # that found nothing.
+    unanswerable = 0
+    # Each case's `sync_gaps`, one entry per search, read off that search's
+    # own record.
+    unsynced: list[tuple[str, ...]] = []
+
+    def search(prompt: str) -> list[str]:
+        nonlocal unanswerable
+        rec: dict = {}
+        hits = hook.recall(prompt, stats=rec, dirs=dirs)
+        unanswerable += int(rec.get("errs_lex") or 0)
+        unsynced.append(sync_gaps(rec))
+        return hits
+
+    # The corpus every case is scored against, taken before the first search
+    # on either path. Each search syncs the index to the disk as it is then,
+    # so a file edited mid-run is indexed by the next search: the index the
+    # run ends on matches the disk, and a case scored before the edit saw what
+    # the file held before it.
+    scored_on = corpus_map(hook, dirs)
 
     for case in cases["suite"]:
         prompt, expected = case["prompt"], case["file"]
@@ -1319,7 +1391,7 @@ def main() -> None:
             continue
         tier = "hot" if found[0] == "hot" else "search"
         try:
-            hits = hook.recall(prompt, dirs=dirs)  # abs paths, best-first
+            hits = search(prompt)  # abs paths, best-first
         except AttributeError:
             sys.exit(
                 "hook has no recall(prompt) entrypoint — expose one "
@@ -1336,7 +1408,7 @@ def main() -> None:
         # Three ways to miss, and they call for different fixes: never
         # retrieved (query/description), retrieved then floored (floor), or
         # retrieved and above the floor but ranked out of the pointer slots
-        # (rank — usually a description competing badly against neighbours).
+        # (rank — usually a description competing badly against neighbors).
         note = ""
         if not ok and tier == "search":
             if expected in passed:
@@ -1352,7 +1424,7 @@ def main() -> None:
 
     for case in cases["noinject"]:
         prompt = case["prompt"]
-        _, shown = pointers(hook, prompt, hook.recall(prompt, dirs=dirs))
+        _, shown = pointers(hook, prompt, search(prompt))
         ok = not shown
         mark = "NOINJECT-OK" if ok else "NOINJECT-FAIL"
         scored["noinject"][0] += int(ok)
@@ -1385,11 +1457,11 @@ def main() -> None:
                 f"(not in search/){moved}"
             )
             continue
-        # dirs=dirs, like every other call site here. Without it this slice
-        # measured the DEFAULT stores while the three above measured --repo's,
-        # so a --repo run printed one scoreboard over two different corpora and
-        # named neither.
-        hits = hook.recall(prompt, dirs=dirs)
+        # Through `search`, and so dirs=dirs, like every other call site here.
+        # Without it this slice measured the DEFAULT stores while the three
+        # above measured --repo's, so a --repo run printed one scoreboard over
+        # two different corpora and named neither.
+        hits = search(prompt)
         _, shown = pointers(hook, prompt, hits)
         got = expected in shown
         vocab_tot += 1
@@ -1479,6 +1551,8 @@ def main() -> None:
             entrypoint_checked = False
             for case in briefs["served"]:
                 got = task_delivery(hook, case["brief"], dirs)
+                unanswerable += got["unanswerable"]
+                unsynced.append(got["unsynced"])
                 shown = got["names"]
                 ok = case["file"] in shown
                 if shown and not entrypoint_checked:
@@ -1527,7 +1601,10 @@ def main() -> None:
                 if got["unanswerable"] and not ok:
                     mark = "BRIEF-NOINDEX"
                 moved = against_snapshot(
-                    LONG_BRIEF_SLICE, case["name"], case_record(mark, case["file"])
+                    LONG_BRIEF_SLICE,
+                    case["name"],
+                    case_record(mark, case["file"]),
+                    (case["file"],),
                 )
                 print(
                     f"[{mark:<12}] {case['name'][:58]:<58} -> "
@@ -1537,6 +1614,8 @@ def main() -> None:
                     cap_fail.extend(over_cap_faults(hook, case, got))
             for case in briefs["unserved"]:
                 got = task_delivery(hook, case["brief"], dirs)
+                unanswerable += got["unanswerable"]
+                unsynced.append(got["unsynced"])
                 shown = got["names"]
                 ok = not shown
                 leaked += not ok
@@ -1558,21 +1637,27 @@ def main() -> None:
                     )
                     mark = "BRIEF-NOINDEX"
                 moved = against_snapshot(
-                    LONG_BRIEF_SLICE, case["name"], case_record(mark)
+                    LONG_BRIEF_SLICE, case["name"], case_record(mark), tuple(shown)
                 )
                 saw = f"injected {shown}" if shown else "(nothing)"
                 print(f"[{mark:<12}] {case['name'][:58]:<58} -> {saw}{moved}")
 
     # A case deleted from a list up there leaves its expectation behind, and a
     # stale expectation is the one kind of drift no case line can report —
-    # nothing iterates it any more.
+    # nothing iterates it any more. In a gating slice it gates like any other
+    # mismatch, or deleting a case would take it out of the gate with the
+    # snapshot unchanged, and a memory edit could delete the one case it fails.
     for slice_, want in prior_cases.items():
         for prompt in want:
             if prompt not in seen_cases.get(slice_, {}):
                 tally["drift"] += 1
+                tail = "; not gating"
+                if slice_ in gating:
+                    gate_fails += 1
+                    tail = ""
                 print(
                     f"[DRIFT       ] {prompt[:58]:<58} -> in the snapshot's "
-                    f"{slice_} slice, not in the suite; not gating"
+                    f"{slice_} slice, not in the suite{tail}"
                 )
 
     ret, tot = scored["search"]
@@ -1620,61 +1705,95 @@ def main() -> None:
                 f"{briefs['max_injected']:.3f} ceiling — the task gate is "
                 "rewriting spawns the corpus has nothing to say about"
             )
-    loose = tally["regression"] + tally["new"] - gate_fails
+    # A snapshot recorded against an index that could not answer matches that
+    # index case for case, so on a gating run the snapshot alone would read it
+    # as a pass, and a re-baseline would record the failure as the expected
+    # outcome. The failed searches are the only evidence either run has. An
+    # index its sync did not bring up to date is the same case on a corpus
+    # that is not this one. The sync's counters speak for each search as it
+    # ran, and a later search can repair what an earlier one answered from;
+    # the comparison against disk speaks for the index the run ends on,
+    # whatever left it there. Neither stands in for the other.
+    incomplete = []
+    if unanswerable:
+        incomplete.append(
+            f"{unanswerable} store search(es) failed in this run, and a store "
+            "that cannot answer scores as a miss or a clean abstention — rerun "
+            "where memkit can build its index"
+        )
+    behind = [gaps for gaps in unsynced if gaps]
+    if behind:
+        fired = sorted({key for gaps in behind for key in gaps})
+        incomplete.append(
+            f"{len(behind)} case(s) scored on an index whose sync left memory "
+            f"files out of it ({', '.join(fired)}) — rerun once memkit can read "
+            "every memory file and nothing else is updating its index"
+        )
+    ended_on = corpus_map(hook, dirs)
+    changed = sorted(
+        p
+        for p in scored_on.keys() | ended_on.keys()
+        if scored_on.get(p) != ended_on.get(p)
+    )
+    if changed:
+        incomplete.append(
+            f"{len(changed)} memory file(s) changed while this run was scoring "
+            f"({_first_few(changed)}) — a case scored before the change saw what "
+            "they held before it; rerun once nothing is editing them"
+        )
+    drift = index_drift(hook, dirs)
+    if drift:
+        incomplete.append(
+            "the index this run searched does not hold the memory files on disk "
+            f"now: {drift} — rerun once memkit can read every memory file and "
+            "nothing is editing them"
+        )
+    cannot_answer = "; ".join(incomplete)
+    if cannot_answer and not args.update_snapshot:
+        rate_fail.append(f"refusing to gate: {cannot_answer}")
+    loose = sum(tally.values()) - gate_fails
     parts = [f"{gate_fails} gating failure(s) in {'/'.join(sorted(gating))}"]
     if loose:
         parts.append(f"{loose} outside the gate")
     if tally["drift"]:
-        parts.append(f"{tally['drift']} drifted (the corpus moved under the case)")
+        parts.append(
+            f"{tally['drift']} drifted (a target or tier changed, or a case is gone)"
+        )
     if tally["new"]:
         parts.append(f"{tally['new']} unrecorded (newer than the snapshot)")
     print("vs snapshot: " + ", ".join(parts))
     if rate_fail and not args.update_snapshot:
-        # Ahead of the corpus-moved refusal, and deliberately: that refusal
-        # says nothing was attributable, which is true of every SNAPSHOT
-        # comparison and false of these. A rate is an absolute measurement of
-        # the corpus in front of it, so a moved corpus is exactly when it still
-        # answers — and exactly when a coverage collapse would otherwise be
-        # filed as drift and re-baselined away.
+        # Ahead of everything the snapshot decides, and deliberately. A rate is
+        # an absolute measurement of the corpus in front of it and no
+        # re-baseline may accept it, so it is reported on its own rather than
+        # beside the snapshot's remedy, which cannot fix it.
         sys.exit("; ".join(rate_fail))
-    if prior is not None and not corpus_matches and not args.update_snapshot:
+    if gate_fails and not args.update_snapshot:
+        # The attribution rule, on every failing run. The corpus and the
+        # retriever can each move an outcome and nothing here can tell which
+        # did, so the reader is handed the one fact that can: what the change
+        # under test edits. A bump re-baselined over is a regression recorded
+        # as the expected outcome.
         print(
-            "             these stores are not the ones baselined, so every "
-            "line above is drift and nothing was gated"
+            "             a case in a gating slice moved off the snapshot, and "
+            "the corpus and the retriever can each move one:\n"
+            "             - if this change edits no memory store and no case "
+            "(a memkit bump, say), the retriever moved it: do not re-baseline\n"
+            "             - if it edits memories or cases, review what moved, "
+            "then --update-snapshot and commit the snapshot in the same change"
         )
-        # And that is a REFUSAL, not a pass. Everything above is right — under
-        # a moved corpus nothing measured here is attributable to the tool, so
-        # nothing may gate — but exiting 0 on it made "this run gated nothing"
-        # and "this run gated everything and found nothing wrong" the same
-        # answer to CI, and the first one is by far the commoner. Measured on
-        # the consumer at the time this changed: 88 memory-touching commits in
-        # 30 days against 3 re-baselines ever, so the check spent most of its
-        # life inert while reporting green.
-        #
-        # Consumer impact, deliberately: nix-config's `memory-eval` check and
-        # `check-all` will now fail on any memory edit that does not re-baseline
-        # in the same change. That is the contract its own MEMORY.md already
-        # states ("re-baseline with --update-snapshot and commit the snapshot in
-        # the same change") being enforced rather than waived, and the remedy is
-        # one command that historically moves only the fingerprint line.
-        #
-        # A consumer BUMPING to this build should carry a fresh
-        # --update-snapshot in the same change as the bump. Whatever drift
-        # accumulated while this exited 0 is standing and invisible, and the
-        # first run on the new build surfaces all of it at once — on whichever
-        # PR happens to move the input, which is rarely the one expecting it.
-        sys.exit(
-            "corpus moved — re-baseline with `--update-snapshot` and commit "
-            "the snapshot in the same change"
-        )
-    # The pointer fires on ANY unclean run, regressions included: a regression
-    # is sometimes the outcome you meant (a floor deliberately loosened), and
-    # the re-baseline is how you say so — leaving it off the failing case made
-    # the fix look like it had no sanctioned path.
-    if any(tally.values()) and not args.update_snapshot:
+    elif any(tally.values()) and not args.update_snapshot:
+        # Outside the gate, the pointer still fires: an outcome moved in a
+        # report-only slice is sometimes the one you meant, and a stale row
+        # stays until a re-baseline drops it, so the line names the sanctioned
+        # path for both.
         print("             --update-snapshot accepts these, once you know why")
     if args.update_snapshot:
-        write_snapshot(snap_path, seen_cases, corpus)
+        # The same refusal as the two ahead of scoring, on a fact only scoring
+        # can find.
+        if cannot_answer:
+            sys.exit(f"refusing to write a snapshot: {cannot_answer}")
+        write_snapshot(snap_path, seen_cases)
         # Exit 0 even on a red run: re-baselining is the act of accepting what
         # the run reported, and a nonzero exit here would make the accepted
         # state indistinguishable from a refusal to write.
@@ -1683,26 +1802,32 @@ def main() -> None:
         # snapshot records WHAT HAPPENED and accepting it is the whole point;
         # the rates record what has to be true whatever happened, and a floor
         # that `--update-snapshot` can silence is not a floor. The write still
-        # lands first, so the remedy for a moved corpus is not blocked by this
+        # lands first, so the remedy for a moved outcome is not blocked by this
         # — the run just does not report success.
         sys.exit("; ".join(rate_fail) if rate_fail else 0)
-    # A gating slice that compared nothing is the failure mode a green cannot
-    # show: zero failures and zero comparisons print the same exit code, and
-    # an empty or missing slice would otherwise buy a pass by having no
-    # expectations to fail. Only asked in the attributable regime — under a
-    # moved corpus every slice compares nothing BY DESIGN.
-    vacuous = [s for s in sorted(gating) if not compared[s]]
-    if vacuous and corpus_matches:
+    # A gating slice that ran no case is the failure mode a green cannot show:
+    # zero failures and zero cases print the same exit code, and an empty or
+    # missing slice would otherwise buy a pass by having no expectations to
+    # fail. Every case a slice ran either matched or counted as a failure, so
+    # a slice that ran any case gated it.
+    vacuous = [s for s in sorted(gating) if not seen_cases[s]]
+    if vacuous:
         sys.exit(
             "nothing was gated: "
-            + "; ".join(
-                f"the {s} slice compared 0 of {len(seen_cases[s])} case(s) "
-                "against the snapshot"
-                for s in vacuous
-            )
-            + " — re-baseline with --update-snapshot and commit the result"
+            + "; ".join(f"the {s} slice ran 0 cases" for s in vacuous)
+            + " — give each one cases in eval.cases, or take it out of "
+            "eval.gating_slices"
         )
-    sys.exit(gate_fails)
+    if not any(tally.values()):
+        # Said on the pass because it is the commonest result of a memory edit
+        # and needs no re-baseline: the snapshot is still true as written.
+        print(
+            "             every gating case matched the snapshot — no re-baseline "
+            "needed, whatever this change did to the memories"
+        )
+    # Saturated, because the status is taken mod 256 and 256 failures would
+    # otherwise exit 0. The summary line above carries the whole count.
+    sys.exit(min(gate_fails, 255))
 
 
 def cli() -> None:

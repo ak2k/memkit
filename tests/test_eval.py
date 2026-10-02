@@ -13,12 +13,16 @@ anybody edits, and it read as green for most of this check's life.
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
+import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -48,7 +52,12 @@ def corpus(tmp_path: Path) -> Path:
     return dst
 
 
-def _eval(corpus: Path, *args: str) -> subprocess.CompletedProcess:
+def _eval(
+    corpus: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -61,94 +70,940 @@ def _eval(corpus: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=300,
+        env=env,
+        cwd=cwd,
     )
 
 
 def _drift(corpus: Path) -> None:
-    """Move the corpus without moving any case's outcome.
+    """Edit a memory without moving any case's outcome.
 
-    The point is the FINGERPRINT, not the retrieval: an edit that changed a
-    result would also fail the old code, and this has to fail on a corpus that
-    still scores identically — which is what a typical memory edit looks like.
+    What a typical memory edit looks like: the corpus differs from the one the
+    snapshot was written on, and every case still scores as recorded.
     """
     memo = corpus / "corpus" / "project" / "search" / "flange_torque.md"
     memo.write_text(memo.read_text() + "\nA sentence nobody searches for.\n")
 
 
+SNAPSHOT = "eval-expectations.json"
+
+# The rule a failing run prints, quoted in pieces: one half for a change that
+# edits no memory, one for a change that does.
+NO_REBASELINE = "edits no memory store and no case"
+REVIEW_THEN_UPDATE = "review what moved, then --update-snapshot"
+
+
+def _recorded(corpus: Path) -> dict:
+    return json.loads((corpus / SNAPSHOT).read_text(encoding="utf-8"))
+
+
+def _record(corpus: Path, state: dict) -> None:
+    (corpus / SNAPSHOT).write_text(json.dumps(state), encoding="utf-8")
+
+
+def _line(stdout: str, needle: str) -> str:
+    return next(ln for ln in stdout.splitlines() if needle in ln)
+
+
 def test_the_committed_fixture_corpus_gates_clean(corpus: Path) -> None:
     """The control. Without it every case below could pass because the eval is
-    broken in some way that has nothing to do with fingerprints."""
+    broken in some way that has nothing to do with the snapshot."""
     out = _eval(corpus)
     assert out.returncode == 0, out.stdout + out.stderr
-    assert "matches the snapshot" in out.stdout
+    assert "every gating case matched the snapshot" in out.stdout
 
 
-def test_a_moved_corpus_refuses_instead_of_reporting_green(corpus: Path) -> None:
-    """The fix. Nothing measured under a moved corpus is attributable to the
-    tool, so nothing may gate — and that is a refusal, not a pass."""
-    _drift(corpus)
-    out = _eval(corpus)
-
-    assert out.returncode != 0, out.stdout
-    # The remedy IS the message: one command, and the instruction to commit
-    # what it writes in the same change.
-    assert "--update-snapshot" in out.stderr
-    assert "same change" in out.stderr
-    # And the report above it is unchanged — the per-case lines and the
-    # explanation of why none of them counted. Only the ending moved.
-    assert "[PASS" in out.stdout
-    assert "these stores are not the ones baselined" in out.stdout
-    assert "the corpus moved, so nothing gates" in out.stdout
-
-
-def test_update_snapshot_still_works_on_the_corpus_it_is_the_remedy_for(
+def test_a_memory_edit_that_moves_no_outcome_passes_without_a_re_baseline(
     corpus: Path,
 ) -> None:
-    """A re-baseline that refused on a moved corpus would name a fix and then
-    reject it. It writes, and it exits 0 — accepting what the run reported is
-    the act, so a non-zero here would be indistinguishable from a refusal."""
-    snapshot = corpus / "eval-expectations.json"
-    before = json.loads(snapshot.read_text())["corpus"]
+    """The common memory commit. Every case was compared against the corpus in
+    front of it and every one held, so the run gated everything and found
+    nothing wrong — a pass, and the snapshot is still true as written."""
+    before = (corpus / SNAPSHOT).read_bytes()
     _drift(corpus)
+    out = _eval(corpus)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "no re-baseline needed" in out.stdout, out.stdout
+    assert "[PASS" in out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "a gating run wrote the snapshot"
+
+
+@pytest.mark.parametrize("edit_memory", [False, True], ids=["corpus-as-recorded", "memory-edited"])
+def test_a_moved_outcome_fails_and_says_how_to_attribute_it(
+    corpus: Path, edit_memory: bool
+) -> None:
+    """A recorded outcome that no longer holds fails the run whatever the
+    corpus did, and the run cannot say whether the corpus or the retriever
+    moved it — so it prints the rule that can, both halves of it.
+
+    Every case in the slice moved, so the slice compared all of them and none
+    held: a refusal for comparing nothing would be the wrong message here.
+    """
+    if edit_memory:
+        _drift(corpus)
+    state = _recorded(corpus)
+    for row in state["cases"]["noinject"].values():
+        row["status"] = "NOINJECT-FAIL"
+    _record(corpus, state)
+
+    out = _eval(corpus)
+    assert out.returncode == 2, out.stdout + out.stderr
+    row = _line(out.stdout, "thanks, that is exactly")
+    assert "<- MOVED (snapshot says NOINJECT-FAIL)" in row, row
+    assert "2 gating failure(s)" in out.stdout, out.stdout
+    assert NO_REBASELINE in out.stdout, out.stdout
+    assert "do not re-baseline" in out.stdout, out.stdout
+    assert REVIEW_THEN_UPDATE in out.stdout, out.stdout
+    assert "nothing was gated" not in out.stderr, out.stderr
+    assert "no re-baseline needed" not in out.stdout
+
+
+def test_an_unrecorded_case_gates_after_a_memory_edit(corpus: Path) -> None:
+    """A case nobody baselined is a case asserting nothing until somebody
+    happens to re-baseline, so adding one would be the way to add an ungated
+    case. It gates whatever else the change edited."""
+    _drift(corpus)
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["cases"]["noinject"].append(
+        {"prompt": "what time zone is the standup in"}
+    )
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    row = _line(out.stdout, "what time zone is the standup in")
+    assert "<- NEW (no expectation recorded)" in row, row
+    assert "1 gating failure(s)" in out.stdout, out.stdout
+
+
+def test_a_failure_count_past_255_still_exits_non_zero(corpus: Path) -> None:
+    """A process exit status is taken mod 256, so a count passed through as
+    the status reads 256 failures as a pass. The count saturates at 255 and
+    the summary line still carries the whole of it."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["cases"]["noinject"].extend(
+        {"prompt": f"what time zone is standup number {i} in"} for i in range(256)
+    )
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode == 255, out.stdout[-2000:] + out.stderr
+    assert "256 gating failure(s)" in out.stdout, out.stdout[-2000:]
+
+
+def test_a_memory_moved_between_tiers_gates(corpus: Path) -> None:
+    """Moving a memory from hot/ to search/ flips what every case about it
+    asserts, from abstention to injection, with no byte of it edited. The
+    snapshot's row then answers a different question, and leaving it ungated
+    until somebody re-baselines is the inert gate this rule closes."""
+    project = corpus / "corpus" / "project"
+    (project / "hot" / "gasket_replacement.md").rename(
+        project / "search" / "gasket_replacement.md"
+    )
+    out = _eval(corpus)
+    assert out.returncode == 1, out.stdout + out.stderr
+    row = _line(out.stdout, "gasket replacement interval")
+    assert "<- DRIFT (snapshot says hot, now search)" in row, row
+    assert "1 gating failure(s)" in out.stdout, out.stdout
+    assert NO_REBASELINE in out.stdout, out.stdout
+
+
+def test_a_case_pointed_at_another_memory_gates(corpus: Path) -> None:
+    """The corpus untouched, the case retargeted. What is asserted changed,
+    so the recorded outcome is about a different file and has to be
+    re-baselined in the same change rather than left standing ungated."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    for case in state["eval"]["cases"]["suite"]:
+        if case["file"] == "widget_calibration.md":
+            case["file"] = "sprocket_alignment.md"
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode == 1, out.stdout + out.stderr
+    row = _line(out.stdout, "recalibrate a widget")
+    assert (
+        "<- DRIFT (snapshot says widget_calibration.md, case now names "
+        "sprocket_alignment.md)" in row
+    ), row
+    assert "1 gating failure(s)" in out.stdout, out.stdout
+
+
+def test_a_gating_slice_that_ran_no_case_is_refused_after_a_memory_edit(
+    corpus: Path,
+) -> None:
+    """Zero failures and zero cases print the same exit code, and an empty
+    slice would buy a pass by having no expectations to fail. That holds in
+    every run, a memory edit included."""
+    _drift(corpus)
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["cases"]["noinject"] = []
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode != 0, out.stdout
+    assert "nothing was gated: the noinject slice ran 0 cases" in out.stderr, (
+        out.stderr
+    )
+
+
+def test_a_gating_slice_of_unrecorded_cases_fails_on_each_of_them(
+    corpus: Path,
+) -> None:
+    """A slice whose every case is new ran every one of them and each one
+    failed, so the run reports that many gating failures. It gated all of
+    them, and a refusal saying it gated nothing would misstate the run."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    state["eval"]["cases"]["noinject"] = [
+        {"prompt": "what time zone is the standup in"},
+        {"prompt": "who is buying lunch on friday"},
+        {"prompt": "remind me what the parking code is"},
+    ]
+    config.write_text(json.dumps(state))
+    # A slice nobody has baselined, so no row of the cases it replaced is left
+    # to fail beside these three.
+    recorded = _recorded(corpus)
+    recorded["cases"]["noinject"] = {}
+    _record(corpus, recorded)
+
+    out = _eval(corpus)
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "3 gating failure(s)" in out.stdout, out.stdout
+    assert "nothing was gated" not in out.stderr, out.stderr
+
+
+def test_a_moved_outcome_outside_the_gate_reports_without_failing(
+    corpus: Path,
+) -> None:
+    """`vocab` is not a gating slice in the fixture config, so its rows report
+    and never decide the exit code, whatever else the change edited. Something
+    did move, so the pass does not say the snapshot needs no re-baseline."""
+    _drift(corpus)
+    state = _recorded(corpus)
+    for row in state["cases"]["vocab"].values():
+        row["status"] = "VOCAB-MISS"
+    _record(corpus, state)
+
+    out = _eval(corpus)
+    assert out.returncode == 0, out.stdout + out.stderr
+    row = _line(out.stdout, "the machine reads its old zero")
+    assert "<- MOVED (snapshot says VOCAB-MISS; not gating)" in row, row
+    assert "--update-snapshot accepts these" in out.stdout, out.stdout
+    assert NO_REBASELINE not in out.stdout
+    assert "no re-baseline needed" not in out.stdout, out.stdout
+
+
+@pytest.mark.parametrize(
+    "slice_,code", [("noinject", 1), ("vocab", 0)], ids=["gating", "report-only"]
+)
+def test_a_stale_row_gates_in_a_gating_slice_and_reports_outside_one(
+    corpus: Path, slice_: str, code: int
+) -> None:
+    """A case deleted from the config leaves its row behind, and no case runs
+    it. A gating slice's rows are the record of what its gate checks, so in
+    one a row no case asks is a mismatch like any other: deleting the case
+    fails the run until a re-baseline drops the row in a diff a reviewer sees.
+    Outside the gate the row reports, and still wants that re-baseline."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    gone = state["eval"]["cases"][slice_].pop()["prompt"]
+    config.write_text(json.dumps(state))
+
+    out = _eval(corpus)
+    assert out.returncode == code, out.stdout + out.stderr
+    row = _line(out.stdout, gone[:40])
+    assert f"in the snapshot's {slice_} slice, not in the suite" in row, row
+    assert ("not gating" in row) is (code == 0), row
+    assert f"{code} gating failure(s)" in out.stdout, out.stdout
+    assert "no re-baseline needed" not in out.stdout, out.stdout
+    if not code:
+        assert "--update-snapshot accepts these" in out.stdout, out.stdout
+        return
+    assert REVIEW_THEN_UPDATE in out.stdout, out.stdout
+    # The sanctioned path drops the row, and the gate is green after it.
+    assert _eval(corpus, "--update-snapshot").returncode == 0
+    assert gone not in _recorded(corpus)["cases"][slice_]
+    assert _eval(corpus).returncode == 0
+
+
+@pytest.mark.parametrize("slice_", ["suite", "noinject", "vocab"])
+def test_a_prompt_repeated_in_a_slice_is_refused(corpus: Path, slice_: str) -> None:
+    """The snapshot keys a slice's rows by prompt, so a second case with the
+    same prompt overwrites the first one's row. A re-baseline then records one
+    of the two, and every later run fails the other as drift, which no
+    re-baseline can clear. One prompt per slice is the contract, refused at
+    load like a brief named twice."""
+    config = corpus / "memkit.json"
+    state = json.loads(config.read_text())
+    cases = state["eval"]["cases"][slice_]
+    twin = dict(cases[0])
+    if "file" in twin:
+        twin["file"] = "sprocket_alignment.md"
+    cases.append(twin)
+    config.write_text(json.dumps(state))
+
+    for args in ((), ("--update-snapshot",)):
+        out = _eval(corpus, *args)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert (
+            f"the {slice_} slice names the same prompt twice: {twin['prompt']!r}"
+            in out.stderr
+        ), out.stderr
+
+
+def test_update_snapshot_writes_the_outcomes_and_no_fingerprint(
+    corpus: Path,
+) -> None:
+    """A re-baseline writes, and exits 0 — accepting what the run reported is
+    the act, so a non-zero here would be indistinguishable from a refusal. It
+    records outcomes only: nothing reads which corpus they were measured on."""
+    _drift(corpus)
+    state = _recorded(corpus)
+    prompt = next(iter(state["cases"]["noinject"]))
+    state["cases"]["noinject"][prompt]["status"] = "NOINJECT-FAIL"
+    _record(corpus, state)
 
     out = _eval(corpus, "--update-snapshot")
     assert out.returncode == 0, out.stdout + out.stderr
     assert "wrote" in out.stdout
-    after = json.loads(snapshot.read_text())["corpus"]
-    assert after != before, "the fingerprint is what a re-baseline is for"
+    written = _recorded(corpus)
+    assert set(written) == {"note", "cases"}, sorted(written)
+    assert written["cases"]["noinject"][prompt]["status"] == "NOINJECT-OK"
 
     # And the gate is live again immediately, which is what makes the remedy a
     # remedy rather than a way to switch the check off.
     assert _eval(corpus).returncode == 0
 
 
+@contextlib.contextmanager
+def _an_index_that_cannot_answer(tmp_path: Path) -> Iterator[dict[str, str]]:
+    """An environment whose state directory the run cannot write.
+
+    `recall` returns no hits for such an index rather than raising, so every
+    search case scores a MISS and every abstention and noinject case passes.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root writes everything, so this cannot be staged")
+    cache = tmp_path / "cache"
+    state = cache / "memory-recall"
+    state.mkdir(parents=True)
+    state.chmod(0o500)
+    try:
+        yield {**os.environ, "XDG_CACHE_HOME": str(cache)}
+    finally:
+        state.chmod(0o700)
+
+
+def _searches(corpus: Path) -> int:
+    """How many cases a run over this config takes to retrieval. Every fixture
+    case does, on the prompt path; a brief does when the task path's own gate
+    lets it through."""
+    data = json.loads((corpus / "memkit.json").read_text())
+    calls = sum(len(cases) for cases in data["eval"]["cases"].values())
+    if "long_briefs" in data["eval"]:
+        briefs = ev.long_brief_set(corpus / data["eval"]["long_briefs"])
+        calls += sum(
+            hook.task_gate(case["brief"]) is None
+            for half in ("served", "unserved")
+            for case in briefs[half]
+        )
+    return calls
+
+
+def _store_searches(corpus: Path) -> int:
+    """How many store searches a run over this config makes: one per store for
+    every case that reaches retrieval."""
+    data = json.loads((corpus / "memkit.json").read_text())
+    return _searches(corpus) * len(data["stores"])
+
+
+def _shape(corpus: Path, shape: str) -> None:
+    config = corpus / "memkit.json"
+    data = json.loads(config.read_text())
+    if shape == "no-long-briefs":
+        del data["eval"]["long_briefs"]
+        data["eval"]["gating_slices"] = ["noinject", "suite"]
+    elif shape == "long-briefs-only":
+        data["eval"]["cases"] = {}
+        data["eval"]["gating_slices"] = ["longbrief"]
+    config.write_text(json.dumps(data))
+
+
+@pytest.mark.parametrize("shape", ["as-shipped", "no-long-briefs", "long-briefs-only"])
+def test_a_re_baseline_from_an_index_that_cannot_answer_writes_nothing(
+    corpus: Path, tmp_path: Path, shape: str
+) -> None:
+    """Written, a run on an index that cannot answer is a snapshot of the
+    failure, and every later run that cannot write there either matches it.
+
+    Without the long-brief slice no rate fails either, so nothing but this
+    refusal stands between that run and an exit 0. With only that slice, the
+    task path's searches are the only ones that could have failed. The count
+    is of store searches, one per store per case, so a two-store fixture
+    reports its searches rather than dozens of stores."""
+    _shape(corpus, shape)
+    before = (corpus / SNAPSHOT).read_bytes()
+    with _an_index_that_cannot_answer(tmp_path) as env:
+        out = _eval(corpus, "--update-snapshot", env=env)
+    assert "search tier: 0/" in out.stdout, out.stdout
+    assert out.returncode != 0, out.stdout
+    assert (
+        f"refusing to write a snapshot: {_store_searches(corpus)} store "
+        "search(es) failed in this run" in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+
+def test_a_gating_run_on_an_index_that_cannot_answer_fails(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The gating half of the refusal above. A snapshot that recorded what a
+    dead index scores — every search case a MISS, every abstention and noinject
+    case a pass — matches a dead index case for case, so the snapshot alone
+    reads that run as a pass over every gating case."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    for slice_ in ("suite", "vocab"):
+        for row in state["cases"][slice_].values():
+            row["status"] = {"PASS": "MISS", "VOCAB-FOUND": "VOCAB-MISS"}.get(
+                row["status"], row["status"]
+            )
+    _record(corpus, state)
+    with _an_index_that_cannot_answer(tmp_path) as env:
+        out = _eval(corpus, env=env)
+    assert "search tier: 0/" in out.stdout, out.stdout
+    assert "0 gating failure(s)" in out.stdout, out.stdout
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert (
+        f"refusing to gate: {_store_searches(corpus)} store search(es) failed "
+        "in this run" in out.stderr
+    ), out.stderr
+    assert "no re-baseline needed" not in out.stdout, out.stdout
+
+
+@contextlib.contextmanager
+def _an_index_another_process_is_writing(cache: Path) -> Iterator[None]:
+    """Every index under `cache` held mid-write by another connection, as a
+    concurrent session's hook holds it while its own sync runs. A sync that
+    needs the lock waits out the busy timeout and is skipped, and the query
+    still answers from the rows the index held before."""
+    held = []
+    try:
+        for db in sorted((cache / "memory-recall").glob("fts5-*.db")):
+            con = sqlite3.connect(db, isolation_level=None)
+            held.append(con)
+            con.execute("BEGIN IMMEDIATE")
+        assert held, "no index was built to hold"
+        yield
+    finally:
+        for con in held:
+            con.close()
+
+
+# The memory the flange cases target, rewritten so that none of them finds it.
+UNRELATED = (
+    "---\nname: office_plants\ndescription: The office plants are watered on "
+    "Fridays.\ntype: reference\n---\n\nWater the office plants on Fridays.\n"
+)
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+@pytest.mark.parametrize(
+    "shape,needle,held_status",
+    [
+        ("no-long-briefs", "flange fastener tightening", "[PASS"),
+        ("long-briefs-only", "vessel-reassembly", "[BRIEF-SERVED"),
+    ],
+    ids=["prompt-path", "task-path"],
+)
+def test_a_run_whose_sync_lost_the_lock_neither_gates_nor_writes(
+    corpus: Path,
+    tmp_path: Path,
+    shape: str,
+    needle: str,
+    held_status: str,
+    args: tuple,
+) -> None:
+    """A sync that loses the write lock to another process is skipped, and the
+    query answers from the rows the index held before this change's memory
+    edit. The outcomes then match the snapshot because the run measured the
+    corpus as it was, so the run may neither pass the gate nor become the
+    baseline."""
+    _shape(corpus, shape)
+    if shape == "no-long-briefs":
+        state = _recorded(corpus)
+        del state["cases"]["longbrief"]
+        _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    (corpus / "corpus" / "project" / "search" / "flange_torque.md").write_text(
+        UNRELATED, encoding="utf-8"
+    )
+    with _an_index_another_process_is_writing(tmp_path / "cache"):
+        out = _eval(corpus, *args, env=env)
+    row = _line(out.stdout, needle)
+    assert row.startswith(held_status), row
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert (
+        f"{_searches(corpus)} case(s) scored on an index whose sync left memory "
+        "files out of it (lex_busy_skip)" in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: the rows the index held are what answered. A run that
+    # syncs the edit moves the same case.
+    synced = _eval(corpus, env=env)
+    assert "scored on an index whose sync" not in synced.stderr, synced.stderr
+    assert "<- MOVED" in _line(synced.stdout, needle), synced.stdout
+    assert synced.returncode != 0, synced.stdout
+
+
+# Memories each path must not deliver: one a noinject prompt asks about, one an
+# unserved brief does.
+ABOUT_A_NOINJECT_PROMPT = (
+    "---\nname: linked_list_reversal\ndescription: Reverse a linked list in "
+    "place with three pointers.\ntype: reference\n---\n\nTo reverse a linked "
+    "list in place, walk the list once and flip each next pointer.\n"
+)
+ABOUT_AN_UNSERVED_BRIEF = (
+    "---\nname: warehouse_slotting\ndescription: Re-slot a warehouse from the "
+    "order history: fast movers near the pick faces, pickers walk less.\ntype: "
+    "reference\n---\n\nSlot the warehouse from the order history, not the "
+    "current layout. Fast movers go to the widest aisles; heavy and bulky items "
+    "stay off the mezzanine; print the pick-face labels on the move plan's "
+    "timeline; measure walking distance per order.\n"
+)
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+@pytest.mark.parametrize(
+    "shape,memory,needle,quiet,hide,counter",
+    [
+        (
+            "no-long-briefs", ABOUT_A_NOINJECT_PROMPT, "reverse a linked list",
+            "[NOINJECT-OK", "file", "lex_spared",
+        ),
+        (
+            "long-briefs-only", ABOUT_AN_UNSERVED_BRIEF, "warehouse-slotting",
+            "[BRIEF-QUIET", "file", "lex_spared",
+        ),
+        (
+            "no-long-briefs", ABOUT_A_NOINJECT_PROMPT, "reverse a linked list",
+            "[NOINJECT-OK", "dir", "lex_unwalked",
+        ),
+    ],
+    ids=["prompt-path-unreadable", "task-path-unreadable", "prompt-path-unlisted"],
+)
+def test_a_run_whose_sync_could_not_read_a_memory_neither_gates_nor_writes(
+    corpus: Path,
+    tmp_path: Path,
+    shape: str,
+    memory: str,
+    needle: str,
+    quiet: str,
+    hide: str,
+    counter: str,
+    args: tuple,
+) -> None:
+    """A memory the sync cannot read, or one in a directory it cannot list,
+    keeps whatever rows the index already held for it, and a new one has none.
+    The query answers without it, so a memory edit that should move a case
+    matches the snapshot instead, and the run may neither pass the gate nor
+    become the baseline. The refusal names the counter that fired."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything, so this cannot be staged")
+    _shape(corpus, shape)
+    if shape == "no-long-briefs":
+        state = _recorded(corpus)
+        del state["cases"]["longbrief"]
+        _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    folder = corpus / "corpus" / "project" / "search" / "added"
+    folder.mkdir()
+    memo = folder / "added_memory.md"
+    memo.write_text(memory, encoding="utf-8")
+    hidden = memo if hide == "file" else folder
+    hidden.chmod(0)
+    try:
+        out = _eval(corpus, *args, env=env)
+    finally:
+        hidden.chmod(0o700)
+    assert _line(out.stdout, needle).startswith(quiet), out.stdout
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert (
+        f"{_searches(corpus)} case(s) scored on an index whose sync left memory "
+        f"files out of it ({counter})" in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: once the sync can read it, the same memory moves the case.
+    synced = _eval(corpus, env=env)
+    assert "scored on an index whose sync" not in synced.stderr, synced.stderr
+    assert "<- MOVED" in _line(synced.stdout, needle), synced.stdout
+    assert synced.returncode != 0, synced.stdout
+
+
+def test_a_sync_gap_refusal_does_not_also_say_the_cap_case_moved(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The over-cap brief clears the floor on four memories, and the sync
+    cannot read one of them, so that trip sees three. The refusal already says
+    the index did not hold the corpus; the cap check adding that the corpus or
+    the brief moved would be a wrong diagnosis of a right refusal."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything, so this cannot be staged")
+    _shape(corpus, "long-briefs-only")
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    memo = corpus / "corpus" / "project" / "search" / "flange_torque.md"
+    memo.write_text(UNRELATED, encoding="utf-8")
+    memo.chmod(0)
+    try:
+        out = _eval(corpus, env=env)
+    finally:
+        memo.chmod(0o600)
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert (
+        "scored on an index whose sync left memory files out of it (lex_spared)"
+        in out.stderr
+    ), out.stderr
+    assert "exists to drive the cap" not in out.stderr, out.stderr
+
+    # Non-vacuity: with the edit read, the corpus did move, and the cap check
+    # says so.
+    synced = _eval(corpus, env=env)
+    assert "scored on an index whose sync" not in synced.stderr, synced.stderr
+    assert "exists to drive the cap" in synced.stderr, synced.stderr
+
+
+def test_a_memory_over_the_size_cap_neither_refuses_the_gate_nor_the_write(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The index declines a file over its size cap on every run and holds no
+    rows for it, so no rerun would read it and the run already measures the
+    corpus the hook can see. The sync counts it as spared all the same, and
+    that alone must not refuse the run."""
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    memo = corpus / "corpus" / "project" / "search" / "oversize.md"
+    memo.write_bytes(b"flange " * (hook.INDEX_FILE_MAX_BYTES // 7 + 1))
+    assert memo.stat().st_size > hook.INDEX_FILE_MAX_BYTES
+    out = _eval(corpus, env=env)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "every gating case matched the snapshot" in out.stdout, out.stdout
+    written = _eval(corpus, "--update-snapshot", env=env)
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "wrote" in written.stdout, written.stdout
+
+
+@pytest.mark.parametrize(
+    "rec,gaps",
+    [
+        ({}, ()),
+        ({"errs_lex": 0, "lex_hits": 3, "lex_outside": 1, "lex_secret": 2}, ()),
+        ({"lex_spared": 2, "lex_oversize": 2}, ()),
+        ({"lex_spared": 3, "lex_oversize": 2}, ("lex_spared",)),
+        ({"lex_busy_skip": 1}, ("lex_busy_skip",)),
+        ({"lex_unwalked": 1}, ("lex_unwalked",)),
+        ({"lex_deadline": 4, "lex_spared": 4}, ("lex_deadline", "lex_spared")),
+        ({"lex_unswept": 5}, ("lex_unswept",)),
+        ({"skipped_lex": 1}, ("skipped_lex",)),
+    ],
+    ids=[
+        "clean", "deliberate-refusals", "oversize-only", "spared-past-oversize",
+        "busy", "unwalked", "deadline", "unswept", "store-skipped",
+    ],
+)
+def test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed(
+    rec: dict, gaps: tuple
+) -> None:
+    """The counters that cannot be staged cheaply through a whole run, read
+    the way the run reads them: off one search's record. A refusal the index
+    makes on every run — a link out of the store, a file over the cap, a
+    credential the scan matched — leaves nothing stale and is not a gap."""
+    assert ev.sync_gaps(rec) == gaps
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+def test_a_repo_holding_no_store_is_refused_as_nothing_to_measure(
+    corpus: Path, tmp_path: Path, args: tuple
+) -> None:
+    """A --repo holding none of the configured stores leaves the run no corpus
+    to search. Searched anyway, the stores the hook's own config names answered
+    in its place, so a snapshot of what they inject matched and the run
+    passed, or wrote, over a checkout it never read."""
+    prompt = "recalibrate a widget after a firmware flash"
+    data = json.loads((corpus / "memkit.json").read_text())
+    del data["eval"]["long_briefs"]
+    data["eval"]["gating_slices"] = ["noinject"]
+    data["eval"]["cases"] = {"noinject": [{"prompt": prompt}]}
+    (corpus / "memkit.json").write_text(json.dumps(data))
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        json.dumps({"cases": {"noinject": {prompt: {"status": "NOINJECT-FAIL"}}}})
+    )
+    before = snapshot.read_bytes()
+    env = {
+        **os.environ,
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "MEMKIT_CONFIG": str(corpus / "memkit.json"),
+    }
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    out = _eval(
+        corpus, "--repo", str(empty), "--snapshot", str(snapshot), *args, env=env
+    )
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "nothing to measure" in out.stderr, out.stderr
+    assert "[NOINJECT" not in out.stdout, out.stdout
+    assert snapshot.read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: the stores the hook's config names do inject for this
+    # prompt, so the recorded row is the one they would have matched.
+    held = _eval(corpus, "--repo", str(corpus), "--snapshot", str(snapshot), env=env)
+    assert _line(held.stdout, prompt).startswith("[NOINJECT-FAIL"), held.stdout
+    assert held.returncode == 0, held.stdout + held.stderr
+
+
+# The eval with the hook's sync replaced by one that does nothing, so the index
+# keeps the rows it held and no sync counter fires.
+FROZEN_SYNC = """\
+from memkit import eval_memory_recall as ev
+load = ev.load_hook
+def frozen(path):
+    hook = load(path)
+    hook._fts_sync = lambda con, root, deadline=None: (0, 0, 0, 0)
+    return hook
+ev.load_hook = frozen
+ev.main()
+"""
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+@pytest.mark.parametrize(
+    "change,kind",
+    [("added", "missing"), ("deleted", "extra"), ("edited", "stale")],
+)
+def test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes(
+    corpus: Path, tmp_path: Path, change: str, kind: str, args: tuple
+) -> None:
+    """A memory the index never saw, one deleted whose rows still answer, and
+    one edited whose rows predate the edit, each with every sync counter at 0.
+    Every case then matches the snapshot on a corpus that is not the one on
+    disk, and the comparison of the index against disk is what refuses."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    search = corpus / "corpus" / "project" / "search"
+    memo = search / "office_plants.md"
+    if change == "deleted":
+        memo.write_text(UNRELATED, encoding="utf-8")
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    if change == "added":
+        memo.write_text(UNRELATED, encoding="utf-8")
+    elif change == "deleted":
+        memo.unlink()
+    else:
+        memo = search / "flange_torque.md"
+        memo.write_text(memo.read_text() + "\nA sentence nobody searches for.\n")
+
+    out = subprocess.run(
+        [sys.executable, "-c", FROZEN_SYNC, "--config", str(corpus / "memkit.json"),
+         *args],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert "0 gating failure(s)" in out.stdout, out.stdout + out.stderr
+    assert "scored on an index whose sync" not in out.stderr, out.stderr
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert (
+        "the index this run searched does not hold the memory files on disk "
+        f"now: 1 {kind} ({memo})" in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: a run whose sync brings the index up to date passes.
+    synced = _eval(corpus, env=env)
+    assert synced.returncode == 0, synced.stdout + synced.stderr
+
+
+# The eval with a memory written once the search for one prompt returns, as an
+# editor working while the run scores would write it. Formatted with the
+# memory's path, its text and the prompt.
+EDITED_DURING_THE_RUN = """\
+import pathlib
+from memkit import eval_memory_recall as ev
+load = ev.load_hook
+def editing(path):
+    hook = load(path)
+    recall = hook.recall
+    def search_then_edit(prompt, *args, **kwargs):
+        hits = recall(prompt, *args, **kwargs)
+        if prompt == {prompt!r}:
+            pathlib.Path({memo!r}).write_text({text!r}, encoding="utf-8")
+        return hits
+    hook.recall = search_then_edit
+    return hook
+ev.load_hook = editing
+ev.main()
+"""
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+def test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes(
+    corpus: Path, tmp_path: Path, args: tuple
+) -> None:
+    """A memory about a noinject prompt lands just after that prompt is scored,
+    and the next search indexes it. Every search syncs cleanly and the index
+    the run ends on matches the disk, so the prompt's row matches the snapshot
+    on a corpus the run no longer holds."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    prompt = "how do I reverse a linked list in place"
+    memo = corpus / "corpus" / "project" / "search" / "linked_list_reversal.md"
+    script = EDITED_DURING_THE_RUN.format(
+        prompt=prompt, memo=str(memo), text=ABOUT_A_NOINJECT_PROMPT
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script, "--config", str(corpus / "memkit.json"),
+         *args],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert memo.is_file(), out.stdout + out.stderr
+    assert _line(out.stdout, prompt).startswith("[NOINJECT-OK"), out.stdout
+    assert "scored on an index whose sync" not in out.stderr, out.stderr
+    assert "does not hold the memory files" not in out.stderr, out.stderr
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert (
+        f"1 memory file(s) changed while this run was scoring ({memo})"
+        in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: on the corpus the run ended on, the prompt's row moves.
+    rerun = _eval(corpus, env=env)
+    assert "<- MOVED" in _line(rerun.stdout, prompt), rerun.stdout
+    assert rerun.returncode != 0, rerun.stdout
+
+
+@pytest.mark.parametrize("mode", [0, 0o400], ids=["unlisted", "unstattable"])
+def test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra(
+    corpus: Path, tmp_path: Path, mode: int
+) -> None:
+    """A directory the walk cannot list, or can list and not stat inside, hides
+    whether the memories the index holds there still exist. The refusal names
+    what it could not read and does not claim their rows are extra."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything, so this cannot be staged")
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    folder = corpus / "corpus" / "project" / "search" / "added"
+    folder.mkdir()
+    (folder / "office_plants.md").write_text(UNRELATED, encoding="utf-8")
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    folder.chmod(mode)
+    try:
+        out = _eval(corpus, env=env)
+    finally:
+        folder.chmod(0o700)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "does not hold the memory files on disk now: 1 unreadable (" in (
+        out.stderr
+    ), out.stderr
+    assert " extra (" not in out.stderr, out.stderr
+
+
+def test_an_index_the_comparison_cannot_open_is_named_in_the_refusal(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """A directory standing where an index belongs fails every search of that
+    store, and the comparison against disk cannot open it either. The refusal
+    says so rather than ending the run in a traceback."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    dbs = sorted((tmp_path / "cache" / "memory-recall").glob("fts5-*.db"))
+    assert len(dbs) == 2, dbs
+    for db in dbs:
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{db}{suffix}").unlink(missing_ok=True)
+        db.mkdir()
+    out = _eval(corpus, env=env)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "store search(es) failed in this run" in out.stderr, out.stderr
+    unreadable = re.search(r"now: 2 unreadable \(([^)]*)\)", out.stderr)
+    assert unreadable, out.stderr
+    assert sorted(unreadable.group(1).split(", ")) == [str(db) for db in dbs]
+
+
+def test_a_clean_run_passes_on_a_cold_index_and_on_the_warm_one_it_leaves(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The comparison against disk must not refuse a run whose index is right:
+    a first run that builds the index, and the next run over it, both pass,
+    and a re-baseline writes, on the prompt path and the task path alike."""
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    for run in ("cold", "warm"):
+        out = _eval(corpus, env=env)
+        assert out.returncode == 0, (run, out.stdout + out.stderr)
+        assert "every gating case matched the snapshot" in out.stdout, out.stdout
+        assert "[BRIEF-SERVED" in out.stdout, out.stdout
+    written = _eval(corpus, "--update-snapshot", env=env)
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "wrote" in written.stdout, written.stdout
+
+
+def test_a_snapshot_that_still_carries_a_fingerprint_reads_as_before(
+    corpus: Path,
+) -> None:
+    """Consumers' committed snapshots carry a `corpus` digest until their next
+    re-baseline. It names a corpus that is not this one and is ignored: the
+    run gates the outcomes it records, and they all hold."""
+    state = _recorded(corpus)
+    state = {"note": state["note"], "corpus": "0" * 64, **state}
+    _record(corpus, state)
+
+    out = _eval(corpus)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "every gating case matched the snapshot" in out.stdout
+
+
 def test_no_snapshot_at_all_still_refuses(corpus: Path) -> None:
-    """Unchanged by this fix, asserted because it is the same property: a run
-    with nothing to gate against must not report having gated."""
-    (corpus / "eval-expectations.json").unlink()
+    """A run with nothing to gate against must not report having gated."""
+    (corpus / SNAPSHOT).unlink()
     out = _eval(corpus)
     assert out.returncode != 0
     assert "--update-snapshot" in out.stderr
-
-
-def test_a_real_regression_still_fails_on_a_matched_corpus(corpus: Path) -> None:
-    """The fix must not have made the gate coarser. With the fingerprint
-    MATCHING, a case whose outcome moved still fails on its own terms — and
-    with a different message, so the two reds stay distinguishable."""
-    snapshot = corpus / "eval-expectations.json"
-    state = json.loads(snapshot.read_text())
-    # Move a recorded STATUS, which is the field the diff compares — leaving
-    # the corpus alone, so the fingerprint still matches and the run is in the
-    # regime where an outcome that moved is attributable to the tool.
-    noinject = state["cases"]["noinject"]
-    prompt = next(iter(noinject))
-    noinject[prompt]["status"] = "NOINJECT-LEAK"
-    snapshot.write_text(json.dumps(state))
-
-    out = _eval(corpus)
-    assert out.returncode != 0, out.stdout
-    assert "REGRESSION" in out.stdout
-    assert "corpus moved" not in out.stderr
 
 
 # --- the long-brief slice ----------------------------------------------------
@@ -220,6 +1075,82 @@ def test_the_slice_refuses_when_the_hook_process_delivers_nothing(
     # refusal above is the break's and not the check's.
     ok = _eval(corpus)
     assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def _gate_out_the_project_store(corpus: Path) -> None:
+    """Only the long-brief slice, with the project store gated to the fixture
+    root, so a run standing outside that root is gated out of it."""
+    _shape(corpus, "long-briefs-only")
+    config = corpus / "memkit.json"
+    data = json.loads(config.read_text())
+    for store in data["stores"]:
+        if store["id"] == "project":
+            store["cwd_gate"] = {"root": "self"}
+    config.write_text(json.dumps(data))
+
+
+@pytest.mark.parametrize(
+    "brief,code",
+    [("period-close-automation", 1), ("gearbox-acceptance", 0)],
+    ids=["memory-in-a-searched-store", "memory-only-in-the-gated-store"],
+)
+def test_all_stores_gates_a_served_row_whose_memory_this_cwd_searches(
+    corpus: Path, tmp_path: Path, brief: str, code: int
+) -> None:
+    """`--all-stores` reads a store this cwd is gated out of, and a brief row
+    whose memory lives only there is a delivery production refuses from here,
+    so it reports. A row whose memory is in a store this cwd searches is one
+    production delivers, and one such row moving fails the run although the
+    coverage rate stays inside its slack."""
+    _gate_out_the_project_store(corpus)
+    state = _recorded(corpus)
+    for name, row in state["cases"][ev.LONG_BRIEF_SLICE].items():
+        if brief in name:
+            row["status"] = "BRIEF-MISS"
+    _record(corpus, state)
+
+    out = _eval(corpus, "--all-stores", cwd=tmp_path)
+    assert "which this cwd is gated out of" in out.stdout, out.stdout
+    row = _line(out.stdout, brief)
+    assert "<- MOVED (snapshot says BRIEF-MISS" in row, row
+    assert out.returncode == code, out.stdout + out.stderr
+    assert f"{code} gating failure(s) in longbrief" in out.stdout, out.stdout
+
+
+# A memory the warehouse-slotting brief is about, which no other brief is.
+SLOTTING = (
+    "---\nname: warehouse_slotting\ndescription: Re-slotting the north "
+    "warehouse before peak season puts the fast movers in the widest aisles "
+    "nearest the pack bench, argued from the picked-line history.\ntype: "
+    "reference\n---\n\n# Warehouse slotting\n\nWalk the aisle widths with a "
+    "tape before drawing a slotting plan; the racking drawing is out of "
+    "date.\nFast movers go to the wide aisles near the pack bench. Pickers walk "
+    "less when the catalogue's top fifteen percent sit together.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "store,code",
+    [("personal", 1), ("project", 0)],
+    ids=["memory-in-a-searched-store", "memory-only-in-the-gated-store"],
+)
+def test_all_stores_gates_a_leak_of_a_memory_this_cwd_searches(
+    corpus: Path, tmp_path: Path, store: str, code: int
+) -> None:
+    """The leak half of the rule above. One new memory makes one quiet brief
+    leak, which is 1/16 and under the injection ceiling, so the row is the
+    only thing that can fail the run. It does when production would deliver
+    that memory from this cwd."""
+    _gate_out_the_project_store(corpus)
+    memory = corpus / "corpus" / store / "search" / "warehouse_slotting.md"
+    memory.write_text(SLOTTING, encoding="utf-8")
+
+    out = _eval(corpus, "--all-stores", cwd=tmp_path)
+    row = _line(out.stdout, "warehouse-slotting")
+    assert "<- MOVED (snapshot says BRIEF-QUIET" in row, row
+    assert "1/16 leaked" in _line(out.stdout, " leaked ("), out.stdout
+    assert out.returncode == code, out.stdout + out.stderr
+    assert f"{code} gating failure(s) in longbrief" in out.stdout, out.stdout
 
 
 def test_the_fixture_note_states_the_counts_it_has(corpus: Path) -> None:
@@ -331,30 +1262,27 @@ def test_a_rate_failure_is_not_accepted_by_a_re_baseline(corpus: Path) -> None:
     assert snapshot.read_text() != before, "the re-baseline itself must still land"
 
 
-def test_a_rate_failure_survives_a_moved_corpus_instead_of_becoming_drift(
+def test_a_rate_failure_answers_ahead_of_the_snapshot_after_a_memory_edit(
     corpus: Path,
 ) -> None:
-    """A moved corpus makes every SNAPSHOT comparison unattributable, and the
-    run refuses on that. A rate is not a comparison — it is an absolute
-    measurement of the corpus in front of it — so it still answers, and it has
-    to answer first: filed as drift, a coverage collapse gets re-baselined away
-    by the very command the refusal recommends."""
+    """A rate is not a snapshot comparison — it is an absolute measurement of
+    the corpus in front of it, which no re-baseline may accept — so it answers
+    first and on its own. Printed beside the snapshot's remedy, a coverage
+    collapse invites the one command that cannot fix it."""
     _drift(corpus)
     _unserve(corpus, "backlash-rig.md", "gearbox-acceptance.md", "vessel-reassembly.md")
     out = _eval(corpus)
     assert out.returncode != 0
     assert "long-brief coverage" in out.stderr
-    assert "corpus moved" not in out.stderr
+    assert NO_REBASELINE not in out.stdout, out.stdout
 
 
 def test_an_edited_brief_reads_as_a_new_case_rather_than_inheriting_one(
     corpus: Path,
 ) -> None:
-    """The corpus fingerprint covers the stores and not this directory, because
-    these are the queries rather than the corpus. So the brief's own digest is
-    in its snapshot key — otherwise an edited brief silently keeps the outcome
-    recorded for the text it used to have, which is the one kind of drift no
-    case line can report."""
+    """A brief is a query, and its snapshot key carries a digest of its text —
+    otherwise an edited brief silently keeps the outcome recorded for the text
+    it used to have, which is the one kind of drift no case line can report."""
     first = _eval(corpus)
     assert first.returncode == 0, first.stdout + first.stderr
     # The control, and the half that fails under a filename-only key: the
@@ -567,29 +1495,25 @@ def test_one_leaked_brief_fails_the_run_even_under_the_rate_slack(
     corpus: Path,
 ) -> None:
     """The rate slack exists so a corpus can move by one case without a red
-    CI; it is not a licence for one new wrong injection.
+    CI; it is not a license for one new wrong injection.
 
-    One leak in twelve is 0.083, under the 0.084 ceiling, so the RATE holds —
-    and the per-case row said `<- REGRESSION ... not gating` and never reached
-    the exit code. That made a single new injection into an autonomous
-    subagent's instructions a green run. The two controls do different jobs:
-    the rate bounds systemic loosening, the snapshot bounds one case moving.
+    One leak in sixteen is 0.062, under the 0.084 ceiling, so the RATE holds,
+    and only the per-case row can fail the run: in a gating slice it reads
+    `<- MOVED` and reaches the exit code, so a single new injection into an
+    autonomous subagent's instructions is a red run. The two controls do
+    different jobs: the rate bounds systemic loosening, the snapshot bounds
+    one case moving. A new memory is the edit, so every brief keeps its key and
+    the leak is the only row that moves.
     """
-    path = corpus / BRIEFS / "unserved" / "accessibility-audit.md"
-    _write_brief(
-        path,
-        path.read_text()
-        + "\n\nThe sprocket backlash after a gearbox rebuild traces to the "
-        "shim stack rather than chain tension, and the flange fasteners want "
-        "a crossing sequence over three passes.",
-    )
+    memory = corpus / "corpus" / "personal" / "search" / "warehouse_slotting.md"
+    memory.write_text(SLOTTING, encoding="utf-8")
     out = _eval(corpus)
-    assert out.returncode != 0, out.stdout
+    assert out.returncode == 1, out.stdout + out.stderr
     # The RATE held — this is the case the rate cannot catch.
     assert "1/16 leaked (0.062, ceiling 0.084)" in _rates(out.stdout), out.stdout
     assert "long-brief injection" not in out.stderr, out.stderr
     leak = next(ln for ln in out.stdout.splitlines() if "[BRIEF-LEAK  ]" in ln)
-    assert "not gating" not in leak, leak
+    assert "<- MOVED (snapshot says BRIEF-QUIET)" in leak, leak
     assert re.search(r"1 gating failure\(s\) in [\w/]*longbrief", out.stdout), out.stdout
 
 
@@ -821,7 +1745,7 @@ def test_a_neighbours_pointer_line_is_not_this_memory_being_delivered(
     """The names are read back out of the emitted bytes so that a pick the
     block dropped scores as a miss. Tested by containment against the whole
     line, a name another memory's name merely EXTENDS is found on that
-    neighbour's line and scores as delivered — the delivery gate satisfied by
+    neighbor's line and scores as delivered — the delivery gate satisfied by
     a pointer the subagent never received.
 
     Latent on the shipped fixtures, where no basename is a substring of
@@ -840,8 +1764,8 @@ def test_a_neighbours_pointer_line_is_not_this_memory_being_delivered(
         if case["brief"] == "served/rotor-swap-programme.md":
             case["file"] = twin.name
     index.write_text(json.dumps(state, indent=2))
-    # The stock hook baselines the moved corpus: the divergence under test is
-    # the copy's, and a run against a fingerprint that moved gates nothing.
+    # The stock hook baselines the edited corpus, so the divergence under test
+    # is the copy's rather than the twin's.
     assert _eval(corpus, "--update-snapshot").returncode == 0
 
     src = _copy_hook(
@@ -894,7 +1818,7 @@ def test_the_slice_retrieves_under_the_deadline_production_passes(
     the divergence only shows against a consumer's own store under `--repo` or
     `--all-stores`, where the gate can wait and report served pointers that
     production abandons. Driven by moving the budget the gate is supposed to
-    honour — a hook copy whose `TASK_BUDGET_SECONDS` has already expired serves
+    honor — a hook copy whose `TASK_BUDGET_SECONDS` has already expired serves
     nothing, and a slice that passes no deadline cannot tell.
     """
     before = _eval(corpus)
@@ -941,7 +1865,7 @@ def test_two_filenames_holding_one_brief_are_one_case(corpus: Path) -> None:
     states the invariant as "a CASE is a distinct brief".
 
     So two filenames holding the same text both counted toward the minimum
-    population and both fed the rate denominators — one behaviour repeated
+    population and both fed the rate denominators — one behavior repeated
     enough times to satisfy a bar written to mean that many briefs, which is
     the same defect the path check exists to prevent wearing a different
     filename.
@@ -1051,7 +1975,7 @@ def test_a_description_that_mentions_a_file_does_not_prove_it_was_delivered(
     Splitting a pointer line on whitespace and taking every token's basename
     makes any word of a surviving DESCRIPTION able to vouch for a pointer that
     was shed or never emitted — and descriptions in this corpus are file
-    contents, so a memory that mentions its neighbour by name is ordinary
+    contents, so a memory that mentions its neighbor by name is ordinary
     rather than contrived. The gate then reports subagent coverage for a
     pointer the subagent did not receive, which is the one thing this slice
     exists to measure.
@@ -1286,50 +2210,6 @@ def test_the_task_surface_declares_every_hook_name_the_slice_reaches() -> None:
     # the hook this repo ships over a name nothing reaches any more.
     absent = [n for n in ev.TASK_SURFACE if getattr(hook, n, None) is None]
     assert not absent, absent
-
-
-def test_the_corpus_fingerprint_survives_a_lone_surrogate(
-    corpus: Path, monkeypatch, tmp_path: Path
-) -> None:
-    """The fingerprint is taken before the gate does anything, so a strict
-    encode there ends the run with a traceback and no eval at all.
-
-    Two sources, and neither is exotic. A store id comes out of `json.load`,
-    which turns an escaped `\\udXXX` in the config into a lone surrogate. A
-    relative path comes out of `rglob`, which turns a filename the filesystem
-    holds as undecodable bytes into one. Both used to reach a bare
-    `.encode()`, which raises `UnicodeEncodeError` on either.
-
-    Accepted-open once, on the argument that the raise is visible on a CLI —
-    but visible is not the same as diagnosable: `UnicodeEncodeError` out of a
-    hashing loop names neither the store nor the file, and the run it ends is
-    the one that would have told the adopter what their corpus scores.
-    """
-    blob = json.loads((corpus / "memkit.json").read_text(encoding="utf-8"))
-    surrogate = json.loads('"\\ud800"')
-    blob["stores"][0]["id"] += surrogate
-    (corpus / "memkit.json").write_text(json.dumps(blob), encoding="utf-8")
-    cfg = hook.load_config(str(corpus / "memkit.json"))
-    first = ev.corpus_fingerprint(cfg, corpus)
-    assert len(first) == 64, first
-
-    # Non-vacuity: the digest still SEPARATES, which is the whole reason it is
-    # taken over the raw id rather than over a sanitized one.
-    blob["stores"][0]["id"] += "x"
-    (corpus / "memkit.json").write_text(json.dumps(blob), encoding="utf-8")
-    assert ev.corpus_fingerprint(
-        hook.load_config(str(corpus / "memkit.json")), corpus
-    ) != first
-
-    # The filename half. APFS refuses to create a name that is not valid
-    # UTF-8, so the two answers the filesystem would give are supplied rather
-    # than staged — the subject is what this function does with a name it is
-    # handed, and on a filesystem that allows one it is handed exactly this.
-    monkeypatch.setattr(
-        Path, "rglob", lambda self, pat: iter([Path(f"{self}/m\udcff.md")])
-    )
-    monkeypatch.setattr(Path, "read_bytes", lambda self: b"body")
-    assert len(ev.corpus_fingerprint(cfg, corpus)) == 64
 
 
 def test_no_digest_in_the_eval_dies_on_a_lone_surrogate() -> None:
