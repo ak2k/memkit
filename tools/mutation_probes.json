@@ -3927,6 +3927,30 @@
       "why": "an index the run cannot open is a refusal with a reason, and a traceback in its place reads as a crash in the tool"
     },
     {
+      "name": "a-memory-edited-while-the-run-scored-is-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        if scored_on.get(p) != ended_on.get(p)\n",
+      "new": "        if False\n",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[gate]",
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[write]"
+      ],
+      "why": "a memory edited after a case was scored is indexed by the next search, so the index the run ends on matches the disk and the case's stale row passes the gate or becomes the baseline"
+    },
+    {
+      "name": "the-corpus-the-run-ends-on-is-the-one-it-started-on",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    ended_on = corpus_map(hook, dirs)\n",
+      "new": "    ended_on = scored_on\n",
+      "tests": [
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[gate]",
+        "tests/test_eval.py::test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes[write]"
+      ],
+      "why": "comparing the corpus taken before the first search with itself finds nothing, so an edit during the run never refuses it"
+    },
+    {
       "name": "an-all-stores-brief-row-about-a-searched-memory-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
@@ -4899,7 +4923,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 713 probes",
+      "old": "the 715 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"

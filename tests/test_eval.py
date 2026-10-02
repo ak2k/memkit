@@ -844,6 +844,70 @@ def test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes(
     assert synced.returncode == 0, synced.stdout + synced.stderr
 
 
+# The eval with a memory written once the search for one prompt returns, as an
+# editor working while the run scores would write it. Formatted with the
+# memory's path, its text and the prompt.
+EDITED_DURING_THE_RUN = """\
+import pathlib
+from memkit import eval_memory_recall as ev
+load = ev.load_hook
+def editing(path):
+    hook = load(path)
+    recall = hook.recall
+    def search_then_edit(prompt, *args, **kwargs):
+        hits = recall(prompt, *args, **kwargs)
+        if prompt == {prompt!r}:
+            pathlib.Path({memo!r}).write_text({text!r}, encoding="utf-8")
+        return hits
+    hook.recall = search_then_edit
+    return hook
+ev.load_hook = editing
+ev.main()
+"""
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+def test_a_memory_edited_while_the_run_scores_neither_gates_nor_writes(
+    corpus: Path, tmp_path: Path, args: tuple
+) -> None:
+    """A memory about a noinject prompt lands just after that prompt is scored,
+    and the next search indexes it. Every search syncs cleanly and the index
+    the run ends on matches the disk, so the prompt's row matches the snapshot
+    on a corpus the run no longer holds."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    prompt = "how do I reverse a linked list in place"
+    memo = corpus / "corpus" / "project" / "search" / "linked_list_reversal.md"
+    script = EDITED_DURING_THE_RUN.format(
+        prompt=prompt, memo=str(memo), text=ABOUT_A_NOINJECT_PROMPT
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script, "--config", str(corpus / "memkit.json"),
+         *args],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert memo.is_file(), out.stdout + out.stderr
+    assert _line(out.stdout, prompt).startswith("[NOINJECT-OK"), out.stdout
+    assert "scored on an index whose sync" not in out.stderr, out.stderr
+    assert "does not hold the memory files" not in out.stderr, out.stderr
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert (
+        f"1 memory file(s) changed while this run was scoring ({memo})"
+        in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: on the corpus the run ended on, the prompt's row moves.
+    rerun = _eval(corpus, env=env)
+    assert "<- MOVED" in _line(rerun.stdout, prompt), rerun.stdout
+    assert rerun.returncode != 0, rerun.stdout
+
+
 @pytest.mark.parametrize("mode", [0, 0o400], ids=["unlisted", "unstattable"])
 def test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra(
     corpus: Path, tmp_path: Path, mode: int

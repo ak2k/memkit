@@ -69,11 +69,11 @@ the snapshot recording an answer to a question the case no longer asks, and a
 case left ungated until somebody happens to re-baseline is an inert gate.
 
 The snapshot records outcomes, not the corpus they were measured on, and
-every run re-checks every case against the corpus in front of it: the index
-it searched has to hold exactly the memory files its stores hold on disk, at
-their current contents, or it neither gates nor writes. A run that gated
-nothing does not exit 0: to CI that exit has to mean every gating case was
-checked and held.
+every run re-checks every case against the corpus in front of it: one
+corpus, unchanged from the first search to the last, which the index it
+searched holds exactly, at its current contents, or the run neither gates
+nor writes. A run that gated nothing does not exit 0: to CI that exit has to
+mean every gating case was checked and held.
 
 So a memory edit that moves no outcome passes with no re-baseline. What a run
 cannot know is WHICH side moved an outcome, since the corpus and the retriever
@@ -101,10 +101,10 @@ Usage:
 Exit code = failures in the gating slices, counting MOVED, NEW and DRIFT
 cases, capped at 255; or 1 for a refusal. Before scoring: an unreadable or
 absent snapshot, a config that cannot run, or no store to search. After
-scoring: a gating slice that ran no case, a long-brief rate outside its
-bounds or a failed delivery check in that slice, or a store search that
-failed, ran on an index its sync did not bring up to date, or left an index
-that does not hold the memory files on disk, which refuses a gating run and
+scoring: a gating slice that ran no case, a long-brief rate outside its bounds
+or a failed delivery check in that slice, a store search that failed or ran on
+an index its sync did not bring up to date, or memory files that changed while
+the run scored or that the index does not hold, which refuses a gating run and
 an --update-snapshot alike. 0 = every case in every gating slice matched the
 snapshot, so it can gate CI. Every way of NOT gating is non-zero, which is the
 property that makes a green here mean something.
@@ -736,11 +736,20 @@ def index_drift(hook, dirs: list[str]) -> str:
             p for p in disk.keys() & held.keys() if disk[p] != held[p]
         )
     return ", ".join(
-        f"{len(paths)} {kind} ({', '.join(paths[:3])}"
-        f"{', ...' if len(paths) > 3 else ''})"
+        f"{len(paths)} {kind} ({_first_few(paths)})"
         for kind, paths in found.items()
         if paths
     )
+
+
+def corpus_map(hook, dirs: list[str]) -> dict[str, tuple[int, int, int]]:
+    """Every memory file under `dirs` that the hook's walk finds, at the
+    identity its sync decides staleness by."""
+    return {path: ident for d in dirs for path, ident in hook._fts_scan(d)[0].items()}
+
+
+def _first_few(paths: list[str]) -> str:
+    return ", ".join(paths[:3]) + (", ..." if len(paths) > 3 else "")
 
 
 def task_delivery(hook, brief: str, dirs: list[str]) -> dict:
@@ -1120,11 +1129,11 @@ def main() -> None:
             "  1  one case in a gating slice moved off the snapshot, or a\n"
             "     refusal: the run could not start or had no store to search,\n"
             "     a gating slice ran no case, the long-brief slice failed a\n"
-            "     rate or a delivery check, or a store search failed, ran on\n"
-            "     an index its sync did not bring up to date, or left an index\n"
-            "     that does not hold the memory files on disk, which refuses\n"
-            "     gating and --update-snapshot alike. The message names\n"
-            "     which, and what to do about it.\n"
+            "     rate or a delivery check, a store search failed or ran on an\n"
+            "     index its sync did not bring up to date, or memory files\n"
+            "     changed while the run scored or are not what the index\n"
+            "     holds, which refuses gating and --update-snapshot alike.\n"
+            "     The message names which, and what to do about it.\n"
             "  N  N cases in gating slices moved off the snapshot, counting\n"
             "     MOVED, NEW and DRIFT; 255 is 255 or more"
         ),
@@ -1349,6 +1358,13 @@ def main() -> None:
         unanswerable += int(rec.get("errs_lex") or 0)
         unsynced.append(sync_gaps(rec))
         return hits
+
+    # The corpus every case is scored against, taken before the first search
+    # on either path. Each search syncs the index to the disk as it is then,
+    # so a file edited mid-run is indexed by the next search: the index the
+    # run ends on matches the disk, and a case scored before the edit saw what
+    # the file held before it.
+    scored_on = corpus_map(hook, dirs)
 
     for case in cases["suite"]:
         prompt, expected = case["prompt"], case["file"]
@@ -1712,6 +1728,18 @@ def main() -> None:
             f"{len(behind)} case(s) scored on an index whose sync left memory "
             f"files out of it ({', '.join(fired)}) — rerun once memkit can read "
             "every memory file and nothing else is updating its index"
+        )
+    ended_on = corpus_map(hook, dirs)
+    changed = sorted(
+        p
+        for p in scored_on.keys() | ended_on.keys()
+        if scored_on.get(p) != ended_on.get(p)
+    )
+    if changed:
+        incomplete.append(
+            f"{len(changed)} memory file(s) changed while this run was scoring "
+            f"({_first_few(changed)}) — a case scored before the change saw what "
+            "they held before it; rerun once nothing is editing them"
         )
     drift = index_drift(hook, dirs)
     if drift:
