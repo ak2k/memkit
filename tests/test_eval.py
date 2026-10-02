@@ -737,6 +737,161 @@ def test_a_sync_gap_is_every_counter_that_leaves_a_memory_unindexed(
     assert ev.sync_gaps(rec) == gaps
 
 
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+def test_a_repo_holding_no_store_is_refused_as_nothing_to_measure(
+    corpus: Path, tmp_path: Path, args: tuple
+) -> None:
+    """A --repo holding none of the configured stores leaves the run no corpus
+    to search. Searched anyway, the stores the hook's own config names answered
+    in its place, so a snapshot of what they inject matched and the run
+    passed, or wrote, over a checkout it never read."""
+    prompt = "recalibrate a widget after a firmware flash"
+    data = json.loads((corpus / "memkit.json").read_text())
+    del data["eval"]["long_briefs"]
+    data["eval"]["gating_slices"] = ["noinject"]
+    data["eval"]["cases"] = {"noinject": [{"prompt": prompt}]}
+    (corpus / "memkit.json").write_text(json.dumps(data))
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        json.dumps({"cases": {"noinject": {prompt: {"status": "NOINJECT-FAIL"}}}})
+    )
+    before = snapshot.read_bytes()
+    env = {
+        **os.environ,
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "MEMKIT_CONFIG": str(corpus / "memkit.json"),
+    }
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    out = _eval(
+        corpus, "--repo", str(empty), "--snapshot", str(snapshot), *args, env=env
+    )
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "nothing to measure" in out.stderr, out.stderr
+    assert "[NOINJECT" not in out.stdout, out.stdout
+    assert snapshot.read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: the stores the hook's config names do inject for this
+    # prompt, so the recorded row is the one they would have matched.
+    held = _eval(corpus, "--repo", str(corpus), "--snapshot", str(snapshot), env=env)
+    assert _line(held.stdout, prompt).startswith("[NOINJECT-FAIL"), held.stdout
+    assert held.returncode == 0, held.stdout + held.stderr
+
+
+# The eval with the hook's sync replaced by one that does nothing, so the index
+# keeps the rows it held and no sync counter fires.
+FROZEN_SYNC = """\
+from memkit import eval_memory_recall as ev
+load = ev.load_hook
+def frozen(path):
+    hook = load(path)
+    hook._fts_sync = lambda con, root, deadline=None: (0, 0, 0, 0)
+    return hook
+ev.load_hook = frozen
+ev.main()
+"""
+
+
+@pytest.mark.parametrize("args", [(), ("--update-snapshot",)], ids=["gate", "write"])
+@pytest.mark.parametrize(
+    "change,kind",
+    [("added", "missing"), ("deleted", "extra"), ("edited", "stale")],
+)
+def test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes(
+    corpus: Path, tmp_path: Path, change: str, kind: str, args: tuple
+) -> None:
+    """A memory the index never saw, one deleted whose rows still answer, and
+    one edited whose rows predate the edit, each with every sync counter at 0.
+    Every case then matches the snapshot on a corpus that is not the one on
+    disk, and the comparison of the index against disk is what refuses."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    before = (corpus / SNAPSHOT).read_bytes()
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    search = corpus / "corpus" / "project" / "search"
+    memo = search / "office_plants.md"
+    if change == "deleted":
+        memo.write_text(UNRELATED, encoding="utf-8")
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    if change == "added":
+        memo.write_text(UNRELATED, encoding="utf-8")
+    elif change == "deleted":
+        memo.unlink()
+    else:
+        memo = search / "flange_torque.md"
+        memo.write_text(memo.read_text() + "\nA sentence nobody searches for.\n")
+
+    out = subprocess.run(
+        [sys.executable, "-c", FROZEN_SYNC, "--config", str(corpus / "memkit.json"),
+         *args],
+        capture_output=True, text=True, timeout=300, env=env,
+    )
+    assert "0 gating failure(s)" in out.stdout, out.stdout + out.stderr
+    assert "scored on an index whose sync" not in out.stderr, out.stderr
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert (
+        "the index this run searched does not hold the memory files on disk "
+        f"now: 1 {kind} ({memo})" in out.stderr
+    ), out.stderr
+    assert "wrote" not in out.stdout, out.stdout
+    assert (corpus / SNAPSHOT).read_bytes() == before, "the snapshot was rewritten"
+
+    # Non-vacuity: a run whose sync brings the index up to date passes.
+    synced = _eval(corpus, env=env)
+    assert synced.returncode == 0, synced.stdout + synced.stderr
+
+
+@pytest.mark.parametrize("mode", [0, 0o400], ids=["unlisted", "unstattable"])
+def test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra(
+    corpus: Path, tmp_path: Path, mode: int
+) -> None:
+    """A directory the walk cannot list, or can list and not stat inside, hides
+    whether the memories the index holds there still exist. The refusal names
+    what it could not read and does not claim their rows are extra."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything, so this cannot be staged")
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    folder = corpus / "corpus" / "project" / "search" / "added"
+    folder.mkdir()
+    (folder / "office_plants.md").write_text(UNRELATED, encoding="utf-8")
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    folder.chmod(mode)
+    try:
+        out = _eval(corpus, env=env)
+    finally:
+        folder.chmod(0o700)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "does not hold the memory files on disk now: 1 unreadable (" in (
+        out.stderr
+    ), out.stderr
+    assert " extra (" not in out.stderr, out.stderr
+
+
+def test_a_clean_run_passes_on_a_cold_index_and_on_the_warm_one_it_leaves(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """The comparison against disk must not refuse a run whose index is right:
+    a first run that builds the index, and the next run over it, both pass,
+    and a re-baseline writes, on the prompt path and the task path alike."""
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    for run in ("cold", "warm"):
+        out = _eval(corpus, env=env)
+        assert out.returncode == 0, (run, out.stdout + out.stderr)
+        assert "every gating case matched the snapshot" in out.stdout, out.stdout
+        assert "[BRIEF-SERVED" in out.stdout, out.stdout
+    written = _eval(corpus, "--update-snapshot", env=env)
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "wrote" in written.stdout, written.stdout
+
+
 def test_a_snapshot_that_still_carries_a_fingerprint_reads_as_before(
     corpus: Path,
 ) -> None:

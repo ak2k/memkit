@@ -1462,6 +1462,18 @@ def test_recall_records_a_sync_skipped_by_contention(corpus: Path, monkeypatch) 
     assert record["files"] is None
 
 
+def test_recall_searches_nothing_when_handed_an_empty_dir_list(
+    corpus: Path, monkeypatch
+) -> None:
+    """An empty `dirs` is a caller whose own resolution found no corpus. The
+    stores the config names answered in its place, so the eval scored a
+    checkout holding no store against the live ones."""
+    memo = _memo(corpus, "a.md", "# a\n\nrestic repository pruning")
+    monkeypatch.setattr(hook, "_search_dirs", lambda: [(str(corpus), False)])
+    assert hook.recall("restic repository pruning") == [memo]
+    assert hook.recall("restic repository pruning", dirs=[]) == []
+
+
 def test_recall_logs_the_built_query_for_the_shadow_harness(
     corpus: Path, monkeypatch
 ) -> None:
