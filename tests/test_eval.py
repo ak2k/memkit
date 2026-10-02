@@ -875,6 +875,33 @@ def test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra(
     assert " extra (" not in out.stderr, out.stderr
 
 
+def test_an_index_the_comparison_cannot_open_is_named_in_the_refusal(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """A directory standing where an index belongs fails every search of that
+    store, and the comparison against disk cannot open it either. The refusal
+    says so rather than ending the run in a traceback."""
+    _shape(corpus, "no-long-briefs")
+    state = _recorded(corpus)
+    del state["cases"]["longbrief"]
+    _record(corpus, state)
+    env = {**os.environ, "XDG_CACHE_HOME": str(tmp_path / "cache")}
+    warm = _eval(corpus, env=env)
+    assert warm.returncode == 0, warm.stdout + warm.stderr
+    dbs = sorted((tmp_path / "cache" / "memory-recall").glob("fts5-*.db"))
+    assert len(dbs) == 2, dbs
+    for db in dbs:
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{db}{suffix}").unlink(missing_ok=True)
+        db.mkdir()
+    out = _eval(corpus, env=env)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "store search(es) failed in this run" in out.stderr, out.stderr
+    unreadable = re.search(r"now: 2 unreadable \(([^)]*)\)", out.stderr)
+    assert unreadable, out.stderr
+    assert sorted(unreadable.group(1).split(", ")) == [str(db) for db in dbs]
+
+
 def test_a_clean_run_passes_on_a_cold_index_and_on_the_warm_one_it_leaves(
     corpus: Path, tmp_path: Path
 ) -> None:
