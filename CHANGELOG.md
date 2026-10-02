@@ -44,14 +44,18 @@ ordering.
   snapshot that recorded the same failure matched it case for case, so the run
   exited 0 having searched nothing. It now refuses with the number of store
   searches that failed.
-- **A `memory-eval` run whose index sync did not bring every memory file up
-  to date refuses to gate or to write a snapshot.** A sync that lost the write
-  lock, could not read a memory file or list a directory, or ran out of budget
-  left the search answering without the memory edit under test, so every case
-  could match the snapshot and the run exited 0 or wrote that other corpus's
-  outcomes as the baseline. It now refuses with the number of cases scored that
-  way and the counters that fired. A file over the index's size cap, which no
-  run indexes, still passes.
+- **A `memory-eval` run gates or writes a snapshot only if the index it
+  searched holds exactly the memory files its stores hold on disk.** A sync
+  that lost the write lock, could not read a memory file or list a directory,
+  or ran out of budget left the search answering without the memory edit
+  under test, and a `--repo` holding none of the configured stores was
+  answered from the stores the hook's own config names. Either way every case
+  could match the snapshot, and the run exited 0 or wrote that other corpus's
+  outcomes as the baseline. The run now refuses when a search's sync reports
+  such a gap, when the index it ends on is missing a memory file, holds rows
+  for one that is gone or older than its file, or covers a path it cannot
+  read, naming the first few paths, and when it has no store to search. A
+  file over the index's size cap, which no run indexes, still passes.
 - **A gating slice whose every case is new or drifted fails once per case.**
   The vacuity check counted only cases that matched or moved, so the run
   refused such a slice as one that gated nothing and exited 1. Every case it
@@ -165,7 +169,7 @@ ordering.
   to diff against, and on the release schedule. Each run is held to two counts
   read from the corpus rather than typed into the workflow: every selected
   probe ran, and no more waivers were declared than the corpus declares for
-  what was selected. So the 703 probes `tools/mutation_sweep.py --list` counts
+  what was selected. So the 713 probes `tools/mutation_sweep.py --list` counts
   in this tree are all of them rather than a subset somebody keeps in step by
   hand. The two `--module` runs the job replaced covered 114 of them, which is how
   an anchor that had slipped off the code it was written for sat dead for

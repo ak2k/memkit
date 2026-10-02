@@ -3812,6 +3812,121 @@
       "why": "a trip whose sync left a memory out can see fewer eligible memories than the cap case needs, and the cap check then tells the reader the corpus or the brief moved beside a refusal that says the index did not hold the corpus"
     },
     {
+      "name": "recall-answers-an-empty-dir-list-from-the-stores",
+      "module": "eval",
+      "file": "src/memkit/memory_prompt_recall.py",
+      "old": "        if dirs is not None\n",
+      "new": "        if dirs\n",
+      "tests": [
+        "tests/test_memory_prompt_recall.py::test_recall_searches_nothing_when_handed_an_empty_dir_list"
+      ],
+      "why": "a caller whose own resolution found no store is answered from the live stores, so the eval scored a checkout holding none of them against a corpus it never named"
+    },
+    {
+      "name": "a-run-with-no-store-to-search-is-scored",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    if not dirs:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests/test_eval.py::test_a_repo_holding_no_store_is_refused_as_nothing_to_measure[gate]",
+        "tests/test_eval.py::test_a_repo_holding_no_store_is_refused_as_nothing_to_measure[write]"
+      ],
+      "why": "a run that searches no corpus scores every noinject case clean and every search case a miss, and writes that as the baseline"
+    },
+    {
+      "name": "the-run-does-not-compare-its-index-against-disk",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "    drift = index_drift(hook, dirs)\n",
+      "new": "    drift = \"\"\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes"
+      ],
+      "why": "a sync that leaves the index missing, extra or stale rows without firing a counter lets every case match the snapshot on a corpus that is not the one on disk"
+    },
+    {
+      "name": "a-memory-the-index-never-saw-is-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        found[\"missing\"] += sorted(disk.keys() - held.keys())\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[added-missing-gate]",
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[added-missing-write]"
+      ],
+      "why": "a memory on disk with no rows answers nothing, so the run scores the corpus without it"
+    },
+    {
+      "name": "rows-of-a-deleted-memory-are-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            p for p in held.keys() - disk.keys()\n",
+      "new": "            p for p in ()\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[deleted-extra-gate]",
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[deleted-extra-write]"
+      ],
+      "why": "rows of a memory the corpus no longer holds still answer, so the run scores a corpus that has it"
+    },
+    {
+      "name": "rows-older-than-their-file-are-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            p for p in disk.keys() & held.keys() if disk[p] != held[p]\n",
+      "new": "            p for p in disk.keys() & held.keys() if False\n",
+      "tests": [
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[edited-stale-gate]",
+        "tests/test_eval.py::test_a_run_whose_index_does_not_hold_the_corpus_neither_gates_nor_writes[edited-stale-write]"
+      ],
+      "why": "rows written before a memory edit answer with the text the edit replaced, so the edit under test is never scored"
+    },
+    {
+      "name": "what-the-walk-could-not-read-is-not-a-difference",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "        found[\"unreadable\"] += sorted(spared | unwalked)\n",
+      "new": "",
+      "tests": [
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unlisted]",
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unstattable]"
+      ],
+      "why": "a memory the walk cannot list or stat cannot be compared at all, and its rows are held out of the extra ones, so dropping it reports a corpus nobody could see as matching"
+    },
+    {
+      "name": "rows-under-an-unlisted-directory-are-called-extra",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            if p not in spared and not p.startswith(unseen)\n",
+      "new": "            if p not in spared\n",
+      "tests": [
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unlisted]"
+      ],
+      "why": "a directory the walk cannot list hides whether the memories under it exist, so naming their rows extra sends the reader after deletions that did not happen"
+    },
+    {
+      "name": "rows-of-an-unstattable-memory-are-called-extra",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            if p not in spared and not p.startswith(unseen)\n",
+      "new": "            if not p.startswith(unseen)\n",
+      "tests": [
+        "tests/test_eval.py::test_rows_under_a_directory_the_walk_cannot_read_are_not_called_extra[unstattable]"
+      ],
+      "why": "a memory the walk lists and cannot stat may still exist, so naming its rows extra sends the reader after a deletion that did not happen"
+    },
+    {
+      "name": "an-index-the-comparison-cannot-open-ends-the-run-in-a-traceback",
+      "module": "eval",
+      "file": "src/memkit/eval_memory_recall.py",
+      "old": "            except sqlite3.Error:\n",
+      "new": "            except OSError:\n",
+      "tests": [
+        "tests/test_eval.py::test_an_index_the_comparison_cannot_open_is_named_in_the_refusal"
+      ],
+      "why": "an index the run cannot open is a refusal with a reason, and a traceback in its place reads as a crash in the tool"
+    },
+    {
       "name": "an-all-stores-brief-row-about-a-searched-memory-gates",
       "module": "eval",
       "file": "src/memkit/eval_memory_recall.py",
@@ -4784,7 +4899,7 @@
       "declared_skip": "a count re-derived at release; run with RELEASE_CHECKS=1",
       "module": "docs",
       "file": "CHANGELOG.md",
-      "old": "the 703 probes",
+      "old": "the 713 probes",
       "new": "the 365 probes",
       "tests": [
         "tests/test_plugin_surface.py::test_the_changelog_probe_counts_come_from_the_corpora_they_describe"
