@@ -4696,10 +4696,14 @@ def test_a_config_field_and_an_install_option_that_disagree_say_which_one_runs(
 CONFIG_RUNS = 'The config\'s "interpreter" is the one that runs'
 
 
-def _deep(profile) -> pathlib.Path:
-    """A directory whose own path is past 400 bytes, whatever the tmp root, so
-    one path printed in full is most of a 600-byte detail."""
-    deep = profile / ("d" * 200) / ("e" * 200)
+def _deep(base) -> pathlib.Path:
+    """A directory under `base` whose own path is longer than the whole detail
+    cap, so whatever a row prints after it is cut however short the tmp root
+    is. A path that only nearly fills the cap leaves room for the answer on a
+    host whose tmp root is short, and a misplaced answer then survives."""
+    deep = base
+    while len(os.fsencode(deep)) <= doctor.DETAIL_MAX_BYTES:
+        deep = deep / ("d" * 200)
     deep.mkdir(parents=True, exist_ok=True)
     return deep
 
@@ -4753,7 +4757,9 @@ def test_a_record_the_wrapper_refuses_is_not_said_to_run(
     base = _deep(profile) if length == "long" else profile / "elsewhere"
     base.mkdir(parents=True, exist_ok=True)
     if record == "relative":
-        recorded = ("r" * 200 + "/" if length == "long" else "") + "bin/python3"
+        recorded = (
+            "r" * doctor.DETAIL_MAX_BYTES + "/" if length == "long" else ""
+        ) + "bin/python3"
         reason = "refuses it by name"
     else:
         # Not `python3`, the name `_stub_python` writes below for the option.
@@ -4814,8 +4820,7 @@ def test_a_probe_that_cannot_start_leaves_which_python_runs_ahead_of_its_path(
     if raises == "inside-cwd":
         # `_execute` refuses a program inside the directory the session
         # stands in, and the fixture stands in `project`.
-        deep = profile / "project" / ("d" * 200) / ("e" * 200)
-        deep.mkdir(parents=True)
+        deep = _deep(profile / "project")
         body = "#!/bin/sh\nexit 0\n"
     else:
         deep = _deep(profile)
