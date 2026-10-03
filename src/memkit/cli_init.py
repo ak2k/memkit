@@ -1305,23 +1305,36 @@ def _config_target(machine: Machine, named: str | None) -> str:
     # a writable path in its place would still be refused.
     if machine.plugin or path_refusal(config_path):
         return config_path
-    if os.path.realpath(config_path).startswith(NIX_STORE):
-        why = "is inside the read-only /nix/store"
-    else:
-        try:
-            _refuse_unwritable("config", config_path)
-            return config_path
-        except Refusal:
-            why = "this process cannot write"
-    raise Refusal(
-        "read-only-config",
-        f"init would write the config to {_display_path(config_path)}, "
-        f"which {why}. memkit's home-manager module sets ${CONFIG_ENV} on "
-        "every binary it wraps from its `configFile` option, usually to a "
+    # The module's `configFile` is named only when the path is the one
+    # `$MEMKIT_CONFIG` supplied: told to an adopter who passed `--config`, or
+    # who has no such module, it names a cause that is not theirs.
+    from_env = (
+        not named
+        and not machine.settings_option()[0]
+        and bool(machine.ambient_config)
+        and expand_home(machine.ambient_config) == config_path
+    )
+    module = (
+        f" ${CONFIG_ENV} names it, and memkit's home-manager module sets that "
+        "on every binary it wraps from its `configFile` option, usually to a "
         "/nix/store path. Pass `--config <a writable path>`, then set "
         "`configFile` to that path as a string, which Nix does not copy into "
-        "the store, so the hook reads the file init wrote.",
+        "the store, so the hook reads the file init wrote."
     )
+    if os.path.realpath(config_path).startswith(NIX_STORE):
+        raise Refusal(
+            "read-only-config",
+            f"init would write the config to {_display_path(config_path)}, "
+            "which is inside the read-only /nix/store."
+            + (module if from_env else " Pass `--config <a writable path>`."),
+        )
+    try:
+        _refuse_unwritable("config", config_path)
+    except Refusal as refusal:
+        if not from_env:
+            raise
+        raise Refusal("read-only-config", refusal.message + module) from None
+    return config_path
 
 
 def _config_route_note(machine: Machine, config_path: str) -> str:

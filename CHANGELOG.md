@@ -63,18 +63,22 @@ ordering.
   channel.** It wrote to `~/.config/memkit/memkit.json` whatever the variable
   named, so on a pip or nix install it could leave a config the hook never
   reads. `--config` and the install option still come first, and the plugin
-  channel still ignores the variable. A config path in `/nix/store`, where
-  the home-manager module points the variable unless `configFile` names a
-  path outside it, or one this process cannot write, is refused as
-  `read-only-config`, and the refusal names `configFile`.
+  channel still ignores the variable. A config path in `/nix/store` is
+  refused as `read-only-config`. When the path came from the variable, which
+  the home-manager module points into the store unless `configFile` names a
+  path outside it, a store or unwritable path is refused as
+  `read-only-config` and the refusal names `configFile`; an unwritable path
+  from any other route keeps the `not-writable` refusal.
 - **`memkit doctor` finds a hook registered by the nix channel's file
   name.** A settings entry whose last word is `memory-prompt-recall.py`, as
   a bare path to the file the home-manager module links in or as a launcher
-  handed that name (`run-hook memory-prompt-recall.py`), read as no
+  handed that name (`hook-launcher memory-prompt-recall.py`), read as no
   registration, because doctor looked for the word `memkit`. `hook-path`
-  now probes it by running `<config dir>/hooks/memory-prompt-recall.py`
-  directly, never the launcher, and `registrations-count` counts it. A
-  project-scope entry is still reported and not run.
+  now runs a bare path as written, and probes a launcher entry by running
+  `<config dir>/hooks/memory-prompt-recall.py` directly, never the launcher;
+  that result is INFO rather than PASS, because the launcher's own delivery
+  is not exercised. `registrations-count` counts both. A project-scope entry
+  is still reported and not run.
 - **`memory-eval` exits 255 on 255 or more gating failures.** The count was
   the exit status, which is taken mod 256, so 256 failures exited 0.
 - **`memory-eval --update-snapshot` refuses to write from a run whose index

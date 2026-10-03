@@ -1832,6 +1832,37 @@ def test_a_named_config_memkit_config_does_not_name_is_flagged(
     assert "WARNING" in rendered and str(ambient) in rendered, rendered
 
 
+def test_an_unwritable_named_config_without_memkit_config_names_its_cause(
+    profile, monkeypatch
+) -> None:
+    """An adopter with no `$MEMKIT_CONFIG` who passes an unwritable `--config`
+    is told which directory cannot be written, and nothing about a module
+    they may not have."""
+    locked = profile / "locked"
+    locked.mkdir(mode=0o500)
+    try:
+        refusal = _refuses(
+            profile, "not-writable", store=str(profile / "notes"),
+            config=str(locked / "memkit.json"),
+        )
+    finally:
+        locked.chmod(0o700)
+    assert str(locked) in refusal.message, refusal.message
+    assert "home-manager" not in refusal.message
+    assert "configFile" not in refusal.message
+
+
+def test_a_named_config_in_the_nix_store_does_not_blame_the_module(
+    profile, monkeypatch
+) -> None:
+    refusal = _refuses(
+        profile, "read-only-config", store=str(profile / "notes"),
+        config="/nix/store/0000-memkit.json",
+    )
+    assert "/nix/store" in refusal.message
+    assert "home-manager" not in refusal.message
+
+
 def test_the_plugin_channel_ignores_memkit_config(profile, monkeypatch) -> None:
     """The wrapper sets or unsets the variable from the rungs it resolved, so on
     that channel it is never an independent answer."""
@@ -1870,7 +1901,7 @@ def test_an_unwritable_memkit_config_is_refused_naming_the_option(
         )
     finally:
         locked.chmod(0o700)
-    assert "cannot write" in refusal.message
+    assert str(locked) in refusal.message, refusal.message
     assert "configFile" in refusal.message
 
 
@@ -1906,8 +1937,8 @@ def test_a_config_this_process_cannot_read_is_refused_not_replaced(profile):
     config.write_text('{"schema": 1, "stores": [{"id": "theirs"}]}', encoding="utf-8")
     _claim(profile, config)
     # Write-only: readable-and-unwritable is caught earlier and better by
-    # `read-only-config`. The dangerous shape is the one init can act on
-    # and cannot see.
+    # `not-writable`. The dangerous shape is the one init can act on and
+    # cannot see.
     config.chmod(0o200)
     try:
         refusal = _refuses(profile, "unreadable-config", config=str(config))
