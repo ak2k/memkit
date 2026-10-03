@@ -378,6 +378,9 @@ class Store:
         "live_root",
         "edit_root",
         "sub_indexes",
+        # The names of the roots a session must stand inside, or None for an
+        # ungated store. Always a tuple when gated, so no reader has to tell a
+        # single `root` from a `roots` list.
         "cwd_gate",
         # Set only by `_project_store`, and it is what lets a store the
         # REPOSITORY named exist beside stores the user configured without
@@ -435,11 +438,11 @@ class Store:
         if gate is None:
             self.cwd_gate = None
         elif isinstance(gate, dict):
-            self.cwd_gate = _require_str(gate, "root", f"{where}.cwd_gate")
+            self.cwd_gate = _gate_roots(gate, f"{where}.cwd_gate")
         else:
             raise ConfigError(
-                f"{where}.cwd_gate must be an object with a 'root' name, or "
-                f"absent — not {type(gate).__name__}"
+                f"{where}.cwd_gate must be an object with a 'root' name or a "
+                f"'roots' list, or absent — not {type(gate).__name__}"
             )
 
     @property
@@ -1121,13 +1124,13 @@ class Config:
     def searched_stores(self) -> list:
         """Stores this session may read, in config order.
 
-        A store with a `cwd_gate` is searched only from inside the named root —
-        including that root's git worktrees, which live outside its path prefix
-        and share its git common dir.
+        A store with a `cwd_gate` is searched only from inside one of the
+        named roots — including that root's git worktrees, which live outside
+        its path prefix and share its git common dir.
         """
         out = []
         for store in self.stores:
-            if store.cwd_gate is None or _cwd_in_root(self.root(store.cwd_gate)):
+            if store.cwd_gate is None or self._cwd_in_gate(store.cwd_gate):
                 out.append(store)
         # LAST, and NEVER in `self.stores`. That one placement is the whole of
         # what keeps a repository's store to retrieval: init, adoption, the
@@ -1139,6 +1142,14 @@ class Config:
         if project is not None:
             out.append(project)
         return out
+
+    def _cwd_in_gate(self, names: tuple) -> bool:
+        # Every root is resolved before any is tested. Testing as they resolve
+        # would stop at the first match, so a root that cannot resolve would
+        # raise from one directory and be skipped from another, and whether
+        # the config is refused would depend on where the session stands.
+        roots = [self.root(name) for name in names]
+        return any(_cwd_in_root(root) for root in roots)
 
 
 def _require_str(raw: dict, key: str, where: str) -> str:
@@ -1218,6 +1229,28 @@ def _require_str_tuple(raw: dict, key: str, where: str) -> tuple:
                 f"{item!r}"
             )
     return tuple(value)
+
+
+def _gate_roots(gate: dict, where: str) -> tuple:
+    """The root names a `cwd_gate` object lists, as a non-empty tuple.
+
+    Exactly one of `root` and `roots`. Both at once is refused rather than
+    merged, because either reading of it — the union, or one silently winning —
+    is a gate wider or narrower than somebody wrote. An empty list is refused
+    for the reason a malformed gate is: read as no gate it ungates the store,
+    and read as a gate on nothing it hides the store everywhere without saying
+    why.
+    """
+    if "root" in gate and "roots" in gate:
+        raise ConfigError(f"{where} sets both 'root' and 'roots'; keep one")
+    if "roots" in gate:
+        names = _require_str_tuple(gate, "roots", where)
+        if not names:
+            raise ConfigError(f"{where}.roots must list at least one root name")
+        return names
+    if "root" not in gate:
+        raise ConfigError(f"{where} needs a 'root' name or a 'roots' list")
+    return (_require_str(gate, "root", where),)
 
 
 @functools.lru_cache(maxsize=None)
@@ -8261,7 +8294,10 @@ def _print_config(state: tuple) -> int:
     served_by_id = {s.id: s for s in served.stores}
     for store in display.stores:
         live = display.store_dir(store, "live")
-        gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
+        gated = (
+            "always" if store.cwd_gate is None
+            else f"cwd under {', '.join(store.cwd_gate)}"
+        )
         state_shown = _store_state(display, store, shown_searched)
         print(
             f"store {store.id}: {_display_path(live)} "

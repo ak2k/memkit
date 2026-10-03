@@ -979,6 +979,24 @@ def test_store_roots_names_the_route_each_root_resolved_by(profile, monkeypatch)
     assert "personal" in row.detail
 
 
+def test_a_store_gated_by_a_roots_list_is_shown_with_every_root_named(
+    profile, monkeypatch
+) -> None:
+    path = pathlib.Path(
+        _store_config(profile, stores=["project"], gate="elsewhere")
+    )
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    blob["roots"]["further"] = {"kind": "path", "path": str(profile / "further")}
+    blob["stores"][0]["cwd_gate"] = {"roots": ["elsewhere", "further"]}
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    checks = doctor.collect(_machine(profile, monkeypatch, str(path)))
+    (roots,) = _only(checks, "store-roots")
+    assert "cwd_gate elsewhere, further" in roots.detail, roots.detail
+    (corpus,) = _only(checks, "corpus-root")
+    assert corpus.status == doctor.INFO
+    assert "gated to elsewhere, further" in corpus.detail, corpus.detail
+
+
 # --- index-state -------------------------------------------------------------
 
 

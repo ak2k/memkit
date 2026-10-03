@@ -11,6 +11,15 @@ ordering.
 
 ## [Unreleased]
 
+### Added
+
+- **A store's `cwd_gate` can list several roots.** `"cwd_gate": { "roots":
+  ["a", "b"] }` searches the store from a session inside any listed root, so
+  one store can serve several trees without a second store holding the same
+  files. A single `root` reads as before. An empty list, a non-string entry,
+  or `root` and `roots` together is a config error, and every listed root
+  must resolve wherever the session stands, or the config is refused.
+
 ### Changed
 
 - **`memory-eval` gates every case against the corpus in front of it, and the

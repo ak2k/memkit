@@ -557,7 +557,9 @@ point.
   `edit_root` and why a check run from a worktree needs no redirection.
   `edit_root` defaults to `live_root`, which is the right answer whenever one
   tree is both. A `cwd_gate` restricts a store to sessions inside the named
-  root, including that root's git worktrees.
+  root, including that root's git worktrees. `"roots": [...]` in place of
+  `"root"` admits a session inside any root it lists, so one store can serve
+  several trees *(from the next release)*.
 - **`citations`** — which top-level trees a prose path may name, extra
   suffixes to treat as filenames, and the base ref a change is blamed against.
 - **`search_cli`** — the command memkit prints when a pointer block truncates

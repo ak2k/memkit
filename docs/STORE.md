@@ -156,7 +156,10 @@ checkout and gate it:
 
 `cwd_gate` is what makes it a project store: the store is searched only from
 sessions inside that root, including its git worktrees. Without it, a project's
-memories follow you into every unrelated session.
+memories follow you into every unrelated session. A store that belongs to
+several checkouts names them all, as
+`"cwd_gate": { "roots": ["canonical", "other"] }`, and is searched from
+inside any of them *(from the next release)*.
 
 Two things about the list itself. It is **ordered**, and the order is a
 contract — retrieval interleaves hits across stores in the order you write them,

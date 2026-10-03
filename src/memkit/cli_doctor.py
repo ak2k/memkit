@@ -1678,7 +1678,7 @@ def _store_roots(machine: Machine) -> list[Check]:
         except ConfigError as exc:
             broken.append(str(exc))
             continue
-        gate = store.cwd_gate or "ungated"
+        gate = ", ".join(store.cwd_gate) if store.cwd_gate else "ungated"
         edit = "same" if store.edit_root == store.live_root else store.edit_root
         lines.append(
             f"{store.id} ({store.role}): {_display_path(os.path.join(root, store.dir))}"
@@ -1719,8 +1719,9 @@ def _corpus_root(machine: Machine) -> list[Check]:
                 Check(
                     "corpus-root",
                     INFO,
-                    f"{store.id}: gated to {store.cwd_gate}, so this session "
-                    "does not read it. That is the gate working",
+                    f"{store.id}: gated to {', '.join(store.cwd_gate or ())}, "
+                    "so this session does not read it. That is the gate "
+                    "working",
                 )
             )
             continue

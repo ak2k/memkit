@@ -5443,8 +5443,101 @@ def test_a_cwd_gate_that_is_not_an_object_no_longer_ungates_the_store(
     # And the guard can fire in only that direction: the well-formed gate still
     # gates, and an absent one still means ungated.
     gated = _load(tmp_path, _store_with(tmp_path, cwd_gate={"root": "home"}))
-    assert gated.stores[0].cwd_gate == "home"
+    assert gated.stores[0].cwd_gate == ("home",)
     assert _load(tmp_path, _config_blob(tmp_path)).stores[0].cwd_gate is None
+
+
+def _gated_by_list(tmp_path: Path, roots: list) -> dict:
+    """A one-store config gated to `roots`, with roots `a` and `b` defined as
+    two sibling directories under `tmp_path`."""
+    blob = _store_with(tmp_path, cwd_gate={"roots": roots})
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir(exist_ok=True)
+        blob["roots"][name] = {"kind": "path", "path": str(tmp_path / name)}
+    return blob
+
+
+def _searched_from(where: Path, config) -> list:
+    """The ids `config` searches from a session standing in `where`."""
+    origin = os.getcwd()
+    hook._cwd_in_root.cache_clear()
+    try:
+        os.chdir(where)
+        return [store.id for store in config.searched_stores()]
+    finally:
+        os.chdir(origin)
+        hook._cwd_in_root.cache_clear()
+
+
+def test_a_cwd_gate_with_a_roots_list_admits_a_session_under_any_of_them(
+    tmp_path,
+) -> None:
+    """One store, searched from several trees, without a second store holding
+    the same files. The list is what each listed root would admit alone, and
+    nothing past it."""
+    tmp_path = tmp_path.resolve()
+    config = _load(tmp_path, _gated_by_list(tmp_path, ["a", "b"]))
+    assert config.stores[0].cwd_gate == ("a", "b")
+    assert _searched_from(tmp_path / "a", config) == ["s"]
+    assert _searched_from(tmp_path / "b", config) == ["s"]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert _searched_from(elsewhere, config) == []
+    debug = _cli(
+        tmp_path,
+        "--config",
+        config.path,
+        "--debug-config",
+        env=_unconfigured(tmp_path),
+        cwd=str(tmp_path / "b"),
+    )
+    assert "store s: " in debug.stdout, debug.stdout + debug.stderr
+    assert "cwd under a, b" in debug.stdout, debug.stdout
+
+
+def test_a_single_root_gate_still_gates_and_reads_as_a_one_name_list(
+    tmp_path,
+) -> None:
+    tmp_path = tmp_path.resolve()
+    blob = _gated_by_list(tmp_path, ["a"])
+    blob["stores"][0]["cwd_gate"] = {"root": "a"}
+    config = _load(tmp_path, blob)
+    assert config.stores[0].cwd_gate == ("a",)
+    assert _searched_from(tmp_path / "a", config) == ["s"]
+    assert _searched_from(tmp_path / "b", config) == []
+
+
+@pytest.mark.parametrize(
+    ("gate", "names"),
+    [
+        ({"roots": []}, ("cwd_gate.roots", "at least one")),
+        ({"roots": ["a", 7]}, ("cwd_gate.roots", "strings")),
+        ({"roots": ["a", ""]}, ("cwd_gate.roots", "strings")),
+        ({"roots": "a"}, ("cwd_gate.roots", "list")),
+        ({"root": "a", "roots": ["b"]}, ("cwd_gate", "both")),
+    ],
+)
+def test_a_malformed_roots_list_is_a_config_error(tmp_path, gate, names) -> None:
+    blob = _gated_by_list(tmp_path, ["a"])
+    blob["stores"][0]["cwd_gate"] = gate
+    with pytest.raises(hook.ConfigError) as caught:
+        _load(tmp_path, blob)
+    for name in names:
+        assert name in str(caught.value), (name, str(caught.value))
+
+
+def test_a_roots_list_naming_an_undefined_root_is_refused_from_every_directory(
+    tmp_path,
+) -> None:
+    """The store is never served while one of its roots is in doubt — and the
+    refusal must not depend on where the session stands. A session inside `a`
+    has its answer before `missing` is looked at, which is exactly the session
+    that would otherwise be served."""
+    tmp_path = tmp_path.resolve()
+    config = _load(tmp_path, _gated_by_list(tmp_path, ["a", "missing"]))
+    for where in (tmp_path / "a", tmp_path / "b"):
+        with pytest.raises(hook.ConfigError, match="missing"):
+            _searched_from(where, config)
 
 
 def test_a_string_sub_index_is_refused_rather_than_split_into_characters(
