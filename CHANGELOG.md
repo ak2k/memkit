@@ -19,6 +19,13 @@ ordering.
   files. A single `root` reads as before. An empty list, a non-string entry,
   or `root` and `roots` together is a config error, and every listed root
   must resolve wherever the session stands, or the config is refused.
+- **Store keys nothing reads are named.** A key in a store entry that memkit
+  does not read, such as a misspelled one, was ignored without a word. It is
+  still ignored, and now `memkit doctor` shows an INFO row under
+  `config-parse` per store naming the keys, and `memory-integrity` and
+  `memory-eval` print one line on stderr. A key inside `cwd_gate` other
+  than `root` or `roots` is named as `cwd_gate.<key>`. The hook prints
+  nothing new.
 
 ### Changed
 

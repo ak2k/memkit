@@ -979,6 +979,29 @@ def test_store_roots_names_the_route_each_root_resolved_by(profile, monkeypatch)
     assert "personal" in row.detail
 
 
+def test_a_store_key_nothing_reads_is_an_info_row_naming_the_store(
+    profile, monkeypatch
+) -> None:
+    """One row per store, under `config-parse`, and never a failure: the file
+    parses and serves, and the key is a setting that silently does not
+    apply."""
+    path = pathlib.Path(_store_config(profile, stores=["personal", "project"]))
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    blob["stores"][0]["blame_only_in_edit_tree"] = True
+    blob["stores"][1]["colour"] = "red"
+    blob["stores"][1]["note"] = "for people"
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    rows = _only(
+        doctor._PRODUCERS["config-parse"](_machine(profile, monkeypatch, str(path))),
+        "config-parse",
+    )
+    assert [r.status for r in rows] == [doctor.PASS, doctor.INFO, doctor.INFO], rows
+    assert "personal" in rows[1].detail, rows[1].detail
+    assert "blame_only_in_edit_tree" in rows[1].detail, rows[1].detail
+    assert "project" in rows[2].detail and "colour" in rows[2].detail, rows[2].detail
+    assert "note" not in rows[2].detail, rows[2].detail
+
+
 def test_a_store_gated_by_a_roots_list_is_shown_with_every_root_named(
     profile, monkeypatch
 ) -> None:

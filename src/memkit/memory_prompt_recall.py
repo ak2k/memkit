@@ -382,6 +382,9 @@ class Store:
         # ungated store. Always a tuple when gated, so no reader has to tell a
         # single `root` from a `roots` list.
         "cwd_gate",
+        # Keys present in the config that nothing reads, sorted, with a gate's
+        # own as `cwd_gate.<key>`.
+        "unknown_keys",
         # Set only by `_project_store`, and it is what lets a store the
         # REPOSITORY named exist beside stores the user configured without
         # either one learning about the other: an absolute path `store_dir`
@@ -435,10 +438,14 @@ class Store:
         # Overwritten only by `_project_store`.
         self.resolved_dir = ""
         gate = raw.get("cwd_gate")
+        self.unknown_keys = tuple(sorted(k for k in raw if k not in _STORE_KEYS))
         if gate is None:
             self.cwd_gate = None
         elif isinstance(gate, dict):
             self.cwd_gate = _gate_roots(gate, f"{where}.cwd_gate")
+            self.unknown_keys += tuple(
+                f"cwd_gate.{k}" for k in sorted(gate) if k not in _GATE_KEYS
+            )
         else:
             raise ConfigError(
                 f"{where}.cwd_gate must be an object with a 'root' name or a "
@@ -635,6 +642,14 @@ PROJECT_VALUE_MAX_CHARS = 64
 PROJECT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 _PROJECT_TOP_KEYS = frozenset((PROJECT_SCHEMA_KEY, "store", "note"))
 _PROJECT_STORE_KEYS = frozenset(("id", "dir", "note"))
+# The keys a store in the USER's config may carry: what `Store` reads, plus
+# `note`, which is for people. Anything else is collected and reported by the
+# tools that can speak, never refused: the hook fails open, so a refusal here
+# would answer every prompt with nothing over a key that changes nothing.
+_STORE_KEYS = frozenset(
+    ("id", "role", "dir", "live_root", "edit_root", "sub_indexes", "cwd_gate", "note")
+)
+_GATE_KEYS = frozenset(("root", "roots"))
 
 
 def _inside(root: str, path: str) -> bool:
@@ -1143,6 +1158,10 @@ class Config:
             out.append(project)
         return out
 
+    def unknown_store_keys(self) -> list:
+        """`(store id, keys)` for each store carrying keys nothing reads."""
+        return [(s.id, s.unknown_keys) for s in self.stores if s.unknown_keys]
+
     def _cwd_in_gate(self, names: tuple) -> bool:
         # Every root is resolved before any is tested. Testing as they resolve
         # would stop at the first match, so a root that cannot resolve would
@@ -1285,6 +1304,20 @@ def _cwd_in_root(root: str) -> bool:
         return False
     return os.path.realpath(common) == os.path.realpath(
         os.path.join(root, _DOT_GIT)
+    )
+
+
+def unknown_keys_line(cfg: Config) -> str:
+    """One line naming the store keys nothing reads, or "" when there are none.
+
+    For the operator tools only. The hook never prints it: its stdout is the
+    prompt, and it loads the config on every one.
+    """
+    found = cfg.unknown_store_keys()
+    if not found:
+        return ""
+    return f"{cfg.path}: store keys nothing reads, ignored: " + "; ".join(
+        f"stores[{store_id}] {', '.join(keys)}" for store_id, keys in found
     )
 
 

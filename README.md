@@ -486,7 +486,9 @@ The minimum is four lines, and it is a complete working config:
 
 Per store only `id`, `dir` and `live_root` are required: `role` defaults to
 `project`, `edit_root` to `live_root`, and there is no `cwd_gate` unless you
-write one. `citations`, `search_cli` and `eval` are optional in the file.
+write one. `citations`, `search_cli` and `eval` are optional in the file. A
+store key nothing reads is ignored, and `memkit doctor`, `memory-integrity`
+and `memory-eval` name it *(from the next release)*.
 Everything below is the shape a mature install grows into, not a starting
 point.
 

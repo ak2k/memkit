@@ -5540,6 +5540,55 @@ def test_a_roots_list_naming_an_undefined_root_is_refused_from_every_directory(
             _searched_from(where, config)
 
 
+def test_store_keys_nothing_reads_are_collected_and_not_refused(tmp_path) -> None:
+    """A key this build does not read is a setting that silently does not
+    apply, so the tools that can speak name it. It is never a ConfigError: the
+    hook fails open, and a refused config is every prompt answered by
+    nothing."""
+    blob = _store_with(
+        tmp_path,
+        note="for people",
+        colour="red",
+        cwd_gate={"root": "home", "rooot": "x"},
+    )
+    config = _load(tmp_path, blob)
+    assert config.stores[0].unknown_keys == ("colour", "cwd_gate.rooot")
+    assert config.unknown_store_keys() == [("s", ("colour", "cwd_gate.rooot"))]
+    line = hook.unknown_keys_line(config)
+    assert "stores[s]" in line and "colour" in line and "cwd_gate.rooot" in line
+    assert "\n" not in line
+    # A store with only the keys the reader takes reports nothing.
+    clean = _load(tmp_path, _config_blob(tmp_path))
+    assert clean.unknown_store_keys() == []
+    assert hook.unknown_keys_line(clean) == ""
+
+
+def test_the_hook_says_nothing_new_about_a_store_key_nothing_reads(tmp_path) -> None:
+    """The hook loads the config on every prompt, and its stdout is the
+    prompt. A key nothing reads changes not one byte of what it prints."""
+    env = _env(tmp_path)
+    (tmp_path / PROJECT_DIR / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n"
+        "---\n\n# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    prompt = "sprocket backlash after the gearbox rebuild shim stack"
+    plain = _hook(env, prompt, session="uk1")
+    config = Path(env["MEMKIT_CONFIG"])
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["colour"] = "red"
+    config.write_text(json.dumps(blob))
+    flagged = _hook(env, prompt, session="uk2")
+    assert "gearbox.md" in plain.stdout, plain.stdout + plain.stderr
+    # The fence tag is drawn fresh for every block, so it is the one span
+    # two runs may not share.
+    def untagged(text: str) -> str:
+        return re.sub(r"memkit-pointers-[0-9a-f]+", "memkit-pointers-TAG", text)
+
+    assert untagged(flagged.stdout) == untagged(plain.stdout)
+    assert flagged.stderr == plain.stderr
+    assert flagged.returncode == plain.returncode == 0
+
+
 def test_a_string_sub_index_is_refused_rather_than_split_into_characters(
     tmp_path,
 ) -> None:

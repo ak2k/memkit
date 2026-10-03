@@ -1445,6 +1445,14 @@ def _config_parse(machine: Machine) -> list[Check]:
             f"{_display_path(cfg.path)} parses; schema {SCHEMA}, "
             f"{len(cfg.stores)} store(s)",
         )
+    ] + [
+        Check(
+            "config-parse",
+            INFO,
+            f"stores[{store_id}] carries {', '.join(keys)}, which nothing "
+            "reads. A misspelled key is a setting that silently does not apply",
+        )
+        for store_id, keys in cfg.unknown_store_keys()
     ]
 
 

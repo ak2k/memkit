@@ -77,6 +77,7 @@ from memkit.memory_prompt_recall import (  # noqa: E402
     CONFIG_ENV,
     ConfigError,
     load_config,
+    unknown_keys_line,
 )
 
 # What a branch is measured against when deciding which files it is answerable
@@ -1344,6 +1345,9 @@ def main() -> int:
             "verifies is not something to guess at."
         )
         return 1
+    unknown = unknown_keys_line(cfg)
+    if unknown:
+        print(f"memory-integrity: {unknown}", file=sys.stderr)
     stores, notes = stores_from_config(cfg)
     if not stores:
         print(f"memory-integrity: {cfg.path} configures no stores")
