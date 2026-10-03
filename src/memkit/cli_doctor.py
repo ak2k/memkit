@@ -53,6 +53,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -2117,6 +2118,20 @@ def _payload_roots(machine: Machine) -> list:
     return roots
 
 
+def _names_linked_hook(command: str) -> bool:
+    """Whether `command` ends in the hook file the nix channel links in.
+
+    The last word rather than the whole command, because two shapes reach the
+    file and neither carries the word memkit: a bare path to it, and a user's
+    own launcher handed its name, as in `run-hook memory-prompt-recall.py`.
+    """
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    return bool(words) and os.path.basename(words[-1]) == NIX_HOOK_FILES[0]
+
+
 def _installed_hook(machine: Machine) -> tuple:
     """The command the harness would run on a prompt, and how it was found.
 
@@ -2129,7 +2144,10 @@ def _installed_hook(machine: Machine) -> tuple:
     A registered command that is not a bare executable path is reported rather
     than run: the harness hands it to a shell, and a diagnostic that evaluated
     a shell fragment out of a settings file would be executing whatever that
-    file says on a machine whose configuration is already in doubt.
+    file says on a machine whose configuration is already in doubt. A command
+    whose last word names the nix channel's hook file evaluates nothing out of
+    the settings either: what runs is that file under the config directory's
+    `hooks/`, a path this decides rather than one the command spells.
 
     NOTHING A REPOSITORY WROTE IS EVER EXECUTED, and that is the sharper half
     of the same rule. `.claude/settings.json` and `.claude/settings.local.json`
@@ -2155,7 +2173,10 @@ def _installed_hook(machine: Machine) -> tuple:
         for entry in events.get("UserPromptSubmit") or []:
             for spec in (entry or {}).get("hooks") or []:
                 command = (spec or {}).get("command")
-                if not isinstance(command, str) or "memkit" not in command:
+                if not isinstance(command, str):
+                    continue
+                linked = "memkit" not in command and _names_linked_hook(command)
+                if "memkit" not in command and not linked:
                     continue
                 if not scope.adopter_owned:
                     # Kept as the fallback answer rather than returned at once:
@@ -2174,7 +2195,22 @@ def _installed_hook(machine: Machine) -> tuple:
                         "those separately.",
                     )
                     continue
-                if not (os.path.isfile(command) and os.access(command, os.X_OK)):
+                run = command
+                if linked:
+                    # The linked file, never the launcher in front of it:
+                    # what a launcher does before reaching the hook is a
+                    # program of the user's that this has no business running,
+                    # and the file is the hook the harness ends up executing.
+                    run = os.path.join(_config_dir()[1], "hooks", NIX_HOOK_FILES[0])
+                    if not (os.path.isfile(run) and os.access(run, os.X_OK)):
+                        return (
+                            [],
+                            f"the {scope.scope}-settings registration runs "
+                            f'"{command}", and the hook file it names, '
+                            f"{_display_path(run)}, is not an executable file",
+                            NO_HOOK_REMEDY,
+                        )
+                elif not (os.path.isfile(command) and os.access(command, os.X_OK)):
                     return (
                         [],
                         f"the {scope.scope}-settings registration runs "
@@ -2182,21 +2218,28 @@ def _installed_hook(machine: Machine) -> tuple:
                         "can run on its own",
                         NO_HOOK_REMEDY,
                     )
-                if _under_cwd(command):
+                if _under_cwd(run):
                     # Defense in depth, for what the scope rule cannot see: the
                     # scope says an adopter wrote the ENTRY and says nothing
                     # about who wrote the file it points at.
                     return (
                         [],
                         f"the {scope.scope}-settings registration runs "
-                        f'"{command}", which resolves inside this directory. '
+                        f'"{run}", which resolves inside this directory. '
                         "Not run from here",
                         "Read the command above before trusting it. A hook "
                         "whose program lives in the directory the session "
                         "stands in is that directory's choice, whichever "
                         "settings scope names it.",
                     )
-                return [command], f"the {scope.scope}-settings registration", ""
+                if linked and run != command:
+                    return (
+                        [run],
+                        f'the {scope.scope}-settings registration "{command}", '
+                        f"probed by running {_display_path(run)} directly",
+                        "",
+                    )
+                return [run], f"the {scope.scope}-settings registration", ""
     if reported:
         return [], reported[0], reported[1]
     return [], "nothing registers a UserPromptSubmit hook for memkit", NO_HOOK_REMEDY
@@ -3066,7 +3109,9 @@ def _memkit_registrations(machine: Machine) -> list:
             for spec in (entry or {}).get("hooks") or []:
                 command = (spec or {}).get("command")
                 if isinstance(command, str) and (
-                    "memkit" in command or "memory_prompt_recall" in command
+                    "memkit" in command
+                    or "memory_prompt_recall" in command
+                    or _names_linked_hook(command)
                 ):
                     found.append(
                         f'{scope.scope} settings ({_display_path(scope.path)}): '

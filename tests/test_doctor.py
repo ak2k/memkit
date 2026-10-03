@@ -5371,6 +5371,99 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
     assert "inside this directory" in how, how
 
 
+def _linked_hook(profile, config: str, marker=None):
+    """The file the nix channel links into `<config dir>/hooks/`, standing in
+    as the module's wrapper does: the config baked in, then the real hook.
+
+    `marker`, when given, is a file the script creates, so a case can tell
+    whether anything executed it.
+    """
+    linked = profile / "claude-config" / "hooks" / doctor.NIX_HOOK_FILES[0]
+    linked.parent.mkdir(parents=True, exist_ok=True)
+    touch = f"touch {marker}\n" if marker else ""
+    linked.write_text(
+        f"#!/bin/sh\n{touch}MEMKIT_CONFIG={config}\nexport MEMKIT_CONFIG\n"
+        f"exec {sys.executable} {REPO / 'src' / 'memkit' / 'memory_prompt_recall.py'}\n",
+        encoding="utf-8",
+    )
+    linked.chmod(0o755)
+    return linked
+
+
+def test_a_bare_registration_of_the_linked_hook_file_is_found_and_run(
+    profile, monkeypatch
+) -> None:
+    """The nix channel's own shape: settings name the file the module links
+    in, by path, and the command carries no word `memkit` to be found by."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    linked = _linked_hook(profile, path)
+    _settings(profile, hooks=_registration(str(linked)))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [str(linked)], (command, how)
+    (count,) = _only(
+        doctor._PRODUCERS["registrations-count"](machine), "registrations-count"
+    )
+    assert count.status == doctor.PASS, count.detail
+
+
+def test_a_launcher_registration_runs_the_linked_hook_file_and_not_the_launcher(
+    profile, monkeypatch
+) -> None:
+    """`run-hook memory-prompt-recall.py` is a user's own launcher handed the
+    hook's file name. The launcher is a program doctor has no business
+    running; the file it names, in the config dir's hooks directory, is the
+    hook — and running that is the probe this check exists for."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    linked = _linked_hook(profile, path)
+    launcher_ran = profile / "launcher-ran"
+    launcher = profile / "home" / "bin" / "run-hook"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(f"#!/bin/sh\ntouch {launcher_ran}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    _settings(
+        profile, hooks=_registration(f"{launcher} {doctor.NIX_HOOK_FILES[0]}")
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [str(linked)], (command, how)
+    assert str(launcher) in how, how
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status == doctor.PASS or (
+        row.status == doctor.INFO and "where the registration allows" in row.detail
+    ), row.detail
+    assert doctor.CANARY_NAME in row.detail
+    assert not launcher_ran.exists(), "doctor ran the launcher"
+    (count,) = _only(
+        doctor._PRODUCERS["registrations-count"](machine), "registrations-count"
+    )
+    assert count.status == doctor.PASS, count.detail
+
+
+def test_a_project_scope_launcher_registration_is_reported_and_not_run(
+    profile, monkeypatch
+) -> None:
+    """The scope rule holds for the launcher form: a checkout's settings may
+    not choose a program for doctor to run, and that includes choosing the
+    hook file doctor would otherwise run on its behalf."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    marker = profile / "linked-ran"
+    _linked_hook(profile, path, marker=marker)
+    command_text = f"run-hook {doctor.NIX_HOOK_FILES[0]}"
+    (profile / "project" / ".claude").mkdir(parents=True, exist_ok=True)
+    (profile / "project" / ".claude" / "settings.json").write_text(
+        json.dumps({"hooks": _registration(command_text)}), encoding="utf-8"
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    assert command_text in how, how
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert command_text in row.detail, row.detail
+    assert not marker.exists(), "doctor ran a hook a checkout registered"
+
+
 # --- the package-wide execution gate ------------------------------------------
 #
 # The analyser is shared by the two tests below on purpose: one runs it over
