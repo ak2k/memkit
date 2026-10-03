@@ -258,8 +258,9 @@ why it is read first; in a submodule it sits under the superproject, and the
 `case` falls through to the submodule's own root.
 
 Left there they are outside every store: nothing retrieves them and nothing
-curates them. Point the harness at the store instead. The setting is
-`autoMemoryDirectory`, and the value worth giving it is a directory of the
+curates them until you move them into one. The other way is to point the
+harness at the store, and the end of this section weighs the two. The setting
+is `autoMemoryDirectory`, and the value worth giving it is a directory of the
 harness's own **under the corpus root**, so that what it writes is retrievable
 the moment it lands:
 
@@ -314,16 +315,32 @@ written has to move into the store before the swap or it is orphaned, and it
 lands there as new files: they carry no ledger row until the checker's
 `--write` pass adds one.
 
-**`/memkit:init --adopt-auto-memory` does all of that for every project at
-once.** It copies what the harness has written into the store and redirects the
-harness there, listing every path in one manifest you approve before anything
-is written. That is the route this page recommends, and the reason it no longer
-prints a chain of shell to do the same work by hand. It writes the setting into
-your user settings, the bottom of the precedence list above, so where a checkout
-carries a checked-in `.claude/settings.json` that sets it too, set
+**Two routes, and which one fits.** The first is to leave the harness's
+per-project directories where they are and treat them as an inbox: the harness
+keeps loading each project's own `MEMORY.md` index, and you move what is worth
+keeping into a store by hand, through the review your store already has. That
+is the default, and it fits whenever more than one project or more than one
+session writes, or the store is a git checkout that other sessions share.
+
+The second is to adopt into a store through `autoMemoryDirectory`, which fits
+one writer with a store of its own, such as `~/notes`.
+**`/memkit:init --adopt-auto-memory` does the setting and the move above for
+every project at once.** It copies what the harness has written into the store
+and redirects the harness there, listing every path in one manifest you approve
+before anything is written, which is why this page no longer prints a chain of
+shell to do the same work by hand. It writes the setting into your user
+settings, the bottom of the precedence list above, so where a checkout carries
+a checked-in `.claude/settings.json` that sets it too, set
 `.claude/settings.local.json` in that checkout instead: untracked, and above
 both. Its refusal is order-dependent, too — it reads the cwd when it runs, so a
-clone made afterwards is checked by nothing.
+clone made afterwards is checked by nothing. Measured on 2.1.286, adopting
+costs three things. The setting replaces the per-project directory, so that
+project's `MEMORY.md` index stops loading. A value in your user settings loads
+one index in every session, for every project. And where the store is a git
+checkout that sessions share, what the harness writes lands there as untracked
+files: the checker exits 1 on them until a `--write` pass gives them ledger
+rows, and `git pull` aborts once an incoming commit adds a file at the same
+path.
 
 **One case still wants a hand.** An earlier revision of this page pointed that
 directory at the corpus root itself. With `$key` still set by the block above,

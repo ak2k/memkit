@@ -47,6 +47,15 @@ ordering.
   fails on those cases as drift. A snapshot that still carries a `corpus`
   fingerprint is read as before, and the next `--update-snapshot` drops the
   field.
+- **docs/STORE.md no longer recommends `--adopt-auto-memory`.** It presents
+  two routes: leaving the harness's per-project memory directories as an
+  inbox, the default, and adopting into a store through
+  `autoMemoryDirectory`, which fits one writer with a store of its own. It
+  lists adoption's costs, measured on Claude Code 2.1.286: that project's
+  `MEMORY.md` index stops loading, a user-scope value loads one index in
+  every session, and in a shared git checkout the harness's writes land as
+  untracked files that fail the integrity check and can make `git pull`
+  abort. The init skill says the same.
 
 ### Fixed
 
