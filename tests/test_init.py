@@ -1817,6 +1817,21 @@ def test_off_the_plugin_channel_init_writes_where_memkit_config_points(
     assert not (profile / "home" / ".config" / "memkit").exists()
 
 
+def test_a_named_config_memkit_config_does_not_name_is_flagged(
+    profile, monkeypatch
+) -> None:
+    """`--config` still wins, and the manifest says that a hook inheriting this
+    environment reads the other file."""
+    ambient = profile / "ambient" / "memkit.json"
+    named = profile / "named" / "memkit.json"
+    monkeypatch.setenv(hook.CONFIG_ENV, str(ambient))
+    plan = _plan(profile, store=str(profile / "notes"), config=str(named))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(named), action.path
+    rendered = plan.render()
+    assert "WARNING" in rendered and str(ambient) in rendered, rendered
+
+
 def test_the_plugin_channel_ignores_memkit_config(profile, monkeypatch) -> None:
     """The wrapper sets or unsets the variable from the rungs it resolved, so on
     that channel it is never an independent answer."""
