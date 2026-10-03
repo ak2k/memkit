@@ -5433,7 +5433,7 @@ def test_a_bare_registration_of_the_linked_hook_file_is_found_and_run(
 def test_a_launcher_registration_runs_the_linked_hook_file_and_not_the_launcher(
     profile, monkeypatch
 ) -> None:
-    """`run-hook memory-prompt-recall.py` is a user's own launcher handed the
+    """`hook-launcher memory-prompt-recall.py` is a user's own launcher handed the
     hook's file name. The launcher is a program doctor has no business
     running; the file it names, in the config dir's hooks directory, is the
     hook — and running that is the probe this check exists for."""
@@ -5441,7 +5441,7 @@ def test_a_launcher_registration_runs_the_linked_hook_file_and_not_the_launcher(
     _canary(profile / "stores" / "personal", NONCE)
     linked = _linked_hook(profile, path)
     launcher_ran = profile / "launcher-ran"
-    launcher = profile / "home" / "bin" / "run-hook"
+    launcher = profile / "home" / "bin" / "hook-launcher"
     launcher.parent.mkdir(parents=True)
     launcher.write_text(f"#!/bin/sh\ntouch {launcher_ran}\n", encoding="utf-8")
     launcher.chmod(0o755)
@@ -5449,19 +5449,79 @@ def test_a_launcher_registration_runs_the_linked_hook_file_and_not_the_launcher(
         profile, hooks=_registration(f"{launcher} {doctor.NIX_HOOK_FILES[0]}")
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, caveat = doctor._installed_hook(machine)
     assert command == [str(linked)], (command, how)
     assert str(launcher) in how, how
+    assert "did not run the launcher" in caveat, caveat
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
-    assert row.status == doctor.PASS or (
-        row.status == doctor.INFO and "where the registration allows" in row.detail
-    ), row.detail
+    # INFO and never PASS: the pointer proves the hook file, and nothing here
+    # ran the launcher that is supposed to reach it.
+    assert row.status == doctor.INFO, row.detail
     assert doctor.CANARY_NAME in row.detail
     assert not launcher_ran.exists(), "doctor ran the launcher"
     (count,) = _only(
         doctor._PRODUCERS["registrations-count"](machine), "registrations-count"
     )
     assert count.status == doctor.PASS, count.detail
+
+
+def test_a_launcher_that_never_reaches_the_hook_is_not_reported_as_passing(
+    profile, monkeypatch
+) -> None:
+    """`/usr/bin/true memory-prompt-recall.py` runs nothing on a prompt, and
+    doctor, which never runs a launcher, cannot tell that apart from one that
+    works. So no launcher registration is reported as PASS."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _linked_hook(profile, path)
+    _settings(
+        profile, hooks=_registration(f"/usr/bin/true {doctor.NIX_HOOK_FILES[0]}")
+    )
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status != doctor.PASS, row.detail
+    assert "did not run the launcher" in row.detail, row.detail
+
+
+def test_a_bare_registration_of_a_missing_path_is_not_probed_through_the_linked_file(
+    profile, monkeypatch
+) -> None:
+    """The harness runs the path the settings spell. When that path is gone
+    no hook runs on a prompt, so the linked file's answer is not this
+    registration's."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _linked_hook(profile, path)
+    stale = profile / "gone" / doctor.NIX_HOOK_FILES[0]
+    _settings(profile, hooks=_registration(str(stale)))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    assert str(stale) in how, how
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status != doctor.PASS, row.detail
+
+
+def test_a_bare_registration_outside_the_config_dir_runs_the_path_it_names(
+    profile, monkeypatch
+) -> None:
+    """The module links the hook under `$HOME/<hooksDir>`, which is not the
+    config dir's `hooks/` when `$CLAUDE_CONFIG_DIR` points elsewhere. The
+    settings spell the working path, and that path is what runs."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    real = profile / "home" / ".claude" / "hooks" / doctor.NIX_HOOK_FILES[0]
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_text(
+        f"#!/bin/sh\nMEMKIT_CONFIG={path}\nexport MEMKIT_CONFIG\n"
+        f"exec {sys.executable} {REPO / 'src' / 'memkit' / 'memory_prompt_recall.py'}\n",
+        encoding="utf-8",
+    )
+    real.chmod(0o755)
+    _settings(profile, hooks=_registration(str(real)))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [str(real)], (command, how)
 
 
 def test_a_project_scope_launcher_registration_is_reported_and_not_run(
@@ -5473,7 +5533,7 @@ def test_a_project_scope_launcher_registration_is_reported_and_not_run(
     path = _store_config(profile, stores=["personal"], nonce=NONCE)
     marker = profile / "linked-ran"
     _linked_hook(profile, path, marker=marker)
-    command_text = f"run-hook {doctor.NIX_HOOK_FILES[0]}"
+    command_text = f"hook-launcher {doctor.NIX_HOOK_FILES[0]}"
     (profile / "project" / ".claude").mkdir(parents=True, exist_ok=True)
     (profile / "project" / ".claude" / "settings.json").write_text(
         json.dumps({"hooks": _registration(command_text)}), encoding="utf-8"

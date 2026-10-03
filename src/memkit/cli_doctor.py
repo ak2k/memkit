@@ -2131,7 +2131,7 @@ def _names_linked_hook(command: str) -> bool:
 
     The last word rather than the whole command, because two shapes reach the
     file and neither carries the word memkit: a bare path to it, and a user's
-    own launcher handed its name, as in `run-hook memory-prompt-recall.py`.
+    own launcher handed its name, as in `hook-launcher memory-prompt-recall.py`.
     """
     try:
         words = shlex.split(command)
@@ -2186,6 +2186,9 @@ def _installed_hook(machine: Machine) -> tuple:
                 linked = "memkit" not in command and _names_linked_hook(command)
                 if "memkit" not in command and not linked:
                     continue
+                # A launcher is more than one word. A single word is a path the
+                # harness runs as spelled, so it is probed as spelled too.
+                launched = linked and len(shlex.split(command)) > 1
                 if not scope.adopter_owned:
                     # Kept as the fallback answer rather than returned at once:
                     # an adopter-owned entry further down the list is still
@@ -2204,7 +2207,7 @@ def _installed_hook(machine: Machine) -> tuple:
                     )
                     continue
                 run = command
-                if linked:
+                if launched:
                     # The linked file, never the launcher in front of it:
                     # what a launcher does before reaching the hook is a
                     # program of the user's that this has no business running,
@@ -2240,12 +2243,17 @@ def _installed_hook(machine: Machine) -> tuple:
                         "stands in is that directory's choice, whichever "
                         "settings scope names it.",
                     )
-                if linked and run != command:
+                if launched:
+                    # A non-empty third field beside a command is what this
+                    # probe leaves unexercised: `hook-path` reports a delivery
+                    # through it as INFO, because a launcher that never reaches
+                    # the hook would deliver the same answer here.
                     return (
                         [run],
                         f'the {scope.scope}-settings registration "{command}", '
                         f"probed by running {_display_path(run)} directly",
-                        "",
+                        f'doctor did not run the launcher in "{command}", so '
+                        "whether it reaches the hook is not checked",
                     )
                 return [run], f"the {scope.scope}-settings registration", ""
     if reported:
@@ -2582,6 +2590,18 @@ def _hook_path(machine: Machine) -> list[Check]:
                     "budget or the index cannot be written — check "
                     "gate-outcomes for `killed`, and index-state for a "
                     "truncated sync.",
+                    actor=USER,
+                )
+            ]
+        if remedy:
+            return [
+                Check(
+                    "hook-path",
+                    INFO,
+                    f"{how} emitted a framed pointer to {CANARY_NAME} in "
+                    f"{ms}ms{supplied}, but {remedy}",
+                    "A prompt in a new session that brings back a pointer is "
+                    "the launcher's own delivery, which this check cannot run.",
                     actor=USER,
                 )
             ]
