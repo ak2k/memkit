@@ -43,6 +43,14 @@ ordering.
 
 ### Fixed
 
+- **`memkit init` writes where `$MEMKIT_CONFIG` points, off the plugin
+  channel.** It wrote to `~/.config/memkit/memkit.json` whatever the variable
+  named, so on a pip or nix install it could leave a config the hook never
+  reads. `--config` and the install option still come first, and the plugin
+  channel still ignores the variable. A config path in `/nix/store`, where
+  the home-manager module points the variable unless `configFile` names a
+  path outside it, or one this process cannot write, is refused as
+  `read-only-config`, and the refusal names `configFile`.
 - **`memory-eval` exits 255 on 255 or more gating failures.** The count was
   the exit status, which is taken mod 256, so 256 failures exited 0.
 - **`memory-eval --update-snapshot` refuses to write from a run whose index

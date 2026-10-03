@@ -4591,10 +4591,11 @@ def _state_dir_candidate() -> str:
 # THE CONFIG does not live here, and this name is a keep-list entry rather than
 # a location. `memkit init` writes it to whichever route this install READS —
 # `--config`, then the `memkitConfig` option, then either
-# `$CLAUDE_PLUGIN_DATA/memkit.json` on the plugin channel or
-# `~/.config/memkit/memkit.json` off it — and refuses to put one in this
-# directory at all. The entry stays because an adopter can still point
-# `$MEMKIT_CONFIG` at a file here by hand, and the sweep must not eat it.
+# `$CLAUDE_PLUGIN_DATA/memkit.json` on the plugin channel or, off it,
+# `$MEMKIT_CONFIG` and then `~/.config/memkit/memkit.json` — and refuses to
+# put one in this directory at all. The entry stays because an adopter can
+# still point `$MEMKIT_CONFIG` at a file here by hand, and the sweep must
+# not eat it.
 GENERATED_CONFIG_NAME = "memkit.json"
 INIT_JOURNAL_NAME = "init-journal.jsonl"
 SOAK_LOG_NAME = "log.jsonl"

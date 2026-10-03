@@ -875,6 +875,13 @@ memory-poisoning surface of this design, and an ambient environment variable
 would hand that decision to whatever repository the session happens to be
 standing in.
 
+The same override reaches `memkit` itself, so `memkit init` writes to the
+module's config path. Unless `configFile` is a path outside the store, that
+path is in `/nix/store` and read-only, and init refuses it by name
+(`read-only-config`) rather than writing a config the hook never reads: pass
+`--config <a writable path>` and set `configFile` to that path as a string
+*(from the next release)*.
+
 ### Claude Code plugin
 
 ```

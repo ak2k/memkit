@@ -1796,6 +1796,69 @@ def test_off_the_plugin_channel_the_default_path_is_still_right(profile):
     assert action.path == str(profile / "home" / ".config" / "memkit" / "memkit.json")
 
 
+def test_off_the_plugin_channel_init_writes_where_memkit_config_points(
+    profile, monkeypatch
+) -> None:
+    """`$MEMKIT_CONFIG` is the route the pip and nix hooks read. A config
+    written to the default path while it names another file is a store, a
+    green check and a hook reading something else — and the default path is
+    left as it was."""
+    named = profile / "elsewhere" / "memkit.json"
+    monkeypatch.setenv(hook.CONFIG_ENV, str(named))
+    plan = _plan(profile, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(named), action.path
+    assert f"Read via ${hook.CONFIG_ENV}" in plan.render()
+    machine = doctor.Machine()
+    assert init.apply_plan(
+        machine, plan, init._resolve_config(machine, None)
+    ) == init.EXIT_OK
+    assert json.loads(named.read_text(encoding="utf-8"))["stores"]
+    assert not (profile / "home" / ".config" / "memkit").exists()
+
+
+def test_the_plugin_channel_ignores_memkit_config(profile, monkeypatch) -> None:
+    """The wrapper sets or unsets the variable from the rungs it resolved, so on
+    that channel it is never an independent answer."""
+    data = profile / "plugin-data"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    monkeypatch.setenv(hook.CONFIG_ENV, str(profile / "elsewhere" / "memkit.json"))
+    plan = _plan(profile, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(data / "memkit.json"), action.path
+
+
+def test_a_memkit_config_in_the_nix_store_is_refused_naming_the_option(
+    profile, monkeypatch
+) -> None:
+    """The home-manager module sets `$MEMKIT_CONFIG` on every binary it wraps,
+    `memkit` included, and points it into the store. The refusal has to say
+    which option put it there, or the adopter cannot move it."""
+    monkeypatch.setenv(hook.CONFIG_ENV, "/nix/store/0000-memkit.json")
+    refusal = _refuses(profile, "read-only-config", store=str(profile / "notes"))
+    assert "/nix/store" in refusal.message
+    assert "configFile" in refusal.message
+    assert "--config" in refusal.message
+
+
+def test_an_unwritable_memkit_config_is_refused_naming_the_option(
+    profile, monkeypatch
+) -> None:
+    locked = profile / "locked"
+    locked.mkdir(mode=0o500)
+    monkeypatch.setenv(hook.CONFIG_ENV, str(locked / "memkit.json"))
+    try:
+        refusal = _refuses(
+            profile, "read-only-config", store=str(profile / "notes")
+        )
+    finally:
+        locked.chmod(0o700)
+    assert "cannot write" in refusal.message
+    assert "configFile" in refusal.message
+
+
 def test_a_config_inside_the_swept_state_directory_is_refused(profile) -> None:
     """The other half of the sweep hazard: init must not create the thing the
     every-prompt hook garbage-collects.
@@ -1828,8 +1891,8 @@ def test_a_config_this_process_cannot_read_is_refused_not_replaced(profile):
     config.write_text('{"schema": 1, "stores": [{"id": "theirs"}]}', encoding="utf-8")
     _claim(profile, config)
     # Write-only: readable-and-unwritable is caught earlier and better by
-    # `not-writable`. The dangerous shape is the one init can act on and
-    # cannot see.
+    # `read-only-config`. The dangerous shape is the one init can act on
+    # and cannot see.
     config.chmod(0o200)
     try:
         refusal = _refuses(profile, "unreadable-config", config=str(config))
