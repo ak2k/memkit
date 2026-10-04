@@ -81,6 +81,10 @@ ordering.
   than PASS, because the launcher's own delivery is not exercised.
   `registrations-count` counts both. A project-scope entry is still
   reported and not run.
+- **`memkit doctor` holds a hook registered in settings to that entry's own
+  `timeout`.** `hook-path` judged every run against the plugin payload's
+  timeout or the hook's 15-second default, so it could pass a run that took
+  longer than the entry allows, which the harness ends before it answers.
 - **`memory-eval` exits 255 on 255 or more gating failures.** The count was
   the exit status, which is taken mod 256, so 256 failures exited 0.
 - **`memory-eval --update-snapshot` refuses to write from a run whose index

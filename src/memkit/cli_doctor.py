@@ -2012,6 +2012,14 @@ PROBE_EVENT = "UserPromptSubmit"
 HOOK_PROBE_HEADROOM = 10
 
 
+def _timeout_seconds(value) -> int | None:
+    """`value` as a registration's timeout in seconds, or None if it is not one."""
+    # `bool` is an `int` and a `True` here is not a budget.
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 def _registered_timeout(event: str) -> int | None:
     """The timeout this payload's `hooks.json` registers for `event`.
 
@@ -2027,24 +2035,23 @@ def _registered_timeout(event: str) -> int | None:
             blob = json.load(f)
         for entry in (blob.get("hooks") or {}).get(event) or []:
             for registration in (entry or {}).get("hooks") or []:
-                timeout = (registration or {}).get("timeout")
-                # `bool` is an `int` and a `True` here is not a budget.
-                if (
-                    isinstance(timeout, int)
-                    and not isinstance(timeout, bool)
-                    and timeout > 0
-                ):
+                timeout = _timeout_seconds((registration or {}).get("timeout"))
+                if timeout is not None:
                     return timeout
     return None
 
 
-def _probe_budget() -> tuple:
+def _probe_budget(registered: int | None = None) -> tuple:
     """`(what production allows, what this probe waits)`, both in seconds.
 
     Two values from ONE source. The first is what the adopter's own
     registration gives the hook and is what a completed run is judged
-    against; the second is that plus the headroom above.
+    against; the second is that plus the headroom above. `registered` is a
+    settings entry's own timeout, which is that source when the entry is what
+    runs; a plugin install's is in its payload's `hooks.json`.
     """
+    if registered is not None:
+        return registered, registered + HOOK_PROBE_HEADROOM
     allowed = _registered_timeout(PROBE_EVENT) or HARNESS_TIMEOUT
     return allowed, allowed + HOOK_PROBE_HEADROOM
 
@@ -2142,7 +2149,12 @@ def _names_linked_hook(command: str) -> bool:
 
 
 def _installed_hook(machine: Machine) -> tuple:
-    """The command the harness would run on a prompt, and how it was found.
+    """The command the harness would run on a prompt, how it was found, what
+    the probe leaves unexercised, and the timeout a settings entry gives it.
+
+    The timeout is None unless a settings entry sets a valid one. A plugin
+    install's budget is in its payload's `hooks.json`, which `_probe_budget`
+    reads when this gives none.
 
     THE POINT OF THE CHECK IS THAT IT IS THE INSTALLED ONE. Running the module
     in this process would prove that retrieval works and nothing about the
@@ -2174,7 +2186,12 @@ def _installed_hook(machine: Machine) -> tuple:
     for root in _payload_roots(machine):
         path = os.path.join(root, HOOK_WRAPPER)
         if os.path.isfile(path) and os.access(path, os.X_OK):
-            return [path], f"the plugin's own wrapper at {_display_path(path)}", ""
+            return (
+                [path],
+                f"the plugin's own wrapper at {_display_path(path)}",
+                "",
+                None,
+            )
     reported = ()
     for scope in machine.settings:
         events = scope.data.get("hooks")
@@ -2233,6 +2250,7 @@ def _installed_hook(machine: Machine) -> tuple:
                             f"the {scope.scope}-settings registration runs "
                             f'"{command}", {named}is not an executable file',
                             NO_HOOK_REMEDY,
+                            None,
                         )
                 elif not (os.path.isfile(command) and os.access(command, os.X_OK)):
                     return (
@@ -2241,6 +2259,7 @@ def _installed_hook(machine: Machine) -> tuple:
                         f'"{command}", which is not an executable file this '
                         "can run on its own",
                         NO_HOOK_REMEDY,
+                        None,
                     )
                 if _under_cwd(run):
                     # Defense in depth, for what the scope rule cannot see: the
@@ -2255,7 +2274,9 @@ def _installed_hook(machine: Machine) -> tuple:
                         "whose program lives in the directory the session "
                         "stands in is that directory's choice, whichever "
                         "settings scope names it.",
+                        None,
                     )
+                timeout = _timeout_seconds(spec.get("timeout"))
                 if launched:
                     # A non-empty third field beside a command is what this
                     # probe leaves unexercised: `hook-path` reports a delivery
@@ -2267,11 +2288,17 @@ def _installed_hook(machine: Machine) -> tuple:
                         f"probed by running {_display_path(run)} directly",
                         f'doctor did not run the launcher in "{command}", so '
                         "whether it reaches that file is not checked",
+                        timeout,
                     )
-                return [run], f"the {scope.scope}-settings registration", ""
+                return [run], f"the {scope.scope}-settings registration", "", timeout
     if reported:
-        return [], reported[0], reported[1]
-    return [], "nothing registers a UserPromptSubmit hook for memkit", NO_HOOK_REMEDY
+        return [], reported[0], reported[1], None
+    return (
+        [],
+        "nothing registers a UserPromptSubmit hook for memkit",
+        NO_HOOK_REMEDY,
+        None,
+    )
 
 
 # What the hook probe carries over from THIS session, named rather than
@@ -2490,7 +2517,7 @@ def _hook_path(machine: Machine) -> list[Check]:
     and that span is exactly where both walkthroughs' installs were broken
     while every other light was green.
     """
-    command, how, remedy = _installed_hook(machine)
+    command, how, remedy, registered = _installed_hook(machine)
     if not command:
         return [
             Check("hook-path", UNKNOWN, f"no hook was run: {how}",
@@ -2524,7 +2551,7 @@ def _hook_path(machine: Machine) -> list[Check]:
     # gives the hook and is what a COMPLETED run is judged against, `waited`
     # is what this probe is willing to sit through so the elapsed time exists
     # to judge.
-    allowed, waited = _probe_budget()
+    allowed, waited = _probe_budget(registered)
     if not nonce:
         stdout, stderr, code, ms = _probe_hook(
             machine, command, "memkit doctor probe prompt", waited

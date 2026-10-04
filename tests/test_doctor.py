@@ -1434,7 +1434,7 @@ def test_a_registration_that_is_a_shell_fragment_is_reported_not_run(
         },
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == []
     assert "not an executable file" in how
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
@@ -5316,7 +5316,7 @@ def test_doctor_never_runs_a_hook_a_repository_registered(profile, monkeypatch):
         encoding="utf-8",
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
     assert not marker.exists(), "doctor executed a command the repository chose"
@@ -5348,7 +5348,7 @@ def test_a_user_scope_registration_is_still_run(profile, monkeypatch) -> None:
         },
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [str(theirs)], (command, how)
     assert "user-settings" in how
 
@@ -5371,7 +5371,7 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
         },
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     assert "inside this directory" in how, how
 
@@ -5389,7 +5389,7 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
             ]
         },
     )
-    command, how, _remedy = doctor._installed_hook(doctor.Machine())
+    command, how, _remedy, _timeout = doctor._installed_hook(doctor.Machine())
     assert command == [], (command, how)
     assert "inside this directory" in how, how
 
@@ -5422,7 +5422,7 @@ def test_a_bare_registration_of_the_linked_hook_file_is_found_and_run(
     linked = _linked_hook(profile, path)
     _settings(profile, hooks=_registration(str(linked)))
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [str(linked)], (command, how)
     (count,) = _only(
         doctor._PRODUCERS["registrations-count"](machine), "registrations-count"
@@ -5449,7 +5449,7 @@ def test_a_launcher_registration_runs_the_linked_hook_file_and_not_the_launcher(
         profile, hooks=_registration(f"{launcher} {doctor.NIX_HOOK_FILES[0]}")
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, caveat = doctor._installed_hook(machine)
+    command, how, caveat, _timeout = doctor._installed_hook(machine)
     assert command == [str(linked)], (command, how)
     assert str(launcher) in how, how
     assert "did not run the launcher" in caveat, caveat
@@ -5495,7 +5495,7 @@ def test_a_bare_registration_of_a_missing_path_is_not_probed_through_the_linked_
     stale = profile / "gone" / doctor.NIX_HOOK_FILES[0]
     _settings(profile, hooks=_registration(str(stale)))
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     assert str(stale) in how, how
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
@@ -5520,7 +5520,7 @@ def test_a_bare_registration_outside_the_config_dir_runs_the_path_it_names(
     real.chmod(0o755)
     _settings(profile, hooks=_registration(str(real)))
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [str(real)], (command, how)
 
 
@@ -5536,7 +5536,7 @@ def test_a_launcher_handed_a_path_probes_that_path(profile, monkeypatch) -> None
     launcher = profile / "home" / "bin" / "hook-launcher"
     _settings(profile, hooks=_registration(f"{launcher} {spelled}"))
     machine = _machine(profile, monkeypatch, path)
-    command, how, caveat = doctor._installed_hook(machine)
+    command, how, caveat, _timeout = doctor._installed_hook(machine)
     assert command == [str(spelled)], (command, how)
     assert "did not run the launcher" in caveat, caveat
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
@@ -5548,7 +5548,7 @@ def test_a_launcher_handed_a_path_probes_that_path(profile, monkeypatch) -> None
         profile,
         hooks=_registration(f"{launcher} ~/.claude/hooks/{doctor.NIX_HOOK_FILES[0]}"),
     )
-    command, how, _caveat = doctor._installed_hook(doctor.Machine())
+    command, how, _caveat, _timeout = doctor._installed_hook(doctor.Machine())
     assert command == [str(spelled)], (command, how)
 
 
@@ -5565,7 +5565,7 @@ def test_a_launcher_handed_a_missing_path_is_not_probed_through_another_file(
     gone = profile / "gone" / doctor.NIX_HOOK_FILES[0]
     _settings(profile, hooks=_registration(f"python3 {gone}"))
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     assert str(gone) in how, how
     assert str(linked) not in how, how
@@ -5585,11 +5585,57 @@ def test_a_launcher_handed_the_bare_file_name_says_where_doctor_looked(
         profile, hooks=_registration(f"hook-launcher {doctor.NIX_HOOK_FILES[0]}")
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     looked = profile / "claude-config" / "hooks" / doctor.NIX_HOOK_FILES[0]
     assert str(looked) in how, how
     assert "it names" not in how, how
+
+
+@pytest.mark.parametrize("name", [doctor.NIX_HOOK_FILES[0], "memkit-hook"])
+def test_a_settings_registrations_own_timeout_is_the_budget_its_probe_gets(
+    profile, monkeypatch, name
+) -> None:
+    """The harness ends a settings hook at that entry's `timeout`, so a run
+    judged against any other number can pass a hook production kills first.
+    Both shapes a settings entry is found by: the linked file's name, and the
+    word memkit.
+
+    The run underneath is a real delivery; only the clock is moved, and the
+    real run gets a generous deadline so a slow machine cannot decide it."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    hook_file = _linked_hook(profile, path, at=profile / "home" / "hooks" / name)
+    assert ("memkit" in str(hook_file)) == (name == "memkit-hook"), hook_file
+    real = doctor._probe_hook
+    asked = []
+
+    def slow(machine, command, prompt, timeout):
+        asked.append(timeout)
+        stdout, stderr, code, _ms = real(machine, command, prompt, 120)
+        return stdout, stderr, code, 2000
+
+    monkeypatch.setattr(doctor, "_probe_hook", slow)
+
+    def probe(timeout):
+        spec = {"type": "command", "command": str(hook_file), "timeout": timeout}
+        _settings(profile, hooks={"UserPromptSubmit": [{"hooks": [spec]}]})
+        (row,) = _only(
+            doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
+            "hook-path",
+        )
+        return row
+
+    row = probe(1)
+    assert asked == [1 + doctor.HOOK_PROBE_HEADROOM], asked
+    assert row.status == doctor.INFO, row.detail
+    assert "allows 1s" in row.detail, row.detail
+
+    # A value that is not a positive whole number of seconds is no budget,
+    # and the default stands.
+    row = probe(True)
+    assert asked[-1] == hook.HARNESS_TIMEOUT + doctor.HOOK_PROBE_HEADROOM, asked
+    assert row.status == doctor.PASS, row.detail
 
 
 def test_a_project_scope_launcher_registration_is_reported_and_not_run(
@@ -5607,7 +5653,7 @@ def test_a_project_scope_launcher_registration_is_reported_and_not_run(
         json.dumps({"hooks": _registration(command_text)}), encoding="utf-8"
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     assert command_text in how, how
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
