@@ -378,7 +378,13 @@ class Store:
         "live_root",
         "edit_root",
         "sub_indexes",
+        # The names of the roots a session must stand inside, or None for an
+        # ungated store. Always a tuple when gated, so no reader has to tell a
+        # single `root` from a `roots` list.
         "cwd_gate",
+        # Keys present in the config that nothing reads, sorted, with a gate's
+        # own as `cwd_gate.<key>`.
+        "unknown_keys",
         # Set only by `_project_store`, and it is what lets a store the
         # REPOSITORY named exist beside stores the user configured without
         # either one learning about the other: an absolute path `store_dir`
@@ -432,14 +438,18 @@ class Store:
         # Overwritten only by `_project_store`.
         self.resolved_dir = ""
         gate = raw.get("cwd_gate")
+        self.unknown_keys = tuple(sorted(k for k in raw if k not in _STORE_KEYS))
         if gate is None:
             self.cwd_gate = None
         elif isinstance(gate, dict):
-            self.cwd_gate = _require_str(gate, "root", f"{where}.cwd_gate")
+            self.cwd_gate = _gate_roots(gate, f"{where}.cwd_gate")
+            self.unknown_keys += tuple(
+                f"cwd_gate.{k}" for k in sorted(gate) if k not in _GATE_KEYS
+            )
         else:
             raise ConfigError(
-                f"{where}.cwd_gate must be an object with a 'root' name, or "
-                f"absent — not {type(gate).__name__}"
+                f"{where}.cwd_gate must be an object with a 'root' name or a "
+                f"'roots' list, or absent — not {type(gate).__name__}"
             )
 
     @property
@@ -632,6 +642,14 @@ PROJECT_VALUE_MAX_CHARS = 64
 PROJECT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 _PROJECT_TOP_KEYS = frozenset((PROJECT_SCHEMA_KEY, "store", "note"))
 _PROJECT_STORE_KEYS = frozenset(("id", "dir", "note"))
+# The keys a store in the USER's config may carry: what `Store` reads, plus
+# `note`, which is for people. Anything else is collected and reported by the
+# tools that can speak, never refused: the hook fails open, so a refusal here
+# would answer every prompt with nothing over a key that changes nothing.
+_STORE_KEYS = frozenset(
+    ("id", "role", "dir", "live_root", "edit_root", "sub_indexes", "cwd_gate", "note")
+)
+_GATE_KEYS = frozenset(("root", "roots"))
 
 
 def _inside(root: str, path: str) -> bool:
@@ -873,6 +891,30 @@ class Config:
         self.stores = [
             Store(s, i) for i, s in enumerate(_optional_list(raw, "stores"))
         ]
+        # Gate names are checked against `roots` here, though roots resolve
+        # lazily: a name nothing defines can never resolve, and met lazily it
+        # raises where a session's stores are chosen, which on the hook's path
+        # drops every store with nothing recorded.
+        # A git_toplevel root resolves to the session's own repository, so in
+        # a list it admits every repository and the other names gate nothing.
+        for store in self.stores:
+            names = store.cwd_gate or ()
+            for name in names:
+                if name not in self._roots_raw:
+                    raise ConfigError(
+                        f"{path}: stores[{store.id}].cwd_gate: no root named "
+                        f"{name!r}"
+                    )
+                if len(names) > 1 and (
+                    self._roots_raw[name].get("kind") == "git_toplevel"
+                ):
+                    raise ConfigError(
+                        f"{path}: stores[{store.id}].cwd_gate.roots lists "
+                        f"{name!r}, a git_toplevel root. It resolves to "
+                        "whatever repository the session is in, so beside "
+                        "other roots it admits every repository; gate on it "
+                        "alone, or name the checkout as a path root"
+                    )
         citations = _optional_mapping(raw, "citations")
         # Whether the config MENTIONS citations at all, which absent-or-empty
         # collapses away — and the checker needs the difference. A store whose
@@ -1121,13 +1163,13 @@ class Config:
     def searched_stores(self) -> list:
         """Stores this session may read, in config order.
 
-        A store with a `cwd_gate` is searched only from inside the named root —
-        including that root's git worktrees, which live outside its path prefix
-        and share its git common dir.
+        A store with a `cwd_gate` is searched only from inside one of the
+        named roots — including that root's git worktrees, which live outside
+        its path prefix and share its git common dir.
         """
         out = []
         for store in self.stores:
-            if store.cwd_gate is None or _cwd_in_root(self.root(store.cwd_gate)):
+            if store.cwd_gate is None or self._cwd_in_gate(store.cwd_gate):
                 out.append(store)
         # LAST, and NEVER in `self.stores`. That one placement is the whole of
         # what keeps a repository's store to retrieval: init, adoption, the
@@ -1139,6 +1181,18 @@ class Config:
         if project is not None:
             out.append(project)
         return out
+
+    def unknown_store_keys(self) -> list:
+        """`(store id, keys)` for each store carrying keys nothing reads."""
+        return [(s.id, s.unknown_keys) for s in self.stores if s.unknown_keys]
+
+    def _cwd_in_gate(self, names: tuple) -> bool:
+        # Every root is resolved before any is tested. Testing as they resolve
+        # would stop at the first match, so a root that cannot resolve would
+        # raise from one directory and be skipped from another, and whether
+        # the config is refused would depend on where the session stands.
+        roots = [self.root(name) for name in names]
+        return any(_cwd_in_root(root) for root in roots)
 
 
 def _require_str(raw: dict, key: str, where: str) -> str:
@@ -1220,6 +1274,28 @@ def _require_str_tuple(raw: dict, key: str, where: str) -> tuple:
     return tuple(value)
 
 
+def _gate_roots(gate: dict, where: str) -> tuple:
+    """The root names a `cwd_gate` object lists, as a non-empty tuple.
+
+    Exactly one of `root` and `roots`. Both at once is refused rather than
+    merged, because either reading of it — the union, or one silently winning —
+    is a gate wider or narrower than somebody wrote. An empty list is refused
+    for the reason a malformed gate is: read as no gate it ungates the store,
+    and read as a gate on nothing it hides the store everywhere without saying
+    why.
+    """
+    if "root" in gate and "roots" in gate:
+        raise ConfigError(f"{where} sets both 'root' and 'roots'; keep one")
+    if "roots" in gate:
+        names = _require_str_tuple(gate, "roots", where)
+        if not names:
+            raise ConfigError(f"{where}.roots must list at least one root name")
+        return names
+    if "root" not in gate:
+        raise ConfigError(f"{where} needs a 'root' name or a 'roots' list")
+    return (_require_str(gate, "root", where),)
+
+
 @functools.lru_cache(maxsize=None)
 def _cwd_in_root(root: str) -> bool:
     """True when the session cwd is inside `root` — including its git
@@ -1252,6 +1328,20 @@ def _cwd_in_root(root: str) -> bool:
         return False
     return os.path.realpath(common) == os.path.realpath(
         os.path.join(root, _DOT_GIT)
+    )
+
+
+def unknown_keys_line(cfg: Config) -> str:
+    """One line naming the store keys nothing reads, or "" when there are none.
+
+    For the operator tools only. The hook never prints it: its stdout is the
+    prompt, and it loads the config on every one.
+    """
+    found = cfg.unknown_store_keys()
+    if not found:
+        return ""
+    return f"{cfg.path}: store keys nothing reads, ignored: " + "; ".join(
+        f"stores[{store_id}] {', '.join(keys)}" for store_id, keys in found
     )
 
 
@@ -4558,10 +4648,11 @@ def _state_dir_candidate() -> str:
 # THE CONFIG does not live here, and this name is a keep-list entry rather than
 # a location. `memkit init` writes it to whichever route this install READS —
 # `--config`, then the `memkitConfig` option, then either
-# `$CLAUDE_PLUGIN_DATA/memkit.json` on the plugin channel or
-# `~/.config/memkit/memkit.json` off it — and refuses to put one in this
-# directory at all. The entry stays because an adopter can still point
-# `$MEMKIT_CONFIG` at a file here by hand, and the sweep must not eat it.
+# `$CLAUDE_PLUGIN_DATA/memkit.json` on the plugin channel or, off it,
+# `$MEMKIT_CONFIG` and then `~/.config/memkit/memkit.json` — and refuses to
+# put one in this directory at all. The entry stays because an adopter can
+# still point `$MEMKIT_CONFIG` at a file here by hand, and the sweep must
+# not eat it.
 GENERATED_CONFIG_NAME = "memkit.json"
 INIT_JOURNAL_NAME = "init-journal.jsonl"
 SOAK_LOG_NAME = "log.jsonl"
@@ -8261,7 +8352,10 @@ def _print_config(state: tuple) -> int:
     served_by_id = {s.id: s for s in served.stores}
     for store in display.stores:
         live = display.store_dir(store, "live")
-        gated = "always" if store.cwd_gate is None else f"cwd under {store.cwd_gate}"
+        gated = (
+            "always" if store.cwd_gate is None
+            else f"cwd under {', '.join(store.cwd_gate)}"
+        )
         state_shown = _store_state(display, store, shown_searched)
         print(
             f"store {store.id}: {_display_path(live)} "

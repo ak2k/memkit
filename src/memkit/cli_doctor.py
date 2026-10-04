@@ -53,6 +53,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -1444,6 +1445,14 @@ def _config_parse(machine: Machine) -> list[Check]:
             f"{_display_path(cfg.path)} parses; schema {SCHEMA}, "
             f"{len(cfg.stores)} store(s)",
         )
+    ] + [
+        Check(
+            "config-parse",
+            INFO,
+            f"stores[{store_id}] carries {', '.join(keys)}, which nothing "
+            "reads. A misspelled key is a setting that silently does not apply",
+        )
+        for store_id, keys in cfg.unknown_store_keys()
     ]
 
 
@@ -1678,7 +1687,7 @@ def _store_roots(machine: Machine) -> list[Check]:
         except ConfigError as exc:
             broken.append(str(exc))
             continue
-        gate = store.cwd_gate or "ungated"
+        gate = ", ".join(store.cwd_gate) if store.cwd_gate else "ungated"
         edit = "same" if store.edit_root == store.live_root else store.edit_root
         lines.append(
             f"{store.id} ({store.role}): {_display_path(os.path.join(root, store.dir))}"
@@ -1719,8 +1728,9 @@ def _corpus_root(machine: Machine) -> list[Check]:
                 Check(
                     "corpus-root",
                     INFO,
-                    f"{store.id}: gated to {store.cwd_gate}, so this session "
-                    "does not read it. That is the gate working",
+                    f"{store.id}: gated to {', '.join(store.cwd_gate or ())}, "
+                    "so this session does not read it. That is the gate "
+                    "working",
                 )
             )
             continue
@@ -2002,6 +2012,14 @@ PROBE_EVENT = "UserPromptSubmit"
 HOOK_PROBE_HEADROOM = 10
 
 
+def _timeout_seconds(value) -> int | None:
+    """`value` as a registration's timeout in seconds, or None if it is not one."""
+    # `bool` is an `int` and a `True` here is not a budget.
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 def _registered_timeout(event: str) -> int | None:
     """The timeout this payload's `hooks.json` registers for `event`.
 
@@ -2017,24 +2035,23 @@ def _registered_timeout(event: str) -> int | None:
             blob = json.load(f)
         for entry in (blob.get("hooks") or {}).get(event) or []:
             for registration in (entry or {}).get("hooks") or []:
-                timeout = (registration or {}).get("timeout")
-                # `bool` is an `int` and a `True` here is not a budget.
-                if (
-                    isinstance(timeout, int)
-                    and not isinstance(timeout, bool)
-                    and timeout > 0
-                ):
+                timeout = _timeout_seconds((registration or {}).get("timeout"))
+                if timeout is not None:
                     return timeout
     return None
 
 
-def _probe_budget() -> tuple:
+def _probe_budget(registered: int | None = None) -> tuple:
     """`(what production allows, what this probe waits)`, both in seconds.
 
     Two values from ONE source. The first is what the adopter's own
     registration gives the hook and is what a completed run is judged
-    against; the second is that plus the headroom above.
+    against; the second is that plus the headroom above. `registered` is a
+    settings entry's own timeout, which is that source when the entry is what
+    runs; a plugin install's is in its payload's `hooks.json`.
     """
+    if registered is not None:
+        return registered, registered + HOOK_PROBE_HEADROOM
     allowed = _registered_timeout(PROBE_EVENT) or HARNESS_TIMEOUT
     return allowed, allowed + HOOK_PROBE_HEADROOM
 
@@ -2116,8 +2133,28 @@ def _payload_roots(machine: Machine) -> list:
     return roots
 
 
+def _names_linked_hook(command: str) -> bool:
+    """Whether `command` ends in the hook file the nix channel links in.
+
+    The last word rather than the whole command, because two shapes reach the
+    file and neither carries the word memkit: a bare path to it, and a user's
+    own launcher handed its name or its path, as in
+    `hook-launcher memory-prompt-recall.py`.
+    """
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    return bool(words) and os.path.basename(words[-1]) == NIX_HOOK_FILES[0]
+
+
 def _installed_hook(machine: Machine) -> tuple:
-    """The command the harness would run on a prompt, and how it was found.
+    """The command the harness would run on a prompt, how it was found, what
+    the probe leaves unexercised, and the timeout a settings entry gives it.
+
+    The timeout is None unless a settings entry sets a valid one. A plugin
+    install's budget is in its payload's `hooks.json`, which `_probe_budget`
+    reads when this gives none.
 
     THE POINT OF THE CHECK IS THAT IT IS THE INSTALLED ONE. Running the module
     in this process would prove that retrieval works and nothing about the
@@ -2128,7 +2165,12 @@ def _installed_hook(machine: Machine) -> tuple:
     A registered command that is not a bare executable path is reported rather
     than run: the harness hands it to a shell, and a diagnostic that evaluated
     a shell fragment out of a settings file would be executing whatever that
-    file says on a machine whose configuration is already in doubt.
+    file says on a machine whose configuration is already in doubt. A command
+    of more than one word whose last word names the nix channel's hook file is
+    a launcher, and nothing of it is run: the file behind it, run alone, is
+    not what a prompt runs, since the launcher may export the config, change
+    directory or never reach the file. It comes back as an empty command with
+    no remedy, which `hook-path` reports as INFO.
 
     NOTHING A REPOSITORY WROTE IS EVER EXECUTED, and that is the sharper half
     of the same rule. `.claude/settings.json` and `.claude/settings.local.json`
@@ -2145,7 +2187,12 @@ def _installed_hook(machine: Machine) -> tuple:
     for root in _payload_roots(machine):
         path = os.path.join(root, HOOK_WRAPPER)
         if os.path.isfile(path) and os.access(path, os.X_OK):
-            return [path], f"the plugin's own wrapper at {_display_path(path)}", ""
+            return (
+                [path],
+                f"the plugin's own wrapper at {_display_path(path)}",
+                "",
+                None,
+            )
     reported = ()
     for scope in machine.settings:
         events = scope.data.get("hooks")
@@ -2154,8 +2201,15 @@ def _installed_hook(machine: Machine) -> tuple:
         for entry in events.get("UserPromptSubmit") or []:
             for spec in (entry or {}).get("hooks") or []:
                 command = (spec or {}).get("command")
-                if not isinstance(command, str) or "memkit" not in command:
+                if not isinstance(command, str):
                     continue
+                linked = _names_linked_hook(command)
+                if "memkit" not in command and not linked:
+                    continue
+                words = shlex.split(command) if linked else []
+                # A launcher is more than one word. A single word is a path the
+                # harness runs as spelled, so it is probed as spelled too.
+                launched = len(words) > 1
                 if not scope.adopter_owned:
                     # Kept as the fallback answer rather than returned at once:
                     # an adopter-owned entry further down the list is still
@@ -2173,32 +2227,56 @@ def _installed_hook(machine: Machine) -> tuple:
                         "those separately.",
                     )
                     continue
-                if not (os.path.isfile(command) and os.access(command, os.X_OK)):
+                if launched:
+                    # Not probed at all. The launcher is a program of the
+                    # user's that this has no business running, and the file
+                    # behind it run on its own is not what a prompt runs: the
+                    # launcher may export the config, change directory, or
+                    # never reach the file.
+                    return (
+                        [],
+                        f'the {scope.scope}-settings registration "{command}" '
+                        "is registered through a launcher. Doctor does not "
+                        "run launchers, so it did not probe the hook",
+                        "",
+                        None,
+                    )
+                # The word the shell runs once it removes the quoting.
+                run = words[0] if words else command
+                if not (os.path.isfile(run) and os.access(run, os.X_OK)):
                     return (
                         [],
                         f"the {scope.scope}-settings registration runs "
                         f'"{command}", which is not an executable file this '
                         "can run on its own",
                         NO_HOOK_REMEDY,
+                        None,
                     )
-                if _under_cwd(command):
+                if _under_cwd(run):
                     # Defense in depth, for what the scope rule cannot see: the
                     # scope says an adopter wrote the ENTRY and says nothing
                     # about who wrote the file it points at.
                     return (
                         [],
                         f"the {scope.scope}-settings registration runs "
-                        f'"{command}", which resolves inside this directory. '
+                        f'"{run}", which resolves inside this directory. '
                         "Not run from here",
                         "Read the command above before trusting it. A hook "
                         "whose program lives in the directory the session "
                         "stands in is that directory's choice, whichever "
                         "settings scope names it.",
+                        None,
                     )
-                return [command], f"the {scope.scope}-settings registration", ""
+                timeout = _timeout_seconds(spec.get("timeout"))
+                return [run], f"the {scope.scope}-settings registration", "", timeout
     if reported:
-        return [], reported[0], reported[1]
-    return [], "nothing registers a UserPromptSubmit hook for memkit", NO_HOOK_REMEDY
+        return [], reported[0], reported[1], None
+    return (
+        [],
+        "nothing registers a UserPromptSubmit hook for memkit",
+        NO_HOOK_REMEDY,
+        None,
+    )
 
 
 # What the hook probe carries over from THIS session, named rather than
@@ -2417,7 +2495,18 @@ def _hook_path(machine: Machine) -> list[Check]:
     and that span is exactly where both walkthroughs' installs were broken
     while every other light was green.
     """
-    command, how, remedy = _installed_hook(machine)
+    command, how, remedy, registered = _installed_hook(machine)
+    if not command and not remedy:
+        return [
+            Check(
+                "hook-path",
+                INFO,
+                f"no hook was run: {how}",
+                "A prompt in a new session that brings back a pointer is the "
+                "launcher's own delivery, which this check cannot run.",
+                actor=USER,
+            )
+        ]
     if not command:
         return [
             Check("hook-path", UNKNOWN, f"no hook was run: {how}",
@@ -2451,7 +2540,7 @@ def _hook_path(machine: Machine) -> list[Check]:
     # gives the hook and is what a COMPLETED run is judged against, `waited`
     # is what this probe is willing to sit through so the elapsed time exists
     # to judge.
-    allowed, waited = _probe_budget()
+    allowed, waited = _probe_budget(registered)
     if not nonce:
         stdout, stderr, code, ms = _probe_hook(
             machine, command, "memkit doctor probe prompt", waited
@@ -3065,7 +3154,9 @@ def _memkit_registrations(machine: Machine) -> list:
             for spec in (entry or {}).get("hooks") or []:
                 command = (spec or {}).get("command")
                 if isinstance(command, str) and (
-                    "memkit" in command or "memory_prompt_recall" in command
+                    "memkit" in command
+                    or "memory_prompt_recall" in command
+                    or _names_linked_hook(command)
                 ):
                     found.append(
                         f'{scope.scope} settings ({_display_path(scope.path)}): '

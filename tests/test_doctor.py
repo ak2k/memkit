@@ -979,6 +979,68 @@ def test_store_roots_names_the_route_each_root_resolved_by(profile, monkeypatch)
     assert "personal" in row.detail
 
 
+def test_a_store_key_nothing_reads_is_an_info_row_naming_the_store(
+    profile, monkeypatch
+) -> None:
+    """One row per store, under `config-parse`, and never a failure: the file
+    parses and serves, and the key is a setting that silently does not
+    apply."""
+    path = pathlib.Path(_store_config(profile, stores=["personal", "project"]))
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    blob["stores"][0]["blame_only_in_edit_tree"] = True
+    blob["stores"][1]["colour"] = "red"
+    blob["stores"][1]["note"] = "for people"
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    rows = _only(
+        doctor._PRODUCERS["config-parse"](_machine(profile, monkeypatch, str(path))),
+        "config-parse",
+    )
+    assert [r.status for r in rows] == [doctor.PASS, doctor.INFO, doctor.INFO], rows
+    assert "personal" in rows[1].detail, rows[1].detail
+    assert "blame_only_in_edit_tree" in rows[1].detail, rows[1].detail
+    assert "project" in rows[2].detail and "colour" in rows[2].detail, rows[2].detail
+    assert "note" not in rows[2].detail, rows[2].detail
+
+
+def test_a_store_gated_by_a_roots_list_is_shown_with_every_root_named(
+    profile, monkeypatch
+) -> None:
+    path = pathlib.Path(
+        _store_config(profile, stores=["project"], gate="elsewhere")
+    )
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    blob["roots"]["further"] = {"kind": "path", "path": str(profile / "further")}
+    blob["stores"][0]["cwd_gate"] = {"roots": ["elsewhere", "further"]}
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    checks = doctor.collect(_machine(profile, monkeypatch, str(path)))
+    (roots,) = _only(checks, "store-roots")
+    assert "cwd_gate elsewhere, further" in roots.detail, roots.detail
+    (corpus,) = _only(checks, "corpus-root")
+    assert corpus.status == doctor.INFO
+    assert "gated to elsewhere, further" in corpus.detail, corpus.detail
+
+
+@pytest.mark.parametrize(
+    "gate", [{"roots": ["elsewhere", "tpyo"]}, {"root": "tpyo"}]
+)
+def test_a_gate_naming_an_undefined_root_fails_the_config_check(
+    profile, monkeypatch, gate
+) -> None:
+    """The hook serves no store at all under such a gate, so a verdict of OK
+    over it is a green report on a hook that answers nothing."""
+    path = pathlib.Path(
+        _store_config(profile, stores=["personal", "project"], gate="elsewhere")
+    )
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    blob["stores"][1]["cwd_gate"] = gate
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    checks = doctor.collect(_machine(profile, monkeypatch, str(path)))
+    (parsed,) = _only(checks, "config-parse")
+    assert parsed.status == doctor.FAIL, parsed.detail
+    assert "tpyo" in parsed.detail, parsed.detail
+    assert doctor.verdict(checks) != "OK"
+
+
 # --- index-state -------------------------------------------------------------
 
 
@@ -1393,7 +1455,7 @@ def test_a_registration_that_is_a_shell_fragment_is_reported_not_run(
         },
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == []
     assert "not an executable file" in how
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
@@ -5275,7 +5337,7 @@ def test_doctor_never_runs_a_hook_a_repository_registered(profile, monkeypatch):
         encoding="utf-8",
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
     assert not marker.exists(), "doctor executed a command the repository chose"
@@ -5307,7 +5369,7 @@ def test_a_user_scope_registration_is_still_run(profile, monkeypatch) -> None:
         },
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [str(theirs)], (command, how)
     assert "user-settings" in how
 
@@ -5330,7 +5392,7 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
         },
     )
     machine = _machine(profile, monkeypatch, path)
-    command, how, _remedy = doctor._installed_hook(machine)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
     assert command == [], (command, how)
     assert "inside this directory" in how, how
 
@@ -5348,9 +5410,253 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
             ]
         },
     )
-    command, how, _remedy = doctor._installed_hook(doctor.Machine())
+    command, how, _remedy, _timeout = doctor._installed_hook(doctor.Machine())
     assert command == [], (command, how)
     assert "inside this directory" in how, how
+
+
+def _linked_hook(profile, config: str, marker=None, at=None):
+    """The file the nix channel links into `<config dir>/hooks/`, standing in
+    as the module's wrapper does: the config baked in, then the real hook.
+
+    `marker`, when given, is a file the script creates, so a case can tell
+    whether anything executed it. `at` writes the same file somewhere else.
+    """
+    linked = at or profile / "claude-config" / "hooks" / doctor.NIX_HOOK_FILES[0]
+    linked.parent.mkdir(parents=True, exist_ok=True)
+    touch = f"touch {marker}\n" if marker else ""
+    linked.write_text(
+        f"#!/bin/sh\n{touch}MEMKIT_CONFIG={config}\nexport MEMKIT_CONFIG\n"
+        f"exec {sys.executable} {REPO / 'src' / 'memkit' / 'memory_prompt_recall.py'}\n",
+        encoding="utf-8",
+    )
+    linked.chmod(0o755)
+    return linked
+
+
+def test_a_bare_registration_of_the_linked_hook_file_is_found_and_run(
+    profile, monkeypatch
+) -> None:
+    """The nix channel's own shape: settings name the file the module links
+    in, by path, and the command carries no word `memkit` to be found by."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    linked = _linked_hook(profile, path)
+    _settings(profile, hooks=_registration(str(linked)))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
+    assert command == [str(linked)], (command, how)
+    (count,) = _only(
+        doctor._PRODUCERS["registrations-count"](machine), "registrations-count"
+    )
+    assert count.status == doctor.PASS, count.detail
+
+
+_HOOK = doctor.NIX_HOOK_FILES[0]
+
+# Every launcher shape the gate rounds raised, as (command, the hook file the
+# command reaches or None). Three of them a direct run of that file got wrong:
+# a launcher whose own name holds the word memkit, a file that needs what the
+# launcher exports, and a relative path the shell resolves.
+_LAUNCHER_SHAPES = {
+    "bare-name": lambda p: (
+        f"{p / 'home' / 'bin' / 'hook-launcher'} {_HOOK}",
+        p / "claude-config" / "hooks" / _HOOK,
+    ),
+    "spelled-path-needing-the-launchers-env": lambda p: (
+        f"hook-launcher {p / 'home' / '.claude' / 'hooks' / _HOOK}",
+        p / "home" / ".claude" / "hooks" / _HOOK,
+    ),
+    "memkit-in-the-launchers-name": lambda p: (
+        f"{p / 'home' / 'bin' / 'memkit-launcher'} {p / 'hooks' / _HOOK}",
+        p / "hooks" / _HOOK,
+    ),
+    "relative-path": lambda p: (
+        f"hook-launcher ../outside/{_HOOK}",
+        p / "outside" / _HOOK,
+    ),
+    "missing-path": lambda p: (f"python3 {p / 'gone' / _HOOK}", None),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_LAUNCHER_SHAPES))
+def test_a_launcher_registration_is_reported_and_nothing_is_run(
+    profile, monkeypatch, shape
+) -> None:
+    """Doctor does not run launchers, and running the file behind one is not
+    the registration either: a launcher can export the config, change
+    directory, or never reach the file, so a direct run measures something no
+    prompt runs. Every shape is INFO saying so, with nothing executed."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    marker = profile / "something-ran"
+    command, hook_file = _LAUNCHER_SHAPES[shape](profile)
+    if hook_file is not None:
+        # No config baked in: it reads the one its launcher exports.
+        hook_file.parent.mkdir(parents=True, exist_ok=True)
+        hook_file.write_text(
+            f"#!/bin/sh\ntouch {marker}\n"
+            f"exec {sys.executable} {REPO / 'src' / 'memkit' / 'memory_prompt_recall.py'}\n",
+            encoding="utf-8",
+        )
+        hook_file.chmod(0o755)
+    _settings(profile, hooks=_registration(command))
+    machine = _machine(profile, monkeypatch, path)
+    found, how, remedy, _timeout = doctor._installed_hook(machine)
+    assert (found, remedy) == ([], ""), (found, how, remedy)
+    checks = doctor.collect(machine)
+    (row,) = _only(checks, "hook-path")
+    assert row.status == doctor.INFO, row.detail
+    assert "does not run launchers" in row.detail, row.detail
+    # Rows show paths under HOME as `~/`.
+    assert command.replace(str(profile / "home"), "~") in row.detail, row.detail
+    assert not marker.exists(), "doctor ran a file behind a launcher"
+    (count,) = _only(checks, "registrations-count")
+    assert count.status == doctor.PASS, count.detail
+
+
+def test_a_launcher_that_never_reaches_the_hook_is_not_reported_as_passing(
+    profile, monkeypatch
+) -> None:
+    """`/usr/bin/true memory-prompt-recall.py` runs nothing on a prompt, and
+    doctor, which never runs a launcher, cannot tell that apart from one that
+    works. So no launcher registration is reported as PASS."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _linked_hook(profile, path)
+    _settings(
+        profile, hooks=_registration(f"/usr/bin/true {doctor.NIX_HOOK_FILES[0]}")
+    )
+    machine = _machine(profile, monkeypatch, path)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status != doctor.PASS, row.detail
+    assert "does not run launchers" in row.detail, row.detail
+
+
+def test_a_bare_registration_of_a_missing_path_is_not_probed_through_the_linked_file(
+    profile, monkeypatch
+) -> None:
+    """The harness runs the path the settings spell. When that path is gone
+    no hook runs on a prompt, so the linked file's answer is not this
+    registration's."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    _linked_hook(profile, path)
+    stale = profile / "gone" / doctor.NIX_HOOK_FILES[0]
+    _settings(profile, hooks=_registration(str(stale)))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    assert str(stale) in how, how
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status != doctor.PASS, row.detail
+
+
+def test_a_quoted_single_word_registration_is_probed_as_the_shell_reads_it(
+    profile, monkeypatch
+) -> None:
+    """The shell strips the quotes before it runs the path, so a quoted path,
+    with or without a space in it, is the same registration as a bare one."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    spaced = profile / "home" / "hook dir" / doctor.NIX_HOOK_FILES[0]
+    _linked_hook(profile, path, at=spaced)
+    _settings(profile, hooks=_registration(f'"{spaced}"'))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
+    assert command == [str(spaced)], (command, how)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status == doctor.PASS, row.detail
+
+
+def test_a_bare_registration_outside_the_config_dir_runs_the_path_it_names(
+    profile, monkeypatch
+) -> None:
+    """The module links the hook under `$HOME/<hooksDir>`, which is not the
+    config dir's `hooks/` when `$CLAUDE_CONFIG_DIR` points elsewhere. The
+    settings spell the working path, and that path is what runs."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    real = profile / "home" / ".claude" / "hooks" / doctor.NIX_HOOK_FILES[0]
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_text(
+        f"#!/bin/sh\nMEMKIT_CONFIG={path}\nexport MEMKIT_CONFIG\n"
+        f"exec {sys.executable} {REPO / 'src' / 'memkit' / 'memory_prompt_recall.py'}\n",
+        encoding="utf-8",
+    )
+    real.chmod(0o755)
+    _settings(profile, hooks=_registration(str(real)))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
+    assert command == [str(real)], (command, how)
+
+
+@pytest.mark.parametrize("name", [doctor.NIX_HOOK_FILES[0], "memkit-hook"])
+def test_a_settings_registrations_own_timeout_is_the_budget_its_probe_gets(
+    profile, monkeypatch, name
+) -> None:
+    """The harness ends a settings hook at that entry's `timeout`, so a run
+    judged against any other number can pass a hook production kills first.
+    Both shapes a settings entry is found by: the linked file's name, and the
+    word memkit.
+
+    The run underneath is a real delivery; only the clock is moved, and the
+    real run gets a generous deadline so a slow machine cannot decide it."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    hook_file = _linked_hook(profile, path, at=profile / "home" / "hooks" / name)
+    assert ("memkit" in str(hook_file)) == (name == "memkit-hook"), hook_file
+    real = doctor._probe_hook
+    asked = []
+
+    def slow(machine, command, prompt, timeout):
+        asked.append(timeout)
+        stdout, stderr, code, _ms = real(machine, command, prompt, 120)
+        return stdout, stderr, code, 2000
+
+    monkeypatch.setattr(doctor, "_probe_hook", slow)
+
+    def probe(timeout):
+        spec = {"type": "command", "command": str(hook_file), "timeout": timeout}
+        _settings(profile, hooks={"UserPromptSubmit": [{"hooks": [spec]}]})
+        (row,) = _only(
+            doctor._PRODUCERS["hook-path"](_machine(profile, monkeypatch, path)),
+            "hook-path",
+        )
+        return row
+
+    row = probe(1)
+    assert asked == [1 + doctor.HOOK_PROBE_HEADROOM], asked
+    assert row.status == doctor.INFO, row.detail
+    assert "allows 1s" in row.detail, row.detail
+
+    # A value that is not a positive whole number of seconds is no budget,
+    # and the default stands.
+    row = probe(True)
+    assert asked[-1] == hook.HARNESS_TIMEOUT + doctor.HOOK_PROBE_HEADROOM, asked
+    assert row.status == doctor.PASS, row.detail
+
+
+def test_a_project_scope_launcher_registration_is_reported_and_not_run(
+    profile, monkeypatch
+) -> None:
+    """The scope rule holds for the launcher form: a checkout's settings may
+    not choose a program for doctor to run, and that includes choosing the
+    hook file doctor would otherwise run on its behalf."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    marker = profile / "linked-ran"
+    _linked_hook(profile, path, marker=marker)
+    command_text = f"hook-launcher {doctor.NIX_HOOK_FILES[0]}"
+    (profile / "project" / ".claude").mkdir(parents=True, exist_ok=True)
+    (profile / "project" / ".claude" / "settings.json").write_text(
+        json.dumps({"hooks": _registration(command_text)}), encoding="utf-8"
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    assert command_text in how, how
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert command_text in row.detail, row.detail
+    assert not marker.exists(), "doctor ran a hook a checkout registered"
 
 
 # --- the package-wide execution gate ------------------------------------------

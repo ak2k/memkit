@@ -5443,8 +5443,186 @@ def test_a_cwd_gate_that_is_not_an_object_no_longer_ungates_the_store(
     # And the guard can fire in only that direction: the well-formed gate still
     # gates, and an absent one still means ungated.
     gated = _load(tmp_path, _store_with(tmp_path, cwd_gate={"root": "home"}))
-    assert gated.stores[0].cwd_gate == "home"
+    assert gated.stores[0].cwd_gate == ("home",)
     assert _load(tmp_path, _config_blob(tmp_path)).stores[0].cwd_gate is None
+
+
+def _gated_by_list(tmp_path: Path, roots: list) -> dict:
+    """A one-store config gated to `roots`, with roots `a` and `b` defined as
+    two sibling directories under `tmp_path`."""
+    blob = _store_with(tmp_path, cwd_gate={"roots": roots})
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir(exist_ok=True)
+        blob["roots"][name] = {"kind": "path", "path": str(tmp_path / name)}
+    return blob
+
+
+def _searched_from(where: Path, config) -> list:
+    """The ids `config` searches from a session standing in `where`."""
+    origin = os.getcwd()
+    hook._cwd_in_root.cache_clear()
+    try:
+        os.chdir(where)
+        return [store.id for store in config.searched_stores()]
+    finally:
+        os.chdir(origin)
+        hook._cwd_in_root.cache_clear()
+
+
+def test_a_cwd_gate_with_a_roots_list_admits_a_session_under_any_of_them(
+    tmp_path,
+) -> None:
+    """One store, searched from several trees, without a second store holding
+    the same files. The list is what each listed root would admit alone, and
+    nothing past it."""
+    tmp_path = tmp_path.resolve()
+    config = _load(tmp_path, _gated_by_list(tmp_path, ["a", "b"]))
+    assert config.stores[0].cwd_gate == ("a", "b")
+    assert _searched_from(tmp_path / "a", config) == ["s"]
+    assert _searched_from(tmp_path / "b", config) == ["s"]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert _searched_from(elsewhere, config) == []
+    debug = _cli(
+        tmp_path,
+        "--config",
+        config.path,
+        "--debug-config",
+        env=_unconfigured(tmp_path),
+        cwd=str(tmp_path / "b"),
+    )
+    assert "store s: " in debug.stdout, debug.stdout + debug.stderr
+    assert "cwd under a, b" in debug.stdout, debug.stdout
+
+
+def test_a_single_root_gate_still_gates_and_reads_as_a_one_name_list(
+    tmp_path,
+) -> None:
+    tmp_path = tmp_path.resolve()
+    blob = _gated_by_list(tmp_path, ["a"])
+    blob["stores"][0]["cwd_gate"] = {"root": "a"}
+    config = _load(tmp_path, blob)
+    assert config.stores[0].cwd_gate == ("a",)
+    assert _searched_from(tmp_path / "a", config) == ["s"]
+    assert _searched_from(tmp_path / "b", config) == []
+
+
+@pytest.mark.parametrize(
+    ("gate", "names"),
+    [
+        ({"roots": []}, ("cwd_gate.roots", "at least one")),
+        ({"roots": ["a", 7]}, ("cwd_gate.roots", "strings")),
+        ({"roots": ["a", ""]}, ("cwd_gate.roots", "strings")),
+        ({"roots": "a"}, ("cwd_gate.roots", "list")),
+        ({"root": "a", "roots": ["b"]}, ("cwd_gate", "both")),
+    ],
+)
+def test_a_malformed_roots_list_is_a_config_error(tmp_path, gate, names) -> None:
+    blob = _gated_by_list(tmp_path, ["a"])
+    blob["stores"][0]["cwd_gate"] = gate
+    with pytest.raises(hook.ConfigError) as caught:
+        _load(tmp_path, blob)
+    for name in names:
+        assert name in str(caught.value), (name, str(caught.value))
+
+
+def test_a_roots_list_naming_a_git_toplevel_root_is_refused(tmp_path) -> None:
+    """A `git_toplevel` root resolves to whatever repository the session
+    stands in, so in a list it admits every repository and the other names
+    constrain nothing inside one. Alone it means "any repository", which is
+    what it says, and stays allowed."""
+    blob = _gated_by_list(tmp_path, ["a", "checkout"])
+    blob["roots"]["checkout"] = {"kind": "git_toplevel", "fallback": "home"}
+    path = tmp_path / "gated.json"
+    path.write_text(json.dumps(blob))
+    with pytest.raises(hook.ConfigError, match="checkout") as caught:
+        hook.load_config(str(path))
+    assert "git_toplevel" in str(caught.value), caught.value
+    for gate in ({"roots": ["checkout"]}, {"root": "checkout"}):
+        blob["stores"][0]["cwd_gate"] = gate
+        assert _load(tmp_path, blob).stores[0].cwd_gate == ("checkout",)
+
+
+@pytest.mark.parametrize("gate", [{"roots": ["a", "tpyo"]}, {"root": "tpyo"}])
+def test_a_gate_naming_an_undefined_root_is_refused_when_the_config_loads(
+    tmp_path, gate
+) -> None:
+    """A name no root carries can never resolve, so the store is never served
+    while it stands, and neither is any other: the hook answers with nothing.
+    Refused at load, that silence has a record saying why, and the refusal
+    cannot depend on where the session stands. A session inside `a` would
+    otherwise have its answer before `tpyo` is looked at."""
+    tmp_path = tmp_path.resolve()
+    blob = _gated_by_list(tmp_path, ["a"])
+    blob["stores"][0]["cwd_gate"] = gate
+    path = tmp_path / "gated.json"
+    path.write_text(json.dumps(blob))
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "gatetypo", "prompt": "flange torque passes"}),
+        capture_output=True,
+        text=True,
+        env=_sealed_env(tmp_path, MEMKIT_CONFIG=str(path)),
+        cwd=str(tmp_path / "a"),
+        timeout=60,
+    )
+    assert out.returncode == 0 and out.stdout == ""
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    assert log.is_file(), "the hook served nothing and recorded nothing"
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "gate:nodirs", record
+    assert "tpyo" in record.get("config", ""), record
+    with pytest.raises(hook.ConfigError, match="tpyo"):
+        hook.load_config(str(path))
+
+
+def test_store_keys_nothing_reads_are_collected_and_not_refused(tmp_path) -> None:
+    """A key this build does not read is a setting that silently does not
+    apply, so the tools that can speak name it. It is never a ConfigError: the
+    hook fails open, and a refused config is every prompt answered by
+    nothing."""
+    blob = _store_with(
+        tmp_path,
+        note="for people",
+        colour="red",
+        cwd_gate={"root": "home", "rooot": "x"},
+    )
+    config = _load(tmp_path, blob)
+    assert config.stores[0].unknown_keys == ("colour", "cwd_gate.rooot")
+    assert config.unknown_store_keys() == [("s", ("colour", "cwd_gate.rooot"))]
+    line = hook.unknown_keys_line(config)
+    assert "stores[s]" in line and "colour" in line and "cwd_gate.rooot" in line
+    assert "\n" not in line
+    # A store with only the keys the reader takes reports nothing.
+    clean = _load(tmp_path, _config_blob(tmp_path))
+    assert clean.unknown_store_keys() == []
+    assert hook.unknown_keys_line(clean) == ""
+
+
+def test_the_hook_says_nothing_new_about_a_store_key_nothing_reads(tmp_path) -> None:
+    """The hook loads the config on every prompt, and its stdout is the
+    prompt. A key nothing reads changes not one byte of what it prints."""
+    env = _env(tmp_path)
+    (tmp_path / PROJECT_DIR / "search" / "gearbox.md").write_text(
+        "---\ndescription: backlash after a gearbox rebuild\ntype: reference\n"
+        "---\n\n# Backlash\n\nsprocket backlash after the gearbox rebuild\n"
+    )
+    prompt = "sprocket backlash after the gearbox rebuild shim stack"
+    plain = _hook(env, prompt, session="uk1")
+    config = Path(env["MEMKIT_CONFIG"])
+    blob = json.loads(config.read_text())
+    blob["stores"][0]["colour"] = "red"
+    config.write_text(json.dumps(blob))
+    flagged = _hook(env, prompt, session="uk2")
+    assert "gearbox.md" in plain.stdout, plain.stdout + plain.stderr
+    # The fence tag is drawn fresh for every block, so it is the one span
+    # two runs may not share.
+    def untagged(text: str) -> str:
+        return re.sub(r"memkit-pointers-[0-9a-f]+", "memkit-pointers-TAG", text)
+
+    assert untagged(flagged.stdout) == untagged(plain.stdout)
+    assert flagged.stderr == plain.stderr
+    assert flagged.returncode == plain.returncode == 0
 
 
 def test_a_string_sub_index_is_refused_rather_than_split_into_characters(

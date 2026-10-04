@@ -5363,6 +5363,35 @@ def test_every_checkable_claim_in_the_adoption_section_has_an_anchor() -> None:
     assert not loose, (f"{len(loose)} claims no extractor reads", loose)
 
 
+def test_the_adopter_routes_are_weighed_rather_than_one_recommended() -> None:
+    """Adopting through `autoMemoryDirectory` was the route the page
+    recommended, for an adopter shape it never named. Measured on a consumer
+    with many projects and one shared checkout, it removed every project's own
+    index, loaded one merged index everywhere, and left the harness's writes
+    untracked in a checkout other sessions pull into. The page and the skill
+    now weigh it against the inbox default and name those costs."""
+    prose = _prose(_store_in_git_section(STORE_DOC.read_text(encoding="utf-8")))
+    assert "the route this page recommends" not in prose
+    assert "**Two routes, and which one fits.**" in prose
+    assert "That is the default" in prose
+    for cost in (
+        "`MEMORY.md` index stops loading",
+        "loads one index in every session",
+        "lands there as untracked files",
+        "`git pull` aborts",
+    ):
+        assert cost in prose, cost
+    skill = _prose((SKILLS / "init" / "SKILL.md").read_text(encoding="utf-8"))
+    assert "Not the default" in skill
+    for cost in (
+        "`MEMORY.md` index stops loading",
+        "loads in every session",
+        "untracked files",
+        "`git pull` abort",
+    ):
+        assert cost in skill, cost
+
+
 def test_the_store_in_git_section_agrees_with_its_own_precedence_list() -> None:
     """Three sentences about one ordering, checked against each other.
 

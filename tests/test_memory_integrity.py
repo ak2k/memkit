@@ -17,6 +17,8 @@ then the dead links it exists to catch come back.
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
 import os
 import re
@@ -802,6 +804,27 @@ class ConfigDrivenStores(unittest.TestCase):
         root = self.tmp / "repo"
         self.assertEqual(ev.store_roots(cfg, root), [root / "notes"])
 
+    def test_the_checker_names_store_keys_nothing_reads_on_stderr(self) -> None:
+        # One line, on stderr, before any store is checked: stdout is the
+        # report a commit hook reads, and the key does not change it.
+        path = _config(
+            self.tmp / "memkit.json",
+            [{"id": "project", "dir": STORE_DIR, "live_root": "home",
+              "colour": "red", "note": "for people"}],
+        )
+        err = io.StringIO()
+        with unittest.mock.patch.object(
+            sys, "argv", ["memory-integrity", "--config", str(path)]
+        ), unittest.mock.patch.dict(os.environ, {"HOME": str(self.tmp)}), \
+                contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()):
+            mi.main()
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("stores[project]", lines[0])
+        self.assertIn("colour", lines[0])
+        self.assertNotIn("note", lines[0].split("stores[project]", 1)[1])
+
     def test_the_checker_reports_which_tree_answered_for_each_store(self) -> None:
         # The wrong-tree bug was invisible precisely because the output named
         # no repo: `[OK] docs/memories/ (139 files)` reads the same whether it
@@ -1573,6 +1596,20 @@ class FixtureEvalSensitivity(unittest.TestCase):
         done = self.run_eval()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("every gating case matched the snapshot", done.stdout)
+
+    def test_a_store_key_nothing_reads_is_one_stderr_line_and_not_a_failure(
+        self,
+    ) -> None:
+        config = self.fixtures / "memkit.json"
+        blob = json.loads(config.read_text())
+        blob["stores"][0]["colour"] = "red"
+        config.write_text(json.dumps(blob))
+        done = self.run_eval()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        named = [ln for ln in done.stderr.splitlines() if "colour" in ln]
+        self.assertEqual(len(named), 1, done.stderr)
+        self.assertIn("memory-eval:", named[0])
+        self.assertIn(f"stores[{blob['stores'][0]['id']}]", named[0])
 
     def test_an_outcome_that_moved_off_the_snapshot_reaches_the_exit_code(
         self,

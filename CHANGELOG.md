@@ -11,6 +11,26 @@ ordering.
 
 ## [Unreleased]
 
+### Added
+
+- **A store's `cwd_gate` can list several roots.** `"cwd_gate": { "roots":
+  ["a", "b"] }` searches the store from a session inside any listed root, so
+  one store can serve several trees without a second store holding the same
+  files. A single `root` reads as before. An empty list, a non-string entry,
+  or `root` and `roots` together is a config error, and every listed root
+  must resolve wherever the session stands, or the config is refused. A
+  listed name the config's `roots` does not define is refused when the
+  config loads, and so is a list naming a `git_toplevel` root: that root is
+  whatever repository the session is in, so beside other names it would
+  admit every repository. A `git_toplevel` root still gates on its own.
+- **Store keys nothing reads are named.** A key in a store entry that memkit
+  does not read, such as a misspelled one, was ignored without a word. It is
+  still ignored, and now `memkit doctor` shows an INFO row under
+  `config-parse` per store naming the keys, and `memory-integrity` and
+  `memory-eval` print one line on stderr. A key inside `cwd_gate` other
+  than `root` or `roots` is named as `cwd_gate.<key>`. The hook prints
+  nothing new.
+
 ### Changed
 
 - **`memory-eval` gates every case against the corpus in front of it, and the
@@ -31,9 +51,48 @@ ordering.
   fails on those cases as drift. A snapshot that still carries a `corpus`
   fingerprint is read as before, and the next `--update-snapshot` drops the
   field.
+- **docs/STORE.md no longer recommends `--adopt-auto-memory`.** It presents
+  two routes: leaving the harness's per-project memory directories as an
+  inbox, the default, and adopting into a store through
+  `autoMemoryDirectory`, which fits one writer with a store of its own. It
+  lists adoption's costs, measured on Claude Code 2.1.286: that project's
+  `MEMORY.md` index stops loading, a user-scope value loads one index in
+  every session, and in a shared git checkout the harness's writes land as
+  untracked files that fail the integrity check and can make `git pull`
+  abort. The init skill says the same.
 
 ### Fixed
 
+- **`memkit init` writes where `$MEMKIT_CONFIG` points, off the plugin
+  channel.** It wrote to `~/.config/memkit/memkit.json` whatever the variable
+  named, so on a pip or nix install it could leave a config the hook never
+  reads. `--config` and the install option still come first, and the plugin
+  channel still ignores the variable. A config path in `/nix/store` is
+  refused as `read-only-config`. When the path came from the variable, which
+  the home-manager module points into the store unless `configFile` names a
+  path outside it, a store or unwritable path is refused as
+  `read-only-config` and the refusal names `configFile`; an unwritable path
+  from any other route keeps the `not-writable` refusal.
+- **A `cwd_gate` naming a root the config does not define is refused when
+  the config loads.** It was found only when a session's stores were
+  chosen, where it raised: the hook served no store at all and recorded
+  nothing, and `memkit doctor`'s `config-parse` passed. The hook now records
+  `gate:nodirs` with the reason, and `config-parse` fails.
+- **`memkit doctor` finds a hook registered by the nix channel's file
+  name.** A settings entry whose last word is `memory-prompt-recall.py`, as
+  a bare path to the file the home-manager module links in or as a launcher
+  handed that name (`hook-launcher memory-prompt-recall.py`), read as no
+  registration, because doctor looked for the word `memkit`. `hook-path`
+  now runs a bare path as written, quoted or not. A launcher entry is
+  reported as INFO and nothing of it is run: doctor does not run launchers,
+  and the file behind one, run alone, is not what a prompt runs, since the
+  launcher may export the config, change directory or never reach it.
+  `registrations-count` counts both. A project-scope entry is still
+  reported and not run.
+- **`memkit doctor` holds a hook registered in settings to that entry's own
+  `timeout`.** `hook-path` judged every run against the plugin payload's
+  timeout or the hook's 15-second default, so it could pass a run that took
+  longer than the entry allows, which the harness ends before it answers.
 - **`memory-eval` exits 255 on 255 or more gating failures.** The count was
   the exit status, which is taken mod 256, so 256 failures exited 0.
 - **`memory-eval --update-snapshot` refuses to write from a run whose index

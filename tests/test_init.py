@@ -1796,6 +1796,115 @@ def test_off_the_plugin_channel_the_default_path_is_still_right(profile):
     assert action.path == str(profile / "home" / ".config" / "memkit" / "memkit.json")
 
 
+def test_off_the_plugin_channel_init_writes_where_memkit_config_points(
+    profile, monkeypatch
+) -> None:
+    """`$MEMKIT_CONFIG` is the route the pip and nix hooks read. A config
+    written to the default path while it names another file is a store, a
+    green check and a hook reading something else — and the default path is
+    left as it was."""
+    named = profile / "elsewhere" / "memkit.json"
+    monkeypatch.setenv(hook.CONFIG_ENV, str(named))
+    plan = _plan(profile, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(named), action.path
+    assert f"Read via ${hook.CONFIG_ENV}" in plan.render()
+    machine = doctor.Machine()
+    assert init.apply_plan(
+        machine, plan, init._resolve_config(machine, None)
+    ) == init.EXIT_OK
+    assert json.loads(named.read_text(encoding="utf-8"))["stores"]
+    assert not (profile / "home" / ".config" / "memkit").exists()
+
+
+def test_a_named_config_memkit_config_does_not_name_is_flagged(
+    profile, monkeypatch
+) -> None:
+    """`--config` still wins, and the manifest says that a hook inheriting this
+    environment reads the other file."""
+    ambient = profile / "ambient" / "memkit.json"
+    named = profile / "named" / "memkit.json"
+    monkeypatch.setenv(hook.CONFIG_ENV, str(ambient))
+    plan = _plan(profile, store=str(profile / "notes"), config=str(named))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(named), action.path
+    rendered = plan.render()
+    assert "WARNING" in rendered and str(ambient) in rendered, rendered
+
+
+def test_an_unwritable_named_config_without_memkit_config_names_its_cause(
+    profile, monkeypatch
+) -> None:
+    """An adopter with no `$MEMKIT_CONFIG` who passes an unwritable `--config`
+    is told which directory cannot be written, and nothing about a module
+    they may not have."""
+    locked = profile / "locked"
+    locked.mkdir(mode=0o500)
+    try:
+        refusal = _refuses(
+            profile, "not-writable", store=str(profile / "notes"),
+            config=str(locked / "memkit.json"),
+        )
+    finally:
+        locked.chmod(0o700)
+    assert str(locked) in refusal.message, refusal.message
+    assert "home-manager" not in refusal.message
+    assert "configFile" not in refusal.message
+
+
+def test_a_named_config_in_the_nix_store_does_not_blame_the_module(
+    profile, monkeypatch
+) -> None:
+    refusal = _refuses(
+        profile, "read-only-config", store=str(profile / "notes"),
+        config="/nix/store/0000-memkit.json",
+    )
+    assert "/nix/store" in refusal.message
+    assert "home-manager" not in refusal.message
+
+
+def test_the_plugin_channel_ignores_memkit_config(profile, monkeypatch) -> None:
+    """The wrapper sets or unsets the variable from the rungs it resolved, so on
+    that channel it is never an independent answer."""
+    data = profile / "plugin-data"
+    data.mkdir()
+    monkeypatch.setenv(hook.PLUGIN_ENV, "1")
+    monkeypatch.setenv(hook.PLUGIN_DATA_ENV, str(data))
+    monkeypatch.setenv(hook.CONFIG_ENV, str(profile / "elsewhere" / "memkit.json"))
+    plan = _plan(profile, store=str(profile / "notes"))
+    (action,) = [a for a in plan.actions if a.op == init.MERGE_CONFIG]
+    assert action.path == str(data / "memkit.json"), action.path
+
+
+def test_a_memkit_config_in_the_nix_store_is_refused_naming_the_option(
+    profile, monkeypatch
+) -> None:
+    """The home-manager module sets `$MEMKIT_CONFIG` on every binary it wraps,
+    `memkit` included, and points it into the store. The refusal has to say
+    which option put it there, or the adopter cannot move it."""
+    monkeypatch.setenv(hook.CONFIG_ENV, "/nix/store/0000-memkit.json")
+    refusal = _refuses(profile, "read-only-config", store=str(profile / "notes"))
+    assert "/nix/store" in refusal.message
+    assert "configFile" in refusal.message
+    assert "--config" in refusal.message
+
+
+def test_an_unwritable_memkit_config_is_refused_naming_the_option(
+    profile, monkeypatch
+) -> None:
+    locked = profile / "locked"
+    locked.mkdir(mode=0o500)
+    monkeypatch.setenv(hook.CONFIG_ENV, str(locked / "memkit.json"))
+    try:
+        refusal = _refuses(
+            profile, "read-only-config", store=str(profile / "notes")
+        )
+    finally:
+        locked.chmod(0o700)
+    assert str(locked) in refusal.message, refusal.message
+    assert "configFile" in refusal.message
+
+
 def test_a_config_inside_the_swept_state_directory_is_refused(profile) -> None:
     """The other half of the sweep hazard: init must not create the thing the
     every-prompt hook garbage-collects.

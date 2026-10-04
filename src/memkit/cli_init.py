@@ -60,6 +60,7 @@ from memkit.cli_doctor import (
     INTERPRETER_ENV,
     INTERPRETER_OPTION_ENV,
     INTERPRETER_ROUTES,
+    NIX_STORE,
     NO_CHECKER_REMEDY,
     OPTION_KEY,
     USER,
@@ -110,10 +111,10 @@ LOCK_WAIT_SECONDS = 10.0
 # it once should find init converging on the same directory rather than
 # creating a second store beside it.
 DEFAULT_STORE = "~/notes"
-# The config, when neither `--config` nor the install option names one, OFF the
-# plugin channel. `--config` and `$MEMKIT_CONFIG` are the two routes pip and
-# nix read and both take a path the adopter names, so a file under `~/.config`
-# is one they can point either route at.
+# The config, when neither `--config`, the install option nor `$MEMKIT_CONFIG`
+# names one, OFF the plugin channel. `--config` and `$MEMKIT_CONFIG` are the
+# two routes pip and nix read and both take a path the adopter names, so a
+# file under `~/.config` is one they can point either route at.
 #
 # It is NOT the plugin channel's answer. The wrapper reads exactly two rungs
 # and this is neither, so a config written here on that channel is a config the
@@ -1279,7 +1280,61 @@ def _resolve_config(machine: Machine, named: str | None) -> str:
                 "it yourself.",
             )
         return rung_two
+    # Off the plugin channel only. On it, `bin/memkit` sets this variable to
+    # the rung it resolved or unsets it, so it holds nothing the branch above
+    # has not answered. Off it, this is the route pip and nix installs read,
+    # and a config written anywhere else is one their hook never sees.
+    if machine.ambient_config:
+        return expand_home(machine.ambient_config)
     return expand_home(DEFAULT_CONFIG)
+
+
+def _config_target(machine: Machine, named: str | None) -> str:
+    """`_resolve_config`, refused when the answer is a path init cannot write.
+
+    Off the plugin channel the likeliest such answer is `$MEMKIT_CONFIG` from
+    memkit's home-manager module, which sets it on every binary it wraps,
+    `memkit` included, from its `configFile` option, and that is usually a
+    /nix/store path. The not-writable refusal in `check_refusals` would also
+    fire, after the interpreter probe and without naming the option that put
+    the path there.
+    """
+    config_path = _resolve_config(machine, named)
+    # A path the wrapper refuses by shape is left to `check_refusals`, whose
+    # refusal names the shape: `/proc/self/cwd/x` is not writable either, and
+    # a writable path in its place would still be refused.
+    if machine.plugin or path_refusal(config_path):
+        return config_path
+    # The module's `configFile` is named only when the path is the one
+    # `$MEMKIT_CONFIG` supplied: told to an adopter who passed `--config`, or
+    # who has no such module, it names a cause that is not theirs.
+    from_env = (
+        not named
+        and not machine.settings_option()[0]
+        and bool(machine.ambient_config)
+        and expand_home(machine.ambient_config) == config_path
+    )
+    module = (
+        f" ${CONFIG_ENV} names it, and memkit's home-manager module sets that "
+        "on every binary it wraps from its `configFile` option, usually to a "
+        "/nix/store path. Pass `--config <a writable path>`, then set "
+        "`configFile` to that path as a string, which Nix does not copy into "
+        "the store, so the hook reads the file init wrote."
+    )
+    if os.path.realpath(config_path).startswith(NIX_STORE):
+        raise Refusal(
+            "read-only-config",
+            f"init would write the config to {_display_path(config_path)}, "
+            "which is inside the read-only /nix/store."
+            + (module if from_env else " Pass `--config <a writable path>`."),
+        )
+    try:
+        _refuse_unwritable("config", config_path)
+    except Refusal as refusal:
+        if not from_env:
+            raise
+        raise Refusal("read-only-config", refusal.message + module) from None
+    return config_path
 
 
 def _config_route_note(machine: Machine, config_path: str) -> str:
@@ -1300,6 +1355,15 @@ def _config_route_note(machine: Machine, config_path: str) -> str:
             "WARNING: this path is on neither rung a plugin install reads "
             f"(the {OPTION_KEY} option, ${PLUGIN_DATA_ENV}/"
             f"{GENERATED_CONFIG_NAME}), so the hook will not see it"
+        )
+    ambient = machine.ambient_config
+    if ambient and expand_home(ambient) == config_path:
+        return f"Read via ${CONFIG_ENV}, which names this path here"
+    if ambient:
+        return (
+            f"WARNING: ${CONFIG_ENV} names {_display_path(expand_home(ambient))} "
+            "here, so a hook started from this environment reads that file "
+            "and not this one"
         )
     return f"Read via --config or ${CONFIG_ENV}"
 
@@ -3112,7 +3176,7 @@ def build_plan(
     interpreter: str | None = None,
 ) -> Plan:
     """Everything init would do, computed against the tree as it is now."""
-    config_path = _resolve_config(machine, config)
+    config_path = _config_target(machine, config)
     store_path = expand_home(store or DEFAULT_STORE)
     check_refusals(
         machine,
@@ -3641,7 +3705,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--config",
         metavar="PATH",
         help="where the config goes (default: the memkitConfig install option, "
-        f"else {DEFAULT_CONFIG})",
+        f"else ${CONFIG_ENV} off the plugin channel, else {DEFAULT_CONFIG})",
     )
     parser.add_argument(
         "--interpreter",
@@ -3697,7 +3761,7 @@ def run(args: argparse.Namespace) -> int:
     # directory, which can be removed under this process.
     try:
         machine = Machine()
-        config_path = _resolve_config(machine, getattr(args, "config", None))
+        config_path = _config_target(machine, getattr(args, "config", None))
         plan = build_plan(
             machine,
             store=getattr(args, "store", None),

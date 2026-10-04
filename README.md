@@ -486,7 +486,9 @@ The minimum is four lines, and it is a complete working config:
 
 Per store only `id`, `dir` and `live_root` are required: `role` defaults to
 `project`, `edit_root` to `live_root`, and there is no `cwd_gate` unless you
-write one. `citations`, `search_cli` and `eval` are optional in the file.
+write one. `citations`, `search_cli` and `eval` are optional in the file. A
+store key nothing reads is ignored, and `memkit doctor`, `memory-integrity`
+and `memory-eval` name it *(from the next release)*.
 Everything below is the shape a mature install grows into, not a starting
 point.
 
@@ -557,7 +559,9 @@ point.
   `edit_root` and why a check run from a worktree needs no redirection.
   `edit_root` defaults to `live_root`, which is the right answer whenever one
   tree is both. A `cwd_gate` restricts a store to sessions inside the named
-  root, including that root's git worktrees.
+  root, including that root's git worktrees. `"roots": [...]` in place of
+  `"root"` admits a session inside any root it lists, so one store can serve
+  several trees *(from the next release)*.
 - **`citations`** — which top-level trees a prose path may name, extra
   suffixes to treat as filenames, and the base ref a change is blamed against.
 - **`search_cli`** — the command memkit prints when a pointer block truncates
@@ -872,6 +876,13 @@ directories an every-prompt hook reads and injects from is the whole
 memory-poisoning surface of this design, and an ambient environment variable
 would hand that decision to whatever repository the session happens to be
 standing in.
+
+The same override reaches `memkit` itself, so `memkit init` writes to the
+module's config path. Unless `configFile` is a path outside the store, that
+path is in `/nix/store` and read-only, and init refuses it by name
+(`read-only-config`) rather than writing a config the hook never reads: pass
+`--config <a writable path>` and set `configFile` to that path as a string
+*(from the next release)*.
 
 ### Claude Code plugin
 

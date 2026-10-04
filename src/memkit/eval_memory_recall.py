@@ -132,6 +132,7 @@ from memkit.memory_prompt_recall import (
     ConfigError,
     _utf8,
     load_config,
+    unknown_keys_line,
 )
 
 # The packaged hook, and the default for --hook. `--repo` moves the STORES;
@@ -1193,6 +1194,9 @@ def main() -> None:
         cases = cases_from_config(cfg)
     except ConfigError as exc:
         sys.exit(f"memory-eval: {exc}")
+    unknown = unknown_keys_line(cfg)
+    if unknown:
+        print(f"memory-eval: {unknown}", file=sys.stderr)
     if cfg.eval_snapshot is None:
         sys.exit(f"memory-eval: {cfg.path} names no eval.snapshot to gate against")
 

@@ -43,7 +43,15 @@ The flags themselves may be in any order after it:
 - `--adopt-auto-memory` — copy the memories the harness has already written
   under its own config directory into the store, and set
   `"autoMemoryDirectory"` so the ones it writes next land there too. Copies,
-  never moves.
+  never moves. Not the default: leaving the harness's per-project
+  directories as an inbox is, and adopting fits one writer with a store of
+  its own. Measured on 2.1.286, it costs three things, so relay them with the
+  manifest: each project's `MEMORY.md` index stops loading, because the
+  setting replaces the per-project directory; the one index it points at
+  loads in every session; and where the store is a git checkout that
+  sessions share, what the harness writes lands as untracked files that fail
+  the integrity check until a `--write` pass, and that make `git pull` abort
+  once an incoming commit adds the same path.
 - `--auto-memory-off` — set `"autoMemoryEnabled": false`, so the harness
   writes no memories of its own at all and memkit is the only one here.
 
