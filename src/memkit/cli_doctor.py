@@ -2166,10 +2166,11 @@ def _installed_hook(machine: Machine) -> tuple:
     than run: the harness hands it to a shell, and a diagnostic that evaluated
     a shell fragment out of a settings file would be executing whatever that
     file says on a machine whose configuration is already in doubt. A command
-    whose last word names the nix channel's hook file evaluates nothing out of
-    the settings either: what runs is the file that word spells, or, when the
-    word is the bare file name, the copy under the config directory's
-    `hooks/`, a place this chooses because the word names none.
+    of more than one word whose last word names the nix channel's hook file is
+    a launcher, and nothing of it is run: the file behind it, run alone, is
+    not what a prompt runs, since the launcher may export the config, change
+    directory or never reach the file. It comes back as an empty command with
+    no remedy, which `hook-path` reports as INFO.
 
     NOTHING A REPOSITORY WROTE IS EVER EXECUTED, and that is the sharper half
     of the same rule. `.claude/settings.json` and `.claude/settings.local.json`
@@ -2202,7 +2203,7 @@ def _installed_hook(machine: Machine) -> tuple:
                 command = (spec or {}).get("command")
                 if not isinstance(command, str):
                     continue
-                linked = "memkit" not in command and _names_linked_hook(command)
+                linked = _names_linked_hook(command)
                 if "memkit" not in command and not linked:
                     continue
                 words = shlex.split(command) if linked else []
@@ -2226,35 +2227,23 @@ def _installed_hook(machine: Machine) -> tuple:
                         "those separately.",
                     )
                     continue
-                # The word the shell runs, quotes removed, for a single-word
-                # registration of the linked file.
-                run = words[0] if words else command
                 if launched:
-                    # The hook file, never the launcher in front of it: what a
-                    # launcher does before reaching the hook is a program of
-                    # the user's that this has no business running. The shell
-                    # expands a leading `~/` before the launcher sees the word.
-                    run = expand_home(words[-1])
-                    if run == NIX_HOOK_FILES[0]:
-                        # No directory to follow, so this looks where the nix
-                        # channel links the file, and says it chose the place.
-                        run = os.path.join(_config_dir()[1], "hooks", NIX_HOOK_FILES[0])
-                        named = (
-                            "which gives the hook file no directory. Doctor "
-                            "looked for it where the nix channel links it, "
-                            f"{_display_path(run)}, and that "
-                        )
-                    else:
-                        named = f"and the hook file it names, {_display_path(run)}, "
-                    if not (os.path.isfile(run) and os.access(run, os.X_OK)):
-                        return (
-                            [],
-                            f"the {scope.scope}-settings registration runs "
-                            f'"{command}", {named}is not an executable file',
-                            NO_HOOK_REMEDY,
-                            None,
-                        )
-                elif not (os.path.isfile(run) and os.access(run, os.X_OK)):
+                    # Not probed at all. The launcher is a program of the
+                    # user's that this has no business running, and the file
+                    # behind it run on its own is not what a prompt runs: the
+                    # launcher may export the config, change directory, or
+                    # never reach the file.
+                    return (
+                        [],
+                        f'the {scope.scope}-settings registration "{command}" '
+                        "is registered through a launcher. Doctor does not "
+                        "run launchers, so it did not probe the hook",
+                        "",
+                        None,
+                    )
+                # The word the shell runs once it removes the quoting.
+                run = words[0] if words else command
+                if not (os.path.isfile(run) and os.access(run, os.X_OK)):
                     return (
                         [],
                         f"the {scope.scope}-settings registration runs "
@@ -2279,19 +2268,6 @@ def _installed_hook(machine: Machine) -> tuple:
                         None,
                     )
                 timeout = _timeout_seconds(spec.get("timeout"))
-                if launched:
-                    # A non-empty third field beside a command is what this
-                    # probe leaves unexercised: `hook-path` reports a delivery
-                    # through it as INFO, because a launcher that never reaches
-                    # the hook would deliver the same answer here.
-                    return (
-                        [run],
-                        f'the {scope.scope}-settings registration "{command}", '
-                        f"probed by running {_display_path(run)} directly",
-                        f'doctor did not run the launcher in "{command}", so '
-                        "whether it reaches that file is not checked",
-                        timeout,
-                    )
                 return [run], f"the {scope.scope}-settings registration", "", timeout
     if reported:
         return [], reported[0], reported[1], None
@@ -2520,6 +2496,17 @@ def _hook_path(machine: Machine) -> list[Check]:
     while every other light was green.
     """
     command, how, remedy, registered = _installed_hook(machine)
+    if not command and not remedy:
+        return [
+            Check(
+                "hook-path",
+                INFO,
+                f"no hook was run: {how}",
+                "A prompt in a new session that brings back a pointer is the "
+                "launcher's own delivery, which this check cannot run.",
+                actor=USER,
+            )
+        ]
     if not command:
         return [
             Check("hook-path", UNKNOWN, f"no hook was run: {how}",
@@ -2632,18 +2619,6 @@ def _hook_path(machine: Machine) -> list[Check]:
                     "budget or the index cannot be written — check "
                     "gate-outcomes for `killed`, and index-state for a "
                     "truncated sync.",
-                    actor=USER,
-                )
-            ]
-        if remedy:
-            return [
-                Check(
-                    "hook-path",
-                    INFO,
-                    f"{how} emitted a framed pointer to {CANARY_NAME} in "
-                    f"{ms}ms{supplied}, but {remedy}",
-                    "A prompt in a new session that brings back a pointer is "
-                    "the launcher's own delivery, which this check cannot run.",
                     actor=USER,
                 )
             ]

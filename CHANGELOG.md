@@ -83,11 +83,10 @@ ordering.
   a bare path to the file the home-manager module links in or as a launcher
   handed that name (`hook-launcher memory-prompt-recall.py`), read as no
   registration, because doctor looked for the word `memkit`. `hook-path`
-  now runs a bare path as written, and probes a launcher entry by running
-  the file its last word names directly, never the launcher. Only a bare
-  file name, with no directory, is looked for at
-  `<config dir>/hooks/memory-prompt-recall.py`. That result is INFO rather
-  than PASS, because the launcher's own delivery is not exercised.
+  now runs a bare path as written, quoted or not. A launcher entry is
+  reported as INFO and nothing of it is run: doctor does not run launchers,
+  and the file behind one, run alone, is not what a prompt runs, since the
+  launcher may export the config, change directory or never reach it.
   `registrations-count` counts both. A project-scope entry is still
   reported and not run.
 - **`memkit doctor` holds a hook registered in settings to that entry's own
