@@ -75,9 +75,10 @@ ordering.
   handed that name (`hook-launcher memory-prompt-recall.py`), read as no
   registration, because doctor looked for the word `memkit`. `hook-path`
   now runs a bare path as written, and probes a launcher entry by running
-  `<config dir>/hooks/memory-prompt-recall.py` directly, never the launcher;
-  that result is INFO rather than PASS, because the launcher's own delivery
-  is not exercised. `registrations-count` counts both. A project-scope entry
+  the file its last word names directly, never the launcher. Only a bare
+  file name, with no directory, is looked for at
+  `<config dir>/hooks/memory-prompt-recall.py`. That result is INFO rather
+  than PASS, because the launcher's own delivery is not exercised. `registrations-count` counts both. A project-scope entry
   is still reported and not run.
 - **`memory-eval` exits 255 on 255 or more gating failures.** The count was
   the exit status, which is taken mod 256, so 256 failures exited 0.

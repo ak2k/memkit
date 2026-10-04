@@ -2131,7 +2131,8 @@ def _names_linked_hook(command: str) -> bool:
 
     The last word rather than the whole command, because two shapes reach the
     file and neither carries the word memkit: a bare path to it, and a user's
-    own launcher handed its name, as in `hook-launcher memory-prompt-recall.py`.
+    own launcher handed its name or its path, as in
+    `hook-launcher memory-prompt-recall.py`.
     """
     try:
         words = shlex.split(command)
@@ -2154,8 +2155,9 @@ def _installed_hook(machine: Machine) -> tuple:
     a shell fragment out of a settings file would be executing whatever that
     file says on a machine whose configuration is already in doubt. A command
     whose last word names the nix channel's hook file evaluates nothing out of
-    the settings either: what runs is that file under the config directory's
-    `hooks/`, a path this decides rather than one the command spells.
+    the settings either: what runs is the file that word spells, or, when the
+    word is the bare file name, the copy under the config directory's
+    `hooks/`, a place this chooses because the word names none.
 
     NOTHING A REPOSITORY WROTE IS EVER EXECUTED, and that is the sharper half
     of the same rule. `.claude/settings.json` and `.claude/settings.local.json`
@@ -2186,9 +2188,10 @@ def _installed_hook(machine: Machine) -> tuple:
                 linked = "memkit" not in command and _names_linked_hook(command)
                 if "memkit" not in command and not linked:
                     continue
+                words = shlex.split(command) if linked else []
                 # A launcher is more than one word. A single word is a path the
                 # harness runs as spelled, so it is probed as spelled too.
-                launched = linked and len(shlex.split(command)) > 1
+                launched = len(words) > 1
                 if not scope.adopter_owned:
                     # Kept as the fallback answer rather than returned at once:
                     # an adopter-owned entry further down the list is still
@@ -2208,17 +2211,27 @@ def _installed_hook(machine: Machine) -> tuple:
                     continue
                 run = command
                 if launched:
-                    # The linked file, never the launcher in front of it:
-                    # what a launcher does before reaching the hook is a
-                    # program of the user's that this has no business running,
-                    # and the file is the hook the harness ends up executing.
-                    run = os.path.join(_config_dir()[1], "hooks", NIX_HOOK_FILES[0])
+                    # The hook file, never the launcher in front of it: what a
+                    # launcher does before reaching the hook is a program of
+                    # the user's that this has no business running. The shell
+                    # expands a leading `~/` before the launcher sees the word.
+                    run = expand_home(words[-1])
+                    if run == NIX_HOOK_FILES[0]:
+                        # No directory to follow, so this looks where the nix
+                        # channel links the file, and says it chose the place.
+                        run = os.path.join(_config_dir()[1], "hooks", NIX_HOOK_FILES[0])
+                        named = (
+                            "which gives the hook file no directory. Doctor "
+                            "looked for it where the nix channel links it, "
+                            f"{_display_path(run)}, and that "
+                        )
+                    else:
+                        named = f"and the hook file it names, {_display_path(run)}, "
                     if not (os.path.isfile(run) and os.access(run, os.X_OK)):
                         return (
                             [],
                             f"the {scope.scope}-settings registration runs "
-                            f'"{command}", and the hook file it names, '
-                            f"{_display_path(run)}, is not an executable file",
+                            f'"{command}", {named}is not an executable file',
                             NO_HOOK_REMEDY,
                         )
                 elif not (os.path.isfile(command) and os.access(command, os.X_OK)):
@@ -2253,7 +2266,7 @@ def _installed_hook(machine: Machine) -> tuple:
                         f'the {scope.scope}-settings registration "{command}", '
                         f"probed by running {_display_path(run)} directly",
                         f'doctor did not run the launcher in "{command}", so '
-                        "whether it reaches the hook is not checked",
+                        "whether it reaches that file is not checked",
                     )
                 return [run], f"the {scope.scope}-settings registration", ""
     if reported:

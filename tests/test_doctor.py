@@ -5394,14 +5394,14 @@ def test_a_command_inside_the_session_directory_is_never_run(profile, monkeypatc
     assert "inside this directory" in how, how
 
 
-def _linked_hook(profile, config: str, marker=None):
+def _linked_hook(profile, config: str, marker=None, at=None):
     """The file the nix channel links into `<config dir>/hooks/`, standing in
     as the module's wrapper does: the config baked in, then the real hook.
 
     `marker`, when given, is a file the script creates, so a case can tell
-    whether anything executed it.
+    whether anything executed it. `at` writes the same file somewhere else.
     """
-    linked = profile / "claude-config" / "hooks" / doctor.NIX_HOOK_FILES[0]
+    linked = at or profile / "claude-config" / "hooks" / doctor.NIX_HOOK_FILES[0]
     linked.parent.mkdir(parents=True, exist_ok=True)
     touch = f"touch {marker}\n" if marker else ""
     linked.write_text(
@@ -5522,6 +5522,74 @@ def test_a_bare_registration_outside_the_config_dir_runs_the_path_it_names(
     machine = _machine(profile, monkeypatch, path)
     command, how, _remedy = doctor._installed_hook(machine)
     assert command == [str(real)], (command, how)
+
+
+def test_a_launcher_handed_a_path_probes_that_path(profile, monkeypatch) -> None:
+    """`hook-launcher <dir>/memory-prompt-recall.py` spells the file the
+    launcher reaches. With `$CLAUDE_CONFIG_DIR` away from where the module
+    links the hook, the config dir's `hooks/` holds nothing, and the spelled
+    path is still the hook a prompt runs."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    spelled = profile / "home" / ".claude" / "hooks" / doctor.NIX_HOOK_FILES[0]
+    _linked_hook(profile, path, at=spelled)
+    launcher = profile / "home" / "bin" / "hook-launcher"
+    _settings(profile, hooks=_registration(f"{launcher} {spelled}"))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, caveat = doctor._installed_hook(machine)
+    assert command == [str(spelled)], (command, how)
+    assert "did not run the launcher" in caveat, caveat
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status == doctor.INFO, row.detail
+    assert doctor.CANARY_NAME in row.detail
+
+    # `~/` as the shell expands it before the launcher sees the word.
+    _settings(
+        profile,
+        hooks=_registration(f"{launcher} ~/.claude/hooks/{doctor.NIX_HOOK_FILES[0]}"),
+    )
+    command, how, _caveat = doctor._installed_hook(doctor.Machine())
+    assert command == [str(spelled)], (command, how)
+
+
+def test_a_launcher_handed_a_missing_path_is_not_probed_through_another_file(
+    profile, monkeypatch
+) -> None:
+    """The config dir's copy answering for a path the command spells would be
+    INFO about a program no prompt runs. The spelled path is gone, so nothing
+    runs on a prompt, and the row says which file it looked for."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    marker = profile / "linked-ran"
+    linked = _linked_hook(profile, path, marker=marker)
+    gone = profile / "gone" / doctor.NIX_HOOK_FILES[0]
+    _settings(profile, hooks=_registration(f"python3 {gone}"))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    assert str(gone) in how, how
+    assert str(linked) not in how, how
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status != doctor.PASS, row.detail
+    assert not marker.exists(), "doctor ran a file the registration does not name"
+
+
+def test_a_launcher_handed_the_bare_file_name_says_where_doctor_looked(
+    profile, monkeypatch
+) -> None:
+    """A bare name carries no directory, so the config dir's `hooks/` is
+    doctor's own choice of where to look. The row says that, and does not
+    call the path one the command names."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _settings(
+        profile, hooks=_registration(f"hook-launcher {doctor.NIX_HOOK_FILES[0]}")
+    )
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy = doctor._installed_hook(machine)
+    assert command == [], (command, how)
+    looked = profile / "claude-config" / "hooks" / doctor.NIX_HOOK_FILES[0]
+    assert str(looked) in how, how
+    assert "it names" not in how, how
 
 
 def test_a_project_scope_launcher_registration_is_reported_and_not_run(
