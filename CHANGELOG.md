@@ -18,7 +18,9 @@ ordering.
   one store can serve several trees without a second store holding the same
   files. A single `root` reads as before. An empty list, a non-string entry,
   or `root` and `roots` together is a config error, and every listed root
-  must resolve wherever the session stands, or the config is refused.
+  must resolve wherever the session stands, or the config is refused. A
+  listed name the config's `roots` does not define is refused when the
+  config loads.
 - **Store keys nothing reads are named.** A key in a store entry that memkit
   does not read, such as a misspelled one, was ignored without a word. It is
   still ignored, and now `memkit doctor` shows an INFO row under
@@ -69,6 +71,11 @@ ordering.
   path outside it, a store or unwritable path is refused as
   `read-only-config` and the refusal names `configFile`; an unwritable path
   from any other route keeps the `not-writable` refusal.
+- **A `cwd_gate` naming a root the config does not define is refused when
+  the config loads.** It was found only when a session's stores were
+  chosen, where it raised: the hook served no store at all and recorded
+  nothing, and `memkit doctor`'s `config-parse` passed. The hook now records
+  `gate:nodirs` with the reason, and `config-parse` fails.
 - **`memkit doctor` finds a hook registered by the nix channel's file
   name.** A settings entry whose last word is `memory-prompt-recall.py`, as
   a bare path to the file the home-manager module links in or as a launcher

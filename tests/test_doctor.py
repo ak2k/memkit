@@ -1020,6 +1020,27 @@ def test_a_store_gated_by_a_roots_list_is_shown_with_every_root_named(
     assert "gated to elsewhere, further" in corpus.detail, corpus.detail
 
 
+@pytest.mark.parametrize(
+    "gate", [{"roots": ["elsewhere", "tpyo"]}, {"root": "tpyo"}]
+)
+def test_a_gate_naming_an_undefined_root_fails_the_config_check(
+    profile, monkeypatch, gate
+) -> None:
+    """The hook serves no store at all under such a gate, so a verdict of OK
+    over it is a green report on a hook that answers nothing."""
+    path = pathlib.Path(
+        _store_config(profile, stores=["personal", "project"], gate="elsewhere")
+    )
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    blob["stores"][1]["cwd_gate"] = gate
+    path.write_text(json.dumps(blob), encoding="utf-8")
+    checks = doctor.collect(_machine(profile, monkeypatch, str(path)))
+    (parsed,) = _only(checks, "config-parse")
+    assert parsed.status == doctor.FAIL, parsed.detail
+    assert "tpyo" in parsed.detail, parsed.detail
+    assert doctor.verdict(checks) != "OK"
+
+
 # --- index-state -------------------------------------------------------------
 
 

@@ -5526,18 +5526,37 @@ def test_a_malformed_roots_list_is_a_config_error(tmp_path, gate, names) -> None
         assert name in str(caught.value), (name, str(caught.value))
 
 
-def test_a_roots_list_naming_an_undefined_root_is_refused_from_every_directory(
-    tmp_path,
+@pytest.mark.parametrize("gate", [{"roots": ["a", "tpyo"]}, {"root": "tpyo"}])
+def test_a_gate_naming_an_undefined_root_is_refused_when_the_config_loads(
+    tmp_path, gate
 ) -> None:
-    """The store is never served while one of its roots is in doubt — and the
-    refusal must not depend on where the session stands. A session inside `a`
-    has its answer before `missing` is looked at, which is exactly the session
-    that would otherwise be served."""
+    """A name no root carries can never resolve, so the store is never served
+    while it stands, and neither is any other: the hook answers with nothing.
+    Refused at load, that silence has a record saying why, and the refusal
+    cannot depend on where the session stands. A session inside `a` would
+    otherwise have its answer before `tpyo` is looked at."""
     tmp_path = tmp_path.resolve()
-    config = _load(tmp_path, _gated_by_list(tmp_path, ["a", "missing"]))
-    for where in (tmp_path / "a", tmp_path / "b"):
-        with pytest.raises(hook.ConfigError, match="missing"):
-            _searched_from(where, config)
+    blob = _gated_by_list(tmp_path, ["a"])
+    blob["stores"][0]["cwd_gate"] = gate
+    path = tmp_path / "gated.json"
+    path.write_text(json.dumps(blob))
+    out = subprocess.run(
+        ["python3", HOOK],
+        input=json.dumps({"session_id": "gatetypo", "prompt": "flange torque passes"}),
+        capture_output=True,
+        text=True,
+        env=_sealed_env(tmp_path, MEMKIT_CONFIG=str(path)),
+        cwd=str(tmp_path / "a"),
+        timeout=60,
+    )
+    assert out.returncode == 0 and out.stdout == ""
+    log = tmp_path / ".cache" / "memory-recall" / "log.jsonl"
+    assert log.is_file(), "the hook served nothing and recorded nothing"
+    record = _last_record(tmp_path)
+    assert record["outcome"] == "gate:nodirs", record
+    assert "tpyo" in record.get("config", ""), record
+    with pytest.raises(hook.ConfigError, match="tpyo"):
+        hook.load_config(str(path))
 
 
 def test_store_keys_nothing_reads_are_collected_and_not_refused(tmp_path) -> None:

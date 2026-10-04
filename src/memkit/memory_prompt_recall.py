@@ -891,6 +891,17 @@ class Config:
         self.stores = [
             Store(s, i) for i, s in enumerate(_optional_list(raw, "stores"))
         ]
+        # Gate names are checked against `roots` here, though roots resolve
+        # lazily: a name nothing defines can never resolve, and met lazily it
+        # raises where a session's stores are chosen, which on the hook's path
+        # drops every store with nothing recorded.
+        for store in self.stores:
+            for name in store.cwd_gate or ():
+                if name not in self._roots_raw:
+                    raise ConfigError(
+                        f"{path}: stores[{store.id}].cwd_gate: no root named "
+                        f"{name!r}"
+                    )
         citations = _optional_mapping(raw, "citations")
         # Whether the config MENTIONS citations at all, which absent-or-empty
         # collapses away — and the checker needs the difference. A store whose
