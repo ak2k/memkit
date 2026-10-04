@@ -5523,6 +5523,23 @@ def test_a_bare_registration_of_a_missing_path_is_not_probed_through_the_linked_
     assert row.status != doctor.PASS, row.detail
 
 
+def test_a_quoted_single_word_registration_is_probed_as_the_shell_reads_it(
+    profile, monkeypatch
+) -> None:
+    """The shell strips the quotes before it runs the path, so a quoted path,
+    with or without a space in it, is the same registration as a bare one."""
+    path = _store_config(profile, stores=["personal"], nonce=NONCE)
+    _canary(profile / "stores" / "personal", NONCE)
+    spaced = profile / "home" / "hook dir" / doctor.NIX_HOOK_FILES[0]
+    _linked_hook(profile, path, at=spaced)
+    _settings(profile, hooks=_registration(f'"{spaced}"'))
+    machine = _machine(profile, monkeypatch, path)
+    command, how, _remedy, _timeout = doctor._installed_hook(machine)
+    assert command == [str(spaced)], (command, how)
+    (row,) = _only(doctor._PRODUCERS["hook-path"](machine), "hook-path")
+    assert row.status == doctor.PASS, row.detail
+
+
 def test_a_bare_registration_outside_the_config_dir_runs_the_path_it_names(
     profile, monkeypatch
 ) -> None:

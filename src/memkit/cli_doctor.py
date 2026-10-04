@@ -2226,7 +2226,9 @@ def _installed_hook(machine: Machine) -> tuple:
                         "those separately.",
                     )
                     continue
-                run = command
+                # The word the shell runs, quotes removed, for a single-word
+                # registration of the linked file.
+                run = words[0] if words else command
                 if launched:
                     # The hook file, never the launcher in front of it: what a
                     # launcher does before reaching the hook is a program of
@@ -2252,7 +2254,7 @@ def _installed_hook(machine: Machine) -> tuple:
                             NO_HOOK_REMEDY,
                             None,
                         )
-                elif not (os.path.isfile(command) and os.access(command, os.X_OK)):
+                elif not (os.path.isfile(run) and os.access(run, os.X_OK)):
                     return (
                         [],
                         f"the {scope.scope}-settings registration runs "
