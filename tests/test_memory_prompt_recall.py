@@ -5526,6 +5526,23 @@ def test_a_malformed_roots_list_is_a_config_error(tmp_path, gate, names) -> None
         assert name in str(caught.value), (name, str(caught.value))
 
 
+def test_a_roots_list_naming_a_git_toplevel_root_is_refused(tmp_path) -> None:
+    """A `git_toplevel` root resolves to whatever repository the session
+    stands in, so in a list it admits every repository and the other names
+    constrain nothing inside one. Alone it means "any repository", which is
+    what it says, and stays allowed."""
+    blob = _gated_by_list(tmp_path, ["a", "checkout"])
+    blob["roots"]["checkout"] = {"kind": "git_toplevel", "fallback": "home"}
+    path = tmp_path / "gated.json"
+    path.write_text(json.dumps(blob))
+    with pytest.raises(hook.ConfigError, match="checkout") as caught:
+        hook.load_config(str(path))
+    assert "git_toplevel" in str(caught.value), caught.value
+    for gate in ({"roots": ["checkout"]}, {"root": "checkout"}):
+        blob["stores"][0]["cwd_gate"] = gate
+        assert _load(tmp_path, blob).stores[0].cwd_gate == ("checkout",)
+
+
 @pytest.mark.parametrize("gate", [{"roots": ["a", "tpyo"]}, {"root": "tpyo"}])
 def test_a_gate_naming_an_undefined_root_is_refused_when_the_config_loads(
     tmp_path, gate

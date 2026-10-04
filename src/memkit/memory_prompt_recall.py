@@ -895,12 +895,25 @@ class Config:
         # lazily: a name nothing defines can never resolve, and met lazily it
         # raises where a session's stores are chosen, which on the hook's path
         # drops every store with nothing recorded.
+        # A git_toplevel root resolves to the session's own repository, so in
+        # a list it admits every repository and the other names gate nothing.
         for store in self.stores:
-            for name in store.cwd_gate or ():
+            names = store.cwd_gate or ()
+            for name in names:
                 if name not in self._roots_raw:
                     raise ConfigError(
                         f"{path}: stores[{store.id}].cwd_gate: no root named "
                         f"{name!r}"
+                    )
+                if len(names) > 1 and (
+                    self._roots_raw[name].get("kind") == "git_toplevel"
+                ):
+                    raise ConfigError(
+                        f"{path}: stores[{store.id}].cwd_gate.roots lists "
+                        f"{name!r}, a git_toplevel root. It resolves to "
+                        "whatever repository the session is in, so beside "
+                        "other roots it admits every repository; gate on it "
+                        "alone, or name the checkout as a path root"
                     )
         citations = _optional_mapping(raw, "citations")
         # Whether the config MENTIONS citations at all, which absent-or-empty
