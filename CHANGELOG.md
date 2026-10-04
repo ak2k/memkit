@@ -78,8 +78,9 @@ ordering.
   the file its last word names directly, never the launcher. Only a bare
   file name, with no directory, is looked for at
   `<config dir>/hooks/memory-prompt-recall.py`. That result is INFO rather
-  than PASS, because the launcher's own delivery is not exercised. `registrations-count` counts both. A project-scope entry
-  is still reported and not run.
+  than PASS, because the launcher's own delivery is not exercised.
+  `registrations-count` counts both. A project-scope entry is still
+  reported and not run.
 - **`memory-eval` exits 255 on 255 or more gating failures.** The count was
   the exit status, which is taken mod 256, so 256 failures exited 0.
 - **`memory-eval --update-snapshot` refuses to write from a run whose index
